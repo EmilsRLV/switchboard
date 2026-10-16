@@ -1,11 +1,14 @@
 # Switchboard (working title)
 
+![ci](https://github.com/EmilsRLV/switchboard/actions/workflows/ci.yml/badge.svg)
+
 A small desktop app for Windows and Linux whose main surface is a **graph of projects, Claude Code
 sessions and branches**. It starts, watches, connects and reviews Claude Code sessions. It is not a
 text editor.
 
 Status: **Epic 1 in progress**. The Tauri 2 shell (Rust core, React 19 + TypeScript + Vite UI) builds
-and tests on Windows; no product features yet.
+and tests on Windows and Linux (CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)); no product
+features yet.
 
 ## Plans
 
@@ -20,7 +23,20 @@ and tests on Windows; no product features yet.
 ## Dev loop
 
 Prerequisites: Rust 1.94 (MSVC toolchain on Windows), Node 25, WebView2 (ships with Windows 11).
-Linux prerequisites (webkit2gtk 4.1 and friends) are pinned down in Story 1.2 together with CI.
+
+On Linux (Ubuntu 24.04; other distros need the equivalent packages) the webview is webkit2gtk 4.1, and the
+dev loop plus the AppImage/.deb bundler need:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev \
+  libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils
+```
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the same loop on `ubuntu-24.04` and
+`windows-latest` on every push and pull request: typecheck, vitest, `cargo test`, then `tauri build`,
+uploading the bundles as the `switchboard-linux` (AppImage, .deb) and `switchboard-windows` (NSIS, MSI)
+artefacts for 14 days.
 
 ```powershell
 npm install              # frontend deps (pinned in package.json)
