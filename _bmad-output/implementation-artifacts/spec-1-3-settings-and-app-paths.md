@@ -2,7 +2,7 @@
 title: 'Story 1.3: Settings and app paths'
 type: 'feature'
 created: '2026-10-16'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'ffb9566f6a7f924a24a9b170d9f19a1f5e125b1f'
@@ -77,6 +77,7 @@ context:
 
 - Orchestrator GUI run (2026-10-16, pass 1): drove `npm run tauri dev` through first launch → broken JSON → bogus `claude.path` → `ctrl+,` → fix → Esc, screenshotting each state. Verified: first launch writes the full file with `claude.path` pinned, `external_editor = code -g {file}:{line}`, `shell = powershell`; no banner; pane renders path / binaries / tree; `ctrl+,` opens, Esc closes; last-good settings stay in force under a parse banner (pane still showed claude 2.1.301). Found: every file written with a UTF-8 BOM failed with `settings.json:1:1 expected value` (triage O1). RSS 27 MB.
 - Orchestrator GUI run (pass 2, after patches): broken file without BOM → `settings.json:3:12 expected value`; valid file **with** BOM and `claude.path = C:\nope.exe` → configured-missing banner, pane row `C:\nope.exe (configured, does not exist)`; fix → no banner, claude re-detected `2.1.301`; `ctrl+,`/Esc work. Full verification after patches: vitest 3 files / 18 passed, `tsc` clean, `cargo test` 72 passed, clippy 0 warnings, debug build OK.
+- Orchestrator (2026-10-16): committed `b78f527`, pushed. CI run 38935319796: Windows green, Linux red on two tests using the "file where the config dir should be" fixture — Linux reports `NotADirectory` on the read where Windows reports `NotFound`. Fix `0a84afb`: `load_or_init` treats both as "attempt the write" so the failure surfaces as `settings.write` on every OS. Re-run green on both runners. Nothing deferred.
 
 - 2026-10-16: defaults not fixed by architecture §7 (which only names the shell) were chosen as: `defaults.model` / `defaults.effort` `null` (leave to `claude`), `defaults.permission_mode` `"default"` (the CLI's own name for its default mode), `worktrees_root` `null` (= `<repo>/.worktrees/`, FR-BRANCH-2), `theme` `"dark"`, `poll.agents_ms` 2000 (NFR-4's "default 2 s"), `poll.git_ms` 5000. All recorded in the README key table and asserted by `settings::tests::defaults_match_the_recorded_decisions`.
 - `Settings::default()` is static (no IO); `Settings::for_machine(&Search)` layers the machine-dependent first-launch values on top: detected `claude.path`, `shell` (`pwsh` → `powershell` on Windows, `$SHELL` elsewhere), `external_editor` = `code -g {file}:{line}` when `code` is on PATH. `git.path` is deliberately **not** pinned on first launch (stays `null`, re-detected every launch) -- the matrix only asks for `claude.path`, and pinning git would skip detection for a binary nothing in this story reads from settings.
