@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SettingsSnapshot } from "../ipc";
+import type { SettingsSnapshot, Viewport } from "../ipc";
+import { useCanvasStore, type CanvasInstance } from "../state/canvas";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
 import { builtinCommands, registerBuiltins } from "./builtins";
@@ -24,6 +25,7 @@ describe("built-in commands", () => {
     clearCommands();
     usePaletteStore.setState({ isOpen: false, query: "", selected: 0 });
     useSettingsStore.setState({ snapshot: null, loadError: null, paneOpen: false, actionBusy: false, actionError: null });
+    useCanvasStore.setState({ instance: null });
     registerBuiltins();
   });
   afterEach(() => clearCommands());
@@ -33,10 +35,11 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the eight initial commands with the spec's keybindings", () => {
+  it("register the nine commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "app.quit",
       "binaries.redetect",
+      "canvas.fitView",
       "palette.close",
       "palette.toggle",
       "settings.closePane",
@@ -48,14 +51,16 @@ describe("built-in commands", () => {
     expect(getCommand("settings.toggle")?.keybinding).toBe("ctrl+,");
     expect(getCommand("settings.open")?.keybinding).toBeUndefined();
     expect(getCommand("app.quit")?.keybinding).toBe("ctrl+q");
+    expect(getCommand("canvas.fitView")?.keybinding).toBe("ctrl+0");
     expect(getCommand("palette.close")?.keybinding).toBe("escape");
     expect(getCommand("settings.closePane")?.keybinding).toBe("escape");
   });
 
-  it("the key-only carriers are hidden from the palette, the five actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the six actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "app.quit",
       "binaries.redetect",
+      "canvas.fitView",
       "palette.toggle",
       "settings.open",
       "settings.reveal",
@@ -64,7 +69,28 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(8);
+    expect(listCommands()).toHaveLength(9);
+  });
+
+  it("Fit view is hidden and inert until the canvas has mounted", () => {
+    expect(listCommands({ enabledOnly: true }).map((c) => c.id)).not.toContain("canvas.fitView");
+    expect(runCommand("canvas.fitView")).toBe(false);
+    expect(handleKeydown(key("0", { ctrlKey: true }))).toBe(false);
+  });
+
+  it("Fit view on an empty canvas goes home to {0,0,1}, from the palette and from ctrl+0", async () => {
+    const instance = fakeCanvas();
+    useCanvasStore.getState().setInstance(instance);
+    expect(listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title)).toContain("Fit view");
+
+    expect(runCommand("canvas.fitView")).toBe(true);
+    await flush();
+    expect(instance.setViewport).toHaveBeenCalledWith({ x: 0, y: 0, zoom: 1 });
+    expect(instance.fitView).not.toHaveBeenCalled();
+
+    expect(handleKeydown(key("0", { ctrlKey: true }))).toBe(true);
+    await flush();
+    expect(instance.setViewport).toHaveBeenCalledTimes(2);
   });
 
   it("Open settings only opens: chosen with the pane already open, it stays open", () => {
@@ -161,6 +187,19 @@ describe("built-in commands", () => {
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 5; i += 1) await Promise.resolve();
+}
+
+function fakeCanvas(): CanvasInstance & { setViewport: ReturnType<typeof vi.fn>; fitView: ReturnType<typeof vi.fn> } {
+  let viewport: Viewport = { x: -120, y: 40, zoom: 1.5 };
+  return {
+    getNodes: () => [],
+    getViewport: () => viewport,
+    setViewport: vi.fn(async (next: Viewport) => {
+      viewport = next;
+      return true;
+    }),
+    fitView: vi.fn(async () => true),
+  };
 }
 
 function fixtureSnapshot(): SettingsSnapshot {

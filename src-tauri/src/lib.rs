@@ -1,7 +1,9 @@
 //! Switchboard core. Rust is the source of truth; the webview talks to it only
 //! through the thin commands in [`ipc`].
 
+pub mod graph;
 pub mod ipc;
+pub mod persist;
 pub mod settings;
 
 use settings::AppState;
@@ -17,6 +19,8 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::settings_get,
             ipc::settings_reveal,
             ipc::binaries_redetect,
+            ipc::workspace_get,
+            ipc::workspace_set_viewport,
             ipc::app_quit,
         ])
 }
@@ -38,6 +42,7 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
     with_commands(builder)
         .setup(|app| {
             settings::initialise(app.handle());
+            graph::initialise(app.handle());
             Ok(())
         })
 }
@@ -81,6 +86,15 @@ mod tests {
         webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
         cmd: &str,
     ) -> Result<tauri::ipc::InvokeResponseBody, serde_json::Value> {
+        invoke_with(webview, cmd, InvokeBody::default())
+    }
+
+    /// Invoke `cmd` with named arguments, as `invoke(cmd, { arg: … })` sends them from JS.
+    fn invoke_with(
+        webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+        cmd: &str,
+        body: InvokeBody,
+    ) -> Result<tauri::ipc::InvokeResponseBody, serde_json::Value> {
         // Tauri's local webview origin differs per platform; a non-local origin is treated as a
         // remote request and the command is rejected before it runs.
         #[cfg(windows)]
@@ -95,7 +109,7 @@ mod tests {
                 callback: CallbackFn(0),
                 error: CallbackFn(1),
                 url: origin.parse().unwrap(),
-                body: InvokeBody::default(),
+                body,
                 headers: Default::default(),
                 invoke_key: INVOKE_KEY.to_string(),
             },
@@ -166,6 +180,47 @@ mod tests {
         // The managed state now holds the same result.
         let state = app.state::<super::AppState>();
         assert_ne!(state.read().binaries.git.status, super::settings::BinaryStatus::Pending);
+    }
+
+    #[test]
+    fn workspace_get_is_registered_and_reads_the_managed_state() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+
+        let body = invoke(&webview, "workspace_get").expect("workspace_get should be registered and succeed");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        // Nothing ran `graph::initialise`, so this is the pristine managed state.
+        assert_eq!(value["path"], serde_json::Value::Null);
+        assert_eq!(value["workspace"]["version"], 1);
+        assert_eq!(value["workspace"]["viewport"], serde_json::json!({ "x": 0.0, "y": 0.0, "zoom": 1.0 }));
+        assert_eq!(value["workspace"]["projects"], serde_json::json!([]));
+        assert_eq!(value["banners"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn workspace_set_viewport_is_registered_takes_the_viewport_argument_and_replies_with_the_snapshot() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("workspace.json");
+        super::graph::initialise_at(app.handle(), Some(path.clone()));
+
+        let args = serde_json::json!({ "viewport": { "x": -120, "y": 40, "zoom": 1.5 } });
+        let body = invoke_with(&webview, "workspace_set_viewport", InvokeBody::Json(args))
+            .expect("workspace_set_viewport should be registered and succeed");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value["workspace"]["viewport"], serde_json::json!({ "x": -120.0, "y": 40.0, "zoom": 1.5 }));
+        assert_eq!(value["banners"], serde_json::json!([]));
+        let on_disk: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(on_disk["viewport"]["zoom"], 1.5);
+
+        // A missing or malformed argument is rejected before the handler runs.
+        invoke_with(&webview, "workspace_set_viewport", InvokeBody::Json(serde_json::json!({})))
+            .expect_err("viewport is required");
     }
 
     #[test]

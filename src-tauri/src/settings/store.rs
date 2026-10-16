@@ -1,19 +1,13 @@
-//! Persistence of `settings.json`: tolerant parsing with line/column errors, atomic writes
-//! (temp file in the same directory, then rename) and first-launch creation.
+//! Persistence of `settings.json`: the settings schema's validation plus thin wrappers over
+//! [`crate::persist`] (tolerant parsing with line/column errors, atomic writes, first-launch
+//! creation) that name the settings file in their errors.
 
-use std::io::Write;
 use std::path::Path;
 
 use super::{Banner, PollSettings, SCHEMA_VERSION, Settings};
+use crate::persist;
 
-/// A JSON syntax or shape error with its 1-based position, formatted `line:col message`.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{line}:{col} {msg}")]
-pub struct ParseError {
-    pub line: usize,
-    pub col: usize,
-    pub msg: String,
-}
+pub use crate::persist::ParseError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
@@ -25,35 +19,29 @@ pub enum LoadError {
     Write(std::io::Error),
 }
 
-/// Outcome of [`load_or_init`]: whether the file was there or had to be created.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Loaded {
-    Created(Settings),
-    Existing(Settings),
-}
-
-impl Loaded {
-    pub fn into_settings(self) -> Settings {
-        match self {
-            Loaded::Created(s) | Loaded::Existing(s) => s,
+impl From<persist::LoadError> for LoadError {
+    fn from(err: persist::LoadError) -> Self {
+        match err {
+            persist::LoadError::Parse(err) => LoadError::Parse(err),
+            persist::LoadError::Read(err) => LoadError::Read(err),
+            persist::LoadError::Write(err) => LoadError::Write(err),
         }
     }
 }
 
+/// Outcome of [`load_or_init`]: whether the file was there or had to be created.
+pub type Loaded = persist::Loaded<Settings>;
+
+impl Loaded {
+    pub fn into_settings(self) -> Settings {
+        self.into_inner()
+    }
+}
+
 /// Parse settings text. Missing keys take their defaults and unknown keys are ignored
-/// (`#[serde(default)]`, no `deny_unknown_fields`).
+/// (`#[serde(default)]`, no `deny_unknown_fields`); a leading BOM is tolerated.
 pub fn parse(text: &str) -> Result<Settings, ParseError> {
-    // Windows editors (Notepad, PowerShell's `-Encoding utf8`) prepend a BOM, which
-    // serde_json rejects as "expected value" at 1:1.
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    serde_json::from_str(text).map_err(|err| {
-        let (line, col) = (err.line(), err.column());
-        let full = err.to_string();
-        // serde_json renders "<message> at line L column C"; keep only the message.
-        let suffix = format!(" at line {line} column {col}");
-        let msg = full.strip_suffix(suffix.as_str()).unwrap_or(&full).to_string();
-        ParseError { line, col, msg }
-    })
+    persist::parse_json(text)
 }
 
 /// Soft checks on a parsed file. Values that cannot work are replaced by their defaults and
@@ -90,47 +78,19 @@ pub fn validate(settings: &mut Settings) -> Vec<Banner> {
 
 /// The on-disk form: pretty JSON with every key present and a trailing newline.
 pub fn to_json(settings: &Settings) -> String {
-    let mut text = serde_json::to_string_pretty(settings).expect("Settings always serialises");
-    text.push('\n');
-    text
+    persist::to_json(settings).expect("Settings always serialises")
 }
 
-/// Write `settings` to `path` atomically: the parent dir is created if needed, the JSON goes
-/// to a temp file in that dir, is flushed, then renamed over `path`. A crash mid-write
-/// leaves either the old file or the new one, never a half-written one.
+/// Write `settings` to `path` atomically (temp file in the same dir, then rename); see
+/// [`persist::write_atomic_json`].
 pub fn write_atomic(path: &Path, settings: &Settings) -> std::io::Result<()> {
-    let dir = path.parent().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "settings path has no parent")
-    })?;
-    std::fs::create_dir_all(dir)?;
-    let mut tmp = tempfile::Builder::new()
-        .prefix(".settings-")
-        .suffix(".tmp")
-        .tempfile_in(dir)?;
-    tmp.write_all(to_json(settings).as_bytes())?;
-    tmp.as_file().sync_all()?;
-    tmp.persist(path).map_err(|err| err.error)?;
-    Ok(())
+    persist::write_atomic_json(path, settings)
 }
 
 /// Read and parse `path`; when it does not exist, write `defaults` there and return them.
 /// An existing file is never rewritten, so an operator's formatting and unknown keys survive.
 pub fn load_or_init(path: &Path, defaults: &Settings) -> Result<Loaded, LoadError> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(Loaded::Existing(parse(&text)?)),
-        // `NotADirectory` (a file where the config dir should be) is a write problem too: Linux
-        // reports it on the read, Windows reports `NotFound` and fails in `create_dir_all`.
-        Err(err)
-            if matches!(
-                err.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ) =>
-        {
-            write_atomic(path, defaults).map_err(LoadError::Write)?;
-            Ok(Loaded::Created(defaults.clone()))
-        }
-        Err(err) => Err(LoadError::Read(err)),
-    }
+    Ok(persist::load_or_init(path, defaults)?)
 }
 
 #[cfg(test)]

@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 pub const DIR_NAME: &str = "switchboard";
 /// The settings file name inside [`config_dir`].
 pub const FILE_NAME: &str = "settings.json";
+/// The workspace file name inside [`config_dir`], beside `settings.json`.
+pub const WORKSPACE_FILE_NAME: &str = "workspace.json";
 
 /// `<platform config dir>/switchboard`, or `None` when the platform has no config dir
 /// (no `%APPDATA%` / no home).
@@ -28,6 +30,16 @@ pub fn settings_path() -> Option<PathBuf> {
 /// `settings.json` inside a given config dir.
 pub fn settings_path_in(config_dir: &Path) -> PathBuf {
     config_dir.join(FILE_NAME)
+}
+
+/// Absolute path of `workspace.json`.
+pub fn workspace_path() -> Option<PathBuf> {
+    config_dir().map(|dir| workspace_path_in(&dir))
+}
+
+/// `workspace.json` inside a given config dir.
+pub fn workspace_path_in(config_dir: &Path) -> PathBuf {
+    config_dir.join(WORKSPACE_FILE_NAME)
 }
 
 /// Directories searched for `claude` after PATH: `~/.local/bin` (where the native installer
@@ -55,6 +67,15 @@ mod tests {
     fn settings_path_in_appends_the_file_name() {
         let dir = Path::new("/base").join("switchboard");
         assert_eq!(settings_path_in(&dir), dir.join("settings.json"));
+    }
+
+    #[test]
+    fn workspace_path_sits_beside_settings_json() {
+        let dir = Path::new("/base").join("switchboard");
+        assert_eq!(workspace_path_in(&dir), dir.join("workspace.json"));
+        let (settings, workspace) = (settings_path().unwrap(), workspace_path().unwrap());
+        assert_eq!(settings.parent(), workspace.parent());
+        assert_eq!(workspace.file_name().unwrap(), "workspace.json");
     }
 
     #[test]

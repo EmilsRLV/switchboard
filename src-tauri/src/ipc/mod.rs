@@ -4,6 +4,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Runtime, State};
 use tauri_plugin_opener::OpenerExt;
 
+use crate::graph::{self, Viewport, WorkspaceSnapshot};
 use crate::settings::{self, AppState, Snapshot};
 
 /// Identity of the running app, as the Cargo package declares it.
@@ -53,6 +54,20 @@ pub fn settings_reveal<R: Runtime>(app: AppHandle<R>, state: State<'_, AppState>
 #[tauri::command]
 pub async fn binaries_redetect<R: Runtime>(app: AppHandle<R>) -> Snapshot {
     settings::redetect(app).await
+}
+
+/// The current workspace snapshot: file path, workspace (viewport, nodes, edges), banners.
+#[tauri::command]
+pub fn workspace_get(state: State<'_, AppState>) -> WorkspaceSnapshot {
+    state.read_workspace().snapshot()
+}
+
+/// Persist a new canvas viewport (end of a pan/zoom gesture or Fit view). Writes
+/// `workspace.json` atomically and emits `workspace://changed`; replies with the snapshot.
+/// Async so the fsync + rename run on the async runtime, not the main thread.
+#[tauri::command]
+pub async fn workspace_set_viewport<R: Runtime>(app: AppHandle<R>, viewport: Viewport) -> WorkspaceSnapshot {
+    graph::set_viewport(&app, viewport)
 }
 
 /// Exit the app with status 0 (the `app.quit` command, `ctrl+q`). Under `cfg(test)` it only

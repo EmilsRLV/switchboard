@@ -1,0 +1,60 @@
+/* The canvas fills the shell body under the banners; panes and the palette sit over it.
+   xyflow ships unstyled (`base.css`); colours come from theme/tokens.css through xyflow's
+   own CSS variables. No accent anywhere here: an empty canvas is calm. */
+
+.canvas {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  background: var(--bg);
+}
+
+.canvas .react-flow {
+  --xy-background-color: var(--bg);
+  --xy-attribution-background-color: transparent;
+}
+
+.canvas .react-flow__pane {
+  cursor: default;
+}
+
+.canvas .react-flow__pane.draggable {
+  cursor: grab;
+}
+
+.canvas .react-flow__pane.dragging {
+  cursor: grabbing;
+}
+
+.canvas .react-flow__attribution {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  padding: 0.15rem 0.4rem;
+}
+
+.canvas .react-flow__attribution a {
+  color: var(--fg-muted);
+  text-decoration: none;
+  opacity: 0.6;
+}
+
+/* Empty-state hint: centred, muted, never in the way of a gesture. */
+.canvas-hint {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  user-select: none;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 0 1rem;
+}
+
+.canvas-hint kbd {
+  margin-left: 0.3em;
+}

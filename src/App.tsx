@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
-import { appInfo, hasTauriRuntime, onSettingsChanged, settingsGet } from "./ipc";
+import { useEffect } from "react";
+import { hasTauriRuntime, onSettingsChanged, onWorkspaceChanged, settingsGet, workspaceGet } from "./ipc";
+import { mirror } from "./ipc/mirror";
 import { registerBuiltins } from "./commands/builtins";
 import { useKeybindings } from "./commands/keybindings";
-import { useAppStore } from "./state/app";
 import { useSettingsStore } from "./state/settings";
+import { useWorkspaceStore } from "./state/workspace";
+import { Canvas } from "./canvas/Canvas";
 import { Banners } from "./components/Banners";
 import { Palette } from "./components/Palette";
 import { SettingsPane } from "./components/SettingsPane";
@@ -12,75 +14,40 @@ import "./components/shell.css";
 // Commands exist for the life of the module, not of a component: registered once here.
 registerBuiltins();
 
-type Status = "loading" | "ready" | "no-runtime" | "error";
-
 /**
- * The shell: banner strip on top, content area, settings pane on the right when open, the
- * command palette over everything when open. Every key goes through the command registry's
- * dispatcher (`useKeybindings`). The canvas (Epic 2) replaces the content area.
+ * The shell: banner strip on top, the canvas filling the rest, settings pane on the right
+ * when open, the command palette over everything when open. Every key goes through the
+ * command registry's dispatcher (`useKeybindings`).
  */
 export default function App() {
-  const info = useAppStore((s) => s.appInfo);
-  const setAppInfo = useAppStore((s) => s.setAppInfo);
   const paneOpen = useSettingsStore((s) => s.paneOpen);
-  const applySnapshot = useSettingsStore((s) => s.applySnapshot);
-  const setLoadError = useSettingsStore((s) => s.setLoadError);
-  const [status, setStatus] = useState<Status>("loading");
-  const [error, setError] = useState<string | null>(null);
+  const applySettings = useSettingsStore((s) => s.applySnapshot);
+  const setSettingsLoadError = useSettingsStore((s) => s.setLoadError);
+  const applyWorkspace = useWorkspaceStore((s) => s.applySnapshot);
+  const setWorkspaceLoadError = useWorkspaceStore((s) => s.setLoadError);
 
-  useEffect(() => {
-    if (!hasTauriRuntime()) {
-      setStatus("no-runtime");
-      return;
-    }
-    let cancelled = false;
-    appInfo()
-      .then((result) => {
-        if (cancelled) return;
-        setAppInfo(result);
-        setStatus("ready");
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : String(err));
-        setStatus("error");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [setAppInfo]);
-
-  // Settings: subscribe first so no change between the initial read and the listener is lost,
-  // then read the current snapshot.
+  // Rust is the source of truth for both; `mirror` subscribes, then reads.
   useEffect(() => {
     if (!hasTauriRuntime()) return;
-    let cancelled = false;
-    let unlisten: (() => void) | null = null;
-    onSettingsChanged((snapshot) => {
-      if (!cancelled) applySnapshot(snapshot);
-    })
-      .then((stop) => {
-        if (cancelled) stop();
-        else unlisten = stop;
-        return settingsGet();
-      })
-      .then((snapshot) => {
-        // A `settings://changed` event may already have delivered something newer than
-        // this response; never overwrite it with the older read.
-        if (!cancelled && useSettingsStore.getState().snapshot === null) {
-          applySnapshot(snapshot);
-        }
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setLoadError(`settings load failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, [applySnapshot, setLoadError]);
+    return mirror({
+      listen: onSettingsChanged,
+      get: settingsGet,
+      apply: applySettings,
+      hasSnapshot: () => useSettingsStore.getState().snapshot !== null,
+      fail: (message) => setSettingsLoadError(`settings load failed: ${message}`),
+    });
+  }, [applySettings, setSettingsLoadError]);
+
+  useEffect(() => {
+    if (!hasTauriRuntime()) return;
+    return mirror({
+      listen: onWorkspaceChanged,
+      get: workspaceGet,
+      apply: applyWorkspace,
+      hasSnapshot: () => useWorkspaceStore.getState().snapshot !== null,
+      fail: (message) => setWorkspaceLoadError(`workspace load failed: ${message}`),
+    });
+  }, [applyWorkspace, setWorkspaceLoadError]);
 
   useKeybindings();
 
@@ -88,18 +55,7 @@ export default function App() {
     <div className="shell">
       <Banners />
       <div className="shell-body">
-        <main className="content">
-          <h1 className="content-title">Switchboard</h1>
-          {status === "loading" && <p className="muted">connecting…</p>}
-          {status === "ready" && info && (
-            <p className="muted">
-              {info.name} {info.version}
-            </p>
-          )}
-          {status === "no-runtime" && <p className="muted">no Tauri runtime</p>}
-          {status === "error" && <p className="muted">app_info failed: {error}</p>}
-          <p className="muted">ctrl+k commands · ctrl+, settings</p>
-        </main>
+        <Canvas />
         {paneOpen && <SettingsPane />}
         <Palette />
       </div>

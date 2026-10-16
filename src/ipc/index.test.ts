@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { appInfo, hasTauriRuntime, NoTauriRuntimeError } from "./index";
+import {
+  appInfo,
+  hasTauriRuntime,
+  NoTauriRuntimeError,
+  workspaceGet,
+  workspaceSetViewport,
+  type WorkspaceSnapshot,
+} from "./index";
 
 // vitest runs these in a node environment: there is no `window` at all, which
 // is the plain-browser-without-Tauri case taken to its extreme.
@@ -26,5 +33,42 @@ describe("ipc runtime guard", () => {
     vi.stubGlobal("window", {});
     await expect(appInfo()).rejects.toBeInstanceOf(NoTauriRuntimeError);
     await expect(appInfo()).rejects.toThrow('cannot invoke "app_info"');
+  });
+});
+
+describe("workspace command wrappers", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const snapshot: WorkspaceSnapshot = {
+    path: null,
+    workspace: {
+      version: 1,
+      viewport: { x: -120, y: 40, zoom: 1.5 },
+      projects: [],
+      branches: [],
+      sessions: [],
+      edges: [],
+      defaults: { model: null, effort: null, permissionMode: null },
+    },
+    banners: [],
+  };
+
+  it("workspaceSetViewport invokes workspace_set_viewport with a { viewport } argument", async () => {
+    // `@tauri-apps/api/core`'s `invoke(cmd, args = {}, options)` forwards to this.
+    const invoke = vi.fn().mockResolvedValue(snapshot);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    const viewport = { x: -120, y: 40, zoom: 1.5 };
+    await expect(workspaceSetViewport(viewport)).resolves.toBe(snapshot);
+    expect(invoke).toHaveBeenCalledWith("workspace_set_viewport", { viewport }, undefined);
+  });
+
+  it("workspaceGet invokes workspace_get with no arguments of its own", async () => {
+    const invoke = vi.fn().mockResolvedValue(snapshot);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await expect(workspaceGet()).resolves.toBe(snapshot);
+    // The api fills in `{}` for a missing args object before forwarding.
+    expect(invoke).toHaveBeenCalledWith("workspace_get", {}, undefined);
   });
 });

@@ -15,6 +15,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
+use crate::graph::WorkspaceState;
 use detect::{ProcessRunner, Runner, Search};
 
 /// Event name carrying a [`Snapshot`] to the webview whenever settings, detection or
@@ -286,11 +287,12 @@ impl SettingsState {
     }
 }
 
-/// Tauri-managed application state. The watcher lives here only to stay alive for the
-/// app's lifetime; dropping it stops the fs watch.
+/// Tauri-managed application state: settings and the workspace (`crate::graph`). The watcher
+/// lives here only to stay alive for the app's lifetime; dropping it stops the fs watch.
 #[derive(Default)]
 pub struct AppState {
     pub settings: RwLock<SettingsState>,
+    pub workspace: RwLock<WorkspaceState>,
     pub watcher: Mutex<Option<notify::RecommendedWatcher>>,
     /// Bumped per detection run; a run stores its result only if it is still the latest,
     /// so overlapping runs (startup, reload, Re-detect) cannot finish out of order.
@@ -305,6 +307,15 @@ impl AppState {
 
     pub fn write(&self) -> RwLockWriteGuard<'_, SettingsState> {
         self.settings.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Read the workspace state; a poisoned lock is recovered rather than propagated.
+    pub fn read_workspace(&self) -> RwLockReadGuard<'_, WorkspaceState> {
+        self.workspace.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn write_workspace(&self) -> RwLockWriteGuard<'_, WorkspaceState> {
+        self.workspace.write().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -341,6 +352,10 @@ pub fn initialise_at<R: Runtime>(app: &AppHandle<R>, path: Option<PathBuf>, sear
         ));
         return;
     };
+    // A crash mid-write leaves `.settings.json-*.tmp` behind; nothing else cleans those up.
+    if let Err(err) = crate::persist::sweep_temp_files(&path) {
+        eprintln!("settings: cannot sweep temp files beside {}: {err}", path.display());
+    }
     match store::load_or_init(&path, &Settings::for_machine(search)) {
         Ok(loaded) => st.accept(loaded.into_settings()),
         Err(store::LoadError::Parse(err)) => st.file_banner = Some(parse_banner(&path, &err)),
@@ -740,6 +755,24 @@ mod tests {
         assert_eq!(st.settings.claude.path, None, "nothing detected is treated as configured");
         assert_eq!(st.file_banner, None);
         assert!(st.validation_banners.is_empty());
+    }
+
+    #[test]
+    fn initialise_at_sweeps_orphaned_temp_files_but_not_the_file() {
+        let app = mock_app();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{ "theme": "light" }"#).unwrap();
+        std::fs::write(dir.path().join(".settings.json-abc123.tmp"), "half").unwrap();
+
+        initialise_at(app.handle(), Some(path.clone()), &search_in(dir.path()));
+
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["settings.json"]);
+        assert_eq!(app.state::<AppState>().read().settings.theme, "light");
     }
 
     #[test]

@@ -58,12 +58,94 @@ export type SettingsSnapshot = {
 /** Event name Rust emits with a fresh `SettingsSnapshot` on every change. */
 export const SETTINGS_CHANGED_EVENT = "settings://changed";
 
+// --- workspace (`src-tauri/src/graph/mod.rs`, architecture §5.1) ---------------------------
+
+/** Mirrors `graph::Viewport`: the canvas pan offset in pixels and zoom factor. */
+export type Viewport = { x: number; y: number; zoom: number };
+
+/** Mirrors `graph::Position`: a node position in canvas (unzoomed) coordinates. */
+export type Position = { x: number; y: number };
+
+/** Mirrors `graph::LaunchDefaults`; `null` leaves the choice to `settings.json`. */
+export type LaunchDefaults = {
+  model: string | null;
+  effort: string | null;
+  permissionMode: string | null;
+};
+
+/** Mirrors `graph::Project` (Story 2.2 fills these in). */
+export type Project = {
+  id: string;
+  path: string;
+  label: string;
+  position: Position;
+  expanded: boolean;
+  color: string | null;
+  launchDefaults: LaunchDefaults | null;
+};
+
+/** Mirrors `graph::BranchNode` (Epic 5). */
+export type BranchNode = {
+  id: string;
+  projectId: string;
+  name: string;
+  worktreePath: string | null;
+  position: Position | null;
+};
+
+/** Mirrors `graph::SessionRef` (Epic 3). */
+export type SessionRef = {
+  sessionId: string;
+  projectId: string;
+  branchId: string | null;
+  label: string | null;
+  pinned: boolean;
+  position: Position | null;
+};
+
+/** Mirrors `graph::NodeRef`; `folder` is an ad-hoc path target that is not a node. */
+export type NodeRef = { type: "project" | "branch" | "session" | "folder"; id: string };
+
+/** Mirrors `graph::Edge` (Epic 6). */
+export type Edge = {
+  id: string;
+  from: NodeRef;
+  to: NodeRef;
+  kind: "context" | "cooperate";
+  label: string | null;
+  createdAt: string;
+};
+
+/** Mirrors `graph::Workspace`: the on-disk `workspace.json` schema, version 1. */
+export type Workspace = {
+  version: number;
+  viewport: Viewport;
+  projects: Project[];
+  branches: BranchNode[];
+  sessions: SessionRef[];
+  edges: Edge[];
+  defaults: LaunchDefaults;
+};
+
+/** Mirrors `graph::WorkspaceSnapshot`: what `workspace_get` returns and `workspace://changed` carries. */
+export type WorkspaceSnapshot = {
+  /** Absolute path of `workspace.json`; `null` when no config dir could be determined. */
+  path: string | null;
+  workspace: Workspace;
+  banners: Banner[];
+};
+
+/** Event name Rust emits with a fresh `WorkspaceSnapshot` on every change. */
+export const WORKSPACE_CHANGED_EVENT = "workspace://changed";
+
 /** Return type of every command, keyed by command name. */
 type Commands = {
   app_info: AppInfo;
   settings_get: SettingsSnapshot;
   settings_reveal: void;
   binaries_redetect: SettingsSnapshot;
+  workspace_get: WorkspaceSnapshot;
+  workspace_set_viewport: WorkspaceSnapshot;
   app_quit: void;
 };
 
@@ -116,6 +198,20 @@ export function binariesRedetect(): Promise<SettingsSnapshot> {
   return call("binaries_redetect");
 }
 
+/** `ipc::workspace_get` -- the current snapshot (path, workspace, banners). */
+export function workspaceGet(): Promise<WorkspaceSnapshot> {
+  return call("workspace_get");
+}
+
+/**
+ * `ipc::workspace_set_viewport` -- persist the viewport at the end of a pan/zoom gesture or
+ * Fit view. Rust writes `workspace.json` and emits `workspace://changed`; resolves with the
+ * new snapshot.
+ */
+export function workspaceSetViewport(viewport: Viewport): Promise<WorkspaceSnapshot> {
+  return call("workspace_set_viewport", { viewport });
+}
+
 /** `ipc::app_quit` -- exit the app with status 0. Resolves only if the exit did not happen. */
 export function appQuit(): Promise<void> {
   return call("app_quit");
@@ -132,4 +228,14 @@ export async function onSettingsChanged(
     return () => {};
   }
   return listen<SettingsSnapshot>(SETTINGS_CHANGED_EVENT, (event) => callback(event.payload));
+}
+
+/** Subscribe to `workspace://changed`; same contract as {@link onSettingsChanged}. */
+export async function onWorkspaceChanged(
+  callback: (snapshot: WorkspaceSnapshot) => void,
+): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return listen<WorkspaceSnapshot>(WORKSPACE_CHANGED_EVENT, (event) => callback(event.payload));
 }

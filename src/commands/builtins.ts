@@ -5,6 +5,7 @@
 // does not.
 
 import { appQuit } from "../ipc";
+import { isCanvasReady, useCanvasStore } from "../state/canvas";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
 import { registerCommands, type Command } from "./registry";
@@ -57,6 +58,15 @@ export function builtinCommands(): Command[] {
       title: "Re-detect binaries",
       when: () => !useSettingsStore.getState().actionBusy,
       run: redetectBinaries,
+    },
+    {
+      id: "canvas.fitView",
+      title: "Fit view",
+      keybinding: "ctrl+0",
+      when: isCanvasReady,
+      run: async () => {
+        await useCanvasStore.getState().fitView();
+      },
     },
     {
       id: "app.quit",

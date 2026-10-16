@@ -1,5 +1,6 @@
-/* Shell layout: banner strip on top, content in the middle, panes slide in from the right.
-   Colours come from theme/tokens.css only; the accent is reserved for attention states. */
+/* Shell layout: banner strip on top, the canvas (canvas/canvas.css) filling the rest, panes
+   slide in from the right over it. Colours come from theme/tokens.css only; the accent is
+   reserved for attention states. */
 
 .shell {
   height: 100%;
@@ -14,31 +15,9 @@
   display: flex;
 }
 
-.content {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-}
-
-.content-title {
-  margin: 0;
-  font-size: 1.5rem;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-}
-
 .muted {
   margin: 0;
   color: var(--fg-muted);
-}
-
-.content .muted {
-  font-family: var(--font-mono);
-  font-size: 0.85rem;
 }
 
 .attention {
