@@ -52,6 +52,48 @@ cd src-tauri; cargo test # Rust modules
 `npm run tauri build -- --debug --no-bundle` produces `src-tauri/target/debug/switchboard.exe` without
 installers; plain `npm run tauri build` also bundles NSIS/MSI (Windows) or AppImage/.deb (Linux).
 
+## Settings
+
+One human-editable JSON file, written with every key present on first launch and never rewritten after
+that. There is no settings form: `ctrl+,` opens a read-only pane (Esc closes) showing the file path with a
+"Reveal file" button, the detected binaries with a "Re-detect" button, and the effective values; edit the
+file itself.
+
+| OS | File |
+|---|---|
+| Windows | `%APPDATA%\switchboard\settings.json` |
+| Linux | `$XDG_CONFIG_HOME/switchboard/settings.json` (default `~/.config/switchboard/settings.json`) |
+
+The location is `dirs::config_dir()/switchboard`, so it also resolves on macOS
+(`~/Library/Application Support/switchboard/settings.json`), though macOS is not a target and untested.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `version` | `1` | Schema version. |
+| `claude.path` | detected path, else `null` | Claude Code binary. Filled on first launch from the search below; when set, detection is skipped and the path is used as is (a banner says so if it does not exist). `null` re-detects on every launch. |
+| `git.path` | `null` | `git` binary. `null` means search PATH on every launch. |
+| `defaults.model` | `null` | Launch-sheet default model (`null` leaves it to `claude`). |
+| `defaults.effort` | `null` | Launch-sheet default effort. |
+| `defaults.permission_mode` | `"default"` | Launch-sheet default permission mode. |
+| `worktrees_root` | `null` | Root for app-managed worktrees; `null` means `<repo>/.worktrees/`. |
+| `external_editor` | `"code -g {file}:{line}"` when `code` is on PATH, else `null` | Command template for "open in editor". |
+| `shell` | Windows: `"pwsh"` if present, else `"powershell"`; Linux: `$SHELL` (`null` when unset) | Shell for plain terminals. |
+| `theme` | `"dark"` | UI theme. Reserved; not applied yet (the UI is dark-only). |
+| `poll.agents_ms` | `2000` | `claude agents --json` poll interval. |
+| `poll.git_ms` | `5000` | Git status poll interval. |
+
+Binary detection: `claude` is searched on PATH, then `~/.local/bin`; `git` on PATH. Each one found is run
+with `--version` (5 s timeout) and its version recorded. A configured `*.path` may be absolute, start with
+`~/`, or be a bare name (then it is looked up on PATH). Problems are non-blocking banners at the top of the
+window, never a crash: `claude` missing (banner lists the searched directories), a configured path that does
+not exist, or a `--version` that fails.
+
+The file is watched: save it and the app reloads within a second, no restart (if the watcher cannot start, a
+banner says so and edits apply on the next launch). Missing keys take their defaults and unknown keys are
+ignored; a UTF-8 BOM is tolerated. Broken JSON shows a banner with `settings.json:line:col` and the parse
+message while the last good settings stay in force; fixing the file clears the banner. A `version` newer
+than this build understands, or a poll interval of `0` (replaced by its default), is reported as a banner.
+
 Layout follows [`architecture.md` §8](_bmad-output/planning-artifacts/architecture.md): `src/` is the React
 app (`ipc/` is the only place Rust is called, `state/` holds Zustand stores, `theme/` the CSS variables),
 `src-tauri/` the Rust core (`src/ipc/` holds the thin Tauri commands; other modules arrive with their stories).
