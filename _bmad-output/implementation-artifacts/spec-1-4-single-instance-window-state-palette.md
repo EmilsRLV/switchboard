@@ -2,7 +2,7 @@
 title: 'Story 1.4: Single instance, window state, palette skeleton'
 type: 'feature'
 created: '2026-10-16'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '7855a054d5ea16790978e685a1bb5f74a6f624ba'
@@ -76,6 +76,7 @@ context:
 
 - Implementer (2026-10-16): plugins registered single-instance → window-state → opener; `app_quit` skips `app.exit` under `cfg(test)` so its wire name is testable; registry is a module `Map`, palette UI state in `state/palette.ts`; seven built-ins (the two Escape-carriers `palette.close` / `settings.closePane` give Esc its precedence through mutually exclusive `when`s); `registerCommands` batch API added for duplicate-id detection; `actionBusy`/`actionError` moved to the settings store so pane buttons and palette share outcomes. Verified: cargo 74, vitest 74, tsc clean, debug build; manual run on the debug exe: second launch → 1 process, first un-minimised and focused; window restored at 120,90 1010×640; `ctrl+k` `qu` Enter and `ctrl+q` both exited the process.
 - Orchestrator (2026-10-16): independent Win32-level check — second launch: 1 process, second exited, first un-minimised; window moved to 120,90 1000×700, closed, relaunched at exactly 120,90 1000×700; `.window-state.json` written. The palette/Esc/`ctrl+q` keyboard pass was **invalid**: a game held the foreground, `SetForegroundWindow` was refused and every keystroke went to the game; those rows rest on the implementer's run plus the dispatcher tests until the operator frees the screen for a re-run.
+- Orchestrator (2026-10-16, after patches): review patches verified — vitest 8 files / 94 passed, `tsc` clean, `cargo test` 75 passed, `clippy -D warnings` clean, debug build; committed `013d4d9`, pushed; CI green on both runners. Keyboard pass re-run with a foreground guard before every keystroke (Emils confirmed the screen was free): palette shows the five visible commands with key hints, hidden carriers absent; `set` → Open settings / Reveal settings file; Enter opens the pane; palette layers over the pane; first Esc closes the palette only, second closes the pane; `zzzz` → "No matching commands"; `ctrl+q` exits (process count 0). Nothing deferred. Epic 1 complete.
 
 ## Spec Change Log
 
