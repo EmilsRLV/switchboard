@@ -1,49 +1,43 @@
-import { useEffect, useRef, useState } from "react";
-import { binariesRedetect, hasTauriRuntime, settingsReveal, type Binary } from "../ipc";
+import { useEffect, useRef } from "react";
+import { runCommand } from "../commands/registry";
+import { hasTauriRuntime, type Binary } from "../ipc";
+import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
 
 /**
  * Read-only settings pane (`ctrl+,`; Esc closes). Shows where the file is, what was detected
  * and the effective settings as a tree. The JSON file is the editing surface, so the only
- * actions here are "Reveal file" and "Re-detect".
+ * actions here are "Reveal file" and "Re-detect", and both are registry commands: the buttons
+ * run the same `settings.reveal` / `binaries.redetect` the palette offers.
  */
 export function SettingsPane() {
   const snapshot = useSettingsStore((s) => s.snapshot);
   const loadError = useSettingsStore((s) => s.loadError);
-  const closePane = useSettingsStore((s) => s.closePane);
-  const applySnapshot = useSettingsStore((s) => s.applySnapshot);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const error = useSettingsStore((s) => s.actionError);
+  const busy = useSettingsStore((s) => s.actionBusy);
   const closeRef = useRef<HTMLButtonElement>(null);
 
-  // Take focus so Esc and Tab work inside the pane; give it back when the pane goes.
+  // Take focus so Esc and Tab work inside the pane; give it back when the pane goes. Not when
+  // the palette opened us (`ctrl+,` from inside it): its input keeps the focus.
   useEffect(() => {
     const previous = document.activeElement;
-    closeRef.current?.focus();
+    if (!usePaletteStore.getState().isOpen) closeRef.current?.focus();
     return () => {
       if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
     };
   }, []);
 
-  const reveal = () => {
-    setError(null);
-    settingsReveal().catch((err: unknown) => setError(describe(err)));
-  };
-
-  const redetect = () => {
-    setError(null);
-    setBusy(true);
-    binariesRedetect()
-      .then(applySnapshot)
-      .catch((err: unknown) => setError(describe(err)))
-      .finally(() => setBusy(false));
-  };
-
   return (
     <aside className="pane" aria-label="Settings">
       <header className="pane-header">
         <h2 className="pane-title">Settings</h2>
-        <button ref={closeRef} type="button" className="btn" onClick={closePane} title="Close (Esc)">
+        <button
+          ref={closeRef}
+          type="button"
+          className="btn"
+          onClick={() => runCommand("settings.closePane")}
+          title="Close (Esc)"
+        >
           Close
         </button>
       </header>
@@ -60,7 +54,12 @@ export function SettingsPane() {
             <h3 className="pane-heading">File</h3>
             <code className="path">{snapshot.path ?? "no config directory on this platform"}</code>
             <div className="actions">
-              <button type="button" className="btn" onClick={reveal} disabled={snapshot.path === null}>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => runCommand("settings.reveal")}
+                disabled={snapshot.path === null}
+              >
                 Reveal file
               </button>
             </div>
@@ -75,7 +74,7 @@ export function SettingsPane() {
             <BinaryRow binary={snapshot.binaries.claude} />
             <BinaryRow binary={snapshot.binaries.git} />
             <div className="actions">
-              <button type="button" className="btn" onClick={redetect} disabled={busy}>
+              <button type="button" className="btn" onClick={() => runCommand("binaries.redetect")} disabled={busy}>
                 {busy ? "Detecting…" : "Re-detect"}
               </button>
             </div>
@@ -146,8 +145,4 @@ function Tree({ value }: { value: Json }) {
 
 function formatLeaf(value: string | number | boolean | null): string {
   return value === null ? "null" : typeof value === "string" ? JSON.stringify(value) : String(value);
-}
-
-function describe(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

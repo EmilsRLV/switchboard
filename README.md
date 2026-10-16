@@ -52,6 +52,41 @@ cd src-tauri; cargo test # Rust modules
 `npm run tauri build -- --debug --no-bundle` produces `src-tauri/target/debug/switchboard.exe` without
 installers; plain `npm run tauri build` also bundles NSIS/MSI (Windows) or AppImage/.deb (Linux).
 
+## Commands & keys
+
+There is no menu bar. Every action is a command registered in `src/commands/registry.ts` (`id`, `title`,
+optional `keybinding` and `when` clause, `run`); the palette, the keyboard and the pane buttons all run the
+same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keybindings.ts`): a binding is
+`ctrl+`/`shift+`/`alt+` plus one key, parsed at registration; a held key fires once; a command whose
+`when` is false is hidden from the palette and its shortcut does nothing.
+
+| Key | Command |
+|---|---|
+| `ctrl+k` | Toggle the command palette: type to filter (case-insensitive, over title and id), `↑`/`↓` to move, Enter to run, Esc to close. |
+| `ctrl+,` | Open (toggle) the settings pane. |
+| `ctrl+q` | Quit. |
+| Esc | Closes the palette if it is open, else the settings pane. With both open, the first Esc closes the palette, the second the pane. |
+
+The palette lists five commands: Toggle command palette, Open settings, Reveal settings file (only when the
+file's location is known), Re-detect binaries (not while one runs) and Quit; the key-only carriers (the
+`ctrl+,` toggle and the two Esc commands) are registered but hidden from the list. Keybindings are not
+editable yet (Epic 9).
+
+The app is **single-instance** (`tauri-plugin-single-instance`): launching it again focuses and
+un-minimises the running window and the second process exits. Its arguments are ignored (printed to stderr
+in debug builds) until "open project from CLI" lands in Epic 2.
+
+**Window state** (size, position, maximised) is saved on change and restored on launch by
+`tauri-plugin-window-state`. The file lives in Tauri's identifier directory, not next to `settings.json`:
+
+| OS | File |
+|---|---|
+| Windows | `%APPDATA%\dev.switchboard.app\.window-state.json` |
+| Linux | `$XDG_CONFIG_HOME/dev.switchboard.app/.window-state.json` (default `~/.config/dev.switchboard.app/`) |
+
+The saved position is applied only if some monitor still intersects it; otherwise the OS places the window
+and only the size is restored. Delete the file to reset to the defaults in `tauri.conf.json` (1280×800).
+
 ## Settings
 
 One human-editable JSON file, written with every key present on first launch and never rewritten after
@@ -95,7 +130,8 @@ message while the last good settings stay in force; fixing the file clears the b
 than this build understands, or a poll interval of `0` (replaced by its default), is reported as a banner.
 
 Layout follows [`architecture.md` §8](_bmad-output/planning-artifacts/architecture.md): `src/` is the React
-app (`ipc/` is the only place Rust is called, `state/` holds Zustand stores, `theme/` the CSS variables),
+app (`ipc/` is the only place Rust is called, `commands/` the command registry, dispatcher and built-in
+commands, `state/` holds Zustand stores, `theme/` the CSS variables),
 `src-tauri/` the Rust core (`src/ipc/` holds the thin Tauri commands; other modules arrive with their stories).
 
 Stories are specced one at a time into `_bmad-output/implementation-artifacts/spec-<epic>-<story>-*.md`

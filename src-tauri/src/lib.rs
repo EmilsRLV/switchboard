@@ -17,17 +17,44 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::settings_get,
             ipc::settings_reveal,
             ipc::binaries_redetect,
+            ipc::app_quit,
         ])
 }
 
 /// The fully configured Tauri builder (state, commands, plugins, setup), not yet built.
+///
+/// Plugin order matters: `single-instance` must be registered first (its docs require it) so a
+/// second launch is turned away before anything else initialises. The second instance's argv
+/// and cwd are ignored (printed to stderr, which only debug builds have on Windows) until
+/// Epic 2 adds "open project from CLI".
 pub fn builder() -> tauri::Builder<tauri::Wry> {
-    with_commands(tauri::Builder::default())
-        .plugin(tauri_plugin_opener::init())
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            eprintln!("second instance ignored: argv={argv:?} cwd={cwd}");
+            focus_main_window(app);
+        }))
+        .plugin(tauri_plugin_window_state::Builder::new().build())
+        .plugin(tauri_plugin_opener::init());
+    with_commands(builder)
         .setup(|app| {
             settings::initialise(app.handle());
             Ok(())
         })
+}
+
+/// Bring the `main` window to the front: un-minimise, show, focus. Each step is best effort;
+/// a window the OS refuses to focus is not an error worth surfacing.
+fn focus_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    use tauri::Manager;
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    // Unminimising a normal window is harmless, so when the query fails, do it anyway.
+    if window.is_minimized().unwrap_or(true) {
+        let _ = window.unminimize();
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 /// Build and run the Tauri application.
@@ -139,5 +166,36 @@ mod tests {
         // The managed state now holds the same result.
         let state = app.state::<super::AppState>();
         assert_ne!(state.read().binaries.git.status, super::settings::BinaryStatus::Pending);
+    }
+
+    #[test]
+    fn app_quit_is_registered_under_its_wire_name() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+
+        // Under `cfg(test)` the command returns instead of calling `app.exit(0)`, so reaching
+        // this assertion at all proves the wire name resolves and the handler ran.
+        let body = invoke(&webview, "app_quit").expect("app_quit should be registered and succeed");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn focus_main_window_without_a_main_window_is_a_no_op() {
+        let app = mock_app();
+        // No webview was built, so there is no "main" window to focus; this must not panic.
+        super::focus_main_window(app.handle());
+    }
+
+    #[test]
+    fn a_misspelt_command_is_rejected() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+
+        invoke(&webview, "app_quitt").expect_err("unknown wire names must not resolve");
     }
 }

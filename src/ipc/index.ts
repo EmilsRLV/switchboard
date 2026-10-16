@@ -64,6 +64,7 @@ type Commands = {
   settings_get: SettingsSnapshot;
   settings_reveal: void;
   binaries_redetect: SettingsSnapshot;
+  app_quit: void;
 };
 
 declare global {
@@ -113,6 +114,11 @@ export function settingsReveal(): Promise<void> {
 /** `ipc::binaries_redetect` -- re-run `claude`/`git` detection; resolves with the new snapshot. */
 export function binariesRedetect(): Promise<SettingsSnapshot> {
   return call("binaries_redetect");
+}
+
+/** `ipc::app_quit` -- exit the app with status 0. Resolves only if the exit did not happen. */
+export function appQuit(): Promise<void> {
+  return call("app_quit");
 }
 
 /**

@@ -8,22 +8,33 @@ export type SettingsState = {
   loadError: string | null;
   /** Whether the read-only settings pane is showing. */
   paneOpen: boolean;
+  /** True while `binaries.redetect` is running (the pane disables its button). */
+  actionBusy: boolean;
+  /** Why the last `settings.reveal` / `binaries.redetect` failed; cleared when one starts. */
+  actionError: string | null;
   applySnapshot: (snapshot: SettingsSnapshot | null) => void;
   setLoadError: (error: string | null) => void;
   togglePane: () => void;
   openPane: () => void;
   closePane: () => void;
+  setActionBusy: (busy: boolean) => void;
+  setActionError: (error: string | null) => void;
 };
 
 export const useSettingsStore = create<SettingsState>()((set) => ({
   snapshot: null,
   loadError: null,
   paneOpen: false,
+  actionBusy: false,
+  actionError: null,
   applySnapshot: (snapshot) => set({ snapshot }),
   setLoadError: (loadError) => set({ loadError }),
   togglePane: () => set((s) => ({ paneOpen: !s.paneOpen })),
   openPane: () => set({ paneOpen: true }),
-  closePane: () => set({ paneOpen: false }),
+  // Closing the pane also drops a stale action error; it would otherwise reappear on reopen.
+  closePane: () => set({ paneOpen: false, actionError: null }),
+  setActionBusy: (actionBusy) => set({ actionBusy }),
+  setActionError: (actionError) => set({ actionError }),
 }));
 
 // A stable empty list so selectors return the same reference while there is no snapshot

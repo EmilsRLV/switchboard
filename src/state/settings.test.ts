@@ -91,6 +91,17 @@ describe("settings store", () => {
     expect(useSettingsStore.getState().paneOpen).toBe(false);
   });
 
+  it("closePane clears a stale action error; openPane and toggle leave it alone", () => {
+    useSettingsStore.getState().openPane();
+    useSettingsStore.getState().setActionError("reveal failed");
+    useSettingsStore.getState().togglePane();
+    useSettingsStore.getState().togglePane();
+    expect(useSettingsStore.getState().actionError).toBe("reveal failed");
+    useSettingsStore.getState().closePane();
+    expect(useSettingsStore.getState().actionError).toBeNull();
+    expect(useSettingsStore.getState().paneOpen).toBe(false);
+  });
+
   it("pane state survives a new snapshot", () => {
     useSettingsStore.getState().openPane();
     useSettingsStore.getState().applySnapshot(snapshot);

@@ -55,6 +55,15 @@ pub async fn binaries_redetect<R: Runtime>(app: AppHandle<R>) -> Snapshot {
     settings::redetect(app).await
 }
 
+/// Exit the app with status 0 (the `app.quit` command, `ctrl+q`). Under `cfg(test)` it only
+/// returns, so the wire-name test can invoke it without ending the test process.
+#[tauri::command]
+pub fn app_quit<R: Runtime>(app: AppHandle<R>) {
+    if !cfg!(test) {
+        app.exit(0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

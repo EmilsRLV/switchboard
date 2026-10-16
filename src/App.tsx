@@ -1,23 +1,28 @@
 import { useEffect, useState } from "react";
 import { appInfo, hasTauriRuntime, onSettingsChanged, settingsGet } from "./ipc";
+import { registerBuiltins } from "./commands/builtins";
+import { useKeybindings } from "./commands/keybindings";
 import { useAppStore } from "./state/app";
 import { useSettingsStore } from "./state/settings";
 import { Banners } from "./components/Banners";
+import { Palette } from "./components/Palette";
 import { SettingsPane } from "./components/SettingsPane";
 import "./components/shell.css";
+
+// Commands exist for the life of the module, not of a component: registered once here.
+registerBuiltins();
 
 type Status = "loading" | "ready" | "no-runtime" | "error";
 
 /**
- * The shell: banner strip on top, content area, settings pane on the right when open.
- * `ctrl+,` toggles the pane, Esc closes it. The canvas (Epic 2) replaces the content area.
+ * The shell: banner strip on top, content area, settings pane on the right when open, the
+ * command palette over everything when open. Every key goes through the command registry's
+ * dispatcher (`useKeybindings`). The canvas (Epic 2) replaces the content area.
  */
 export default function App() {
   const info = useAppStore((s) => s.appInfo);
   const setAppInfo = useAppStore((s) => s.setAppInfo);
   const paneOpen = useSettingsStore((s) => s.paneOpen);
-  const togglePane = useSettingsStore((s) => s.togglePane);
-  const closePane = useSettingsStore((s) => s.closePane);
   const applySnapshot = useSettingsStore((s) => s.applySnapshot);
   const setLoadError = useSettingsStore((s) => s.setLoadError);
   const [status, setStatus] = useState<Status>("loading");
@@ -77,21 +82,7 @@ export default function App() {
     };
   }, [applySnapshot, setLoadError]);
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      // A held key auto-repeats; toggling on every repeat makes the pane flicker.
-      if (event.repeat) return;
-      if (event.ctrlKey && !event.altKey && !event.metaKey && event.key === ",") {
-        event.preventDefault();
-        togglePane();
-      } else if (event.key === "Escape" && useSettingsStore.getState().paneOpen) {
-        event.preventDefault();
-        closePane();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [togglePane, closePane]);
+  useKeybindings();
 
   return (
     <div className="shell">
@@ -107,9 +98,10 @@ export default function App() {
           )}
           {status === "no-runtime" && <p className="muted">no Tauri runtime</p>}
           {status === "error" && <p className="muted">app_info failed: {error}</p>}
-          <p className="muted">ctrl+, settings</p>
+          <p className="muted">ctrl+k commands · ctrl+, settings</p>
         </main>
         {paneOpen && <SettingsPane />}
+        <Palette />
       </div>
     </div>
   );

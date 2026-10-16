@@ -236,3 +236,107 @@
 .tree-key::after {
   content: ":";
 }
+
+/* --- palette ------------------------------------------------------------------------- */
+
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  /* Dims the shell without a new colour: the page background at partial opacity. */
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+}
+
+.palette {
+  width: min(560px, 92vw);
+  max-height: min(60vh, 480px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  animation: palette-in 100ms ease-out;
+}
+
+@keyframes palette-in {
+  from {
+    transform: translateY(-6px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .palette {
+    animation: none;
+  }
+}
+
+.palette-input {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 0.6rem 0.75rem;
+  /* No focus ring: the input always has focus while the dialog is open, so the dialog's
+     border is the deliberate focus cue. */
+  outline: none;
+}
+
+.palette-input::placeholder {
+  color: var(--fg-muted);
+}
+
+.palette-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0;
+  overflow-y: auto;
+}
+
+.palette-row,
+.palette-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.9rem;
+}
+
+.palette-row {
+  cursor: pointer;
+}
+
+.palette-row:hover {
+  background: var(--bg);
+}
+
+.palette-row.is-selected {
+  background: var(--bg);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.palette-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-row-key {
+  flex: none;
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+}
+
+.palette-empty {
+  color: var(--fg-muted);
+}
