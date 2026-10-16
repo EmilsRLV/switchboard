@@ -1,0 +1,17 @@
+/* Design tokens. Dark default, one accent. Story 2.5 extends this. */
+:root {
+  color-scheme: dark;
+
+  --bg: #0f1115;
+  --bg-raised: #161920;
+  --fg: #d7dae0;
+  --fg-muted: #8b919c;
+  --border: #262a33;
+  --accent: #e8a33d;
+
+  --font-sans:
+    system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;
+  --font-mono:
+    ui-monospace, "Cascadia Mono", "Cascadia Code", Consolas, "JetBrains Mono", "Fira Code",
+    "DejaVu Sans Mono", Menlo, monospace;
+}

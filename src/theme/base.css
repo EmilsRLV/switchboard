@@ -1,0 +1,35 @@
+/* Base element styles. No framework, no reset library. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+code,
+pre,
+kbd {
+  font-family: var(--font-mono);
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--bg);
+}

@@ -1,0 +1,8 @@
+# Normalise line endings to LF in the repo and the working copy.
+# A global core.autocrlf=true would otherwise check every text file out as CRLF.
+* text=auto eol=lf
+
+# Binaries are never touched.
+*.png binary
+*.ico binary
+*.icns binary

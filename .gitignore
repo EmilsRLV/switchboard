@@ -7,6 +7,10 @@ dist/
 src-tauri/target/
 src-tauri/gen/schemas/
 
+# Logs and local env overrides (from the create-tauri-app template)
+*.log
+*.local
+
 # OS / editor
 Thumbs.db
 .DS_Store
