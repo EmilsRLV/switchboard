@@ -2,7 +2,7 @@
 title: 'Story 2.1: Canvas with persisted viewport'
 type: 'feature'
 created: '2026-10-16'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'b62aa8ce91ff2c07199c8550c5572f52edb71d3d'
@@ -75,6 +75,8 @@ context:
 - Given `cargo test` and `npm test`, then graph store, persist, workspace store and `viewportDiffers` tests pass with the existing suites; `clippy -D warnings` and `tsc` are clean.
 
 ## Implementation Notes
+
+- Orchestrator (2026-10-17, close): review patches verified — vitest 10 files / 128 passed, `cargo test` 124 passed, `clippy -D warnings` clean, `tsc` clean, debug build; GUI re-check (foreground-guarded): a planted `zoom: 0` file produced the `workspace.viewport` banner and was left untouched at load, double-click wrote nothing, a middle-drag persisted `x=80 zoom=1`; committed `d0d8b69`, pushed; CI green on both runners. Nothing deferred.
 
 - Orchestrator GUI run (2026-10-17, foreground-guarded, real mouse/keyboard input): first launch wrote `workspace.json` (`version 1`, home viewport) and showed the dot grid + hint; a 200×120 px middle-button drag persisted as `x=200 y=120` **62 ms** after release; three wheel notches persisted `zoom≈1.516` with the pan adjusted; relaunch opened at exactly the saved viewport and did not rewrite the file; `ctrl+0` and palette "Fit view" both reset to `{0,0,1}` and persisted; a broken file showed `workspace.json:3:15 expected value` and was left untouched at startup; `ctrl+q` quit. One false alarm on the way: a first script picked WebView2's 16×16 helper window as the process's main window and sent `ctrl+0` to it — selecting by window title fixed the harness, not the app.
 
