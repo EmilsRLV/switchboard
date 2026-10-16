@@ -5,13 +5,19 @@ on:
   pull_request:
   workflow_dispatch:
 
-# A newer push to the same ref cancels the run it supersedes.
+permissions:
+  contents: read
+
+# One group per branch, whether the trigger was the push or the PR it belongs to, so a push to a
+# PR branch runs once. On master every run completes so its artefacts survive; elsewhere a newer
+# push cancels the run it supersedes.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   build:
+    timeout-minutes: 45
     strategy:
       # A Windows failure must still show the Linux result, and vice versa.
       fail-fast: false
@@ -37,7 +43,7 @@ jobs:
       # Tauri's Linux prerequisites (webkit2gtk 4.1 et al.) plus the bundler extras
       # (patchelf, xdg-utils for AppImage). ubuntu-24.04 is pinned so this package set stays stable.
       - name: Install Linux dependencies
-        if: matrix.os == 'ubuntu-24.04'
+        if: matrix.name == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -74,6 +80,24 @@ jobs:
         working-directory: src-tauri
 
       - run: npm run tauri build -- --bundles ${{ matrix.bundles }}
+
+      # tauri-bundler skips a bundle kind it cannot produce with a warning, not an error, and
+      # upload-artifact only fails when every path is empty; require each requested kind explicitly.
+      - name: Check bundles
+        run: |
+          shopt -s nullglob
+          status=0
+          for kind in $(echo "${{ matrix.bundles }}" | tr ',' ' '); do
+            dir="src-tauri/target/release/bundle/$kind"
+            files=("$dir"/*.AppImage "$dir"/*.deb "$dir"/*.exe "$dir"/*.msi)
+            if (( ${#files[@]} > 0 )); then
+              echo "ok: $kind -> ${files[*]}"
+            else
+              echo "::error::no installer produced for bundle kind '$kind' in $dir"
+              status=1
+            fi
+          done
+          exit $status
 
       - uses: actions/upload-artifact@v7
         with:

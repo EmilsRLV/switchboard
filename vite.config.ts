@@ -29,7 +29,7 @@ export default defineConfig({
     // Target the webview Tauri ships on each platform (WebView2 / webkit2gtk).
     target: process.env.TAURI_ENV_PLATFORM == "windows" ? "chrome105" : "safari13",
     // Keep debug builds readable: no minification, with source maps.
-    minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
+    minify: !process.env.TAURI_ENV_DEBUG,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
   },
 

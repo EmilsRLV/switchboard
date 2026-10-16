@@ -36,13 +36,20 @@ mod tests {
             .build()
             .expect("mock webview should build");
 
+        // Tauri's local webview origin differs per platform; a non-local origin is treated as a
+        // remote request and the command is rejected before it runs.
+        #[cfg(windows)]
+        let origin = "http://tauri.localhost";
+        #[cfg(not(windows))]
+        let origin = "tauri://localhost";
+
         let body = get_ipc_response(
             &webview,
             InvokeRequest {
                 cmd: "app_info".into(),
                 callback: CallbackFn(0),
                 error: CallbackFn(1),
-                url: "http://tauri.localhost".parse().unwrap(),
+                url: origin.parse().unwrap(),
                 body: InvokeBody::default(),
                 headers: Default::default(),
                 invoke_key: INVOKE_KEY.to_string(),

@@ -2,7 +2,7 @@
 title: 'Story 1.2: Linux build in CI'
 type: 'chore'
 created: '2026-10-16'
-status: 'in-progress'
+status: 'in-review'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'ab5ced8090055a6e799f0246490797b8768250a7'
@@ -24,7 +24,7 @@ context:
 
 **Always:** `npm ci` (lockfile is committed); tests run before the bundle step and a test failure fails the job; the `if:` on the apt step matches the matrix value exactly; cargo cache keyed on `./src-tauri -> target`; `fail-fast: false` so a Windows failure still shows the Linux result.
 
-**Never:** No publishing, releases, signing or auto-update. No macOS job. No changes to app code to make CI pass — if Linux fails, the story records the failure and the fix becomes its own story unless it is a build-config one-liner. No secrets.
+**Never:** No publishing, releases, signing or auto-update. No macOS job. No changes to app code to make CI pass — if Linux fails, the story records the failure and the fix becomes its own story unless it is a build-config one-liner. No secrets. **Amended by Emils (2026-10-16), on the first red run:** one-line fixes to tests or build config that make existing behaviour correct on Linux/CI are allowed inside this story. Applied under this amendment: the mock test's origin URL (`tauri://localhost` off Windows) and Vite 8's `minify` setting (boolean, not `"esbuild"`).
 
 ## I/O & Edge-Case Matrix
 
@@ -62,13 +62,34 @@ context:
 
 ## Implementation Notes
 
+- Orchestrator (2026-10-16): narrowed `upload-artifact` `path` from `src-tauri/target/release/bundle/` to the four installer globs (`appimage/*.AppImage`, `deb/*.deb`, `nsis/*.exe`, `msi/*.msi`) so Tauri's `Switchboard.AppDir/` staging directory is not uploaded; actionlint 1.7.7 clean. Committed `b5ba6f0`, repo `EmilsRLV/switchboard` created private, pushed; first run 38925464448 was red on both OSes (Linux: mock-test origin; Windows: Vite 8 minify) — see Review Triage Log.
+
 - 2026-10-16: `.github/workflows/ci.yml` written exactly per the Execution task. One addition beyond the task list: `defaults.run.shell: bash` on the job, so both runners use the same shell (Git Bash on Windows) and `npm run tauri build -- --bundles …` passes `--` through identically on both; no app code touched.
 - README: Linux prerequisites block (the apt command, Ubuntu 24.04) replaces the Story 1.2 pointer; CI badge added under the title; status line and a short CI paragraph reference the workflow.
 - Local verification (Windows, pre-push): `python -c "import yaml…"` parses; `actionlint 1.7.7` (downloaded binary, shellcheck/pyflakes integrations off) exits 0 with no findings; `npm run typecheck`, `npm test` (7 tests) and `cargo test` (3 tests) pass. The Linux job itself is unverified until the first push; `upload-artifact` on `bundle/` will also include Tauri's `appimage/Switchboard.AppDir/` staging directory alongside the `.AppImage` (the spec fixes the path, so left as is).
+- 2026-10-16 review fixes: `permissions: contents: read`; `timeout-minutes: 45`; concurrency group keyed on the branch name (PR head ref or `ref_name`) with `cancel-in-progress` only off master; apt `if:` keyed on `matrix.name == 'linux'`; new "Check bundles" step requiring an installer file per requested bundle kind (tauri-bundler skips kinds silently). Build-config one-liners outside the workflow: `vite.config.ts` `build.minify` is now a boolean (Vite 8 no longer ships esbuild, `"esbuild"` fails the production build); `lib.rs` test uses the platform's local origin (`tauri://localhost` off Windows) so the mock IPC call is not rejected as remote on Linux. README: Node 24 LTS line, badge pinned to `?branch=master`, pointer from the apt list to `ci.yml`.
 
 ## Spec Change Log
 
 ## Review Triage Log
+
+Pass 1 (2026-10-16) — layers: blind-hunter (BH), edge-case-hunter (EC), verification-gap (VG); plus the live first CI run 38925464448.
+
+- VG-o1 `src-tauri/src/lib.rs:44` — Linux `cargo test` red: test hardcodes the Windows-only local origin `http://tauri.localhost`; on Linux the request is remote and the capability denies `app_info` — **high** (Linux target broken, CI red): intent_gap — frozen Never clause blocked the fix; Emils chose "fix in this story", clause amended; patch (`#[cfg]` origin).
+- CI-Windows `vite.config.ts` — `minify: "esbuild"` needs esbuild installed separately on Vite 8; `npm run build` fails on CI (local debug builds had minify off) — **high** (Windows bundle never built): patch — boolean `minify`, under the same amendment.
+- VG1 `ci.yml` upload — `if-no-files-found: error` fires only when all globs are empty; tauri-bundler skips unsupported kinds with a warning and exit 0, so a half-empty artefact is green — **medium** (pre-verified; AC contract unverified): patch — "Check bundles" step per kind.
+- VG-o2 / BH1 / EC5 spec says `path: bundle/`, shipped file uses installer globs — **low**: orchestrator's change (excludes the `Switchboard.AppDir/` staging dir); recorded in Implementation Notes. EC5's "AppDir for debugging as spec implies" is **false** — the spec never promises the AppDir.
+- VG-o3 / BH2 / EC4 README prerequisites say Node 25, outside vitest's engine range; CI uses `lts/*` — **low**: patch — README says Node 24 LTS.
+- EC1 / BH6 push + pull_request double-build the same commit in different concurrency groups — **low** (2× cost on PR branches, Windows minutes ×2): patch — group on `pull_request.head.ref || ref_name`.
+- BH7 `cancel-in-progress: true` also cancels superseded `master` runs (no artefacts for the first) — **low**: patch — `cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}`.
+- EC2 / BH5 no `timeout-minutes` (360-min default) — **low**: patch — 45 min.
+- EC3 / BH8 apt `if:` repeats the runner literal — **low**: patch — `matrix.name == 'linux'` (still a matrix value, per the frozen Always).
+- BH3 badge without `?branch=master` tracks any branch — **low**: patch.
+- BH4 no `permissions` block — **low**: patch — `contents: read`.
+- BH9 mutable action tags, no Dependabot — **low**: rejected; pin/update policy is a repo-wide chore for Epic 9, not this story's defect.
+- BH10 actionlint not run in CI — **false**: the matrix row says "actionlint or GitHub's parser"; GitHub parses the workflow on every run and fails it on error.
+- BH11 apt list duplicated in README — **low**: patch — cross-reference sentence.
+- BH12 README states Linux works before the first green run — **low**: rejected; a green run on both jobs is this story's exit condition, so the sentence is true at completion.
 
 ## Verification
 

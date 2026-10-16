@@ -1,6 +1,6 @@
 # Switchboard (working title)
 
-![ci](https://github.com/EmilsRLV/switchboard/actions/workflows/ci.yml/badge.svg)
+![ci](https://github.com/EmilsRLV/switchboard/actions/workflows/ci.yml/badge.svg?branch=master)
 
 A small desktop app for Windows and Linux whose main surface is a **graph of projects, Claude Code
 sessions and branches**. It starts, watches, connects and reviews Claude Code sessions. It is not a
@@ -22,7 +22,8 @@ features yet.
 
 ## Dev loop
 
-Prerequisites: Rust 1.94 (MSVC toolchain on Windows), Node 25, WebView2 (ships with Windows 11).
+Prerequisites: Rust 1.94 (MSVC toolchain on Windows), Node 24 LTS (what CI uses via `lts/*`; Node 25
+runs but is outside vitest's engine range), WebView2 (ships with Windows 11).
 
 On Linux (Ubuntu 24.04; other distros need the equivalent packages) the webview is webkit2gtk 4.1, and the
 dev loop plus the AppImage/.deb bundler need:
@@ -32,6 +33,8 @@ sudo apt-get update
 sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev \
   libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils
 ```
+
+This is the same list CI installs (`.github/workflows/ci.yml`); keep the two in step.
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the same loop on `ubuntu-24.04` and
 `windows-latest` on every push and pull request: typecheck, vitest, `cargo test`, then `tauri build`,
