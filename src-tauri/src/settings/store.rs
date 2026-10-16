@@ -118,7 +118,14 @@ pub fn write_atomic(path: &Path, settings: &Settings) -> std::io::Result<()> {
 pub fn load_or_init(path: &Path, defaults: &Settings) -> Result<Loaded, LoadError> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Loaded::Existing(parse(&text)?)),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+        // `NotADirectory` (a file where the config dir should be) is a write problem too: Linux
+        // reports it on the read, Windows reports `NotFound` and fails in `create_dir_all`.
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
             write_atomic(path, defaults).map_err(LoadError::Write)?;
             Ok(Loaded::Created(defaults.clone()))
         }
