@@ -2,7 +2,7 @@
 title: 'Story 1.2: Linux build in CI'
 type: 'chore'
 created: '2026-10-16'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'ab5ced8090055a6e799f0246490797b8768250a7'
@@ -53,7 +53,7 @@ context:
 **Execution:**
 - [x] `.github/workflows/ci.yml` -- `name: ci`; `on: push` (all branches), `pull_request`, `workflow_dispatch`; `concurrency: { group: ci-${{ github.ref }}, cancel-in-progress: true }`; job `build` with `strategy.fail-fast: false` and `matrix.include`: `{ os: ubuntu-24.04, name: linux, bundles: "appimage,deb" }`, `{ os: windows-latest, name: windows, bundles: "nsis,msi" }`; steps: checkout → apt (`if: matrix.os == 'ubuntu-24.04'`) → setup-node `lts/*` + `cache: npm` → rust stable → rust-cache `workspaces: ./src-tauri -> target` → `npm ci` → `npm run typecheck` → `npm test` → `cargo test` (`working-directory: src-tauri`) → `npm run tauri build -- --bundles ${{ matrix.bundles }}` → upload-artifact `name: switchboard-${{ matrix.name }}`, `path: src-tauri/target/release/bundle/`, `retention-days: 14`, `if-no-files-found: error` -- the whole story
 - [x] `README.md` -- replace the Story 1.2 pointer sentence with a Linux prerequisites block (the apt command) and add the CI badge `![ci](https://github.com/EmilsRLV/switchboard/actions/workflows/ci.yml/badge.svg)` under the title -- keep the index honest
-- [ ] (orchestrator, after the files land) `gh repo create EmilsRLV/switchboard --private --source . --remote origin --push` -- so the AC can be demonstrated on the first run
+- [x] (orchestrator, after the files land) `gh repo create EmilsRLV/switchboard --private --source . --remote origin --push` -- so the AC can be demonstrated on the first run
 
 **Acceptance Criteria:**
 - Given the workflow file, when parsed by GitHub (or `actionlint`), then it has no syntax errors and both matrix entries resolve.
@@ -63,6 +63,7 @@ context:
 ## Implementation Notes
 
 - Orchestrator (2026-10-16): narrowed `upload-artifact` `path` from `src-tauri/target/release/bundle/` to the four installer globs (`appimage/*.AppImage`, `deb/*.deb`, `nsis/*.exe`, `msi/*.msi`) so Tauri's `Switchboard.AppDir/` staging directory is not uploaded; actionlint 1.7.7 clean. Committed `b5ba6f0`, repo `EmilsRLV/switchboard` created private, pushed; first run 38925464448 was red on both OSes (Linux: mock-test origin; Windows: Vite 8 minify) — see Review Triage Log.
+- Orchestrator (2026-10-16): review patches committed `b6dd24b`, pushed; run 38927083356 green on both jobs (Linux 15:49→15:59, Windows →16:04). "Check bundles" reported `Switchboard_0.1.0_amd64.AppImage`, `Switchboard_0.1.0_amd64.deb`, `Switchboard_0.1.0_x64-setup.exe`, `Switchboard_0.1.0_x64_en-US.msi`; artefacts `switchboard-linux` 78.1 MB, `switchboard-windows` 3.1 MB. Nothing deferred.
 
 - 2026-10-16: `.github/workflows/ci.yml` written exactly per the Execution task. One addition beyond the task list: `defaults.run.shell: bash` on the job, so both runners use the same shell (Git Bash on Windows) and `npm run tauri build -- --bundles …` passes `--` through identically on both; no app code touched.
 - README: Linux prerequisites block (the apt command, Ubuntu 24.04) replaces the Story 1.2 pointer; CI badge added under the title; status line and a short CI paragraph reference the workflow.
