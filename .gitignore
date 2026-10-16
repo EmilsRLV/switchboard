@@ -1,0 +1,12 @@
+# BMAD personal config (installer-managed; team config lives in _bmad/custom/config.toml)
+_bmad/config.user.toml
+
+# Build output (populated by the Tauri/Vite scaffold)
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# OS / editor
+Thumbs.db
+.DS_Store
