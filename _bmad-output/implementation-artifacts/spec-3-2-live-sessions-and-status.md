@@ -2,7 +2,7 @@
 title: 'Story 3.2: Live sessions and status'
 type: 'feature'
 created: '2026-10-18'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '23c52e0575c2a08cad9dc3b5bccc2deba860c8e6'
@@ -161,6 +161,7 @@ context:
 
 - **Review fixes (round 1):** the card meta renders from `sessionCardMeta` (only the branch shrinks); losing `claude` clears the live map on both channels; add/remove run a live poll; `project_for_cwd` canonicalises the row cwd; the badge counts a project's drawn session children by session id and live-first sorting is by session id across projects; live-only cards have an empty `lastActive` (no age) and hover times only when known; blank `status`/`name` are missing; a snapshot clears the live load error and an empty tray resets its flag; at most 200 exited sessions are kept (oldest exits dropped); `rightClickAction` decides menu vs select, so no empty menu opens; the tray closes on an outside press and labels each Add folder button.
 - Orchestrator (2026-10-18, review + GUI): GUI pass run before the patch round and again after it (foreground-guarded, `ide` expanded). This session showed as a live child under `ide`: `busy` with the pulsing dot, sorted first, badge `1 live`. `elsewhere 4` listed four idle sessions in other folders with path and Add folder; Esc closed the list. Right-clicking the live card offered only "Attach in terminal", which showed the notice `Attach arrives in Epic 4 (claude attach <id>)`. `~/.claude/projects` (excluding this session's live dir) was byte-identical in size and mtime. The first pass found the meta line overflowing (`busy · HEAD · 455 msgs · n…`, GUI1); after the patch it reads in full. Exit and Add folder were not driven from the GUI (they would stop a session or add one of Emils' folders); unit tests cover them. Verification after patches: `cargo test` 256, vitest 312, clippy and `tsc` clean, debug build.
+- Orchestrator (2026-10-18, close): committed `7ac9333`, pushed; the first CI run failed on Linux in a pre-existing test (`run_kills_a_hanging_child_after_the_timeout`: `Text file busy`, the fork-while-writing race made likelier by the new spawning tests). Fixed in `07354a2` (spawn retries on ETXTBSY); CI run 39074170954 green on ubuntu-24.04 and windows-latest. Nothing deferred.
 
 ## Spec Change Log
 
