@@ -26,10 +26,25 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::workspace_set_viewport,
             ipc::project_pick_folder,
             ipc::workspace_add_projects,
+            ipc::workspace_set_expanded,
+            ipc::workspace_move_node,
+            ipc::workspace_relayout_children,
             ipc::claude_projects_list,
             ipc::projects_status_get,
             ipc::app_quit,
         ])
+}
+
+/// Name of the environment variable asking for stub session children per project.
+pub const STUB_CHILDREN_ENV: &str = "SWITCHBOARD_STUB_CHILDREN";
+
+/// The stub-children count a `SWITCHBOARD_STUB_CHILDREN` value asks for: a non-negative
+/// integer clamped to [`graph::MAX_STUB_CHILDREN`]; unset, blank or unparsable means 0.
+pub fn stub_children_from_env(value: Option<&str>) -> usize {
+    value
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(graph::MAX_STUB_CHILDREN)
 }
 
 /// The fully configured Tauri builder (state, commands, plugins, setup), not yet built.
@@ -51,6 +66,9 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
         .setup(|app| {
             use tauri::Manager;
             settings::initialise(app.handle());
+            // Read once, before the workspace loads and copies it; off by default.
+            let stubs = stub_children_from_env(std::env::var(STUB_CHILDREN_ENV).ok().as_deref());
+            let _ = app.state::<AppState>().stub_children.set(stubs);
             graph::initialise(app.handle());
             if let Some(home) = claude::claude_home() {
                 let _ = app.state::<AppState>().claude_home.set(home);
@@ -300,6 +318,118 @@ mod tests {
         // Missing arguments are rejected before the handler runs.
         invoke_with(&webview, "workspace_add_projects", InvokeBody::Json(serde_json::json!({ "paths": [] })))
             .expect_err("position is required");
+    }
+
+    #[test]
+    fn stub_children_from_env_parses_and_clamps() {
+        assert_eq!(super::stub_children_from_env(None), 0);
+        assert_eq!(super::stub_children_from_env(Some("")), 0);
+        assert_eq!(super::stub_children_from_env(Some("abc")), 0);
+        assert_eq!(super::stub_children_from_env(Some("-1")), 0);
+        assert_eq!(super::stub_children_from_env(Some("3")), 3);
+        assert_eq!(super::stub_children_from_env(Some(" 10 ")), 10);
+        assert_eq!(super::stub_children_from_env(Some("50")), 50);
+        assert_eq!(super::stub_children_from_env(Some("51")), 50);
+        assert_eq!(super::stub_children_from_env(Some("99999")), 50);
+        assert_eq!(super::STUB_CHILDREN_ENV, "SWITCHBOARD_STUB_CHILDREN");
+    }
+
+    /// A webview over a workspace with three stub children per project and one project
+    /// `ide`, as the 2.3 commands need.
+    fn app_with_ide() -> (tauri::App<tauri::test::MockRuntime>, tauri::WebviewWindow<tauri::test::MockRuntime>, tempfile::TempDir) {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let dir = tempfile::tempdir().unwrap();
+        app.state::<super::AppState>().stub_children.set(3).unwrap();
+        super::graph::initialise_at(app.handle(), Some(dir.path().join("workspace.json")));
+        app.state::<super::AppState>().write_workspace().workspace.projects.push(super::graph::Project {
+            id: "ide".into(),
+            path: "/p/ide".into(),
+            label: "ide".into(),
+            ..super::graph::Project::default()
+        });
+        (app, webview, dir)
+    }
+
+    #[test]
+    fn workspace_set_expanded_is_registered_takes_project_id_and_expanded_and_replies_with_the_snapshot() {
+        let (_app, webview, dir) = app_with_ide();
+
+        let args = serde_json::json!({ "projectId": "ide", "expanded": true });
+        let body = invoke_with(&webview, "workspace_set_expanded", InvokeBody::Json(args))
+            .expect("workspace_set_expanded should be registered and succeed");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value["workspace"]["projects"][0]["expanded"], true);
+        assert_eq!(value["revision"], 1);
+        assert_eq!(value["children"].as_array().unwrap().len(), 3);
+        assert_eq!(value["children"][0]["id"], "stub-1-ide");
+        assert_eq!(value["children"][0]["kind"], "session");
+        assert_eq!(value["children"][0]["position"], serde_json::Value::Null);
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("workspace.json")).unwrap()).unwrap();
+        assert_eq!(on_disk["projects"][0]["expanded"], true);
+
+        // A validation failure is the command's `Err` string.
+        let args = serde_json::json!({ "projectId": "nope", "expanded": true });
+        let err = invoke_with(&webview, "workspace_set_expanded", InvokeBody::Json(args)).expect_err("unknown id");
+        assert_eq!(err, serde_json::json!("unknown project"));
+        // A missing argument is rejected before the handler runs.
+        invoke_with(&webview, "workspace_set_expanded", InvokeBody::Json(serde_json::json!({ "projectId": "ide" })))
+            .expect_err("expanded is required");
+    }
+
+    #[test]
+    fn workspace_move_node_is_registered_takes_target_and_position_and_replies_with_the_snapshot() {
+        let (_app, webview, dir) = app_with_ide();
+
+        let args = serde_json::json!({ "target": { "kind": "session", "id": "stub-2-ide" }, "position": { "x": 260, "y": 40 } });
+        let body = invoke_with(&webview, "workspace_move_node", InvokeBody::Json(args))
+            .expect("workspace_move_node should be registered and succeed");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value["children"][1]["position"], serde_json::json!({ "x": 260.0, "y": 40.0 }));
+        assert_eq!(value["workspace"]["sessions"][0]["sessionId"], "stub-2-ide");
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("workspace.json")).unwrap()).unwrap();
+        assert_eq!(on_disk["sessions"][0]["position"], serde_json::json!({ "x": 260.0, "y": 40.0 }));
+
+        let args = serde_json::json!({ "target": { "kind": "project", "id": "ide" }, "position": { "x": 120, "y": 0 } });
+        let body = invoke_with(&webview, "workspace_move_node", InvokeBody::Json(args)).unwrap();
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value["workspace"]["projects"][0]["position"], serde_json::json!({ "x": 120.0, "y": 0.0 }));
+        assert_eq!(value["revision"], 2);
+
+        let args = serde_json::json!({ "target": { "kind": "branch", "id": "nope" }, "position": { "x": 0, "y": 0 } });
+        let err = invoke_with(&webview, "workspace_move_node", InvokeBody::Json(args)).expect_err("unknown branch");
+        assert_eq!(err, serde_json::json!("unknown branch"));
+        let args = serde_json::json!({ "target": { "kind": "folder", "id": "x" }, "position": { "x": 0, "y": 0 } });
+        invoke_with(&webview, "workspace_move_node", InvokeBody::Json(args)).expect_err("not a node kind");
+    }
+
+    #[test]
+    fn workspace_relayout_children_is_registered_takes_project_id_and_replies_with_the_snapshot() {
+        let (app, webview, dir) = app_with_ide();
+        let target = super::graph::NodeTarget {
+            kind: super::graph::NodeKind::Session,
+            id: "stub-1-ide".into(),
+        };
+        super::graph::move_node(app.handle(), &target, super::graph::Position { x: 1.0, y: 2.0 }).unwrap();
+
+        let args = serde_json::json!({ "projectId": "ide" });
+        let body = invoke_with(&webview, "workspace_relayout_children", InvokeBody::Json(args))
+            .expect("workspace_relayout_children should be registered and succeed");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value["children"][0]["position"], serde_json::Value::Null);
+        assert_eq!(value["workspace"]["sessions"], serde_json::json!([]));
+        assert_eq!(value["revision"], 2);
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("workspace.json")).unwrap()).unwrap();
+        assert_eq!(on_disk["sessions"], serde_json::json!([]));
+
+        let err = invoke_with(&webview, "workspace_relayout_children", InvokeBody::Json(serde_json::json!({ "projectId": "nope" })))
+            .expect_err("unknown id");
+        assert_eq!(err, serde_json::json!("unknown project"));
     }
 
     #[test]

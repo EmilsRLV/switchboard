@@ -315,6 +315,9 @@ pub struct AppState {
     /// Claude Code's home (`~/.claude`), set once in `setup`. Unset (as in tests) means
     /// discovery has nothing to read and lists nothing.
     pub claude_home: OnceLock<PathBuf>,
+    /// Stub session children per project (`SWITCHBOARD_STUB_CHILDREN`, Story 2.3), set once
+    /// in `setup` before `graph::initialise` copies it into the workspace state. Unset means 0.
+    pub stub_children: OnceLock<usize>,
 }
 
 impl AppState {

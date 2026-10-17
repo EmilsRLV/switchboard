@@ -1,6 +1,7 @@
 // The canvas store holds the live xyflow instance so commands (`canvas.fitView`,
-// `project.add`) can drive the viewport from outside the React tree. It is UI plumbing, not
-// workspace data: the persisted viewport lives in the workspace store, mirrored from Rust.
+// `project.add`) can drive the viewport from outside the React tree, and the transient
+// positions of nodes being dragged. It is UI plumbing, not workspace data: the persisted
+// viewport and every settled position live in the workspace store, mirrored from Rust.
 
 import { create } from "zustand";
 import type { Position, Viewport } from "../ipc";
@@ -26,13 +27,29 @@ export type CanvasElement = {
 /** Where an empty canvas goes home to: no pan, 1:1. */
 export const HOME_VIEWPORT: Readonly<Viewport> = Object.freeze({ x: 0, y: 0, zoom: 1 });
 
+/** Flow-node id → position, for the nodes a drag is moving right now. */
+export type DragOverrides = Readonly<Record<string, Position>>;
+
+const NO_DRAG: DragOverrides = Object.freeze({});
+
 export type CanvasState = {
   /** The mounted canvas, set from `onInit`; `null` before mount and after unmount. */
   instance: CanvasInstance | null;
   /** The canvas's element, for its on-page rectangle; `null` while unmounted. */
   element: CanvasElement | null;
+  /**
+   * Positions xyflow reported for nodes mid-drag (relative to the parent for a child, as
+   * xyflow reports them). They override the snapshot's positions until the drop has gone
+   * through Rust and come back, so a snapshot arriving mid-drag cannot snap the node back.
+   * Reference-stable (the shared empty object) while nothing is dragged.
+   */
+  dragging: DragOverrides;
   setInstance: (instance: CanvasInstance | null) => void;
   setElement: (element: CanvasElement | null) => void;
+  /** Record where a drag has moved the node with flow id `id`. */
+  setDragPosition: (id: string, position: Position) => void;
+  /** Forget the override of `id` (the drop has been applied); a no-op when there is none. */
+  clearDrag: (id: string) => void;
   /**
    * Fit every node into view; with no nodes (xyflow's `fitView` is then a no-op) go home to
    * `{0,0,1}`. Either way the move ends in xyflow's `onMoveEnd`, which persists it. Resolves
@@ -44,8 +61,17 @@ export type CanvasState = {
 export const useCanvasStore = create<CanvasState>()((set, get) => ({
   instance: null,
   element: null,
+  dragging: NO_DRAG,
   setInstance: (instance) => set({ instance }),
   setElement: (element) => set({ element }),
+  setDragPosition: (id, position) =>
+    set((s) => ({ dragging: { ...s.dragging, [id]: { x: position.x, y: position.y } } })),
+  clearDrag: (id) =>
+    set((s) => {
+      if (!(id in s.dragging)) return {};
+      const { [id]: _dropped, ...rest } = s.dragging;
+      return { dragging: Object.keys(rest).length === 0 ? NO_DRAG : rest };
+    }),
   fitView: async () => {
     const instance = get().instance;
     if (instance === null) return false;

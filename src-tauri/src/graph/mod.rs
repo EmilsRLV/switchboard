@@ -35,6 +35,10 @@ const NOT_SAVED: &str = "; changes are kept in memory and not saved";
 /// canvas pixels apart on both axes, so none hides another.
 pub const FAN_OUT_STEP: f64 = 24.0;
 
+/// Upper bound for `SWITCHBOARD_STUB_CHILDREN`: stub session children per project (Story
+/// 2.3 proves layout, drag and persistence with them; Epics 3/5 bring the real ones).
+pub const MAX_STUB_CHILDREN: usize = 50;
+
 // ---------------------------------------------------------------------------------------
 // Schema (architecture §5.1); keys are camelCase on disk, as the TS types there spell them
 // ---------------------------------------------------------------------------------------
@@ -201,6 +205,100 @@ pub struct LaunchDefaults {
 }
 
 // ---------------------------------------------------------------------------------------
+// Children (Story 2.3): derived, type-independent, never persisted as such
+// ---------------------------------------------------------------------------------------
+
+/// What kind of child a [`ChildNode`] is. The layout does not care; Epics 3 and 5 do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChildKind {
+    Session,
+    Branch,
+}
+
+/// A child of a project as the canvas lays it out: one row of the column under the card.
+/// Derived by [`children`] from `workspace.sessions` and `workspace.branches` (plus the stub
+/// source), so later epics replace the derivation and keep the layout. `position` is
+/// relative to the parent card's top-left and `None` for a child still in its column slot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildNode {
+    pub id: String,
+    pub project_id: String,
+    pub kind: ChildKind,
+    pub label: String,
+    pub detail: Option<String>,
+    pub position: Option<Position>,
+}
+
+/// The node types a position can be written for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeKind {
+    Project,
+    Session,
+    Branch,
+}
+
+/// A node named by kind and id: the argument of [`move_node`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeTarget {
+    pub kind: NodeKind,
+    pub id: String,
+}
+
+/// Id of the `i`-th (1-based) stub session of `project_id`.
+pub fn stub_session_id(index: usize, project_id: &str) -> String {
+    format!("stub-{index}-{project_id}")
+}
+
+/// Every child of every project, collapsed ones included, in layout order: the project's
+/// sessions in list order, then its branches. With no real sessions yet, the sessions are
+/// `stubs` per project (`session 1..n`, detail `stub`), each taking its position from the
+/// matching [`SessionRef`] when one exists; a ref whose session is not discovered yields
+/// nothing. Branch children carry the worktree path as detail.
+pub fn children(workspace: &Workspace, stubs: usize) -> Vec<ChildNode> {
+    let mut out = Vec::new();
+    for project in &workspace.projects {
+        for i in 1..=stubs {
+            let id = stub_session_id(i, &project.id);
+            let position = workspace
+                .sessions
+                .iter()
+                .find(|s| s.session_id == id && s.project_id == project.id)
+                .and_then(|s| s.position);
+            out.push(ChildNode {
+                id,
+                project_id: project.id.clone(),
+                kind: ChildKind::Session,
+                label: format!("session {i}"),
+                detail: Some("stub".to_string()),
+                position,
+            });
+        }
+        for branch in workspace.branches.iter().filter(|b| b.project_id == project.id) {
+            out.push(ChildNode {
+                id: branch.id.clone(),
+                project_id: project.id.clone(),
+                kind: ChildKind::Branch,
+                label: branch.name.clone(),
+                detail: branch.worktree_path.clone(),
+                position: branch.position,
+            });
+        }
+    }
+    out
+}
+
+impl SessionRef {
+    /// True when the ref records nothing any more: no label, pin, branch or position. Such
+    /// a ref is pruned by [`relayout_children`] (it only ever held a dragged position).
+    pub fn is_bare(&self) -> bool {
+        self.label.is_none() && !self.pinned && self.branch_id.is_none() && self.position.is_none()
+    }
+}
+
+// ---------------------------------------------------------------------------------------
 // State and snapshot
 // ---------------------------------------------------------------------------------------
 
@@ -214,6 +312,8 @@ pub struct WorkspaceSnapshot {
     /// Bumped on every mutation this session, so the UI can drop a reply that arrives after a
     /// newer snapshot (two adds in flight). Not persisted; starts at 0 on load.
     pub revision: u64,
+    /// Every project's children ([`children`]), collapsed ones too; the UI lays them out.
+    pub children: Vec<ChildNode>,
 }
 
 /// Reply of [`add_projects`]: the snapshot after the call plus which ids it concerns.
@@ -246,6 +346,9 @@ pub struct WorkspaceState {
     pub read_only: Option<&'static str>,
     /// Mutation counter for this session (see [`WorkspaceSnapshot::revision`]).
     pub revision: u64,
+    /// Stub session children per project (`SWITCHBOARD_STUB_CHILDREN`, copied from
+    /// `AppState` on load so `snapshot` stays pure); 0 unless the operator asked for them.
+    pub stub_children: usize,
 }
 
 impl WorkspaceState {
@@ -260,6 +363,7 @@ impl WorkspaceState {
                 .cloned()
                 .collect(),
             revision: self.revision,
+            children: children(&self.workspace, self.stub_children),
         }
     }
 
@@ -305,6 +409,7 @@ pub fn initialise_at<R: Runtime>(app: &AppHandle<R>, path: Option<PathBuf>) {
     let mut st = state.write_workspace();
     *st = WorkspaceState {
         path: path.clone(),
+        stub_children: state.stub_children.get().copied().unwrap_or(0),
         ..WorkspaceState::default()
     };
 
@@ -428,6 +533,110 @@ pub fn add_projects<R: Runtime>(
         existing,
         skipped,
     })
+}
+
+/// Expand or collapse a project: store `expanded`, bump the revision, write the file (outside
+/// the lock) and emit `workspace://changed`. An unknown id is an `Err` and nothing changes.
+pub fn set_expanded<R: Runtime>(app: &AppHandle<R>, project_id: &str, expanded: bool) -> Result<WorkspaceSnapshot, String> {
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        let project = st
+            .workspace
+            .projects
+            .iter_mut()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| "unknown project".to_string())?;
+        project.expanded = expanded;
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    Ok(persist_and_emit(app, target, &workspace))
+}
+
+/// Store where a node was dropped. A project's position is absolute; a child's is relative
+/// to its parent card and goes where the schema keeps it: a session child upserts its
+/// [`SessionRef`] (creating one holding just `sessionId`, `projectId`, `position` when the
+/// session has no ref yet), a branch child sets `BranchNode.position`. A non-finite position
+/// or an id that is not a known node (for a session: not a current child) is an `Err` and
+/// nothing changes.
+pub fn move_node<R: Runtime>(app: &AppHandle<R>, target: &NodeTarget, position: Position) -> Result<WorkspaceSnapshot, String> {
+    if !(position.x.is_finite() && position.y.is_finite()) {
+        return Err("position is not finite".to_string());
+    }
+    let state = app.state::<AppState>();
+    let (write_target, workspace) = {
+        let mut st = state.write_workspace();
+        match target.kind {
+            NodeKind::Project => {
+                let project = st
+                    .workspace
+                    .projects
+                    .iter_mut()
+                    .find(|p| p.id == target.id)
+                    .ok_or_else(|| "unknown project".to_string())?;
+                project.position = position;
+            }
+            NodeKind::Session => {
+                let project_id = children(&st.workspace, st.stub_children)
+                    .into_iter()
+                    .find(|c| c.kind == ChildKind::Session && c.id == target.id)
+                    .map(|c| c.project_id)
+                    .ok_or_else(|| "unknown session".to_string())?;
+                // Both fields, exactly as `children()` matches a ref to its child: a same-id ref
+                // under another project (hand-edited file) must not take the position.
+                match st
+                    .workspace
+                    .sessions
+                    .iter_mut()
+                    .find(|s| s.session_id == target.id && s.project_id == project_id)
+                {
+                    Some(existing) => existing.position = Some(position),
+                    None => st.workspace.sessions.push(SessionRef {
+                        session_id: target.id.clone(),
+                        project_id,
+                        position: Some(position),
+                        ..SessionRef::default()
+                    }),
+                }
+            }
+            NodeKind::Branch => {
+                let branch = st
+                    .workspace
+                    .branches
+                    .iter_mut()
+                    .find(|b| b.id == target.id)
+                    .ok_or_else(|| "unknown branch".to_string())?;
+                branch.position = Some(position);
+            }
+        }
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    Ok(persist_and_emit(app, write_target, &workspace))
+}
+
+/// Put every child of a project back into its column slot: clear the stored positions of
+/// its sessions and branches and drop the session refs left with nothing in them. An
+/// unknown id is an `Err` and nothing changes.
+pub fn relayout_children<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Result<WorkspaceSnapshot, String> {
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        if !st.workspace.projects.iter().any(|p| p.id == project_id) {
+            return Err("unknown project".to_string());
+        }
+        for session in st.workspace.sessions.iter_mut().filter(|s| s.project_id == project_id) {
+            session.position = None;
+        }
+        st.workspace.sessions.retain(|s| s.project_id != project_id || !s.is_bare());
+        for branch in st.workspace.branches.iter_mut().filter(|b| b.project_id == project_id) {
+            branch.position = None;
+        }
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    Ok(persist_and_emit(app, target, &workspace))
 }
 
 /// The canonical form of `raw` when it is an existing directory, as stored in `Project.path`.
@@ -597,12 +806,14 @@ mod tests {
             validation_banners: vec![Banner::new("workspace.version", "newer")],
             read_only: None,
             revision: 3,
+            stub_children: 0,
         };
         assert_eq!(
             serde_json::to_value(st.snapshot()).unwrap(),
             serde_json::json!({
                 "path": "C:/cfg/switchboard/workspace.json",
                 "revision": 3,
+                "children": [],
                 "workspace": {
                     "version": 1,
                     "viewport": { "x": -120.0, "y": 40.0, "zoom": 1.5 },
@@ -1365,6 +1576,415 @@ mod tests {
         assert!(same_path("/a/b", "/a/b"));
         assert!(!same_path("/a/b", "/a/c"));
         assert_eq!(same_path(r"C:\Repo", r"c:\repo"), cfg!(windows));
+    }
+
+    // -- children / set_expanded / move_node / relayout_children ------------------------
+
+    fn project_with(id: &str) -> Project {
+        Project {
+            id: id.into(),
+            path: format!("/p/{id}"),
+            label: id.into(),
+            ..Project::default()
+        }
+    }
+
+    /// A mock app with `stubs` stub children per project, one project `ide` on the canvas
+    /// and the file at `path`.
+    fn app_with_ide(stubs: usize) -> (tauri::App<MockRuntime>, tempfile::TempDir, PathBuf) {
+        let app = mock_app();
+        let cfg = tempfile::tempdir().unwrap();
+        let path = cfg.path().join("workspace.json");
+        app.state::<AppState>().stub_children.set(stubs).unwrap();
+        initialise_at(app.handle(), Some(path.clone()));
+        {
+            let state = app.state::<AppState>();
+            let mut st = state.write_workspace();
+            st.workspace.projects.push(project_with("ide"));
+        }
+        (app, cfg, path)
+    }
+
+    fn on_disk(path: &Path) -> Workspace {
+        store::parse(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn children_lists_stub_sessions_then_branches_per_project_in_order() {
+        let ws = Workspace {
+            projects: vec![project_with("a"), project_with("b")],
+            branches: vec![
+                BranchNode {
+                    id: "br-b".into(),
+                    project_id: "b".into(),
+                    name: "feature".into(),
+                    worktree_path: Some("/p/b/.worktrees/feature".into()),
+                    position: Some(Position { x: 300.0, y: 10.0 }),
+                },
+                BranchNode {
+                    id: "br-a".into(),
+                    project_id: "a".into(),
+                    name: "main".into(),
+                    ..BranchNode::default()
+                },
+            ],
+            sessions: vec![
+                // A dragged stub of `a` keeps its position; a ref for a session nobody
+                // discovered yields no child; a ref on the wrong project is not matched.
+                SessionRef {
+                    session_id: "stub-2-a".into(),
+                    project_id: "a".into(),
+                    position: Some(Position { x: -40.0, y: 200.0 }),
+                    ..SessionRef::default()
+                },
+                SessionRef {
+                    session_id: "real-session".into(),
+                    project_id: "a".into(),
+                    pinned: true,
+                    ..SessionRef::default()
+                },
+                SessionRef {
+                    session_id: "stub-1-b".into(),
+                    project_id: "a".into(),
+                    position: Some(Position { x: 1.0, y: 1.0 }),
+                    ..SessionRef::default()
+                },
+            ],
+            ..Workspace::default()
+        };
+        let kids = children(&ws, 2);
+        type Row<'a> = (&'a str, &'a str, ChildKind, &'a str, Option<&'a str>, Option<Position>);
+        let summary: Vec<Row<'_>> = kids
+            .iter()
+            .map(|c| (c.id.as_str(), c.project_id.as_str(), c.kind, c.label.as_str(), c.detail.as_deref(), c.position))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("stub-1-a", "a", ChildKind::Session, "session 1", Some("stub"), None),
+                ("stub-2-a", "a", ChildKind::Session, "session 2", Some("stub"), Some(Position { x: -40.0, y: 200.0 })),
+                ("br-a", "a", ChildKind::Branch, "main", None, None),
+                ("stub-1-b", "b", ChildKind::Session, "session 1", Some("stub"), None),
+                ("stub-2-b", "b", ChildKind::Session, "session 2", Some("stub"), None),
+                (
+                    "br-b",
+                    "b",
+                    ChildKind::Branch,
+                    "feature",
+                    Some("/p/b/.worktrees/feature"),
+                    Some(Position { x: 300.0, y: 10.0 })
+                ),
+            ]
+        );
+        assert!(children(&ws, 0).iter().all(|c| c.kind == ChildKind::Branch), "no stubs unless asked");
+        assert!(children(&Workspace::default(), 3).is_empty(), "no projects, no children");
+    }
+
+    #[test]
+    fn child_node_serialises_in_camel_case_with_null_position() {
+        let child = ChildNode {
+            id: "stub-1-p".into(),
+            project_id: "p".into(),
+            kind: ChildKind::Session,
+            label: "session 1".into(),
+            detail: Some("stub".into()),
+            position: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&child).unwrap(),
+            serde_json::json!({
+                "id": "stub-1-p", "projectId": "p", "kind": "session",
+                "label": "session 1", "detail": "stub", "position": null
+            })
+        );
+        let target: NodeTarget = serde_json::from_value(serde_json::json!({ "kind": "branch", "id": "b1" })).unwrap();
+        assert_eq!(
+            target,
+            NodeTarget {
+                kind: NodeKind::Branch,
+                id: "b1".into()
+            }
+        );
+    }
+
+    #[test]
+    fn snapshot_carries_every_child_collapsed_or_not_and_initialise_copies_the_stub_count() {
+        let (app, _cfg, _path) = app_with_ide(3);
+        let state = app.state::<AppState>();
+        assert_eq!(state.read_workspace().stub_children, 3);
+        let snapshot = state.read_workspace().snapshot();
+        assert!(!snapshot.workspace.projects[0].expanded);
+        assert_eq!(
+            snapshot.children.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["stub-1-ide", "stub-2-ide", "stub-3-ide"]
+        );
+        assert!(snapshot.children.iter().all(|c| c.position.is_none()));
+        assert!(snapshot.workspace.sessions.is_empty(), "stubs are not persisted");
+    }
+
+    #[test]
+    fn set_expanded_persists_bumps_the_revision_and_emits() {
+        let (app, _cfg, path) = app_with_ide(3);
+        let rx = listen(&app);
+
+        let snapshot = set_expanded(app.handle(), "ide", true).unwrap();
+        assert!(snapshot.workspace.projects[0].expanded);
+        assert_eq!(snapshot.revision, 1);
+        assert_eq!(snapshot.children.len(), 3, "the child list does not depend on expansion");
+        assert!(on_disk(&path).projects[0].expanded);
+        assert_eq!(rx.try_recv().expect("one event"), snapshot);
+
+        let snapshot = set_expanded(app.handle(), "ide", false).unwrap();
+        assert!(!snapshot.workspace.projects[0].expanded);
+        assert_eq!(snapshot.revision, 2);
+        assert!(!on_disk(&path).projects[0].expanded);
+        assert_eq!(rx.try_recv().expect("one event"), snapshot);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn set_expanded_rejects_an_unknown_project_without_writing_or_emitting() {
+        let (app, _cfg, path) = app_with_ide(3);
+        let before = std::fs::read_to_string(&path).unwrap();
+        let rx = listen(&app);
+        assert_eq!(set_expanded(app.handle(), "nope", true), Err("unknown project".to_string()));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(app.state::<AppState>().read_workspace().revision, 0);
+    }
+
+    #[test]
+    fn move_node_writes_a_project_position_once() {
+        let (app, _cfg, path) = app_with_ide(0);
+        let rx = listen(&app);
+        let target = NodeTarget {
+            kind: NodeKind::Project,
+            id: "ide".into(),
+        };
+        let snapshot = move_node(app.handle(), &target, Position { x: 120.0, y: -8.5 }).unwrap();
+        assert_eq!(snapshot.workspace.projects[0].position, Position { x: 120.0, y: -8.5 });
+        assert_eq!(snapshot.revision, 1);
+        assert_eq!(on_disk(&path).projects[0].position, Position { x: 120.0, y: -8.5 });
+        assert_eq!(rx.try_recv().expect("one event"), snapshot);
+        assert!(rx.try_recv().is_err(), "exactly one");
+    }
+
+    #[test]
+    fn move_node_upserts_a_session_ref_for_a_dragged_stub_child() {
+        let (app, _cfg, path) = app_with_ide(3);
+        let target = NodeTarget {
+            kind: NodeKind::Session,
+            id: "stub-2-ide".into(),
+        };
+
+        // First drag: a ref holding just the three fields appears.
+        let snapshot = move_node(app.handle(), &target, Position { x: 260.0, y: 40.0 }).unwrap();
+        assert_eq!(
+            snapshot.workspace.sessions,
+            [SessionRef {
+                session_id: "stub-2-ide".into(),
+                project_id: "ide".into(),
+                position: Some(Position { x: 260.0, y: 40.0 }),
+                ..SessionRef::default()
+            }]
+        );
+        let positions: Vec<Option<Position>> = snapshot.children.iter().map(|c| c.position).collect();
+        assert_eq!(positions, [None, Some(Position { x: 260.0, y: 40.0 }), None], "the other two keep their slots");
+        let disk = on_disk(&path);
+        assert_eq!(disk.sessions.len(), 1);
+        assert_eq!(disk.sessions[0].position, Some(Position { x: 260.0, y: 40.0 }));
+        assert_eq!(children(&disk, 3)[1].position, Some(Position { x: 260.0, y: 40.0 }), "survives a reload");
+
+        // Second drag: the same ref is updated, not duplicated.
+        let snapshot = move_node(app.handle(), &target, Position { x: 10.0, y: 10.0 }).unwrap();
+        assert_eq!(snapshot.workspace.sessions.len(), 1);
+        assert_eq!(snapshot.workspace.sessions[0].position, Some(Position { x: 10.0, y: 10.0 }));
+        assert_eq!(snapshot.revision, 2);
+    }
+
+    #[test]
+    fn move_node_ignores_a_same_id_session_ref_under_another_project() {
+        let (app, _cfg, path) = app_with_ide(2);
+        {
+            let state = app.state::<AppState>();
+            state.write_workspace().workspace.sessions.push(SessionRef {
+                session_id: "stub-1-ide".into(),
+                project_id: "other".into(),
+                pinned: true,
+                position: Some(Position { x: 999.0, y: 999.0 }),
+                ..SessionRef::default()
+            });
+        }
+        let target = NodeTarget {
+            kind: NodeKind::Session,
+            id: "stub-1-ide".into(),
+        };
+
+        let snapshot = move_node(app.handle(), &target, Position { x: 50.0, y: 60.0 }).unwrap();
+
+        assert_eq!(snapshot.children[0].position, Some(Position { x: 50.0, y: 60.0 }), "the child shows the drag");
+        let refs: Vec<(&str, &str, Option<Position>)> = snapshot
+            .workspace
+            .sessions
+            .iter()
+            .map(|s| (s.session_id.as_str(), s.project_id.as_str(), s.position))
+            .collect();
+        assert_eq!(
+            refs,
+            [
+                ("stub-1-ide", "other", Some(Position { x: 999.0, y: 999.0 })),
+                ("stub-1-ide", "ide", Some(Position { x: 50.0, y: 60.0 })),
+            ],
+            "the foreign ref is untouched; a ref for the right project is created"
+        );
+        // A second drag updates the right-project ref, not the foreign one.
+        let snapshot = move_node(app.handle(), &target, Position { x: 7.0, y: 8.0 }).unwrap();
+        assert_eq!(snapshot.workspace.sessions.len(), 2);
+        assert_eq!(snapshot.workspace.sessions[1].position, Some(Position { x: 7.0, y: 8.0 }));
+        assert_eq!(snapshot.workspace.sessions[0].position, Some(Position { x: 999.0, y: 999.0 }));
+        assert_eq!(on_disk(&path).sessions.len(), 2);
+    }
+
+    #[test]
+    fn move_node_sets_a_branch_position_and_rejects_unknown_or_non_finite() {
+        let (app, _cfg, path) = app_with_ide(1);
+        {
+            let state = app.state::<AppState>();
+            state.write_workspace().workspace.branches.push(BranchNode {
+                id: "br".into(),
+                project_id: "ide".into(),
+                name: "main".into(),
+                ..BranchNode::default()
+            });
+        }
+        let branch = NodeTarget {
+            kind: NodeKind::Branch,
+            id: "br".into(),
+        };
+        let snapshot = move_node(app.handle(), &branch, Position { x: 5.0, y: 6.0 }).unwrap();
+        assert_eq!(snapshot.workspace.branches[0].position, Some(Position { x: 5.0, y: 6.0 }));
+        assert_eq!(snapshot.children[1].position, Some(Position { x: 5.0, y: 6.0 }));
+        assert_eq!(on_disk(&path).branches[0].position, Some(Position { x: 5.0, y: 6.0 }));
+
+        let before = std::fs::read_to_string(&path).unwrap();
+        let rx = listen(&app);
+        let unknown = |kind, id: &str| NodeTarget { kind, id: id.into() };
+        assert_eq!(
+            move_node(app.handle(), &unknown(NodeKind::Project, "nope"), Position::default()),
+            Err("unknown project".to_string())
+        );
+        assert_eq!(
+            move_node(app.handle(), &unknown(NodeKind::Session, "stub-9-ide"), Position::default()),
+            Err("unknown session".to_string()),
+            "a stub beyond the configured count is not a child"
+        );
+        assert_eq!(
+            move_node(app.handle(), &unknown(NodeKind::Branch, "nope"), Position::default()),
+            Err("unknown branch".to_string())
+        );
+        for bad in [
+            Position { x: f64::NAN, y: 0.0 },
+            Position { x: 0.0, y: f64::NEG_INFINITY },
+        ] {
+            assert_eq!(
+                move_node(app.handle(), &unknown(NodeKind::Project, "ide"), bad),
+                Err("position is not finite".to_string())
+            );
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "no write");
+        assert!(rx.try_recv().is_err(), "no event");
+        assert_eq!(app.state::<AppState>().read_workspace().revision, 1);
+    }
+
+    #[test]
+    fn relayout_children_clears_positions_and_prunes_bare_refs_of_that_project_only() {
+        let (app, _cfg, path) = app_with_ide(3);
+        {
+            let state = app.state::<AppState>();
+            let mut st = state.write_workspace();
+            st.workspace.projects.push(project_with("other"));
+            st.workspace.branches.push(BranchNode {
+                id: "br".into(),
+                project_id: "ide".into(),
+                name: "main".into(),
+                position: Some(Position { x: 9.0, y: 9.0 }),
+                ..BranchNode::default()
+            });
+            // A ref that carries more than a position stays, with the position cleared.
+            st.workspace.sessions.push(SessionRef {
+                session_id: "stub-3-ide".into(),
+                project_id: "ide".into(),
+                label: Some("kept".into()),
+                position: Some(Position { x: 1.0, y: 2.0 }),
+                ..SessionRef::default()
+            });
+        }
+        let dragged = |id: &str| NodeTarget {
+            kind: NodeKind::Session,
+            id: id.into(),
+        };
+        move_node(app.handle(), &dragged("stub-2-ide"), Position { x: 260.0, y: 40.0 }).unwrap();
+        move_node(app.handle(), &dragged("stub-1-other"), Position { x: -5.0, y: -5.0 }).unwrap();
+        let rx = listen(&app);
+
+        let snapshot = relayout_children(app.handle(), "ide").unwrap();
+
+        assert_eq!(snapshot.revision, 3);
+        let ide_children: Vec<Option<Position>> = snapshot
+            .children
+            .iter()
+            .filter(|c| c.project_id == "ide")
+            .map(|c| c.position)
+            .collect();
+        assert_eq!(ide_children, [None, None, None, None], "three stubs and the branch, all in their slots");
+        let refs: Vec<(&str, Option<&str>, Option<Position>)> = snapshot
+            .workspace
+            .sessions
+            .iter()
+            .map(|s| (s.session_id.as_str(), s.label.as_deref(), s.position))
+            .collect();
+        assert_eq!(
+            refs,
+            [
+                ("stub-3-ide", Some("kept"), None),
+                ("stub-1-other", None, Some(Position { x: -5.0, y: -5.0 })),
+            ],
+            "the bare ref is gone, the labelled one stays, the other project's is untouched"
+        );
+        assert_eq!(snapshot.workspace.branches[0].position, None);
+        assert_eq!(on_disk(&path).sessions.len(), 2);
+        assert_eq!(rx.try_recv().expect("one event"), snapshot);
+
+        assert_eq!(relayout_children(app.handle(), "nope"), Err("unknown project".to_string()));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn the_new_mutations_respect_the_read_only_guard() {
+        let app = mock_app();
+        let cfg = tempfile::tempdir().unwrap();
+        let path = cfg.path().join("workspace.json");
+        let original = r#"{ "version": 2, "projects": [{ "id": "ide", "path": "/p/ide", "label": "ide" }] }"#;
+        std::fs::write(&path, original).unwrap();
+        app.state::<AppState>().stub_children.set(2).unwrap();
+        initialise_at(app.handle(), Some(path.clone()));
+        let rx = listen(&app);
+
+        let snapshot = set_expanded(app.handle(), "ide", true).unwrap();
+        assert!(snapshot.workspace.projects[0].expanded);
+        let target = NodeTarget {
+            kind: NodeKind::Session,
+            id: "stub-1-ide".into(),
+        };
+        let snapshot = move_node(app.handle(), &target, Position { x: 1.0, y: 1.0 }).unwrap();
+        assert_eq!(snapshot.children[0].position, Some(Position { x: 1.0, y: 1.0 }));
+        let snapshot = relayout_children(app.handle(), "ide").unwrap();
+        assert!(snapshot.workspace.sessions.is_empty());
+        assert_eq!(snapshot.revision, 3);
+        let ids: Vec<&str> = snapshot.banners.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, ["workspace.version"]);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "file untouched");
+        assert_eq!(rx.iter().take(3).count(), 3, "each in-memory change is announced");
     }
 
     #[test]

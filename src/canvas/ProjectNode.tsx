@@ -1,22 +1,54 @@
-import { memo } from "react";
+import { memo, type MouseEvent as ReactMouseEvent } from "react";
 import type { NodeProps } from "@xyflow/react";
-import { LIVE_SESSIONS, aheadBehind, shortenPath, statusLine, type ProjectFlowNode } from "./nodes";
+import { runCommand } from "../commands/registry";
+import { useUiStore } from "../state/ui";
+import { LIVE_SESSIONS, aheadBehind, chevronCommandId, shortenPath, statusLine, type ProjectFlowNode } from "./nodes";
 
 /**
  * A project node: a compact card with the folder name, a shortened path (full path on
  * hover), the git line (`branch · N changed`, or why there is none), `↑n ↓m` when the
  * upstream differs, a live-session badge (hidden at 0; wired in Epic 3) and, for git repos
- * only, a "branches" affordance that does nothing until Epic 5. Inert otherwise: dragging,
- * selection and the context menu arrive in 2.3/2.4.
+ * only, a "branches" affordance that does nothing until Epic 5. When the project has
+ * children, a chevron (with the count while collapsed) selects the card and runs
+ * `project.expand` / `project.collapse`. Dragging, selection and the right-click menu are
+ * the canvas's; the selected card shows an outline in `--fg`.
  */
 export const ProjectNode = memo(function ProjectNode({ data }: NodeProps<ProjectFlowNode>) {
-  const { project, status, flashed } = data;
+  const { project, status, flashed, selected, childCount } = data;
   const line = statusLine(status);
   const divergence = aheadBehind(status);
   const isRepo = status?.kind === "repo";
+
+  const toggle = (event: ReactMouseEvent) => {
+    // The card's own click handler (xyflow → `onNodeClick`) would select too; one is enough.
+    event.stopPropagation();
+    useUiStore.getState().select({ kind: "project", id: project.id });
+    runCommand(chevronCommandId(project));
+  };
+
   return (
-    <div className={"project-node" + (flashed ? " is-flash" : "")} role="group" aria-label={`Project ${project.label}`}>
+    <div
+      className={"project-node" + (flashed ? " is-flash" : "") + (selected ? " is-selected" : "")}
+      role="group"
+      aria-label={`Project ${project.label}`}
+    >
       <div className="project-node-head">
+        {childCount > 0 && (
+          // `nodrag`: a press on the chevron never starts a drag of the card.
+          <button
+            type="button"
+            className="project-node-toggle nodrag"
+            aria-expanded={project.expanded}
+            aria-label={project.expanded ? "Collapse children" : `Expand ${childCount} children`}
+            title={project.expanded ? "Collapse" : "Expand"}
+            onClick={toggle}
+          >
+            <span className="project-node-chevron" aria-hidden="true">
+              {project.expanded ? "▾" : "▸"}
+            </span>
+            {!project.expanded && <span className="project-node-badge">{childCount}</span>}
+          </button>
+        )}
         <span className="project-node-label">{project.label}</span>
         {LIVE_SESSIONS > 0 && (
           <span className="project-node-live" title="live sessions">

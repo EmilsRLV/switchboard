@@ -9,7 +9,8 @@ text editor.
 Status: **Epic 2 in progress**. The Tauri 2 shell (Rust core, React 19 + TypeScript + Vite UI) builds
 and tests on Windows and Linux (CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). The home
 surface is an infinite canvas whose viewport persists, holding one card per project folder with its git
-state; expand/collapse, dragging, keyboard navigation and project actions come next.
+state; cards expand into a column of children, every node drags and remembers where it was put, and a
+right-click menu holds the first project actions; keyboard navigation and the rest of the actions come next.
 
 ## Plans
 
@@ -68,13 +69,16 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | `ctrl+,` | Open (toggle) the settings pane. |
 | `ctrl+0` | Fit view: fit every node into the canvas; with no nodes, back to the home viewport (`x 0, y 0, zoom 1`). |
 | `ctrl+q` | Quit. |
-| Esc | Closes the palette if it is open, else the open pane (settings or import). With both open, the first Esc closes the palette, the second the pane. |
+| Esc | One step back, in this order: closes the node context menu, else the palette, else the open pane (settings or import), else clears the selected node. With all of them open, four presses. |
 
-The palette lists eight commands: Toggle command palette, Add project folder…, Import from Claude…, Open
+The palette lists eleven commands: Toggle command palette, Add project folder…, Import from Claude…, Open
 settings, Reveal settings file (only when the file's location is known), Re-detect binaries (not while one
-runs), Fit view (once the canvas has mounted; the two project commands need it too) and Quit; the key-only
-carriers (the `ctrl+,` toggle and the two Esc commands) are registered but hidden from the list; both panes'
-Close buttons run the Esc command (`pane.close`). Keybindings are not editable yet (Epic 9).
+runs), Fit view (once the canvas has mounted; the two project commands need it too), Quit, and, while a
+project card is selected, Re-layout children plus exactly one of Expand project / Collapse project (neither
+for a project without children). The key-only carriers (the `ctrl+,` toggle and the four Esc commands) are
+registered but hidden from the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron
+on a card runs Expand/Collapse, and the context menu lists the commands tagged for it. Keybindings are not
+editable yet (Epic 9).
 
 The app is **single-instance** (`tauri-plugin-single-instance`): launching it again focuses and
 un-minimises the running window and the second process exits. Its arguments are ignored (printed to stderr
@@ -117,8 +121,39 @@ ticked folders and closes the pane; Esc closes it. The app only ever **reads** `
 
 Adding a folder that is already on the canvas adds nothing: the existing node is outlined for 1.5 s.
 Dropping a file (not a folder) does nothing. A folder is identified by its canonical path (case-insensitive
-on Windows), so `B:\projects\ide\` and `b:\PROJECTS\ide` are the same project. Nodes cannot be moved, removed
-or renamed yet (Stories 2.3/2.4).
+on Windows), so `B:\projects\ide\` and `b:\PROJECTS\ide` are the same project. Nodes cannot be removed or
+renamed yet (Story 2.4).
+
+### Selecting, dragging, expanding
+
+A **left click** on a card selects it (a 1-px outline in the text colour; never the accent); a click on empty
+canvas or Esc clears it. **Drag** any node with the left button to move it; a press that travels less than
+4 px is a click and writes nothing, a real drag writes the position once, on release. A **right-button**
+drag still pans from empty canvas, but not when it starts on a card (xyflow reserves presses on draggable
+nodes); the middle button and Space+drag pan from anywhere, cards included. A right-button
+press-and-release on a project card (again within 4 px) opens its **context menu** at the pointer, kept
+inside the window: Expand project or Collapse project (whichever
+applies, only when the project has children) and Re-layout children. `↑`/`↓` move, Enter or a click runs,
+Esc, a click elsewhere or losing focus closes. Child cards have no menu yet.
+
+A project with children shows a **chevron** on its card: `▸ 3` while collapsed (the count is the badge),
+`▾` while expanded. Clicking it, or running Expand/Collapse from the menu or palette, toggles the project
+and persists `expanded`. Expanded, the children appear in a **column** under the card: 16 px in from the
+card's left edge, the first 12 px under it (the card is 240 × 80, so the first child's top-left is at
+`(16, 92)` relative to the card), each child 208 × 40 with 8 px gaps, in a stable order (sessions in list
+order, then branches). Children move with their parent. A child **dragged** out of the column keeps that
+spot, relative to the parent, across restarts; **Re-layout children** returns every child of that project
+to its slot.
+
+Children are derived by Rust from `sessions` and `branches` and carried on the snapshot as a flat
+type-independent list (`children: [{ id, projectId, kind: session|branch, label, detail, position }]`,
+`position: null` for a child in its slot). Until Epics 3 and 5 bring real sessions and branches there are
+none, so the layout can be tried with **stub children**: set `SWITCHBOARD_STUB_CHILDREN=n` (0–50, read once at
+startup) and every project gets `n` session stubs (`session 1`…`session n`, detail `stub`). A value above 50 is
+clamped to 50; a blank, non-numeric or negative value means 0. Launch again without the variable and the stubs
+are gone, while a project's persisted `expanded: true` lingers harmlessly (no chevron, nothing to show) until
+real children arrive. Stubs themselves are never written to the file; dragging one stores a `sessions[]` entry
+holding just its id, project and position, and Re-layout removes such an entry again when nothing else is in it.
 
 ### The project card
 
@@ -153,14 +188,18 @@ What the canvas shows is persisted in one app-written JSON file beside `settings
 | Linux | `$XDG_CONFIG_HOME/switchboard/workspace.json` (default `~/.config/switchboard/workspace.json`) |
 
 The file is written on first launch, when it does not exist (`version: 1`, the home viewport, empty
-`projects`, `branches`, `sessions`, `edges` and null launch `defaults`), when a project is added, and
-atomically (temp file + rename) at the end of every pan or zoom that moved the viewport by more than 0.5 px
-or 0.001 zoom, so a relaunch opens exactly where you left off with the same nodes at the same positions.
-Loading an existing file never rewrites it. Each project is `{ id (UUID v4), path (canonical), label,
-position, expanded, color, launchDefaults }`; `branches`, `sessions` and `edges` are reserved for later
-stories. Rust owns the file: the UI never writes it, it mirrors Rust's snapshot (`workspace_get`, then every
-`workspace://changed` event) just as it does for settings, and every snapshot carries a revision so a reply that
-arrives after a newer one is dropped. A stored zoom is clamped to the canvas limits.
+`projects`, `branches`, `sessions`, `edges` and null launch `defaults`), when a project is added, expanded,
+collapsed or re-laid-out, at the end of every node drag, and atomically (temp file + rename) at the end of
+every pan or zoom that moved the viewport by more than 0.5 px or 0.001 zoom, so a relaunch opens exactly
+where you left off with the same nodes at the same positions. Loading an existing file never rewrites it.
+Each project is `{ id (UUID v4), path (canonical), label, position, expanded, color, launchDefaults }`;
+`sessions[]` holds `{ sessionId, projectId, branchId, label, pinned, position }` (a child's `position` is
+relative to its parent card and `null` in its slot), `branches[].position` likewise; `edges` is reserved
+for Epic 6. A `sessions[]` entry whose session is no longer a child (a stub from a higher count, a
+hand-edited id) is kept verbatim and never pruned by this story; only Re-layout touches refs, and only
+those of the project it was run on. Rust owns the file: the UI never writes it, it mirrors Rust's snapshot (`workspace_get`, then
+every `workspace://changed` event) just as it does for settings, and every snapshot carries a revision so a
+reply that arrives after a newer one is dropped. A stored zoom is clamped to the canvas limits.
 
 The file is not meant for hand editing and is not watched, but it is read tolerantly: missing keys take
 their defaults, unknown keys are ignored, a UTF-8 BOM is fine, an older `version` is upgraded silently, a
@@ -175,6 +214,7 @@ banners, never a crash:
 | workspace.json had N projects with an empty or duplicate id | Hand-edited `projects` | Those entries are dropped (the first of a duplicate is kept); the rest load. |
 | cannot write workspace: … | The write failed (no config dir, permissions) | The change lives in memory; the next write is tried again. |
 | project add failed: … | Adding a folder failed (picker, IPC) | Nothing added; the banner clears on the next successful add. |
+| node move failed / expand failed / collapse failed / re-layout failed: … | Rust rejected the change (an id it does not know, no runtime) | Nothing changes; a dropped node goes back to its stored position; the banner clears on the next successful change. |
 
 ## Settings
 

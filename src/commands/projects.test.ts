@@ -47,6 +47,7 @@ function snapshot(projects: Project[]): WorkspaceSnapshot {
     },
     banners: [],
     revision,
+    children: [],
   };
 }
 

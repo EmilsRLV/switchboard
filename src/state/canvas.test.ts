@@ -26,7 +26,42 @@ function fakeInstance(nodeCount: number): CanvasInstance & {
 
 describe("canvas store", () => {
   beforeEach(() => {
-    useCanvasStore.setState({ instance: null, element: null });
+    useCanvasStore.setState({ instance: null, element: null, dragging: {} });
+  });
+
+  it("starts with no drag overrides", () => {
+    expect(useCanvasStore.getState().dragging).toEqual({});
+  });
+
+  it("setDragPosition records (a copy of) each dragged node's position by flow id; clearDrag forgets one", () => {
+    const s = useCanvasStore.getState();
+    const position = { x: 130, y: 20 };
+    s.setDragPosition("a", position);
+    s.setDragPosition("session:stub-2-a", { x: 5, y: 5 });
+    s.setDragPosition("a", { x: 131, y: 20 });
+    expect(useCanvasStore.getState().dragging).toEqual({ a: { x: 131, y: 20 }, "session:stub-2-a": { x: 5, y: 5 } });
+    expect(useCanvasStore.getState().dragging.a).not.toBe(position);
+    s.clearDrag("a");
+    expect(useCanvasStore.getState().dragging).toEqual({ "session:stub-2-a": { x: 5, y: 5 } });
+    s.clearDrag("session:stub-2-a");
+    expect(useCanvasStore.getState().dragging).toEqual({});
+  });
+
+  it("dragging is reference-stable while nothing is dragged and when clearing an unknown id", () => {
+    const s = useCanvasStore.getState();
+    s.setDragPosition("a", { x: 1, y: 1 });
+    s.clearDrag("a");
+    const empty = useCanvasStore.getState().dragging;
+    s.setDragPosition("b", { x: 1, y: 1 });
+    s.clearDrag("b");
+    expect(useCanvasStore.getState().dragging).toBe(empty);
+    const before = useCanvasStore.getState().dragging;
+    s.clearDrag("nope");
+    expect(useCanvasStore.getState().dragging).toBe(before);
+    s.setDragPosition("c", { x: 2, y: 2 });
+    const withC = useCanvasStore.getState().dragging;
+    s.clearDrag("nope");
+    expect(useCanvasStore.getState().dragging).toBe(withC);
   });
 
   it("is not ready until an instance is set, and not after it is cleared", () => {

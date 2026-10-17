@@ -23,6 +23,7 @@ const snapshot: WorkspaceSnapshot = {
   },
   banners: [{ id: "workspace.version", text: "workspace.json is version 2; this build understands 1" }],
   revision: 5,
+  children: [],
 };
 
 describe("workspace store", () => {

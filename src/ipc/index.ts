@@ -128,6 +128,29 @@ export type Workspace = {
   defaults: LaunchDefaults;
 };
 
+/** Mirrors `graph::ChildKind`. */
+export type ChildKind = "session" | "branch";
+
+/**
+ * Mirrors `graph::ChildNode`: a child of a project as the canvas lays it out, derived by Rust
+ * from `sessions` and `branches` (or the stub source). `position` is relative to the parent
+ * card's top-left and `null` while the child sits in its column slot.
+ */
+export type ChildNode = {
+  id: string;
+  projectId: string;
+  kind: ChildKind;
+  label: string;
+  detail: string | null;
+  position: Position | null;
+};
+
+/** Mirrors `graph::NodeKind`: the node types a position can be written for. */
+export type NodeKind = "project" | "session" | "branch";
+
+/** Mirrors `graph::NodeTarget`: a node named by kind and id. */
+export type NodeTarget = { kind: NodeKind; id: string };
+
 /** Mirrors `graph::WorkspaceSnapshot`: what `workspace_get` returns and `workspace://changed` carries. */
 export type WorkspaceSnapshot = {
   /** Absolute path of `workspace.json`; `null` when no config dir could be determined. */
@@ -136,6 +159,8 @@ export type WorkspaceSnapshot = {
   banners: Banner[];
   /** Mutation counter for this session; a reply older than the stored snapshot is dropped. */
   revision: number;
+  /** Every project's children, collapsed ones too, in layout order. */
+  children: ChildNode[];
 };
 
 /** Event name Rust emits with a fresh `WorkspaceSnapshot` on every change. */
@@ -207,6 +232,9 @@ type Commands = {
   workspace_set_viewport: WorkspaceSnapshot;
   project_pick_folder: string | null;
   workspace_add_projects: AddProjectsResult;
+  workspace_set_expanded: WorkspaceSnapshot;
+  workspace_move_node: WorkspaceSnapshot;
+  workspace_relayout_children: WorkspaceSnapshot;
   claude_projects_list: ClaudeProject[];
   projects_status_get: ProjectStatusMap;
   app_quit: void;
@@ -290,6 +318,30 @@ export function projectPickFolder(): Promise<string | null> {
  */
 export function workspaceAddProjects(paths: string[], position: Position): Promise<AddProjectsResult> {
   return call("workspace_add_projects", { paths, position });
+}
+
+/**
+ * `ipc::workspace_set_expanded` -- expand or collapse a project. Rust persists `expanded`
+ * and emits `workspace://changed`; rejects with `"unknown project"`.
+ */
+export function workspaceSetExpanded(projectId: string, expanded: boolean): Promise<WorkspaceSnapshot> {
+  return call("workspace_set_expanded", { projectId, expanded });
+}
+
+/**
+ * `ipc::workspace_move_node` -- store where a node was dropped: absolute for a project,
+ * relative to the parent card for a child. Rejects for a non-finite position or an unknown node.
+ */
+export function workspaceMoveNode(target: NodeTarget, position: Position): Promise<WorkspaceSnapshot> {
+  return call("workspace_move_node", { target, position });
+}
+
+/**
+ * `ipc::workspace_relayout_children` -- put a project's children back into their column
+ * (clears stored child positions, prunes bare session refs). Rejects with `"unknown project"`.
+ */
+export function workspaceRelayoutChildren(projectId: string): Promise<WorkspaceSnapshot> {
+  return call("workspace_relayout_children", { projectId });
 }
 
 /** `ipc::claude_projects_list` -- Claude Code's known projects (read-only), newest first. */

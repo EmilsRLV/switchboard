@@ -8,7 +8,7 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::claude::{self, ClaudeProject};
 use crate::git::{self, ProjectStatus};
-use crate::graph::{self, AddProjectsResult, Position, Viewport, WorkspaceSnapshot};
+use crate::graph::{self, AddProjectsResult, NodeTarget, Position, Viewport, WorkspaceSnapshot};
 use crate::settings::{self, AppState, Snapshot};
 
 /// Identity of the running app, as the Cargo package declares it.
@@ -124,6 +124,38 @@ pub async fn workspace_add_projects<R: Runtime>(
         });
     }
     Ok(result)
+}
+
+/// Expand or collapse a project (`project.expand` / `project.collapse`). Rust stores
+/// `expanded`, writes `workspace.json` and emits `workspace://changed`; replies with the
+/// snapshot, or `Err("unknown project")`.
+#[tauri::command]
+pub async fn workspace_set_expanded<R: Runtime>(
+    app: AppHandle<R>,
+    project_id: String,
+    expanded: bool,
+) -> Result<WorkspaceSnapshot, String> {
+    graph::set_expanded(&app, &project_id, expanded)
+}
+
+/// Store where a node was dropped (end of a drag). A project's position is absolute, a
+/// child's relative to its parent card. Replies with the snapshot, or an `Err` for a
+/// non-finite position or an unknown node.
+#[tauri::command]
+pub async fn workspace_move_node<R: Runtime>(
+    app: AppHandle<R>,
+    target: NodeTarget,
+    position: Position,
+) -> Result<WorkspaceSnapshot, String> {
+    graph::move_node(&app, &target, position)
+}
+
+/// Put a project's children back into their column (`project.relayout`): clears their
+/// stored positions and prunes session refs left bare. Replies with the snapshot, or
+/// `Err("unknown project")`.
+#[tauri::command]
+pub async fn workspace_relayout_children<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<WorkspaceSnapshot, String> {
+    graph::relayout_children(&app, &project_id)
 }
 
 /// List Claude Code's known projects (`~/.claude/projects`, read-only) for "Import from

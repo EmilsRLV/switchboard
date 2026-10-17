@@ -8,6 +8,9 @@ import {
   projectsStatusGet,
   workspaceAddProjects,
   workspaceGet,
+  workspaceMoveNode,
+  workspaceRelayoutChildren,
+  workspaceSetExpanded,
   workspaceSetViewport,
   type WorkspaceSnapshot,
 } from "./index";
@@ -58,7 +61,21 @@ describe("workspace command wrappers", () => {
     },
     banners: [],
     revision: 0,
+    children: [],
   };
+
+  it("the 2.3 wrappers invoke their wire names with camelCase arguments", async () => {
+    const invoke = vi.fn().mockResolvedValue(snapshot);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await expect(workspaceSetExpanded("p1", true)).resolves.toBe(snapshot);
+    expect(invoke).toHaveBeenCalledWith("workspace_set_expanded", { projectId: "p1", expanded: true }, undefined);
+    const target = { kind: "session", id: "stub-2-p1" } as const;
+    const position = { x: 260, y: 40 };
+    await expect(workspaceMoveNode(target, position)).resolves.toBe(snapshot);
+    expect(invoke).toHaveBeenCalledWith("workspace_move_node", { target, position }, undefined);
+    await expect(workspaceRelayoutChildren("p1")).resolves.toBe(snapshot);
+    expect(invoke).toHaveBeenCalledWith("workspace_relayout_children", { projectId: "p1" }, undefined);
+  });
 
   it("workspaceSetViewport invokes workspace_set_viewport with a { viewport } argument", async () => {
     // `@tauri-apps/api/core`'s `invoke(cmd, args = {}, options)` forwards to this.

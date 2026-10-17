@@ -22,6 +22,8 @@ export type Command = {
   when?: () => boolean;
   /** Key-only carrier: the dispatcher sees it, the palette never lists it. */
   hidden?: boolean;
+  /** Also listed in a context menu: `"node"` is the menu of a right-clicked node. */
+  menu?: "node";
   /** The action. A returned promise is awaited only to log a rejection. */
   run: () => void | Promise<void>;
 };

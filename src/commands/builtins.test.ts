@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Position, SettingsSnapshot, Viewport } from "../ipc";
+import type { ChildNode, Position, Project, SettingsSnapshot, Viewport, WorkspaceSnapshot } from "../ipc";
 import { useCanvasStore, type CanvasInstance } from "../state/canvas";
 import { useImportStore } from "../state/import";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
 import { useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
+import { chevronCommandId } from "../canvas/nodes";
 import { builtinCommands, registerBuiltins } from "./builtins";
 import { handleKeydown, type KeyEventLike } from "./keybindings";
+import { nodeMenuCommands } from "./nodes";
 import { clearCommands, getCommand, listCommands, runCommand } from "./registry";
 
 function key(k: string, mods: Partial<KeyEventLike> = {}): KeyEventLike {
@@ -29,9 +31,9 @@ describe("built-in commands", () => {
     useWorkspaceStore.setState({ snapshot: null, loadError: null });
     usePaletteStore.setState({ isOpen: false, query: "", selected: 0 });
     useSettingsStore.setState({ snapshot: null, loadError: null, actionBusy: false, actionError: null });
-    useUiStore.setState({ pane: null, flashed: [] });
+    useUiStore.setState({ pane: null, flashed: [], selection: null, contextMenu: null });
     useImportStore.getState().reset();
-    useCanvasStore.setState({ instance: null, element: null });
+    useCanvasStore.setState({ instance: null, element: null, dragging: {} });
     registerBuiltins();
   });
   afterEach(() => clearCommands());
@@ -41,16 +43,21 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the eleven commands with the spec's keybindings", () => {
+  it("register the sixteen commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "app.quit",
       "binaries.redetect",
       "canvas.fitView",
+      "contextMenu.close",
       "palette.close",
       "palette.toggle",
       "pane.close",
       "project.add",
+      "project.collapse",
+      "project.expand",
       "project.import",
+      "project.relayout",
+      "selection.clear",
       "settings.open",
       "settings.reveal",
       "settings.toggle",
@@ -64,24 +71,139 @@ describe("built-in commands", () => {
     expect(getCommand("project.import")?.keybinding).toBeUndefined();
     expect(getCommand("palette.close")?.keybinding).toBe("escape");
     expect(getCommand("pane.close")?.keybinding).toBe("escape");
+    expect(getCommand("contextMenu.close")?.keybinding).toBe("escape");
+    expect(getCommand("selection.clear")?.keybinding).toBe("escape");
+    expect(getCommand("project.expand")?.keybinding).toBeUndefined();
+    expect(getCommand("project.collapse")?.keybinding).toBeUndefined();
+    expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the eight actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the eleven actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "app.quit",
       "binaries.redetect",
       "canvas.fitView",
       "palette.toggle",
       "project.add",
+      "project.collapse",
+      "project.expand",
       "project.import",
+      "project.relayout",
       "settings.open",
       "settings.reveal",
     ]);
   });
 
+  it("exactly the three project commands are tagged for the node menu, and the menu lists none without a selection", () => {
+    expect(
+      listCommands()
+        .filter((c) => c.menu === "node")
+        .map((c) => c.id)
+        .sort(),
+    ).toEqual(["project.collapse", "project.expand", "project.relayout"]);
+    expect(nodeMenuCommands()).toEqual([]);
+  });
+
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(11);
+    expect(listCommands()).toHaveLength(16);
+  });
+
+  it("the project commands are hidden and inert with nothing selected, and with a child selected", () => {
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(false)], stubs(3)) });
+    for (const id of ["project.expand", "project.collapse", "project.relayout"]) {
+      expect(listCommands({ enabledOnly: true }).map((c) => c.id)).not.toContain(id);
+      expect(runCommand(id)).toBe(false);
+    }
+    useUiStore.getState().select({ kind: "session", id: "stub-1-ide" });
+    expect(listCommands({ enabledOnly: true }).map((c) => c.id)).not.toContain("project.relayout");
+  });
+
+  it("with a project selected the palette lists exactly one of Expand/Collapse plus Re-layout children", () => {
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(false)], stubs(3)) });
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    const titles = () => listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title);
+    expect(titles()).toContain("Expand project");
+    expect(titles()).not.toContain("Collapse project");
+    expect(titles()).toContain("Re-layout children");
+    expect(nodeMenuCommands().map((c) => c.title)).toEqual(["Expand project", "Re-layout children"]);
+
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(true)], stubs(3)) });
+    expect(titles()).toContain("Collapse project");
+    expect(titles()).not.toContain("Expand project");
+    expect(titles()).toContain("Re-layout children");
+    expect(nodeMenuCommands().map((c) => c.title)).toEqual(["Collapse project", "Re-layout children"]);
+  });
+
+  it("the chevron's command is the one of the pair that is enabled for the card's state", async () => {
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(false)], stubs(3)) });
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    expect(runCommand(chevronCommandId(ideProject(false)))).toBe(true);
+    expect(runCommand(chevronCommandId(ideProject(true)))).toBe(false);
+    await flush();
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(true)], stubs(3)) });
+    expect(runCommand(chevronCommandId(ideProject(true)))).toBe(true);
+    expect(runCommand(chevronCommandId(ideProject(false)))).toBe(false);
+    await flush();
+  });
+
+  it("a project without children has neither Expand nor Collapse", () => {
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(false), ideProject(true, "other")], stubs(3, "other")) });
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    const enabled = () => listCommands({ enabledOnly: true }).map((c) => c.id);
+    expect(enabled()).not.toContain("project.expand");
+    expect(enabled()).not.toContain("project.collapse");
+    expect(enabled()).toContain("project.relayout");
+    useUiStore.getState().select({ kind: "project", id: "other" });
+    expect(enabled()).toContain("project.collapse");
+  });
+
+  it("Expand, Collapse and Re-layout reach their wire names for the selected project (and fail there without a runtime)", async () => {
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(false)], stubs(3)) });
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    expect(runCommand("project.expand")).toBe(true);
+    await flush();
+    expect(useWorkspaceStore.getState().loadError).toMatch(/expand failed: .*cannot invoke "workspace_set_expanded"/);
+    expect(runCommand("project.relayout")).toBe(true);
+    await flush();
+    expect(useWorkspaceStore.getState().loadError).toMatch(/re-layout failed: .*cannot invoke "workspace_relayout_children"/);
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(true)], stubs(3)) });
+    expect(runCommand("project.collapse")).toBe(true);
+    await flush();
+    expect(useWorkspaceStore.getState().loadError).toMatch(/collapse failed: .*cannot invoke "workspace_set_expanded"/);
+  });
+
+  it("Esc closes the menu, then the palette, then the pane, then clears the selection, then nothing", () => {
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    useUiStore.getState().openPane("settings");
+    usePaletteStore.getState().open();
+    useUiStore.getState().openContextMenu({ x: 1, y: 1 });
+
+    const enabledEsc = () =>
+      listCommands({ enabledOnly: true })
+        .filter((c) => c.keybinding === "escape")
+        .map((c) => c.id);
+    expect(enabledEsc()).toEqual(["contextMenu.close"]);
+    expect(handleKeydown(key("Escape"))).toBe(true);
+    expect(useUiStore.getState().contextMenu).toBeNull();
+    expect(usePaletteStore.getState().isOpen).toBe(true);
+
+    expect(enabledEsc()).toEqual(["palette.close"]);
+    expect(handleKeydown(key("Escape"))).toBe(true);
+    expect(usePaletteStore.getState().isOpen).toBe(false);
+    expect(useUiStore.getState().pane).toBe("settings");
+
+    expect(enabledEsc()).toEqual(["pane.close"]);
+    expect(handleKeydown(key("Escape"))).toBe(true);
+    expect(useUiStore.getState().pane).toBeNull();
+    expect(useUiStore.getState().selection).toEqual({ kind: "project", id: "ide" });
+
+    expect(enabledEsc()).toEqual(["selection.clear"]);
+    expect(handleKeydown(key("Escape"))).toBe(true);
+    expect(useUiStore.getState().selection).toBeNull();
+
+    expect(enabledEsc()).toEqual([]);
+    expect(handleKeydown(key("Escape"))).toBe(false);
   });
 
   it("Fit view, Add project folder and Import from Claude are hidden and inert until the canvas has mounted", () => {
@@ -275,6 +397,39 @@ describe("built-in commands", () => {
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 8; i += 1) await Promise.resolve();
+}
+
+function ideProject(expanded: boolean, id = "ide"): Project {
+  return { id, path: `/p/${id}`, label: id, position: { x: 0, y: 0 }, expanded, color: null, launchDefaults: null };
+}
+
+function stubs(count: number, projectId = "ide"): ChildNode[] {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `stub-${i + 1}-${projectId}`,
+    projectId,
+    kind: "session" as const,
+    label: `session ${i + 1}`,
+    detail: "stub",
+    position: null,
+  }));
+}
+
+function workspaceWith(projects: Project[], children: ChildNode[]): WorkspaceSnapshot {
+  return {
+    path: null,
+    workspace: {
+      version: 1,
+      viewport: { x: 0, y: 0, zoom: 1 },
+      projects,
+      branches: [],
+      sessions: [],
+      edges: [],
+      defaults: { model: null, effort: null, permissionMode: null },
+    },
+    banners: [],
+    revision: 1,
+    children,
+  };
 }
 
 function fakeCanvas(): CanvasInstance & { setViewport: ReturnType<typeof vi.fn>; fitView: ReturnType<typeof vi.fn> } {

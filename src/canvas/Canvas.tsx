@@ -1,29 +1,52 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, type PointerEvent as ReactPointerEvent } from "react";
 import {
   Background,
   BackgroundVariant,
   ReactFlow,
   ReactFlowProvider,
+  type NodeMouseHandler,
   type NodeTypes,
+  type OnNodeDrag,
+  type OnNodesChange,
   type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
+import { moveNode, openContextMenuFor } from "../commands/nodes";
 import { dropProjects } from "../commands/projects";
-import { hasTauriRuntime, onFileDrop, workspaceSetViewport, type Position, type Project, type Viewport } from "../ipc";
+import {
+  hasTauriRuntime,
+  onFileDrop,
+  workspaceSetViewport,
+  type ChildNode,
+  type Position,
+  type Project,
+  type Viewport,
+} from "../ipc";
 import { HOME_VIEWPORT, clientToFlow, useCanvasStore, type CanvasElement } from "../state/canvas";
 import { useStatusStore } from "../state/status";
 import { useUiStore } from "../state/ui";
 import { persistViewport, useWorkspaceStore } from "../state/workspace";
+import { BranchNode, SessionNode } from "./ChildNode";
 import { MAX_ZOOM, MIN_ZOOM } from "./limits";
-import { physicalToClient, toFlowNodes, type ProjectFlowNode } from "./nodes";
+import {
+  DRAG_THRESHOLD,
+  dropTarget,
+  parseFlowId,
+  physicalToClient,
+  rightClickTarget,
+  toFlowNodes,
+  type CanvasFlowNode,
+  type RightPress,
+} from "./nodes";
 import { ProjectNode } from "./ProjectNode";
 import "./canvas.css";
 import "./nodes.css";
 
 // Stable collections: a fresh `[]` / `{}` per render would make xyflow diff every time.
 const NO_PROJECTS: readonly Project[] = [];
+const NO_CHILDREN: readonly ChildNode[] = [];
 const NO_EDGES: never[] = [];
-const NODE_TYPES: NodeTypes = { project: ProjectNode };
+const NODE_TYPES: NodeTypes = { project: ProjectNode, session: SessionNode, branch: BranchNode };
 
 /** Pan with the middle (1) or right (2) button; the left button pans only while Space is held. */
 const PAN_BUTTONS = [1, 2];
@@ -31,11 +54,13 @@ const DOT_GAP = 24;
 const DOT_SIZE = 1;
 
 /**
- * The home surface: an infinite canvas with a dot grid holding one card per project. Pan
- * with middle/right drag or Space + left drag, zoom with the wheel, `ctrl+0` fits the view.
- * The viewport is restored from the workspace snapshot and written back at the end of every
- * gesture that moved it. Projects come from Rust's snapshot (`ctrl+o`, a folder dropped from
- * the OS, or Import from Claude); their git lines from the status store.
+ * The home surface: an infinite canvas with a dot grid holding one card per project and,
+ * under an expanded project, a column of its children. Pan with middle/right drag or Space +
+ * left drag, zoom with the wheel, `ctrl+0` fits the view. Drag any node to move it (a child
+ * moves with its parent); click to select; right-click a project card for its menu. The
+ * viewport and every position come from Rust's snapshot and go back to it at the end of each
+ * gesture. Projects come from Rust's snapshot (`ctrl+o`, a folder dropped from the OS, or
+ * Import from Claude); their git lines from the status store.
  */
 export function Canvas() {
   const snapshot = useWorkspaceStore((s) => s.snapshot);
@@ -52,8 +77,16 @@ export function Canvas() {
 
   return (
     // A stable callback ref: the store always holds the element that is actually mounted,
-    // and React does not re-register it on every render.
-    <div className="canvas" ref={setCanvasElement}>
+    // and React does not re-register it on every render. The pointer handlers are the
+    // right-click guard (see `rightPress`); `contextmenu` itself is only ever suppressed, so
+    // the webview's native menu never shows.
+    <div
+      className="canvas"
+      ref={setCanvasElement}
+      onPointerDownCapture={onPointerDownCapture}
+      onPointerUpCapture={onPointerUpCapture}
+      onContextMenu={suppress}
+    >
       <ReactFlowProvider>
         <Flow initialViewport={workspace?.viewport ?? HOME_VIEWPORT} />
       </ReactFlowProvider>
@@ -68,6 +101,41 @@ export function Canvas() {
 
 function setCanvasElement(element: HTMLDivElement | null): void {
   useCanvasStore.getState().setElement(element);
+}
+
+function suppress(event: { preventDefault(): void }): void {
+  event.preventDefault();
+}
+
+/**
+ * The right-click guard. A right button press is a pan (xyflow pans on button 2) or a
+ * context-menu request; which one is known only at release (`rightClickTarget`): moved at
+ * most `DRAG_THRESHOLD` since the press on a node, it selects the node and, for a project
+ * card, opens its menu (child cards have no menu yet). Deciding at release also works where
+ * the webview fires `contextmenu` on press (webkit2gtk), which a `contextmenu`-driven menu
+ * would open at the start of every right-drag pan.
+ */
+let rightPress: RightPress | null = null;
+
+function onPointerDownCapture(event: ReactPointerEvent): void {
+  if (event.button !== 2) return;
+  rightPress = { x: event.clientX, y: event.clientY, flowId: nodeIdAt(event.target) };
+}
+
+function onPointerUpCapture(event: ReactPointerEvent): void {
+  if (event.button !== 2) return;
+  const release = { x: event.clientX, y: event.clientY };
+  const target = rightClickTarget(rightPress, release);
+  rightPress = null;
+  if (target === null) return;
+  if (target.kind === "project") openContextMenuFor(target, release);
+  else useUiStore.getState().select(target);
+}
+
+/** The flow id of the node wrapper containing `target`, if any (xyflow's `data-id`). */
+function nodeIdAt(target: EventTarget | null): string | null {
+  if (!(target instanceof Element)) return null;
+  return target.closest<HTMLElement>(".react-flow__node")?.dataset.id ?? null;
 }
 
 /**
@@ -87,9 +155,19 @@ function dropHitsCanvas(client: Position, canvas: CanvasElement | null): boolean
 
 function Flow({ initialViewport }: { initialViewport: Viewport }) {
   const projects = useWorkspaceStore((s) => s.snapshot?.workspace.projects ?? NO_PROJECTS);
+  const children = useWorkspaceStore((s) => s.snapshot?.children ?? NO_CHILDREN);
   const statuses = useStatusStore((s) => s.statuses);
   const flashed = useUiStore((s) => s.flashed);
-  const nodes = useMemo(() => toFlowNodes(projects, statuses, flashed), [projects, statuses, flashed]);
+  const selection = useUiStore((s) => s.selection);
+  const dragging = useCanvasStore((s) => s.dragging);
+
+  // The previous derivation, so unchanged nodes keep their identity (and skip re-rendering).
+  const previousRef = useRef<CanvasFlowNode[]>([]);
+  const nodes = useMemo(() => {
+    const next = toFlowNodes({ projects, statuses, flashed, children, selection, dragging }, previousRef.current);
+    previousRef.current = next;
+    return next;
+  }, [projects, statuses, flashed, children, selection, dragging]);
 
   // The viewport most recently sent to Rust, acknowledged or not: a gesture that ends where
   // an in-flight write is going is skipped; one that comes back to the stored viewport goes.
@@ -115,7 +193,44 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
     });
   }, []);
 
-  const onInit = useCallback((instance: ReactFlowInstance<ProjectFlowNode>) => {
+  // xyflow's node changes: only the positions of a drag in progress are taken, as transient
+  // overrides. Selection changes are never applied (selection is the ui store's), and
+  // dimension changes are xyflow's own bookkeeping.
+  const onNodesChange = useCallback<OnNodesChange<CanvasFlowNode>>((changes) => {
+    const canvas = useCanvasStore.getState();
+    for (const change of changes) {
+      if (change.type === "position" && change.position !== undefined) {
+        canvas.setDragPosition(change.id, change.position);
+      }
+    }
+  }, []);
+
+  // Dragging selects (and dismisses the menu); dropping writes the position once, where the
+  // override says the node is (xyflow's `node` may lag a frame behind the last change).
+  const onNodeDragStart = useCallback<OnNodeDrag<CanvasFlowNode>>((_event, node) => {
+    const ui = useUiStore.getState();
+    ui.closeContextMenu();
+    ui.select(parseFlowId(node.id));
+  }, []);
+
+  const onNodeDragStop = useCallback<OnNodeDrag<CanvasFlowNode>>((_event, node) => {
+    const [target, position] = dropTarget(node.id, useCanvasStore.getState().dragging, node.position);
+    void moveNode(target, position);
+  }, []);
+
+  const onNodeClick = useCallback<NodeMouseHandler<CanvasFlowNode>>((_event, node) => {
+    const ui = useUiStore.getState();
+    ui.closeContextMenu();
+    ui.select(parseFlowId(node.id));
+  }, []);
+
+  const onPaneClick = useCallback(() => {
+    const ui = useUiStore.getState();
+    ui.closeContextMenu();
+    ui.clearSelection();
+  }, []);
+
+  const onInit = useCallback((instance: ReactFlowInstance<CanvasFlowNode>) => {
     useCanvasStore.getState().setInstance(instance);
   }, []);
 
@@ -159,12 +274,19 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
       selectionKeyCode={null}
       multiSelectionKeyCode={null}
       deleteKeyCode={null}
-      nodesDraggable={false}
+      nodesDraggable
+      nodeDragThreshold={DRAG_THRESHOLD}
+      selectNodesOnDrag={false}
       nodesConnectable={false}
       nodesFocusable={false}
       elementsSelectable={false}
       onInit={onInit}
       onMoveEnd={onMoveEnd}
+      onNodesChange={onNodesChange}
+      onNodeDragStart={onNodeDragStart}
+      onNodeDragStop={onNodeDragStop}
+      onNodeClick={onNodeClick}
+      onPaneClick={onPaneClick}
     >
       <Background variant={BackgroundVariant.Dots} gap={DOT_GAP} size={DOT_SIZE} color="var(--border)" />
     </ReactFlow>

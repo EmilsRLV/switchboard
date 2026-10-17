@@ -1,5 +1,5 @@
-/* Project node cards. Tokens only; no accent (nothing here is an attention state yet). The
-   duplicate-add flash is an outline, as a selected node will be in 2.4. */
+/* Project and child node cards. Tokens only; no accent (nothing here is an attention state).
+   The duplicate-add flash and the selection are both outlines in --fg. */
 
 .project-node {
   width: 240px;
@@ -11,14 +11,31 @@
   flex-direction: column;
   gap: 0.2rem;
   font-size: 0.8rem;
-  cursor: default;
+  cursor: grab;
   user-select: none;
+}
+
+/* Nodes drag: the hand cursor on the card, closed while a drag is on (xyflow's class). */
+.react-flow__node.dragging .project-node,
+.react-flow__node.dragging .child-node {
+  cursor: grabbing;
+}
+
+.project-node.is-selected,
+.child-node.is-selected {
+  outline: 1px solid var(--fg);
+  outline-offset: 2px;
 }
 
 .project-node.is-flash {
   outline: 1px solid var(--fg);
   outline-offset: 2px;
   animation: node-flash 1.5s ease-out forwards;
+}
+
+/* Selected and flashing at once: the selection outline stays. */
+.project-node.is-flash.is-selected {
+  animation: none;
 }
 
 @keyframes node-flash {
@@ -43,7 +60,47 @@
   gap: 0.5rem;
 }
 
+.project-node-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1;
+  color: var(--fg-muted);
+  background: none;
+  border: none;
+  padding: 0 0.15rem;
+  margin-left: -0.15rem;
+  cursor: pointer;
+}
+
+.project-node-toggle:hover {
+  color: var(--fg);
+}
+
+.project-node-toggle:focus-visible {
+  outline: 1px solid var(--fg);
+  outline-offset: 1px;
+}
+
+.project-node-chevron {
+  display: inline-block;
+  width: 0.7em;
+}
+
+.project-node-badge {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 0.3rem;
+}
+
 .project-node-label {
+  flex: 1;
+  min-width: 0;
   font-size: 0.9rem;
   font-weight: 500;
   overflow: hidden;
@@ -97,4 +154,41 @@
   border-radius: 3px;
   padding: 0 0.35rem;
   cursor: default;
+}
+
+/* --- child cards (sessions, branches): one row of the column under the parent ---------- */
+
+.child-node {
+  box-sizing: border-box;
+  width: 208px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.6rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  cursor: grab;
+  user-select: none;
+}
+
+.child-node-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.child-node-detail {
+  flex: none;
+  max-width: 45%;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

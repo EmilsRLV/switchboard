@@ -27,6 +27,11 @@ export const useWorkspaceStore = create<WorkspaceState>()((set) => ({
   setLoadError: (loadError) => set({ loadError }),
 }));
 
+/** True when the snapshot lists at least one child for the project (the chevron's condition). */
+export function projectHasChildren(projectId: string): boolean {
+  return useWorkspaceStore.getState().snapshot?.children.some((child) => child.projectId === projectId) ?? false;
+}
+
 // A stable empty list so selectors return the same reference while there is nothing to show
 // (a fresh `[]` per call would make React's store subscription re-render forever).
 const NO_BANNERS: readonly Banner[] = Object.freeze([]);

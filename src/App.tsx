@@ -17,6 +17,7 @@ import { useUiStore } from "./state/ui";
 import { useWorkspaceStore } from "./state/workspace";
 import { Canvas } from "./canvas/Canvas";
 import { Banners } from "./components/Banners";
+import { ContextMenu } from "./components/ContextMenu";
 import { ImportPane } from "./components/ImportPane";
 import { Palette } from "./components/Palette";
 import { SettingsPane } from "./components/SettingsPane";
@@ -27,8 +28,9 @@ registerBuiltins();
 
 /**
  * The shell: banner strip on top, the canvas filling the rest, one pane (settings or import)
- * on the right when open, the command palette over everything when open. Every key goes
- * through the command registry's dispatcher (`useKeybindings`).
+ * on the right when open, the command palette over everything when open, the node context
+ * menu at the pointer when open. Every key goes through the command registry's dispatcher
+ * (`useKeybindings`).
  */
 export default function App() {
   const pane = useUiStore((s) => s.pane);
@@ -84,6 +86,7 @@ export default function App() {
         {pane === "settings" && <SettingsPane />}
         {pane === "import" && <ImportPane />}
         <Palette />
+        <ContextMenu />
       </div>
     </div>
   );
