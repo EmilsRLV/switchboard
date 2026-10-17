@@ -1,27 +1,51 @@
-import { memo } from "react";
+import { memo, useSyncExternalStore } from "react";
 import type { NodeProps } from "@xyflow/react";
 import type { ChildKind } from "../ipc";
-import type { BranchFlowNode, ChildNodeData, SessionFlowNode } from "./nodes";
+import {
+  moreLabel,
+  sessionHoverText,
+  sessionMetaLine,
+  type BranchFlowNode,
+  type ChildNodeData,
+  type MoreFlowNode,
+  type SessionFlowNode,
+} from "./nodes";
 
 /**
- * One child card (208 × 40): the label and a muted detail. `SessionNode` and `BranchNode`
- * are thin wrappers so xyflow has a type per child kind; Epics 3 and 5 fill them in. A child
- * has no menu yet; selection is an outline in `--fg`, never the accent.
+ * One child card (208 × 40). A discovered session shows two lines: its title, and a muted
+ * mono meta line `branch · N msgs · age` (the age recomputed each minute); the full title and
+ * exact times are on hover. Stubs and branches show the label and a muted detail on one row.
+ * `SessionNode` and `BranchNode` are thin wrappers so xyflow has a type per child kind. A
+ * child has no menu yet; selection is an outline in `--fg`, never the accent.
  */
 function ChildCard({ data, kind }: { data: ChildNodeData; kind: ChildKind }) {
   const { child, selected } = data;
+  const className = `child-node child-node-${kind}` + (selected ? " is-selected" : "");
+  const ariaLabel = `${kind === "session" ? "Session" : "Branch"} ${child.label}`;
+  if (child.session !== null) {
+    return <SessionCard className={className + " child-node-two-line"} ariaLabel={ariaLabel} data={data} />;
+  }
   return (
-    <div
-      className={`child-node child-node-${kind}` + (selected ? " is-selected" : "")}
-      role="group"
-      aria-label={`${kind === "session" ? "Session" : "Branch"} ${child.label}`}
-    >
+    <div className={className} role="group" aria-label={ariaLabel}>
       <span className="child-node-label">{child.label}</span>
       {child.detail !== null && (
         <span className="child-node-detail" title={child.detail}>
           {child.detail}
         </span>
       )}
+    </div>
+  );
+}
+
+function SessionCard({ className, ariaLabel, data }: { className: string; ariaLabel: string; data: ChildNodeData }) {
+  const now = useMinute();
+  const { child } = data;
+  const meta = child.session;
+  if (meta === null) return null;
+  return (
+    <div className={className} role="group" aria-label={ariaLabel} title={sessionHoverText(child.label, meta)}>
+      <span className="child-node-label">{child.label}</span>
+      <span className="child-node-meta">{sessionMetaLine(meta, now)}</span>
     </div>
   );
 }
@@ -33,3 +57,50 @@ export const SessionNode = memo(function SessionNode({ data }: NodeProps<Session
 export const BranchNode = memo(function BranchNode({ data }: NodeProps<BranchFlowNode>) {
   return <ChildCard data={data} kind="branch" />;
 });
+
+/**
+ * The row after the tenth child of a long column: `show all (N)`, or `show fewer` while the
+ * project shows everything. Clicking it (the canvas's `onNodeClick`) or Enter while it is
+ * selected toggles the project's `showAll`. Muted, no border; not draggable, no menu.
+ */
+export const MoreNode = memo(function MoreNode({ data }: NodeProps<MoreFlowNode>) {
+  return (
+    <div className={"more-node" + (data.selected ? " is-selected" : "")} role="button" aria-label={moreLabel(data.total, data.showingAll)}>
+      {moreLabel(data.total, data.showingAll)}
+    </div>
+  );
+});
+
+// --- the minute clock: one interval shared by every session card ---------------------------
+
+const MINUTE_MS = 60_000;
+const listeners = new Set<() => void>();
+let minuteNow = Date.now();
+let minuteTimer: ReturnType<typeof setInterval> | undefined;
+
+function subscribeMinute(listener: () => void): () => void {
+  listeners.add(listener);
+  if (minuteTimer === undefined) {
+    minuteNow = Date.now();
+    minuteTimer = setInterval(() => {
+      minuteNow = Date.now();
+      for (const notify of listeners) notify();
+    }, MINUTE_MS);
+  }
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0 && minuteTimer !== undefined) {
+      clearInterval(minuteTimer);
+      minuteTimer = undefined;
+    }
+  };
+}
+
+function minuteSnapshot(): number {
+  return minuteNow;
+}
+
+/** `Date.now()`, refreshed once a minute while any session card is mounted. */
+function useMinute(): number {
+  return useSyncExternalStore(subscribeMinute, minuteSnapshot);
+}

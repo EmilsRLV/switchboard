@@ -1,12 +1,14 @@
 // UI-only state that no snapshot from Rust carries: which pane (if any) slides in from the
 // right, which project nodes are being flashed (a duplicate add highlights the node that is
 // already there), which node is selected, where the context menu is open and the transient
-// notice in the banner strip. Panes are mutually exclusive: opening one closes the other.
+// notice in the banner strip, and which expanded projects show all their children. Panes
+// are mutually exclusive: opening one closes the other.
 // Selection is one node or none; xyflow never owns it (`elementsSelectable` is off), the
 // canvas writes it here on click and drag, the arrow commands on a key.
 
 import { create } from "zustand";
-import type { NodeTarget, Position, Project } from "../ipc";
+import type { CanvasTarget } from "../canvas/nodes";
+import type { Position, Project } from "../ipc";
 import { useWorkspaceStore } from "./workspace";
 
 export type Pane = "settings" | "import";
@@ -32,12 +34,17 @@ export type UiState = {
   pane: Pane | null;
   /** Project ids currently highlighted; reference-stable while unchanged. */
   flashed: readonly string[];
-  /** The selected node, or `null`; reference-stable while the same node stays selected. */
-  selection: NodeTarget | null;
+  /** The selected node (or `more` row), or `null`; reference-stable while it stays selected. */
+  selection: CanvasTarget | null;
   /** The open context menu's anchor, or `null` while closed. */
   contextMenu: MenuPoint | null;
   /** The notice showing, or `null`. */
   notice: Notice | null;
+  /**
+   * Project ids whose column shows every child rather than the first ten (`show all`). UI
+   * only, never persisted; reference-stable while unchanged.
+   */
+  showAll: readonly string[];
   openPane: (pane: Pane) => void;
   /** Close whichever pane is open (no-op when none is). */
   closePane: () => void;
@@ -48,13 +55,15 @@ export type UiState = {
   /** Stop highlighting `ids`; others keep flashing. */
   unflash: (ids: readonly string[]) => void;
   /** Select one node (replacing any selection); the same node again changes nothing. */
-  select: (target: NodeTarget) => void;
+  select: (target: CanvasTarget) => void;
   clearSelection: () => void;
   openContextMenu: (at: MenuPoint) => void;
   closeContextMenu: () => void;
   /** Show `text` as the notice, replacing any showing. */
   showNotice: (text: string) => void;
   clearNotice: () => void;
+  /** Show all of a project's children, or only the first ten again. */
+  toggleShowAll: (projectId: string) => void;
 };
 
 const NO_IDS: readonly string[] = Object.freeze([]);
@@ -65,6 +74,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   selection: null,
   contextMenu: null,
   notice: null,
+  showAll: NO_IDS,
   openPane: (pane) => set({ pane }),
   closePane: () => set({ pane: null }),
   togglePane: (pane) => set({ pane: get().pane === pane ? null : pane }),
@@ -91,10 +101,16 @@ export const useUiStore = create<UiState>()((set, get) => ({
   closeContextMenu: () => set((s) => (s.contextMenu === null ? {} : { contextMenu: null })),
   showNotice: (text) => set({ notice: { text } }),
   clearNotice: () => set((s) => (s.notice === null ? {} : { notice: null })),
+  toggleShowAll: (projectId) =>
+    set((s) => {
+      if (!s.showAll.includes(projectId)) return { showAll: [...s.showAll, projectId] };
+      const next = s.showAll.filter((id) => id !== projectId);
+      return { showAll: next.length === 0 ? NO_IDS : next };
+    }),
 }));
 
 /** True when both name the same node (or both are `null`). */
-export function sameTarget(a: NodeTarget | null, b: NodeTarget | null): boolean {
+export function sameTarget(a: CanvasTarget | null, b: CanvasTarget | null): boolean {
   return a === b || (a !== null && b !== null && a.kind === b.kind && a.id === b.id);
 }
 

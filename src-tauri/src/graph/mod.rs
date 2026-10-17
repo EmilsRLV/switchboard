@@ -8,12 +8,13 @@
 
 pub mod store;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
+use crate::claude::SessionSummary;
 use crate::persist::{self, LoadError};
 use crate::settings::{AppState, Banner, paths};
 
@@ -218,9 +219,10 @@ pub enum ChildKind {
 }
 
 /// A child of a project as the canvas lays it out: one row of the column under the card.
-/// Derived by [`children`] from `workspace.sessions` and `workspace.branches` (plus the stub
-/// source), so later epics replace the derivation and keep the layout. `position` is
-/// relative to the parent card's top-left and `None` for a child still in its column slot.
+/// Derived by [`children`] from the discovered sessions, `workspace.sessions` and
+/// `workspace.branches` (plus the stub source), so later epics replace the derivation and keep
+/// the layout. `position` is relative to the parent card's top-left and `None` for a child
+/// still in its column slot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChildNode {
@@ -230,6 +232,21 @@ pub struct ChildNode {
     pub label: String,
     pub detail: Option<String>,
     pub position: Option<Position>,
+    /// What the session card shows besides the title; `None` for stubs and branches.
+    pub session: Option<SessionMeta>,
+    /// The branch a session belongs under: the branch whose `worktreePath` holds its `cwd`
+    /// (else the one its ref names). `None` for the project root and for branch children.
+    pub branch_id: Option<String>,
+}
+
+/// The facts of a discovered session a card shows (Story 3.1). Times are ISO 8601 UTC.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMeta {
+    pub started_at: String,
+    pub last_active: String,
+    pub branch: Option<String>,
+    pub messages: u32,
 }
 
 /// The node types a position can be written for.
@@ -254,20 +271,65 @@ pub fn stub_session_id(index: usize, project_id: &str) -> String {
 }
 
 /// Every child of every project, collapsed ones included, in layout order: the project's
-/// sessions in list order, then its branches. With no real sessions yet, the sessions are
-/// `stubs` per project (`session 1..n`, detail `stub`), each taking its position from the
-/// matching [`SessionRef`] when one exists; a ref whose session is not discovered yields
-/// nothing. Branch children carry the worktree path as detail.
-pub fn children(workspace: &Workspace, stubs: usize) -> Vec<ChildNode> {
+/// discovered sessions (`discovered`, by project id) ordered pinned first, then `startedAt`
+/// newest first, then id; then `stubs` stub sessions (`session 1..n`, detail `stub`, only
+/// when asked for); then its branches. A session takes its position (and label, pin) from the
+/// matching [`SessionRef`] -- same `sessionId` and `projectId` -- when one exists; a ref whose
+/// session is not discovered yields nothing. Branch children carry the worktree path as detail.
+pub fn children(workspace: &Workspace, discovered: &HashMap<String, Vec<SessionSummary>>, stubs: usize) -> Vec<ChildNode> {
     let mut out = Vec::new();
     for project in &workspace.projects {
-        for i in 1..=stubs {
-            let id = stub_session_id(i, &project.id);
-            let position = workspace
+        let session_ref = |id: &str| {
+            workspace
                 .sessions
                 .iter()
                 .find(|s| s.session_id == id && s.project_id == project.id)
-                .and_then(|s| s.position);
+        };
+        let branches: Vec<&BranchNode> = workspace.branches.iter().filter(|b| b.project_id == project.id).collect();
+
+        let mut real: Vec<(&SessionSummary, Option<&SessionRef>)> = discovered
+            .get(&project.id)
+            .map(|list| list.iter().map(|s| (s, session_ref(&s.id))).collect())
+            .unwrap_or_default();
+        // One node per session id, even if two project dirs hold the same transcript: the
+        // newer copy (later activity, then more messages) wins.
+        real.sort_by(|(a, _), (b, _)| {
+            a.id.cmp(&b.id)
+                .then_with(|| b.last_active.cmp(&a.last_active))
+                .then_with(|| b.messages.cmp(&a.messages))
+        });
+        real.dedup_by(|(a, _), (b, _)| a.id == b.id);
+        // Started-at, not last activity: two running sessions must not swap slots every pass.
+        let pinned = |r: Option<&SessionRef>| r.is_some_and(|r| r.pinned);
+        real.sort_by(|(a, ra), (b, rb)| {
+            pinned(*rb)
+                .cmp(&pinned(*ra))
+                .then_with(|| b.started_at.cmp(&a.started_at))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        for (summary, session_ref) in real {
+            let worktree_branch = summary.cwd.as_deref().and_then(|cwd| branch_for_cwd(cwd, &branches));
+            out.push(ChildNode {
+                id: summary.id.clone(),
+                project_id: project.id.clone(),
+                kind: ChildKind::Session,
+                label: session_ref
+                    .and_then(|r| r.label.clone())
+                    .unwrap_or_else(|| summary.title.clone()),
+                detail: None,
+                position: session_ref.and_then(|r| r.position),
+                session: Some(SessionMeta {
+                    started_at: summary.started_at.clone(),
+                    last_active: summary.last_active.clone(),
+                    branch: summary.branch.clone(),
+                    messages: summary.messages,
+                }),
+                branch_id: worktree_branch.or_else(|| session_ref.and_then(|r| r.branch_id.clone())),
+            });
+        }
+        for i in 1..=stubs {
+            let id = stub_session_id(i, &project.id);
+            let position = session_ref(&id).and_then(|s| s.position);
             out.push(ChildNode {
                 id,
                 project_id: project.id.clone(),
@@ -275,9 +337,11 @@ pub fn children(workspace: &Workspace, stubs: usize) -> Vec<ChildNode> {
                 label: format!("session {i}"),
                 detail: Some("stub".to_string()),
                 position,
+                session: None,
+                branch_id: None,
             });
         }
-        for branch in workspace.branches.iter().filter(|b| b.project_id == project.id) {
+        for branch in branches {
             out.push(ChildNode {
                 id: branch.id.clone(),
                 project_id: project.id.clone(),
@@ -285,10 +349,37 @@ pub fn children(workspace: &Workspace, stubs: usize) -> Vec<ChildNode> {
                 label: branch.name.clone(),
                 detail: branch.worktree_path.clone(),
                 position: branch.position,
+                session: None,
+                branch_id: None,
             });
         }
     }
     out
+}
+
+/// The id of the branch whose `worktreePath` holds `cwd` (the folder itself or anything in
+/// it); the deepest one when worktrees nest. `None` when no branch has a matching worktree.
+pub fn branch_for_cwd(cwd: &str, branches: &[&BranchNode]) -> Option<String> {
+    branches
+        .iter()
+        .filter_map(|b| b.worktree_path.as_deref().map(|w| (b, w)))
+        .filter(|(_, worktree)| path_within(cwd, worktree))
+        .max_by_key(|(_, worktree)| worktree.len())
+        .map(|(b, _)| b.id.clone())
+}
+
+/// `path` is `root` or lies inside it, compared component by component (so `/a/bc` is not in
+/// `/a/b`); on Windows ASCII case is ignored and `/` counts as `\`.
+pub(crate) fn path_within(path: &str, root: &str) -> bool {
+    if root.trim().is_empty() {
+        return false;
+    }
+    if cfg!(windows) {
+        let norm = |p: &str| p.replace('/', "\\").to_ascii_lowercase();
+        Path::new(&norm(path)).starts_with(Path::new(&norm(root)))
+    } else {
+        Path::new(path).starts_with(Path::new(root))
+    }
 }
 
 impl SessionRef {
@@ -350,6 +441,9 @@ pub struct WorkspaceState {
     /// Stub session children per project (`SWITCHBOARD_STUB_CHILDREN`, copied from
     /// `AppState` on load so `snapshot` stays pure); 0 unless the operator asked for them.
     pub stub_children: usize,
+    /// Sessions discovered from Claude's transcripts, by project id (`crate::claude::sessions`
+    /// via [`set_discovered`]). Never persisted.
+    pub discovered: HashMap<String, Vec<SessionSummary>>,
 }
 
 impl WorkspaceState {
@@ -364,7 +458,7 @@ impl WorkspaceState {
                 .cloned()
                 .collect(),
             revision: self.revision,
-            children: children(&self.workspace, self.stub_children),
+            children: children(&self.workspace, &self.discovered, self.stub_children),
         }
     }
 
@@ -579,7 +673,7 @@ pub fn move_node<R: Runtime>(app: &AppHandle<R>, target: &NodeTarget, position: 
                 project.position = position;
             }
             NodeKind::Session => {
-                let project_id = children(&st.workspace, st.stub_children)
+                let project_id = children(&st.workspace, &st.discovered, st.stub_children)
                     .into_iter()
                     .find(|c| c.kind == ChildKind::Session && c.id == target.id)
                     .map(|c| c.project_id)
@@ -653,7 +747,7 @@ pub fn remove_project<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Resul
         if !st.workspace.projects.iter().any(|p| p.id == project_id) {
             return Err("unknown project".to_string());
         }
-        let session_ids: HashSet<String> = children(&st.workspace, st.stub_children)
+        let session_ids: HashSet<String> = children(&st.workspace, &st.discovered, st.stub_children)
             .into_iter()
             .filter(|c| c.project_id == project_id && c.kind == ChildKind::Session)
             .map(|c| c.id)
@@ -686,6 +780,25 @@ pub fn remove_project<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Resul
         (st.write_target(), st.workspace.clone())
     };
     Ok(persist_and_emit(app, target, &workspace))
+}
+
+/// Store what the latest discovery pass found (project id → its sessions). When it differs
+/// from what is stored, the revision is bumped and `workspace://changed` emitted with the new
+/// children; the file is not written (discovered sessions are not persisted). Returns the
+/// new snapshot, or `None` when nothing changed.
+pub fn set_discovered<R: Runtime>(app: &AppHandle<R>, discovered: HashMap<String, Vec<SessionSummary>>) -> Option<WorkspaceSnapshot> {
+    let state = app.state::<AppState>();
+    let snapshot = {
+        let mut st = state.write_workspace();
+        if st.discovered == discovered {
+            return None;
+        }
+        st.discovered = discovered;
+        st.revision += 1;
+        st.snapshot()
+    };
+    emit(app, &snapshot);
+    Some(snapshot)
 }
 
 /// The canonical form of `raw` when it is an existing directory, as stored in `Project.path`.
@@ -856,6 +969,7 @@ mod tests {
             read_only: None,
             revision: 3,
             stub_children: 0,
+            discovered: HashMap::new(),
         };
         assert_eq!(
             serde_json::to_value(st.snapshot()).unwrap(),
@@ -1701,7 +1815,7 @@ mod tests {
             ],
             ..Workspace::default()
         };
-        let kids = children(&ws, 2);
+        let kids = children(&ws, &HashMap::new(), 2);
         type Row<'a> = (&'a str, &'a str, ChildKind, &'a str, Option<&'a str>, Option<Position>);
         let summary: Vec<Row<'_>> = kids
             .iter()
@@ -1725,8 +1839,8 @@ mod tests {
                 ),
             ]
         );
-        assert!(children(&ws, 0).iter().all(|c| c.kind == ChildKind::Branch), "no stubs unless asked");
-        assert!(children(&Workspace::default(), 3).is_empty(), "no projects, no children");
+        assert!(children(&ws, &HashMap::new(), 0).iter().all(|c| c.kind == ChildKind::Branch), "no stubs unless asked");
+        assert!(children(&Workspace::default(), &HashMap::new(), 3).is_empty(), "no projects, no children");
     }
 
     #[test]
@@ -1738,14 +1852,35 @@ mod tests {
             label: "session 1".into(),
             detail: Some("stub".into()),
             position: None,
+            session: None,
+            branch_id: None,
         };
         assert_eq!(
             serde_json::to_value(&child).unwrap(),
             serde_json::json!({
                 "id": "stub-1-p", "projectId": "p", "kind": "session",
-                "label": "session 1", "detail": "stub", "position": null
+                "label": "session 1", "detail": "stub", "position": null,
+                "session": null, "branchId": null
             })
         );
+        let real = ChildNode {
+            session: Some(SessionMeta {
+                started_at: "2026-10-16T10:00:00.000Z".into(),
+                last_active: "2026-10-16T11:00:00.000Z".into(),
+                branch: None,
+                messages: 3,
+            }),
+            branch_id: Some("b1".into()),
+            ..child
+        };
+        assert_eq!(
+            serde_json::to_value(&real).unwrap()["session"],
+            serde_json::json!({
+                "startedAt": "2026-10-16T10:00:00.000Z", "lastActive": "2026-10-16T11:00:00.000Z",
+                "branch": null, "messages": 3
+            })
+        );
+        assert_eq!(serde_json::to_value(&real).unwrap()["branchId"], "b1");
         let target: NodeTarget = serde_json::from_value(serde_json::json!({ "kind": "branch", "id": "b1" })).unwrap();
         assert_eq!(
             target,
@@ -1842,7 +1977,7 @@ mod tests {
         let disk = on_disk(&path);
         assert_eq!(disk.sessions.len(), 1);
         assert_eq!(disk.sessions[0].position, Some(Position { x: 260.0, y: 40.0 }));
-        assert_eq!(children(&disk, 3)[1].position, Some(Position { x: 260.0, y: 40.0 }), "survives a reload");
+        assert_eq!(children(&disk, &HashMap::new(), 3)[1].position, Some(Position { x: 260.0, y: 40.0 }), "survives a reload");
 
         // Second drag: the same ref is updated, not duplicated.
         let snapshot = move_node(app.handle(), &target, Position { x: 10.0, y: 10.0 }).unwrap();
@@ -2180,5 +2315,262 @@ mod tests {
         assert_eq!(keys, ["added", "existing", "skipped", "snapshot"]);
         assert_eq!(json["added"], serde_json::json!(["a"]));
         assert_eq!(json["skipped"], serde_json::json!(["x.txt"]));
+    }
+
+    // -- discovered sessions (Story 3.1) ---------------------------------------------------
+
+    fn summary(id: &str, last_active: &str) -> SessionSummary {
+        SessionSummary {
+            id: id.into(),
+            title: format!("title {id}"),
+            started_at: "2026-10-01T00:00:00.000Z".into(),
+            last_active: last_active.into(),
+            branch: Some("main".into()),
+            messages: 2,
+            cwd: Some("/p/a".into()),
+        }
+    }
+
+    fn discovered_of(project: &str, list: Vec<SessionSummary>) -> HashMap<String, Vec<SessionSummary>> {
+        HashMap::from([(project.to_string(), list)])
+    }
+
+    #[test]
+    fn children_orders_discovered_sessions_pinned_then_newest_start_then_id_and_appends_stubs() {
+        let ws = Workspace {
+            projects: vec![project_with("a")],
+            sessions: vec![
+                SessionRef {
+                    session_id: "old".into(),
+                    project_id: "a".into(),
+                    pinned: true,
+                    label: Some("my label".into()),
+                    position: Some(Position { x: 5.0, y: 6.0 }),
+                    ..SessionRef::default()
+                },
+                // Pinned, but under another project: no effect here.
+                SessionRef {
+                    session_id: "mid".into(),
+                    project_id: "b".into(),
+                    pinned: true,
+                    ..SessionRef::default()
+                },
+            ],
+            ..Workspace::default()
+        };
+        let started = |id: &str, started_at: &str, last_active: &str| SessionSummary {
+            started_at: started_at.into(),
+            ..summary(id, last_active)
+        };
+        let found = discovered_of(
+            "a",
+            vec![
+                // Started earliest but active latest: it still sorts by its start.
+                started("mid", "2026-10-02T00:00:00.000Z", "2026-10-17T10:00:00.000Z"),
+                started("old", "2026-10-01T00:00:00.000Z", "2026-10-01T10:00:00.000Z"),
+                started("new-b", "2026-10-16T00:00:00.000Z", "2026-10-16T12:00:00.000Z"),
+                started("new-a", "2026-10-16T00:00:00.000Z", "2026-10-16T11:00:00.000Z"),
+            ],
+        );
+        let kids = children(&ws, &found, 1);
+        let ids: Vec<&str> = kids.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["old", "new-a", "new-b", "mid", "stub-1-a"]);
+        assert_eq!(kids[0].label, "my label", "the ref's label wins over the title");
+        assert_eq!(kids[0].position, Some(Position { x: 5.0, y: 6.0 }));
+        assert_eq!(kids[1].label, "title new-a");
+        assert_eq!(kids[1].detail, None);
+        assert_eq!(
+            kids[1].session,
+            Some(SessionMeta {
+                started_at: "2026-10-16T00:00:00.000Z".into(),
+                last_active: "2026-10-16T11:00:00.000Z".into(),
+                branch: Some("main".into()),
+                messages: 2,
+            })
+        );
+        assert_eq!(kids[4].session, None, "stubs carry no meta");
+        assert!(kids.iter().all(|c| c.kind == ChildKind::Session && c.branch_id.is_none()));
+        assert_eq!(children(&ws, &found, 0).len(), 4, "no stubs unless asked");
+        assert_eq!(children(&ws, &discovered_of("zzz", vec![summary("x", "")]), 0).len(), 0, "unknown project ids are ignored");
+    }
+
+    #[test]
+    fn a_session_inside_a_worktree_gets_that_branch() {
+        let sep = std::path::MAIN_SEPARATOR;
+        let root = if cfg!(windows) { "C:\\p\\a".to_string() } else { "/p/a".to_string() };
+        let wt = format!("{root}{sep}.worktrees{sep}feature");
+        let nested = format!("{wt}{sep}deeper");
+        let branches = [
+            BranchNode {
+                id: "br-feature".into(),
+                project_id: "a".into(),
+                name: "feature".into(),
+                worktree_path: Some(wt.clone()),
+                position: None,
+            },
+            BranchNode {
+                id: "br-deeper".into(),
+                project_id: "a".into(),
+                name: "deeper".into(),
+                worktree_path: Some(nested.clone()),
+                position: None,
+            },
+            BranchNode {
+                id: "br-none".into(),
+                project_id: "a".into(),
+                name: "none".into(),
+                worktree_path: None,
+                position: None,
+            },
+        ];
+        let refs: Vec<&BranchNode> = branches.iter().collect();
+        assert_eq!(branch_for_cwd(&wt, &refs).as_deref(), Some("br-feature"), "the worktree itself");
+        assert_eq!(branch_for_cwd(&format!("{wt}{sep}src"), &refs).as_deref(), Some("br-feature"), "inside it");
+        assert_eq!(branch_for_cwd(&format!("{nested}{sep}x"), &refs).as_deref(), Some("br-deeper"), "the deepest");
+        assert_eq!(branch_for_cwd(&format!("{wt}-other"), &refs), None, "a sibling with the same prefix");
+        assert_eq!(branch_for_cwd(&root, &refs), None, "the project root");
+        if cfg!(windows) {
+            assert_eq!(branch_for_cwd(&wt.to_uppercase().replace('\\', "/"), &refs).as_deref(), Some("br-feature"));
+        }
+
+        // Through `children`: the session's cwd places it; the node stays under the project.
+        let ws = Workspace {
+            projects: vec![project_with("a")],
+            branches: branches.to_vec(),
+            ..Workspace::default()
+        };
+        let mut inside = summary("s-in", "2026-10-16T10:00:00.000Z");
+        inside.cwd = Some(format!("{wt}{sep}src"));
+        let mut outside = summary("s-out", "2026-10-16T09:00:00.000Z");
+        outside.cwd = Some(root.clone());
+        let kids = children(&ws, &discovered_of("a", vec![inside, outside]), 0);
+        assert_eq!(kids[0].branch_id.as_deref(), Some("br-feature"));
+        assert_eq!(kids[0].project_id, "a");
+        assert_eq!(kids[1].branch_id, None);
+    }
+
+    #[test]
+    fn set_discovered_bumps_the_revision_and_emits_without_writing_and_only_on_change() {
+        let (app, _cfg, path) = app_with_ide(0);
+        let before = std::fs::read_to_string(&path).unwrap();
+        let rx = listen(&app);
+        let found = discovered_of("ide", vec![summary("s1", "2026-10-16T10:00:00.000Z")]);
+
+        let snapshot = set_discovered(app.handle(), found.clone()).expect("changed");
+        assert_eq!(snapshot.revision, 1);
+        assert_eq!(snapshot.children.len(), 1);
+        assert_eq!(snapshot.children[0].id, "s1");
+        assert_eq!(rx.try_recv().expect("one event"), snapshot);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "not written");
+
+        assert_eq!(set_discovered(app.handle(), found.clone()), None, "same list: nothing");
+        assert!(rx.try_recv().is_err());
+        assert_eq!(app.state::<AppState>().read_workspace().revision, 1);
+
+        let mut grown = found;
+        grown.get_mut("ide").unwrap()[0].messages = 3;
+        let snapshot = set_discovered(app.handle(), grown).expect("changed");
+        assert_eq!(snapshot.revision, 2);
+        assert_eq!(snapshot.children[0].session.as_ref().unwrap().messages, 3);
+        assert_eq!(rx.try_recv().expect("one event"), snapshot);
+    }
+
+    #[test]
+    fn a_discovered_session_can_be_dragged_and_keeps_its_position_on_disk() {
+        let (app, _cfg, path) = app_with_ide(0);
+        set_discovered(
+            app.handle(),
+            discovered_of("ide", vec![summary("s1", "2026-10-16T10:00:00.000Z"), summary("s2", "2026-10-16T09:00:00.000Z")]),
+        );
+        let target = NodeTarget {
+            kind: NodeKind::Session,
+            id: "s2".into(),
+        };
+        let snapshot = move_node(app.handle(), &target, Position { x: 300.0, y: 20.0 }).unwrap();
+        assert_eq!(snapshot.children[1].position, Some(Position { x: 300.0, y: 20.0 }));
+        let disk = on_disk(&path);
+        assert_eq!(disk.sessions.len(), 1);
+        assert_eq!(disk.sessions[0].session_id, "s2");
+        assert_eq!(disk.sessions[0].project_id, "ide");
+        let unknown = NodeTarget {
+            kind: NodeKind::Session,
+            id: "gone".into(),
+        };
+        assert_eq!(move_node(app.handle(), &unknown, Position::default()), Err("unknown session".to_string()));
+    }
+
+    #[test]
+    fn remove_project_prunes_an_edge_to_a_discovered_session_without_a_ref() {
+        let (app, _cfg, _path) = app_with_ide(0);
+        {
+            let state = app.state::<AppState>();
+            let mut st = state.write_workspace();
+            st.workspace.projects.push(project_with("other"));
+            st.workspace.edges = vec![
+                edge("e-found", (NodeType::Project, "other"), (NodeType::Session, "found-1")),
+                edge("e-keep", (NodeType::Project, "other"), (NodeType::Session, "elsewhere")),
+            ];
+        }
+        set_discovered(app.handle(), discovered_of("ide", vec![summary("found-1", "2026-10-16T10:00:00.000Z")]));
+        assert!(app.state::<AppState>().read_workspace().workspace.sessions.is_empty(), "no ref for it");
+
+        let snapshot = remove_project(app.handle(), "ide").unwrap();
+        let ids: Vec<&str> = snapshot.workspace.edges.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["e-keep"]);
+    }
+
+    #[test]
+    fn a_session_in_two_dirs_keeps_the_newer_copy() {
+        let (app, _cfg, _path) = app_with_ide(0);
+        let rx = listen(&app);
+        let older = SessionSummary {
+            started_at: "2026-10-16T09:00:00.000Z".into(),
+            messages: 2,
+            ..summary("dup", "2026-10-16T10:00:00.000Z")
+        };
+        let newer = SessionSummary {
+            started_at: "2026-10-16T08:00:00.000Z".into(),
+            messages: 7,
+            ..summary("dup", "2026-10-16T12:00:00.000Z")
+        };
+        for list in [vec![older.clone(), newer.clone()], vec![newer.clone(), older.clone()]] {
+            let kids = children(&app.state::<AppState>().read_workspace().workspace, &discovered_of("ide", list), 0);
+            assert_eq!(kids.len(), 1);
+            assert_eq!(kids[0].session.as_ref().unwrap().messages, 7, "whatever the input order");
+        }
+        set_discovered(app.handle(), discovered_of("ide", vec![older, newer]));
+        let emitted = rx.try_recv().expect("one event");
+        assert_eq!(
+            emitted.children[0].session,
+            Some(SessionMeta {
+                started_at: "2026-10-16T08:00:00.000Z".into(),
+                last_active: "2026-10-16T12:00:00.000Z".into(),
+                branch: Some("main".into()),
+                messages: 7,
+            })
+        );
+    }
+
+    #[test]
+    fn set_discovered_emits_when_only_a_sessions_worktree_branch_changes() {
+        let (app, _cfg, _path) = app_with_ide(0);
+        let wt = if cfg!(windows) { "C:\\p\\ide\\.worktrees\\f" } else { "/p/ide/.worktrees/f" };
+        app.state::<AppState>().write_workspace().workspace.branches.push(BranchNode {
+            id: "br-f".into(),
+            project_id: "ide".into(),
+            name: "f".into(),
+            worktree_path: Some(wt.into()),
+            position: None,
+        });
+        let at_root = summary("s1", "2026-10-16T10:00:00.000Z");
+        set_discovered(app.handle(), discovered_of("ide", vec![at_root.clone()]));
+        let rx = listen(&app);
+        let in_worktree = SessionSummary {
+            cwd: Some(wt.into()),
+            ..at_root
+        };
+        let snapshot = set_discovered(app.handle(), discovered_of("ide", vec![in_worktree])).expect("changed");
+        assert_eq!(snapshot.children[0].branch_id.as_deref(), Some("br-f"));
+        assert_eq!(rx.try_recv().expect("one event"), snapshot);
     }
 }

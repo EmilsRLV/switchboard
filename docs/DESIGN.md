@@ -142,9 +142,25 @@ The card size is fixed: `nodes.ts` and the arrow-key geometry depend on 240 × 8
 
 ### Child card (208 × 40)
 
-One row of the column under an expanded parent: `--bg-raised`, 1-px `--border`, `--radius-md`; the
-**label** in `--text-md` (ellipsis) and, at the right, the **detail** in mono `--text-xs` `--fg-muted`.
-Same size for session and branch children; the size is fixed like the project card's.
+One row of the column under an expanded parent: `--bg-raised`, 1-px `--border`, `--radius-md`. Same size for
+session and branch children; the size is fixed like the project card's.
+
+- **Session** (discovered from a transcript), two lines:
+  1. the **title** in `--text-md`, ellipsis;
+  2. the **meta** in mono `--text-xs` `--fg-muted`, ellipsis: `branch · N msgs · <age>`. The branch is left
+     out when the transcript names none. The age reads `now`, `5m`, `3h`, `2d`, then `12 Oct` (this year) or
+     `12 Oct 2025`, and is recomputed each minute.
+
+  The full title and the exact start and last-active times are on hover (`title`).
+- **Branch, stub:** one row: the **label** in `--text-md` (ellipsis) and, at the right, the **detail** in mono
+  `--text-xs` `--fg-muted`.
+
+### The more row
+
+Past ten children, a row follows the tenth in the next column slot: `show all (N)` (N counts every child),
+or `show fewer` while all show. Mono `--text-xs` in `--fg-muted` (`--fg` on hover), no border and no surface,
+the slot's 208 × 40. It is selectable like a node (same outline), not draggable, and has no menu; a click or
+Enter toggles it.
 
 ### Node states
 

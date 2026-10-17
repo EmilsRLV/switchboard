@@ -132,9 +132,22 @@ export type Workspace = {
 export type ChildKind = "session" | "branch";
 
 /**
+ * Mirrors `graph::SessionMeta`: what a discovered session's card shows besides its title.
+ * Times are ISO 8601 UTC (`2026-10-16T14:33:02.138Z`).
+ */
+export type SessionMeta = {
+  startedAt: string;
+  lastActive: string;
+  /** The latest `gitBranch` the transcript names; `null` when none. */
+  branch: string | null;
+  /** Prompts plus assistant replies, sidechains not counted. */
+  messages: number;
+};
+
+/**
  * Mirrors `graph::ChildNode`: a child of a project as the canvas lays it out, derived by Rust
- * from `sessions` and `branches` (or the stub source). `position` is relative to the parent
- * card's top-left and `null` while the child sits in its column slot.
+ * from the discovered sessions, `sessions` and `branches` (or the stub source). `position` is
+ * relative to the parent card's top-left and `null` while the child sits in its column slot.
  */
 export type ChildNode = {
   id: string;
@@ -143,6 +156,10 @@ export type ChildNode = {
   label: string;
   detail: string | null;
   position: Position | null;
+  /** A discovered session's facts; `null` for stubs and branches. */
+  session: SessionMeta | null;
+  /** The branch whose worktree holds the session's `cwd`; `null` under the project root. */
+  branchId: string | null;
 };
 
 /** Mirrors `graph::NodeKind`: the node types a position can be written for. */

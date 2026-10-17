@@ -60,10 +60,7 @@ fn scan_project_dir(dir: &Path) -> Option<(Option<SystemTime>, ClaudeProject)> {
     let mut transcripts = list_transcripts(dir)?;
     transcripts.sort_by(|a, b| b.0.cmp(&a.0));
     let newest = transcripts.first().map(|(modified, _)| *modified);
-    let cwd = transcripts
-        .iter()
-        .find_map(|(_, path)| cwd_from_transcript(path))
-        .or_else(|| decode_dir_name(&name))?;
+    let cwd = resolve_cwd(&name, &transcripts)?;
     let exists = Path::new(&cwd).is_dir();
     Some((
         newest,
@@ -77,8 +74,19 @@ fn scan_project_dir(dir: &Path) -> Option<(Option<SystemTime>, ClaudeProject)> {
     ))
 }
 
-/// `(modified, path)` of every `*.jsonl` directly in `dir`; `None` when it cannot be read.
-fn list_transcripts(dir: &Path) -> Option<Vec<(SystemTime, PathBuf)>> {
+/// The working directory a project dir stands for: the `cwd` of the first transcript (in
+/// the order given, newest first) that yields one, else the decoded dir name. `None` when
+/// neither works.
+fn resolve_cwd(name: &str, newest_first: &[(SystemTime, PathBuf)]) -> Option<String> {
+    newest_first
+        .iter()
+        .find_map(|(_, path)| cwd_from_transcript(path))
+        .or_else(|| decode_dir_name(name))
+}
+
+/// `(modified, path)` of every `*.jsonl` directly in `dir` (files only: per-session folders
+/// are not transcripts); `None` when it cannot be read.
+pub(crate) fn list_transcripts(dir: &Path) -> Option<Vec<(SystemTime, PathBuf)>> {
     let entries = fs::read_dir(dir).ok()?;
     Some(
         entries

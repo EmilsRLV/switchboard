@@ -4,7 +4,7 @@
 // `panToReveal`). No React, no DOM, so all of it is unit-tested in vitest's node environment.
 
 import type { Node } from "@xyflow/react";
-import type { ChildNode, NodeTarget, Position, Project, ProjectStatus, ProjectStatusMap, Viewport } from "../ipc";
+import type { ChildNode, NodeTarget, Position, Project, ProjectStatus, ProjectStatusMap, SessionMeta, Viewport } from "../ipc";
 import type { DragOverrides } from "../state/canvas";
 
 /** What a `ProjectNode` renders from. */
@@ -26,10 +26,33 @@ export type ChildNodeData = {
   selected: boolean;
 };
 
+/** What a `MoreNode` (the `show all (N)` / `show fewer` row) renders from. */
+export type MoreNodeData = {
+  projectId: string;
+  /** Every child of the project, hidden ones included. */
+  total: number;
+  /** True while the project shows all its children (the row reads `show fewer`). */
+  showingAll: boolean;
+  selected: boolean;
+};
+
 export type ProjectFlowNode = Node<ProjectNodeData, "project">;
 export type SessionFlowNode = Node<ChildNodeData, "session">;
 export type BranchFlowNode = Node<ChildNodeData, "branch">;
-export type CanvasFlowNode = ProjectFlowNode | SessionFlowNode | BranchFlowNode;
+export type MoreFlowNode = Node<MoreNodeData, "more">;
+export type CanvasFlowNode = ProjectFlowNode | SessionFlowNode | BranchFlowNode | MoreFlowNode;
+
+/**
+ * The synthetic `more` row under a project's column, named by the project's id. It is not a
+ * Rust node: it is never moved, has no menu and only toggles the project's `showAll`.
+ */
+export type MoreTarget = { kind: "more"; id: string };
+
+/** Anything the canvas draws and can select: a node Rust knows, or a `more` row. */
+export type CanvasTarget = NodeTarget | MoreTarget;
+
+/** How many children an expanded project shows until `show all` is clicked. */
+export const SHOW_LIMIT = 10;
 
 /** The card's size (`nodes.css`), so a node placed "at" a point can be centred on it. */
 export const CARD_WIDTH = 240;
@@ -81,16 +104,55 @@ export function childFlowId(child: Pick<ChildNode, "kind" | "id">): string {
   return `${child.kind}:${child.id}`;
 }
 
-/** The flow-node id of any node target. */
-export function flowIdOf(target: NodeTarget): string {
-  return target.kind === "project" ? target.id : childFlowId({ kind: target.kind, id: target.id });
+/** The flow-node id of a project's `more` row: `more:<projectId>`. */
+export function moreFlowId(projectId: string): string {
+  return `more:${projectId}`;
+}
+
+/** The flow-node id of any canvas target. */
+export function flowIdOf(target: CanvasTarget): string {
+  if (target.kind === "project") return target.id;
+  if (target.kind === "more") return moreFlowId(target.id);
+  return childFlowId({ kind: target.kind, id: target.id });
 }
 
 /** The reverse of {@link flowIdOf}. */
-export function parseFlowId(flowId: string): NodeTarget {
+export function parseFlowId(flowId: string): CanvasTarget {
   if (flowId.startsWith("session:")) return { kind: "session", id: flowId.slice("session:".length) };
   if (flowId.startsWith("branch:")) return { kind: "branch", id: flowId.slice("branch:".length) };
+  if (flowId.startsWith("more:")) return { kind: "more", id: flowId.slice("more:".length) };
   return { kind: "project", id: flowId };
+}
+
+/** What {@link visibleChildren} decides for one project's column. */
+export type ColumnCut<C> = {
+  /** The children drawn, in list order. */
+  visible: readonly C[];
+  /** Whether the `more` row follows: more children than {@link SHOW_LIMIT}. */
+  more: boolean;
+  /** The column slot the `more` row takes: after the tenth, or after the last while all show. */
+  slotted: number;
+  /** Every child, hidden ones included: the N of `show all (N)`. */
+  total: number;
+};
+
+/**
+ * The children an expanded project draws: all of them while `showAll`, else those at list
+ * indices below {@link SHOW_LIMIT} (the list is in Rust's order, most relevant first) plus
+ * any later one with a stored (dragged) position, which is always drawn. Indices are kept,
+ * so every drawn child still sits in its own slot.
+ */
+export function visibleChildren<C extends { position: Position | null }>(children: readonly C[], showAll: boolean): ColumnCut<C> {
+  const total = children.length;
+  const more = total > SHOW_LIMIT;
+  if (showAll || !more) return { visible: children, more, slotted: total, total };
+  const visible = children.filter((child, index) => index < SHOW_LIMIT || child.position !== null);
+  return { visible, more, slotted: SHOW_LIMIT, total };
+}
+
+/** The `more` row's text: `show all (N)`, or `show fewer` while everything shows. */
+export function moreLabel(total: number, showingAll: boolean): string {
+  return showingAll ? "show fewer" : `show all (${total})`;
 }
 
 /** The command the card's chevron runs: the one of the exclusive pair that applies. */
@@ -106,7 +168,7 @@ export type RightPress = { x: number; y: number; flowId: string | null };
  * pointer moved at most {@link DRAG_THRESHOLD} since (else it was a pan, or nothing). The
  * caller selects that node and opens the menu for a project.
  */
-export function rightClickTarget(press: RightPress | null, release: Position): NodeTarget | null {
+export function rightClickTarget(press: RightPress | null, release: Position): CanvasTarget | null {
   if (press === null || press.flowId === null) return null;
   if (Math.hypot(release.x - press.x, release.y - press.y) > DRAG_THRESHOLD) return null;
   return parseFlowId(press.flowId);
@@ -116,7 +178,7 @@ export function rightClickTarget(press: RightPress | null, release: Position): N
  * What a drop writes: the node target of `flowId` and where it is, preferring the drag
  * override (the last position xyflow reported) over `nodePosition`, which may lag a frame.
  */
-export function dropTarget(flowId: string, dragging: DragOverrides, nodePosition: Position): [NodeTarget, Position] {
+export function dropTarget(flowId: string, dragging: DragOverrides, nodePosition: Position): [CanvasTarget, Position] {
   const position = override(dragging, flowId) ?? nodePosition;
   return [parseFlowId(flowId), { x: position.x, y: position.y }];
 }
@@ -134,17 +196,23 @@ export type FlowInputs = {
   flashed: readonly string[];
   /** Every child of every project (collapsed ones too), as the snapshot lists them. */
   children: readonly ChildNode[];
-  selection: NodeTarget | null;
+  selection: CanvasTarget | null;
   /** Mid-drag positions by flow id; applied last, over everything stored. */
   dragging: DragOverrides;
+  /** Project ids showing all their children (UI-only); absent means none. */
+  showAll?: readonly string[];
 };
 
 /**
  * The xyflow nodes for the canvas: one `project` node per workspace project at its stored
  * position, followed by its children (`session` / `branch` nodes with `parentId`, positioned
  * relative to the card) when it is expanded. A collapsed project's children are not in the
- * list. Nodes are draggable; selection is the app's, never xyflow's, so `selectable` is off
- * and the selected node is marked in its `data`. Drag overrides win over stored positions.
+ * list. Past {@link SHOW_LIMIT} children only the first ten are drawn (unless the project
+ * is in `showAll`; dragged children always are, see {@link visibleChildren}), and a `more`
+ * node follows in the eleventh slot (after the last while all show); hidden children still
+ * count in the project's `childCount` (the collapsed badge). Nodes are draggable; selection
+ * is the app's, never xyflow's, so `selectable` is off and the selected node is marked in its
+ * `data`. Drag overrides win over stored positions.
  * The selected node gets `zIndex` {@link ELEVATED_Z}; a node with a drag override one more,
  * so a dragged card is never covered by a selected sibling.
  *
@@ -153,6 +221,7 @@ export type FlowInputs = {
  */
 export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNode[] = []): CanvasFlowNode[] {
   const { projects, statuses, flashed, children, selection, dragging } = inputs;
+  const showAll = inputs.showAll ?? [];
   const before = new Map<string, CanvasFlowNode>();
   for (const node of previous) before.set(node.id, node);
 
@@ -186,8 +255,10 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
     };
     out.push(reuse(before.get(project.id), next));
     if (!project.expanded) continue;
-    const slots = layoutChildren(kids);
-    kids.forEach((child, index) => {
+    const showingAll = showAll.includes(project.id);
+    const { visible, more, slotted, total } = visibleChildren(kids, showingAll);
+    const slots = layoutChildren(visible);
+    visible.forEach((child, index) => {
       const id = childFlowId(child);
       const childDrag = override(dragging, id);
       const childSelected = selection !== null && selection.kind === child.kind && selection.id === child.id;
@@ -204,6 +275,22 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
       };
       out.push(reuse(before.get(id), next));
     });
+    if (more) {
+      const id = moreFlowId(project.id);
+      const moreSelected = selection !== null && selection.kind === "more" && selection.id === project.id;
+      const next: MoreFlowNode = {
+        id,
+        type: "more",
+        parentId: project.id,
+        position: columnSlot(slotted),
+        data: { projectId: project.id, total, showingAll, selected: moreSelected },
+        zIndex: layer(moreSelected, undefined),
+        draggable: false,
+        selectable: false,
+        connectable: false,
+      };
+      out.push(reuse(before.get(id), next));
+    }
   }
   return out;
 }
@@ -232,7 +319,15 @@ function sameNode(a: CanvasFlowNode, b: CanvasFlowNode): boolean {
       sameStatus(a.data.status, b.data.status)
     );
   }
-  if (a.type !== "project" && b.type !== "project") {
+  if (a.type === "more" && b.type === "more") {
+    return (
+      a.data.projectId === b.data.projectId &&
+      a.data.total === b.data.total &&
+      a.data.showingAll === b.data.showingAll &&
+      a.data.selected === b.data.selected
+    );
+  }
+  if ((a.type === "session" || a.type === "branch") && (b.type === "session" || b.type === "branch")) {
     return a.data.selected === b.data.selected && sameChild(a.data.child, b.data.child);
   }
   return false;
@@ -259,8 +354,66 @@ function sameChild(a: ChildNode, b: ChildNode): boolean {
       a.kind === b.kind &&
       a.label === b.label &&
       a.detail === b.detail &&
+      a.branchId === b.branchId &&
+      sameSession(a.session, b.session) &&
       (a.position === b.position || (a.position !== null && b.position !== null && samePosition(a.position, b.position))))
   );
+}
+
+function sameSession(a: SessionMeta | null, b: SessionMeta | null): boolean {
+  return (
+    a === b ||
+    (a !== null &&
+      b !== null &&
+      a.startedAt === b.startedAt &&
+      a.lastActive === b.lastActive &&
+      a.branch === b.branch &&
+      a.messages === b.messages)
+  );
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+/** From this age on, the card shows the date instead of `Nd`. */
+const DATE_AFTER_MS = 7 * DAY_MS;
+
+/**
+ * How long ago `lastActive` (ISO 8601) was, as a session card's meta line says it: `now`
+ * (under a minute, or in the future), `5m`, `3h`, `2d` (under a week), then the local date,
+ * `12 Oct` in the year of `now` or `12 Oct 2025` before it. An unparsable time is `?`.
+ */
+export function formatAge(lastActive: string, now: number): string {
+  const then = Date.parse(lastActive);
+  if (Number.isNaN(then)) return "?";
+  const age = now - then;
+  if (age < MINUTE_MS) return "now";
+  if (age < HOUR_MS) return `${Math.floor(age / MINUTE_MS)}m`;
+  if (age < DAY_MS) return `${Math.floor(age / HOUR_MS)}h`;
+  if (age < DATE_AFTER_MS) return `${Math.floor(age / DAY_MS)}d`;
+  const date = new Date(then);
+  const day = `${date.getDate()} ${MONTHS[date.getMonth()]}`;
+  return date.getFullYear() === new Date(now).getFullYear() ? day : `${day} ${date.getFullYear()}`;
+}
+
+/** A session card's second line: `branch · N msgs · age`, the branch left out when `null`. */
+export function sessionMetaLine(meta: SessionMeta, now: number): string {
+  const parts: string[] = [];
+  if (meta.branch !== null && meta.branch !== "") parts.push(meta.branch);
+  parts.push(`${meta.messages} ${meta.messages === 1 ? "msg" : "msgs"}`);
+  parts.push(formatAge(meta.lastActive, now));
+  return parts.join(" · ");
+}
+
+/** A session card's hover text: the full title and the exact local start and last-active times. */
+export function sessionHoverText(title: string, meta: SessionMeta): string {
+  const exact = (iso: string) => {
+    const ms = Date.parse(iso);
+    return Number.isNaN(ms) ? iso : new Date(ms).toLocaleString();
+  };
+  return `${title}\nstarted ${exact(meta.startedAt)}\nlast active ${exact(meta.lastActive)}`;
 }
 
 function sameStatus(a: ProjectStatus | null, b: ProjectStatus | null): boolean {
@@ -336,7 +489,7 @@ export function aheadBehind(status: ProjectStatus | null): string | null {
 // --- keyboard navigation geometry -----------------------------------------------------------
 
 /** A rendered node's rectangle in canvas coordinates, as the canvas draws it. */
-export type NodeRect = { target: NodeTarget; x: number; y: number; width: number; height: number };
+export type NodeRect = { target: CanvasTarget; x: number; y: number; width: number; height: number };
 
 export type Direction = "left" | "right" | "up" | "down";
 
@@ -352,11 +505,12 @@ const PERPENDICULAR_WEIGHT = 2;
 /**
  * The rectangles the arrow keys search: every project card (`CARD_WIDTH × CARD_HEIGHT` at its
  * position) followed, for an expanded project only, by its children (`CHILD_WIDTH ×
- * CHILD_HEIGHT` at the parent's position plus the child's relative position, slot or stored).
- * Collapsed children are not drawn, so they are not candidates. The list order (projects in
- * workspace order, each with its children) is the tie-breaker of the searches.
+ * CHILD_HEIGHT` at the parent's position plus the child's relative position, slot or stored)
+ * and its `more` row (a child-sized rect in its slot) when it has one. Collapsed children,
+ * and children hidden past {@link SHOW_LIMIT}, are not drawn, so they are not candidates. The list order (projects in workspace order, each with its children) is
+ * the tie-breaker of the searches.
  */
-export function nodeRects(projects: readonly Project[], children: readonly ChildNode[]): NodeRect[] {
+export function nodeRects(projects: readonly Project[], children: readonly ChildNode[], showAll: readonly string[] = []): NodeRect[] {
   const out: NodeRect[] = [];
   for (const project of projects) {
     out.push({
@@ -368,8 +522,9 @@ export function nodeRects(projects: readonly Project[], children: readonly Child
     });
     if (!project.expanded) continue;
     const kids = children.filter((child) => child.projectId === project.id);
-    const slots = layoutChildren(kids);
-    kids.forEach((child, index) => {
+    const { visible, more, slotted } = visibleChildren(kids, showAll.includes(project.id));
+    const slots = layoutChildren(visible);
+    visible.forEach((child, index) => {
       const slot = slots[index] ?? columnSlot(index);
       out.push({
         target: { kind: child.kind, id: child.id },
@@ -379,6 +534,16 @@ export function nodeRects(projects: readonly Project[], children: readonly Child
         height: CHILD_HEIGHT,
       });
     });
+    if (more) {
+      const slot = columnSlot(slotted);
+      out.push({
+        target: { kind: "more", id: project.id },
+        x: project.position.x + slot.x,
+        y: project.position.y + slot.y,
+        width: CHILD_WIDTH,
+        height: CHILD_HEIGHT,
+      });
+    }
   }
   return out;
 }
@@ -387,7 +552,7 @@ function centreOf(rect: NodeRect): Position {
   return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
 }
 
-function sameNodeTarget(a: NodeTarget, b: NodeTarget): boolean {
+function sameNodeTarget(a: CanvasTarget, b: CanvasTarget): boolean {
   return a.kind === b.kind && a.id === b.id;
 }
 

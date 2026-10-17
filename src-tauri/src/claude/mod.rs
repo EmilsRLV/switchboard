@@ -1,12 +1,16 @@
 //! Read-only view of Claude Code's own files under `~/.claude`. This module never writes
-//! there. Story 2.2 needs only project discovery (`discover`); transcripts and live sessions
-//! follow in Epic 3.
+//! there. Project discovery (`discover`, Story 2.2), transcript summaries (`transcript`) and
+//! the historic sessions per project (`sessions`, Story 3.1); live sessions follow in 3.2.
 
 pub mod discover;
+pub mod sessions;
+pub mod transcript;
 
 use std::path::PathBuf;
 
 pub use discover::{ClaudeProject, decode_dir_name, list_projects};
+pub use sessions::{SessionCache, sessions_for};
+pub use transcript::{SessionSummary, summarise};
 
 /// `~/.claude`, or `None` when the platform has no home directory. Tests pass their own
 /// directory to [`list_projects`] instead.

@@ -6,7 +6,18 @@
 // what cannot run is a transient notice over the canvas top, never a banner and never a throw
 // (`runCommand` has no error UI). The two Epic 4 stubs only show what they will do.
 
-import { nearestInDirection, nearestToPoint, nodeRects, panToReveal, REVEAL_MARGIN, REVEAL_PAN_MS, type Direction, type NodeRect } from "../canvas/nodes";
+import {
+  nearestInDirection,
+  nearestToPoint,
+  nodeRects,
+  panToReveal,
+  parseFlowId,
+  REVEAL_MARGIN,
+  REVEAL_PAN_MS,
+  visibleChildren,
+  type Direction,
+  type NodeRect,
+} from "../canvas/nodes";
 import { projectOpenEditor, projectOpenFolder, projectRevealClaudeDir } from "../ipc";
 import { useCanvasStore, viewportCentre, type CanvasElement } from "../state/canvas";
 import { NOTICE_MS, sameTarget, selectedProject, useUiStore, type Size } from "../state/ui";
@@ -47,9 +58,9 @@ function describe(err: unknown): string {
 export function moveSelection(direction: Direction): boolean {
   const snapshot = useWorkspaceStore.getState().snapshot;
   if (snapshot === null) return false;
-  const rects = nodeRects(snapshot.workspace.projects, snapshot.children);
-  if (rects.length === 0) return false;
   const ui = useUiStore.getState();
+  const rects = nodeRects(snapshot.workspace.projects, snapshot.children, ui.showAll);
+  if (rects.length === 0) return false;
   const from = ui.selection === null ? undefined : rects.find((rect) => sameTarget(rect.target, ui.selection));
   const next = from === undefined ? nearestToPoint(rects, viewportCentre() ?? { x: 0, y: 0 }) : nearestInDirection(from, rects, direction);
   if (next === null) return false;
@@ -93,13 +104,60 @@ function canvasSize(element: CanvasElement | null): Size | null {
 
 /**
  * `selection.activate` (Enter): the selected node's default action. A project with children
- * toggles expand/collapse (persisted); a childless project and child cards do nothing until
- * sessions attach in Epic 3. Resolves to whether anything was done.
+ * toggles expand/collapse (persisted); a project's `more` row toggles its `show all` (UI
+ * only); a childless project and child cards do nothing (resume and fork arrive in Epic 4).
+ * Resolves to whether anything was done.
  */
 export async function activateSelection(): Promise<boolean> {
+  const ui = useUiStore.getState();
+  const snapshot = useWorkspaceStore.getState().snapshot;
+  // Only a target that is drawn right now: a `more` row that is gone, or a child hidden past
+  // the cut, does nothing.
+  if (ui.selection === null || snapshot === null) return false;
+  const drawn = nodeRects(snapshot.workspace.projects, snapshot.children, ui.showAll);
+  if (!drawn.some((rect) => sameTarget(rect.target, ui.selection))) return false;
+  if (ui.selection.kind === "more") {
+    ui.toggleShowAll(ui.selection.id);
+    return true;
+  }
   const project = selectedProject();
   if (project === null || !projectHasChildren(project.id)) return false;
   return setExpanded(project.id, !project.expanded);
+}
+
+/**
+ * A click on a node (the canvas's `onNodeClick`): close the menu and select it; on a `more`
+ * row, also show all (or fewer) of that project's children.
+ */
+export function clickNode(flowId: string): void {
+  const ui = useUiStore.getState();
+  ui.closeContextMenu();
+  const target = parseFlowId(flowId);
+  ui.select(target);
+  if (target.kind === "more") ui.toggleShowAll(target.id);
+}
+
+/**
+ * The `when` of `project.toggleShowAll`: the selected project is expanded and has more
+ * children than the column shows by default (so it has a `more` row).
+ */
+export function canToggleShowAll(): boolean {
+  const project = selectedProject();
+  if (project === null || !project.expanded) return false;
+  const children = useWorkspaceStore.getState().snapshot?.children ?? [];
+  return visibleChildren(
+    children.filter((child) => child.projectId === project.id),
+    false,
+  ).more;
+}
+
+/** `project.toggleShowAll`: show all (or fewer) of the selected project's children. */
+export function toggleShowAllOfSelected(): boolean {
+  if (!canToggleShowAll()) return false;
+  const project = selectedProject();
+  if (project === null) return false;
+  useUiStore.getState().toggleShowAll(project.id);
+  return true;
 }
 
 /** `project.newSession`: a stub until Epic 4; says so. */

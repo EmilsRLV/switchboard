@@ -25,6 +25,7 @@ const {
   NEW_SESSION_NOTICE,
   PLAIN_TERMINAL_NOTICE,
   activateSelection,
+  clickNode,
   moveSelection,
   newSessionStub,
   notify,
@@ -39,7 +40,7 @@ function project(id: string, x: number, y: number, expanded = false): Project {
 }
 
 function stub(index: number, projectId: string, position: Position | null = null): ChildNode {
-  return { id: `stub-${index}-${projectId}`, projectId, kind: "session", label: `session ${index}`, detail: "stub", position };
+  return { id: `stub-${index}-${projectId}`, projectId, kind: "session", label: `session ${index}`, detail: "stub", position, session: null, branchId: null };
 }
 
 function snapshot(projects: Project[], children: ChildNode[], revision = 1): WorkspaceSnapshot {
@@ -323,5 +324,80 @@ describe("notices", () => {
     expect(useWorkspaceStore.getState().loadError).toBeNull();
     vi.advanceTimersByTime(3000);
     expect(useUiStore.getState().notice).toBeNull();
+  });
+});
+
+describe("show all from the keyboard", () => {
+  const many = (count: number): ChildNode[] => Array.from({ length: count }, (_, i) => stub(i + 1, "ide"));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useWorkspaceStore.setState({ snapshot: snapshot([project("ide", 80, 80, true)], many(15)), loadError: null });
+    useUiStore.setState({ pane: null, flashed: [], selection: null, contextMenu: null, notice: null, showAll: [] });
+    useCanvasStore.setState({ instance: null, element: null, dragging: {} });
+  });
+
+  it("↓ from the tenth child reaches the more row; the hidden ones are skipped", () => {
+    useUiStore.getState().select({ kind: "session", id: "stub-10-ide" });
+    expect(moveSelection("down")).toBe(true);
+    expect(selection()).toEqual({ kind: "more", id: "ide" });
+    expect(moveSelection("down")).toBe(false);
+  });
+
+  it("Enter on the more row toggles show all, and again shows fewer; nothing is sent to Rust", async () => {
+    useUiStore.getState().select({ kind: "more", id: "ide" });
+    await expect(activateSelection()).resolves.toBe(true);
+    expect(useUiStore.getState().showAll).toEqual(["ide"]);
+    // Now every child is drawn and reachable, the row after the fifteenth.
+    useUiStore.getState().select({ kind: "session", id: "stub-15-ide" });
+    expect(moveSelection("down")).toBe(true);
+    expect(selection()).toEqual({ kind: "more", id: "ide" });
+    await expect(activateSelection()).resolves.toBe(true);
+    expect(useUiStore.getState().showAll).toEqual([]);
+    expect(workspaceSetExpanded).not.toHaveBeenCalled();
+  });
+
+  it("Enter on a session does nothing (resume and fork arrive in Epic 4)", async () => {
+    useUiStore.getState().select({ kind: "session", id: "stub-1-ide" });
+    await expect(activateSelection()).resolves.toBe(false);
+    expect(useUiStore.getState().showAll).toEqual([]);
+    expect(workspaceSetExpanded).not.toHaveBeenCalled();
+  });
+
+  it("Enter on a selection that is no longer drawn does nothing", async () => {
+    // A more row whose project now has ten children (no row any more).
+    useUiStore.getState().select({ kind: "more", id: "ide" });
+    useWorkspaceStore.setState({ snapshot: snapshot([project("ide", 80, 80, true)], many(10)) });
+    await expect(activateSelection()).resolves.toBe(false);
+    expect(useUiStore.getState().showAll).toEqual([]);
+    // A more row of a collapsed project.
+    useWorkspaceStore.setState({ snapshot: snapshot([project("ide", 80, 80, false)], many(15)) });
+    await expect(activateSelection()).resolves.toBe(false);
+    expect(useUiStore.getState().showAll).toEqual([]);
+    // A child hidden past the cut.
+    useWorkspaceStore.setState({ snapshot: snapshot([project("ide", 80, 80, true)], many(15)) });
+    useUiStore.getState().select({ kind: "session", id: "stub-12-ide" });
+    await expect(activateSelection()).resolves.toBe(false);
+    // A project that is gone.
+    useUiStore.getState().select({ kind: "project", id: "gone" });
+    await expect(activateSelection()).resolves.toBe(false);
+    expect(workspaceSetExpanded).not.toHaveBeenCalled();
+  });
+
+  it("clickNode selects the node and closes the menu; on a more row it also toggles show all", () => {
+    useUiStore.setState({ contextMenu: { x: 1, y: 1 } });
+    clickNode("session:stub-1-ide");
+    expect(selection()).toEqual({ kind: "session", id: "stub-1-ide" });
+    expect(useUiStore.getState().contextMenu).toBeNull();
+    expect(useUiStore.getState().showAll).toEqual([]);
+
+    clickNode("more:ide");
+    expect(selection()).toEqual({ kind: "more", id: "ide" });
+    expect(useUiStore.getState().showAll).toEqual(["ide"]);
+    clickNode("more:ide");
+    expect(useUiStore.getState().showAll).toEqual([]);
+
+    clickNode("ide");
+    expect(selection()).toEqual({ kind: "project", id: "ide" });
   });
 });

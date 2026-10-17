@@ -16,6 +16,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
+use crate::claude::SessionCache;
 use crate::git::ProjectStatus;
 use crate::graph::WorkspaceState;
 use detect::{ProcessRunner, Runner, Search};
@@ -318,6 +319,12 @@ pub struct AppState {
     /// Stub session children per project (`SWITCHBOARD_STUB_CHILDREN`, Story 2.3), set once
     /// in `setup` before `graph::initialise` copies it into the workspace state. Unset means 0.
     pub stub_children: OnceLock<usize>,
+    /// Transcript summaries cached by `(len, mtime)` (`crate::claude::sessions`). Memory only;
+    /// locked only while no file is being read.
+    pub sessions: Mutex<SessionCache>,
+    /// Serialises session discovery passes (the timer's and the ones after an add or remove),
+    /// so an older pass can never overwrite a newer result.
+    pub sessions_lock: tauri::async_runtime::Mutex<()>,
 }
 
 impl AppState {

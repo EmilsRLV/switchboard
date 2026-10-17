@@ -78,6 +78,7 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
                 let _ = app.state::<AppState>().claude_home.set(home);
             }
             git::poll::start(app.handle().clone());
+            claude::sessions::start(app.handle().clone());
             Ok(())
         })
 }
@@ -627,6 +628,49 @@ mod tests {
         assert_eq!(rows[0]["on_canvas"], false);
         assert_eq!(rows[1]["dir"], "X--two");
         assert_eq!(rows[1]["on_canvas"], true);
+    }
+
+    #[test]
+    fn a_sessions_pass_fills_in_the_projects_children_from_the_injected_home_and_is_quiet_when_unchanged() {
+        let (app, _webview, dir) = app_with_ide();
+        app.state::<super::AppState>().write_workspace().stub_children = 0;
+        let home = tempfile::tempdir().unwrap();
+        let cwd = "/p/ide";
+        let claude_dir = home.path().join("projects").join("-p-ide");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        for (id, ts) in [("s-old", "2026-10-15T10:00:00.000Z"), ("s-new", "2026-10-16T10:00:00.000Z")] {
+            let line = serde_json::json!({ "type": "user", "cwd": cwd, "timestamp": ts, "gitBranch": "main", "message": { "content": format!("prompt {id}") } });
+            std::fs::write(claude_dir.join(format!("{id}.jsonl")), format!("{line}\n")).unwrap();
+        }
+        let before = std::fs::read_to_string(dir.path().join("workspace.json")).ok();
+
+        // No Claude home yet: a pass reads nothing and changes nothing.
+        tauri::async_runtime::block_on(super::claude::sessions::refresh(app.handle()));
+        assert!(app.state::<super::AppState>().read_workspace().snapshot().children.is_empty());
+
+        app.state::<super::AppState>().claude_home.set(home.path().to_path_buf()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            use tauri::Listener;
+            app.listen_any(super::graph::CHANGED_EVENT, move |event| {
+                let _ = tx.send(event.payload().to_string());
+            });
+        }
+        tauri::async_runtime::block_on(super::claude::sessions::refresh(app.handle()));
+        let snapshot = app.state::<super::AppState>().read_workspace().snapshot();
+        let ids: Vec<&str> = snapshot.children.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["s-new", "s-old"], "newest first");
+        assert_eq!(snapshot.children[0].label, "prompt s-new");
+        assert_eq!(snapshot.children[0].session.as_ref().unwrap().branch.as_deref(), Some("main"));
+        assert_eq!(snapshot.revision, 1);
+        let emitted: serde_json::Value = serde_json::from_str(&rx.try_recv().expect("workspace://changed")).unwrap();
+        assert_eq!(emitted["children"][0]["session"]["messages"], 1);
+        assert_eq!(std::fs::read_to_string(dir.path().join("workspace.json")).ok(), before, "not written");
+
+        tauri::async_runtime::block_on(super::claude::sessions::refresh(app.handle()));
+        assert!(rx.try_recv().is_err(), "unchanged: no event");
+        assert_eq!(app.state::<super::AppState>().read_workspace().revision, 1);
+        assert_eq!(app.state::<super::AppState>().sessions.lock().unwrap().parses, 2, "cache hits");
     }
 
     #[test]

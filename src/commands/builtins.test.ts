@@ -31,7 +31,7 @@ describe("built-in commands", () => {
     useWorkspaceStore.setState({ snapshot: null, loadError: null });
     usePaletteStore.setState({ isOpen: false, query: "", selected: 0 });
     useSettingsStore.setState({ snapshot: null, loadError: null, actionBusy: false, actionError: null });
-    useUiStore.setState({ pane: null, flashed: [], selection: null, contextMenu: null, notice: null });
+    useUiStore.setState({ pane: null, flashed: [], selection: null, contextMenu: null, notice: null, showAll: [] });
     useImportStore.getState().reset();
     useCanvasStore.setState({ instance: null, element: null, dragging: {} });
     registerBuiltins();
@@ -46,7 +46,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the twenty-seven commands with the spec's keybindings", () => {
+  it("register the twenty-eight commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "app.quit",
       "binaries.redetect",
@@ -66,6 +66,7 @@ describe("built-in commands", () => {
       "project.remove",
       "project.revealClaudeDir",
       "project.terminal",
+      "project.toggleShowAll",
       "selection.activate",
       "selection.clear",
       "selection.move.down",
@@ -105,7 +106,7 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the seventeen actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the eighteen actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "app.quit",
       "binaries.redetect",
@@ -122,12 +123,13 @@ describe("built-in commands", () => {
       "project.remove",
       "project.revealClaudeDir",
       "project.terminal",
+      "project.toggleShowAll",
       "settings.open",
       "settings.reveal",
     ]);
   });
 
-  it("exactly the nine project commands are tagged for the node menu, and the menu lists none without a selection", () => {
+  it("exactly the ten project commands are tagged for the node menu, and the menu lists none without a selection", () => {
     expect(
       listCommands()
         .filter((c) => c.menu === "node")
@@ -143,13 +145,14 @@ describe("built-in commands", () => {
       "project.remove",
       "project.revealClaudeDir",
       "project.terminal",
+      "project.toggleShowAll",
     ]);
     expect(nodeMenuCommands()).toEqual([]);
   });
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(27);
+    expect(listCommands()).toHaveLength(28);
   });
 
   const PROJECT_ACTIONS = [
@@ -217,6 +220,34 @@ describe("built-in commands", () => {
       "Re-layout children",
       "Remove from canvas",
     ]);
+  });
+
+  it("Show all sessions is offered only for a selected expanded project with more than ten children, and toggles it", () => {
+    const enabled = () => listCommands({ enabledOnly: true }).map((c) => c.id);
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(true)], stubs(11)) });
+    expect(enabled()).not.toContain("project.toggleShowAll");
+    expect(runCommand("project.toggleShowAll")).toBe(false);
+
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    expect(enabled()).toContain("project.toggleShowAll");
+    expect(nodeMenuCommands().map((c) => [c.title, c.menuOrder])).toContainEqual(["Show all sessions", 32]);
+    expect(runCommand("project.toggleShowAll")).toBe(true);
+    expect(useUiStore.getState().showAll).toEqual(["ide"]);
+    expect(runCommand("project.toggleShowAll")).toBe(true);
+    expect(useUiStore.getState().showAll).toEqual([]);
+
+    // Collapsed, or ten or fewer: not offered. Dragged children still count toward the total.
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(false)], stubs(11)) });
+    expect(enabled()).not.toContain("project.toggleShowAll");
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(true)], stubs(10)) });
+    expect(enabled()).not.toContain("project.toggleShowAll");
+    const dragged = stubs(11).map((c, i) => (i === 0 ? { ...c, position: { x: 400, y: 0 } } : c));
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(true)], dragged) });
+    expect(enabled()).toContain("project.toggleShowAll");
+    // A child selected: not offered either.
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(true)], stubs(11)) });
+    useUiStore.getState().select({ kind: "session", id: "stub-1-ide" });
+    expect(enabled()).not.toContain("project.toggleShowAll");
   });
 
   it("the menu's fixed order has a separator wherever the tens digit of menuOrder changes", () => {
@@ -643,6 +674,8 @@ function stubs(count: number, projectId = "ide"): ChildNode[] {
     label: `session ${i + 1}`,
     detail: "stub",
     position: null,
+    session: null,
+    branchId: null,
   }));
 }
 

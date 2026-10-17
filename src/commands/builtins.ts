@@ -17,12 +17,14 @@ import { hasSelection, isContextMenuOpen, isPaneOpen, selectedProject, useUiStor
 import { projectHasChildren } from "../state/workspace";
 import {
   activateSelection,
+  canToggleShowAll,
   moveSelection,
   newSessionStub,
   openProjectFolder,
   openProjectInEditor,
   plainTerminalStub,
   revealClaudeProjectDir,
+  toggleShowAllOfSelected,
 } from "./navigation";
 import { relayoutChildren, removeProject, setExpanded } from "./nodes";
 import { closeOpenPane, openPane, togglePane } from "./panes";
@@ -241,6 +243,16 @@ export function builtinCommands(): Command[] {
       menuOrder: 31,
       when: hasSelectedProject,
       run: withSelectedProject(relayoutChildren),
+    },
+    {
+      id: "project.toggleShowAll",
+      title: "Show all sessions",
+      menu: "node",
+      menuOrder: 32,
+      when: canToggleShowAll,
+      run: () => {
+        toggleShowAllOfSelected();
+      },
     },
     {
       id: "project.remove",

@@ -83,17 +83,18 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | `ctrl+0` | Fit view: fit every node into the canvas; with no nodes, back to the home viewport (`x 0, y 0, zoom 1`). |
 | `ctrl+q` | Quit. |
 | `←` `→` `↑` `↓` | Move the selection to the nearest node in that direction (see [Keyboard navigation](#keyboard-navigation)); with nothing selected, select the node nearest the middle of the view. Only while no palette, pane or menu is open: those keep their own arrow handling. |
-| Enter | The selected node's default action: a project with children expands or collapses (persisted); a childless project or a child card does nothing yet (sessions attach in Epic 3). Same condition as the arrows. |
+| Enter | The selected node's default action: a project with children expands or collapses (persisted); a `show all (N)` / `show fewer` row toggles the column (see [Sessions](#sessions)); a childless project or a child card does nothing yet (resume and fork arrive in Epic 4). Same condition as the arrows. |
 | Esc | One step back, in this order: closes the node context menu, else the palette, else the open pane (settings or import), else clears the selected node. With all of them open, four presses. |
 
 `n`, `e` and `/` are reserved for later epics and deliberately unbound; so is Delete (removal is a menu action).
 
-The palette lists seventeen commands: Toggle command palette, Add project folder…, Import from Claude…, Open
+The palette lists eighteen commands: Toggle command palette, Add project folder…, Import from Claude…, Open
 settings, Reveal settings file (only when the file's location is known), Re-detect binaries (not while one
 runs), Fit view (once the canvas has mounted; the two project commands need it too), Quit, and, while a
 project card is selected, the project actions: New session…, Plain terminal…, Open in external editor, Open
 in file manager, Reveal Claude project dir, Re-layout children, Remove from canvas, plus exactly one of Expand
-project / Collapse project (neither for a project without children). The palette sorts by title. The key-only
+project / Collapse project (neither for a project without children) and Show all sessions (only for an
+expanded project with more than ten children). The palette sorts by title. The key-only
 carriers (the `ctrl+,` toggle, the four Esc commands, the four arrows and Enter) are registered but hidden from
 the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron on a card runs
 Expand/Collapse, and the context menu lists the commands tagged for it in its own fixed order. Keybindings are
@@ -192,18 +193,45 @@ and persists `expanded`. Expanded, the children appear in a **column** under the
 card's left edge, the first 12 px under it (the card is 240 × 80, so the first child's top-left is at
 `(16, 92)` relative to the card), each child 208 × 40 with 8 px gaps, in a stable order (sessions in list
 order, then branches). Children move with their parent. A child **dragged** out of the column keeps that
-spot, relative to the parent, across restarts; **Re-layout children** returns every child of that project
+spot, relative to the parent, across restarts, and leaves its slot empty; **Re-layout children** returns every child of that project
 to its slot.
 
-Children are derived by Rust from `sessions` and `branches` and carried on the snapshot as a flat
-type-independent list (`children: [{ id, projectId, kind: session|branch, label, detail, position }]`,
-`position: null` for a child in its slot). Until Epics 3 and 5 bring real sessions and branches there are
-none, so the layout can be tried with **stub children**: set `SWITCHBOARD_STUB_CHILDREN=n` (0–50, read once at
-startup) and every project gets `n` session stubs (`session 1`…`session n`, detail `stub`). A value above 50 is
-clamped to 50; a blank, non-numeric or negative value means 0. Launch again without the variable and the stubs
-are gone, while a project's persisted `expanded: true` lingers harmlessly (no chevron, nothing to show) until
-real children arrive. Stubs themselves are never written to the file; dragging one stores a `sessions[]` entry
-holding just its id, project and position, and Re-layout removes such an entry again when nothing else is in it.
+Children are derived by Rust from the discovered sessions (see [Sessions](#sessions)), `sessions` and
+`branches` and carried on the snapshot as a flat type-independent list (`children: [{ id, projectId, kind:
+session|branch, label, detail, position, session, branchId }]`, `position: null` for a child in its slot,
+`session` the card's facts for a discovered session and `null` otherwise). Until Epic 5 brings branches, the
+layout can also be tried with **stub children**: set `SWITCHBOARD_STUB_CHILDREN=n` (0–50, read once at startup)
+and every project gets `n` session stubs (`session 1`…`session n`, detail `stub`) after its real sessions. A
+value above 50 is clamped to 50; a blank, non-numeric or negative value means 0. Launch again without the
+variable and the stubs are gone, while a project's persisted `expanded: true` lingers harmlessly (no chevron,
+nothing to show) until real children arrive. Stubs themselves are never written to the file; dragging one
+stores a `sessions[]` entry holding just its id, project and position, and Re-layout removes such an entry
+again when nothing else is in it.
+
+### Sessions
+
+An expanded project lists the **Claude Code sessions already run in its folder**, one child card each. They come
+from Claude's own transcripts: every `~/.claude/projects/<dir>` whose working directory (read from its newest
+transcript, as the import pane does) is the project folder contributes its top-level `*.jsonl` files, one per
+session, keyed by the session id (the file name); per-session folders (`subagents/`, `tool-results/`,
+`memory/`) are not sessions. Several dirs naming the same folder are merged. Each card shows the **title** (the
+`/rename` title, else Claude's own `ai-title`, else the first prompt cut to 60 characters, else `(untitled)`)
+and a muted meta line, `branch · N msgs · 3h`: the latest git branch the transcript names (left out when
+none), prompts plus assistant replies, and the time since the last record (`now`, `5m`, `3h`, `2d`, then
+`12 Oct` or `12 Oct 2025`, updated each minute). Hovering shows the full title and the exact start and
+last-active times. The order is pinned sessions first, then the most recently started (so running sessions
+keep their slots); the collapsed badge counts them all. Past ten, a **`show all (N)`** row follows the tenth
+card; clicking it, Enter while it is selected, or **Show all sessions** in the palette or the
+card's menu shows the rest and the row becomes **`show fewer`** (a per-project view choice, not saved). A
+session card can be dragged like any child and keeps its spot; a dragged child past the tenth is drawn even
+while the rest are hidden. Enter on a session does nothing yet (resume and fork arrive in Epic 4).
+
+Reading is **read-only**: nothing under `~/.claude` is written, renamed, locked or created. Transcripts are
+streamed line by line on a background thread, and unknown record types, broken lines and a half-written last
+line are skipped. The results are cached in memory only, by file size and modification time. Every **5 s** a
+pass re-checks the files and re-reads only those that changed, so a running session's count and age stay
+current and a new session appears on its own; adding or removing a project runs a pass at once. A pass that
+finds nothing new changes nothing on screen.
 
 ### The project card
 

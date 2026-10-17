@@ -175,3 +175,35 @@ describe("ui store", () => {
     expect(clampToArea({ x: 10, y: 10 }, { width: 2000, height: 1000 }, within)).toEqual({ x: 0, y: 0 });
   });
 });
+
+describe("showAll", () => {
+  beforeEach(() => {
+    useUiStore.setState({ showAll: [] });
+  });
+
+  it("toggleShowAll adds and removes a project id, reference-stable for the others, empty after the last", () => {
+    const empty = useUiStore.getState().showAll;
+    expect(empty).toEqual([]);
+    useUiStore.getState().toggleShowAll("a");
+    useUiStore.getState().toggleShowAll("b");
+    expect(useUiStore.getState().showAll).toEqual(["a", "b"]);
+    useUiStore.getState().toggleShowAll("a");
+    expect(useUiStore.getState().showAll).toEqual(["b"]);
+    useUiStore.getState().toggleShowAll("b");
+    const cleared = useUiStore.getState().showAll;
+    expect(cleared).toEqual([]);
+    useUiStore.getState().toggleShowAll("c");
+    useUiStore.getState().toggleShowAll("c");
+    expect(useUiStore.getState().showAll).toBe(cleared);
+  });
+
+  it("a more row can be selected like a node", () => {
+    useUiStore.getState().select({ kind: "more", id: "a" });
+    expect(useUiStore.getState().selection).toEqual({ kind: "more", id: "a" });
+    const held = useUiStore.getState().selection;
+    useUiStore.getState().select({ kind: "more", id: "a" });
+    expect(useUiStore.getState().selection).toBe(held);
+    useUiStore.getState().select({ kind: "project", id: "a" });
+    expect(useUiStore.getState().selection).toEqual({ kind: "project", id: "a" });
+  });
+});

@@ -98,13 +98,14 @@ export async function removeProject(projectId: string): Promise<boolean> {
   const children = useWorkspaceStore.getState().snapshot?.children ?? [];
   const pointedAtIt =
     selection !== null &&
-    (selection.kind === "project"
+    (selection.kind === "project" || selection.kind === "more"
       ? selection.id === projectId
       : children.some((child) => child.projectId === projectId && child.kind === selection.kind && child.id === selection.id));
   const removed = await mutate("remove", () => workspaceRemoveProject(projectId));
-  if (removed && pointedAtIt) {
+  if (removed) {
     const ui = useUiStore.getState();
-    if (sameTarget(ui.selection, selection)) ui.clearSelection();
+    if (pointedAtIt && sameTarget(ui.selection, selection)) ui.clearSelection();
+    if (ui.showAll.includes(projectId)) ui.toggleShowAll(projectId);
   }
   return removed;
 }

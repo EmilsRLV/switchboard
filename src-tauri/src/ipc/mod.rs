@@ -129,8 +129,13 @@ pub async fn workspace_add_projects<R: Runtime>(
         .map_err(|err| err.to_string())??;
     if !result.added.is_empty() {
         let ids = result.added.clone();
+        let sessions_app = app.clone();
         tauri::async_runtime::spawn(async move {
             git::poll::refresh_ids(&app, &ids).await;
+        });
+        // The new cards' sessions fill in now, not at the next 5 s tick.
+        tauri::async_runtime::spawn(async move {
+            claude::sessions::refresh(&sessions_app).await;
         });
     }
     Ok(result)
@@ -176,6 +181,11 @@ pub async fn workspace_relayout_children<R: Runtime>(app: AppHandle<R>, project_
 pub async fn workspace_remove_project<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<WorkspaceSnapshot, String> {
     let snapshot = graph::remove_project(&app, &project_id)?;
     git::poll::forget(&app, &project_id).await;
+    // Drop the removed project's discovered sessions now, not at the next tick.
+    let sessions_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        claude::sessions::refresh(&sessions_app).await;
+    });
     Ok(snapshot)
 }
 

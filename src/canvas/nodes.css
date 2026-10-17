@@ -24,7 +24,8 @@
 }
 
 .project-node.is-selected,
-.child-node.is-selected {
+.child-node.is-selected,
+.more-node.is-selected {
   outline: var(--line) solid var(--focus);
   outline-offset: 2px;
 }
@@ -193,4 +194,47 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* A discovered session: the title over a muted mono meta line (`branch · N msgs · 3h`). */
+.child-node-two-line {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0;
+  line-height: 1.25;
+}
+
+.child-node-two-line .child-node-label {
+  flex: none;
+}
+
+.child-node-meta {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- the `show all (N)` / `show fewer` row after the tenth child: muted, no border --------- */
+
+.more-node {
+  box-sizing: border-box;
+  width: 208px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  padding: 0 0.6rem;
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.more-node:hover {
+  color: var(--fg);
 }

@@ -16,6 +16,7 @@ import {
   workspaceRemoveProject,
   workspaceSetExpanded,
   workspaceSetViewport,
+  type ChildNode,
   type WorkspaceSnapshot,
 } from "./index";
 
@@ -105,6 +106,25 @@ describe("workspace command wrappers", () => {
     const viewport = { x: -120, y: 40, zoom: 1.5 };
     await expect(workspaceSetViewport(viewport)).resolves.toBe(snapshot);
     expect(invoke).toHaveBeenCalledWith("workspace_set_viewport", { viewport }, undefined);
+  });
+
+  it("a session child carries its meta and branch id as Rust serialises them", async () => {
+    const child: ChildNode = {
+      id: "0b7c",
+      projectId: "p1",
+      kind: "session",
+      label: "Fix the login bug",
+      detail: null,
+      position: null,
+      session: { startedAt: "2026-10-16T10:00:00.000Z", lastActive: "2026-10-16T11:00:00.000Z", branch: "main", messages: 4 },
+      branchId: null,
+    };
+    const withChild: WorkspaceSnapshot = { ...snapshot, children: [child] };
+    const invoke = vi.fn().mockResolvedValue(JSON.parse(JSON.stringify(withChild)));
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    const got = await workspaceGet();
+    expect(got.children[0]?.session).toEqual(child.session);
+    expect(got.children[0]?.branchId).toBeNull();
   });
 
   it("workspaceGet invokes workspace_get with no arguments of its own", async () => {

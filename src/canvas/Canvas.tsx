@@ -11,6 +11,7 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
+import { clickNode } from "../commands/navigation";
 import { moveNode, openContextMenuFor } from "../commands/nodes";
 import { dropProjects } from "../commands/projects";
 import {
@@ -26,7 +27,7 @@ import { HOME_VIEWPORT, clientToFlow, useCanvasStore, type CanvasElement } from 
 import { useStatusStore } from "../state/status";
 import { useUiStore } from "../state/ui";
 import { persistViewport, useWorkspaceStore } from "../state/workspace";
-import { BranchNode, SessionNode } from "./ChildNode";
+import { BranchNode, MoreNode, SessionNode } from "./ChildNode";
 import { MAX_ZOOM, MIN_ZOOM } from "./limits";
 import {
   DRAG_THRESHOLD,
@@ -46,7 +47,7 @@ import "./nodes.css";
 const NO_PROJECTS: readonly Project[] = [];
 const NO_CHILDREN: readonly ChildNode[] = [];
 const NO_EDGES: never[] = [];
-const NODE_TYPES: NodeTypes = { project: ProjectNode, session: SessionNode, branch: BranchNode };
+const NODE_TYPES: NodeTypes = { project: ProjectNode, session: SessionNode, branch: BranchNode, more: MoreNode };
 
 /** Pan with the middle (1) or right (2) button; the left button pans only while Space is held. */
 const PAN_BUTTONS = [1, 2];
@@ -159,15 +160,16 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
   const statuses = useStatusStore((s) => s.statuses);
   const flashed = useUiStore((s) => s.flashed);
   const selection = useUiStore((s) => s.selection);
+  const showAll = useUiStore((s) => s.showAll);
   const dragging = useCanvasStore((s) => s.dragging);
 
   // The previous derivation, so unchanged nodes keep their identity (and skip re-rendering).
   const previousRef = useRef<CanvasFlowNode[]>([]);
   const nodes = useMemo(() => {
-    const next = toFlowNodes({ projects, statuses, flashed, children, selection, dragging }, previousRef.current);
+    const next = toFlowNodes({ projects, statuses, flashed, children, selection, dragging, showAll }, previousRef.current);
     previousRef.current = next;
     return next;
-  }, [projects, statuses, flashed, children, selection, dragging]);
+  }, [projects, statuses, flashed, children, selection, dragging, showAll]);
 
   // The viewport most recently sent to Rust, acknowledged or not: a gesture that ends where
   // an in-flight write is going is skipped; one that comes back to the stored viewport goes.
@@ -215,13 +217,14 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
 
   const onNodeDragStop = useCallback<OnNodeDrag<CanvasFlowNode>>((_event, node) => {
     const [target, position] = dropTarget(node.id, useCanvasStore.getState().dragging, node.position);
+    // A `more` row is not draggable and has no position to store.
+    if (target.kind === "more") return;
     void moveNode(target, position);
   }, []);
 
+  // A click selects; on a `more` row it also shows all (or fewer) of the project's children.
   const onNodeClick = useCallback<NodeMouseHandler<CanvasFlowNode>>((_event, node) => {
-    const ui = useUiStore.getState();
-    ui.closeContextMenu();
-    ui.select(parseFlowId(node.id));
+    clickNode(node.id);
   }, []);
 
   const onPaneClick = useCallback(() => {

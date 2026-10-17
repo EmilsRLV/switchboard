@@ -13,3 +13,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-5-visual-language.md`
   summary: `Banners` mounts its `role="status"` live region only together with its first banner, which some screen readers do not announce (pre-existing since Story 1.3).
   evidence: `Banners` returns `null` when empty; `Notice` shows the fix (an always-present region with conditional rows).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-1-historic-sessions-from-transcripts.md`
+  summary: No test proves that `workspace_add_projects` (and `workspace_remove_project`) trigger an immediate sessions pass through the IPC path; deleting the spawn keeps CI green (the 5 s timer hides it).
+  evidence: The IPC wire tests never set `claude_home`; add one that sets a temp home with a transcript, invokes the command and waits (bounded) for `workspace://changed` with the session child.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-1-historic-sessions-from-transcripts.md`
+  summary: `.session-aliases` in Claude project dirs is not read; the epic context calls it a list of linked dirs (unverified medium).
+  evidence: On this machine each such file holds one short id-like line; settle its meaning (linked dirs, or a session alias) before feeding it into the dir → cwd match.

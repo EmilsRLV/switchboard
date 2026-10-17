@@ -35,6 +35,8 @@ import {
   type NodeRect,
   type ProjectFlowNode,
 } from "./nodes";
+import { SHOW_LIMIT, formatAge, moreFlowId, moreLabel, sessionHoverText, sessionMetaLine, visibleChildren } from "./nodes";
+import type { SessionMeta } from "../ipc";
 
 function project(id: string, path: string, x = 0, y = 0, expanded = false): Project {
   return {
@@ -49,7 +51,7 @@ function project(id: string, path: string, x = 0, y = 0, expanded = false): Proj
 }
 
 function stub(index: number, projectId: string, position: ChildNode["position"] = null): ChildNode {
-  return { id: `stub-${index}-${projectId}`, projectId, kind: "session", label: `session ${index}`, detail: "stub", position };
+  return { id: `stub-${index}-${projectId}`, projectId, kind: "session", label: `session ${index}`, detail: "stub", position, session: null, branchId: null };
 }
 
 function inputs(over: Partial<FlowInputs> = {}): FlowInputs {
@@ -134,7 +136,7 @@ describe("toFlowNodes", () => {
 
   it("branch children come as branch nodes with their own flow id", () => {
     const expanded = [project("a", "/p/a", 0, 0, true)];
-    const branch: ChildNode = { id: "br1", projectId: "a", kind: "branch", label: "main", detail: "/p/a/.worktrees/x", position: null };
+    const branch: ChildNode = { id: "br1", projectId: "a", kind: "branch", label: "main", detail: "/p/a/.worktrees/x", position: null, session: null, branchId: null };
     const nodes = toFlowNodes(inputs({ projects: expanded, children: [stub(1, "a"), branch] }));
     expect(nodes[2]?.id).toBe("branch:br1");
     expect(nodes[2]?.type).toBe("branch");
@@ -442,7 +444,7 @@ describe("nodeRects", () => {
   });
 
   it("leaves out the children of a collapsed project, and a branch child keeps its kind", () => {
-    const branch: ChildNode = { id: "br", projectId: "projects", kind: "branch", label: "main", detail: null, position: null };
+    const branch: ChildNode = { id: "br", projectId: "projects", kind: "branch", label: "main", detail: null, position: null, session: null, branchId: null };
     const rects = nodeRects([ideAt(false), { ...projectsAt, expanded: true }], [...matrixChildren, branch]);
     expect(rects.map((r) => r.target)).toEqual([
       { kind: "project", id: "ide" },
@@ -538,5 +540,185 @@ describe("panToReveal", () => {
     expect(panToReveal(wide, { x: -100, y: 0, zoom: 1 }, size)).toEqual({ x: 16, y: 0, zoom: 1 });
     // Once there, a repeated reveal is a no-op (no alternating).
     expect(panToReveal(wide, { x: 16, y: 0, zoom: 1 }, size)).toBeNull();
+  });
+});
+
+function session(id: string, projectId: string, lastActive = "2026-10-16T10:00:00.000Z", meta: Partial<SessionMeta> = {}): ChildNode {
+  return {
+    id,
+    projectId,
+    kind: "session",
+    label: `title ${id}`,
+    detail: null,
+    position: null,
+    session: { startedAt: "2026-10-16T09:00:00.000Z", lastActive, branch: "main", messages: 3, ...meta },
+    branchId: null,
+  };
+}
+
+function sessions(count: number, projectId: string): ChildNode[] {
+  return Array.from({ length: count }, (_, i) => session(`s${i + 1}`, projectId));
+}
+
+describe("show all: the visible-children cut and the more row", () => {
+  const ide = project("ide", "/p/ide", 100, 50, true);
+
+  it("visibleChildren keeps the first ten and flags the rest; at ten or fewer there is no more row", () => {
+    expect(SHOW_LIMIT).toBe(10);
+    const fifteen = sessions(15, "ide");
+    expect(visibleChildren(fifteen, false).visible.map((c) => c.id)).toEqual(fifteen.slice(0, 10).map((c) => c.id));
+    expect(visibleChildren(fifteen, false).more).toBe(true);
+    expect(visibleChildren(fifteen, true).visible).toHaveLength(15);
+    expect(visibleChildren(fifteen, true).more).toBe(true);
+    expect(visibleChildren(sessions(10, "ide"), false)).toEqual({ visible: sessions(10, "ide"), more: false, slotted: 10, total: 10 });
+    expect(visibleChildren(fifteen, false)).toMatchObject({ slotted: 10, total: 15 });
+    expect(visibleChildren(sessions(9, "ide"), true).more).toBe(false);
+  });
+
+  it("fifteen sessions: ten cards and `show all (15)` in the eleventh slot; the badge counts fifteen", () => {
+    const children = sessions(15, "ide");
+    const nodes = toFlowNodes(inputs({ projects: [ide], children }));
+    expect(nodes.map((n) => n.id)).toEqual(["ide", ...children.slice(0, 10).map((c) => `session:${c.id}`), "more:ide"]);
+    const more = nodes[11];
+    if (more?.type !== "more") throw new Error("no more node");
+    expect(more.parentId).toBe("ide");
+    expect(more.position).toEqual(columnSlot(10));
+    expect(more.draggable).toBe(false);
+    expect(more.data).toEqual({ projectId: "ide", total: 15, showingAll: false, selected: false });
+    expect(moreLabel(more.data.total, more.data.showingAll)).toBe("show all (15)");
+    expect(asProject(nodes[0]).data.childCount).toBe(15);
+
+    const collapsed = toFlowNodes(inputs({ projects: [{ ...ide, expanded: false }], children }));
+    expect(collapsed.map((n) => n.id)).toEqual(["ide"]);
+    expect(asProject(collapsed[0]).data.childCount).toBe(15);
+  });
+
+  it("with showAll every child shows and the row reads `show fewer` after the last one", () => {
+    const children = sessions(15, "ide");
+    const nodes = toFlowNodes(inputs({ projects: [ide], children, showAll: ["ide"] }));
+    expect(nodes).toHaveLength(1 + 15 + 1);
+    const more = nodes[16];
+    if (more?.type !== "more") throw new Error("no more node");
+    expect(more.position).toEqual(columnSlot(15));
+    expect(more.data.showingAll).toBe(true);
+    expect(moreLabel(more.data.total, more.data.showingAll)).toBe("show fewer");
+  });
+
+  it("nine sessions: no more row", () => {
+    const nodes = toFlowNodes(inputs({ projects: [ide], children: sessions(9, "ide") }));
+    expect(nodes.some((n) => n.type === "more")).toBe(false);
+  });
+
+  it("a selected more row is marked and elevated; it keeps its identity while nothing changes", () => {
+    const children = sessions(12, "ide");
+    const first = toFlowNodes(inputs({ projects: [ide], children, selection: { kind: "more", id: "ide" } }));
+    const more = first.find((n) => n.type === "more");
+    expect(more?.data).toMatchObject({ selected: true });
+    expect(more?.zIndex).toBe(ELEVATED_Z);
+    const again = toFlowNodes(inputs({ projects: [ide], children, selection: { kind: "more", id: "ide" } }), first);
+    expect(again.find((n) => n.type === "more")).toBe(more);
+    const grown = toFlowNodes(inputs({ projects: [ide], children: sessions(13, "ide"), selection: { kind: "more", id: "ide" } }), first);
+    expect(grown.find((n) => n.type === "more")).not.toBe(more);
+  });
+
+  it("a dragged child past the tenth is drawn at its position; the others past ten hide; slots stay by index", () => {
+    // Thirteen sessions; s3 (inside the ten) and s12 (past them) were dragged.
+    const children = sessions(13, "ide");
+    children[2] = { ...children[2]!, position: { x: 300, y: 0 } };
+    children[11] = { ...children[11]!, position: { x: 400, y: 0 } };
+    const nodes = toFlowNodes(inputs({ projects: [ide], children }));
+    expect(nodes.find((n) => n.id === "session:s3")?.position).toEqual({ x: 300, y: 0 });
+    expect(nodes.find((n) => n.id === "session:s4")?.position).toEqual(columnSlot(3)); // s3's slot stays empty
+    expect(nodes.find((n) => n.id === "session:s12")?.position).toEqual({ x: 400, y: 0 });
+    expect(nodes.some((n) => n.id === "session:s11")).toBe(false);
+    expect(nodes.some((n) => n.id === "session:s13")).toBe(false);
+    const more = nodes.find((n) => n.type === "more");
+    if (more?.type !== "more") throw new Error("no more node");
+    expect(more.data.total).toBe(13);
+    expect(more.position).toEqual(columnSlot(10));
+    expect(asProject(nodes[0]).data.childCount).toBe(13);
+    const rects = nodeRects([ide], children);
+    expect(rects.some((r) => r.target.id === "s12")).toBe(true);
+    expect(rects.some((r) => r.target.id === "s13")).toBe(false);
+    expect(rects.find((r) => r.target.kind === "more")?.y).toBe(50 + columnSlot(10).y);
+
+    // Showing all: every child in its own slot, the row after the last.
+    const all = toFlowNodes(inputs({ projects: [ide], children, showAll: ["ide"] }));
+    expect(all.find((n) => n.id === "session:s13")?.position).toEqual(columnSlot(12));
+    expect(all.find((n) => n.type === "more")?.position).toEqual(columnSlot(13));
+  });
+
+  it("a session card re-renders when its meta changes (age or count), not otherwise", () => {
+    const children = [session("s1", "ide")];
+    const first = toFlowNodes(inputs({ projects: [ide], children }));
+    const same = toFlowNodes(inputs({ projects: [ide], children: [session("s1", "ide")] }), first);
+    expect(same[1]).toBe(first[1]);
+    const more = toFlowNodes(inputs({ projects: [ide], children: [session("s1", "ide", undefined, { messages: 4 })] }), first);
+    expect(more[1]).not.toBe(first[1]);
+    const later = toFlowNodes(inputs({ projects: [ide], children: [session("s1", "ide", "2026-10-16T10:05:00.000Z")] }), first);
+    expect(later[1]).not.toBe(first[1]);
+    const branched = toFlowNodes(inputs({ projects: [ide], children: [{ ...session("s1", "ide"), branchId: "b1" }] }), first);
+    expect(branched[1]).not.toBe(first[1]);
+  });
+
+  it("flow ids round-trip for the more row", () => {
+    expect(moreFlowId("ide")).toBe("more:ide");
+    expect(parseFlowId("more:ide")).toEqual({ kind: "more", id: "ide" });
+    expect(flowIdOf({ kind: "more", id: "ide" })).toBe("more:ide");
+  });
+
+  it("nodeRects: the more row is a child-sized rect in its slot; hidden children are not candidates", () => {
+    const children = sessions(12, "ide");
+    const rects = nodeRects([ide], children);
+    expect(rects.map((r) => `${r.target.kind}:${r.target.id}`)).toEqual([
+      "project:ide",
+      ...children.slice(0, 10).map((c) => `session:${c.id}`),
+      "more:ide",
+    ]);
+    const slot = columnSlot(10);
+    expect(rects[11]).toEqual({ target: { kind: "more", id: "ide" }, x: 100 + slot.x, y: 50 + slot.y, width: CHILD_WIDTH, height: CHILD_HEIGHT });
+    const all = nodeRects([ide], children, ["ide"]);
+    expect(all).toHaveLength(1 + 12 + 1);
+    expect(all[13]?.y).toBe(50 + columnSlot(12).y);
+  });
+});
+
+describe("formatAge / sessionMetaLine", () => {
+  const now = Date.parse("2026-10-17T12:00:00.000Z");
+  const ago = (ms: number) => new Date(now - ms).toISOString();
+
+  it("reads now, minutes, hours and days, then the local date", () => {
+    expect(formatAge(ago(0), now)).toBe("now");
+    expect(formatAge(ago(59_000), now)).toBe("now");
+    expect(formatAge(ago(-60_000), now)).toBe("now"); // a clock a little ahead
+    expect(formatAge(ago(60_000), now)).toBe("1m");
+    expect(formatAge(ago(5 * 60_000 + 30_000), now)).toBe("5m");
+    expect(formatAge(ago(59 * 60_000), now)).toBe("59m");
+    expect(formatAge(ago(3 * 3_600_000), now)).toBe("3h");
+    expect(formatAge(ago(23 * 3_600_000 + 59 * 60_000), now)).toBe("23h");
+    expect(formatAge(ago(2 * 86_400_000), now)).toBe("2d");
+    expect(formatAge(ago(6 * 86_400_000), now)).toBe("6d");
+    // A week and more: the local date, with the year only when it differs from now's.
+    const old = new Date(2026, 9, 1, 12, 0, 0).getTime();
+    expect(formatAge(new Date(old).toISOString(), new Date(2026, 9, 12, 12).getTime())).toBe("1 Oct");
+    const lastYear = new Date(2025, 9, 12, 12, 0, 0).getTime();
+    expect(formatAge(new Date(lastYear).toISOString(), now)).toBe("12 Oct 2025");
+    expect(formatAge("not a time", now)).toBe("?");
+  });
+
+  it("the meta line is branch · N msgs · age, without the branch when there is none", () => {
+    const meta: SessionMeta = { startedAt: ago(7_200_000), lastActive: ago(3 * 3_600_000), branch: "master", messages: 12 };
+    expect(sessionMetaLine(meta, now)).toBe("master · 12 msgs · 3h");
+    expect(sessionMetaLine({ ...meta, branch: null }, now)).toBe("12 msgs · 3h");
+    expect(sessionMetaLine({ ...meta, branch: "", messages: 1 }, now)).toBe("1 msg · 3h");
+  });
+
+  it("the hover text carries the full title and both times", () => {
+    const meta: SessionMeta = { startedAt: "2026-10-16T09:00:00.000Z", lastActive: "2026-10-16T10:00:00.000Z", branch: null, messages: 0 };
+    const text = sessionHoverText("A very long title that the card cuts", meta);
+    const lines = text.split("\n");
+    expect(lines[0]).toBe("A very long title that the card cuts");
+    expect(lines[1]).toBe(`started ${new Date("2026-10-16T09:00:00.000Z").toLocaleString()}`);
+    expect(lines[2]).toBe(`last active ${new Date("2026-10-16T10:00:00.000Z").toLocaleString()}`);
   });
 });

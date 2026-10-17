@@ -21,7 +21,7 @@ const workspaceRemoveProject = vi.mocked(ipc.workspaceRemoveProject);
 const ide: Project = { id: "ide", path: "/p/ide", label: "ide", position: { x: 0, y: 0 }, expanded: false, color: null, launchDefaults: null };
 
 function stub(index: number, position: ChildNode["position"] = null): ChildNode {
-  return { id: `stub-${index}-ide`, projectId: "ide", kind: "session", label: `session ${index}`, detail: "stub", position };
+  return { id: `stub-${index}-ide`, projectId: "ide", kind: "session", label: `session ${index}`, detail: "stub", position, session: null, branchId: null };
 }
 
 function snapshot(revision: number, over: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot {
@@ -71,6 +71,21 @@ describe("node actions", () => {
     useUiStore.getState().select({ kind: "project", id: "other" });
     await removeProject("ide");
     expect(useUiStore.getState().selection).toEqual({ kind: "project", id: "other" });
+  });
+
+  it("removeProject clears the project's selected more row and forgets its show-all; a failure keeps both", async () => {
+    workspaceRemoveProject.mockResolvedValue(snapshot(2));
+    useUiStore.setState({ showAll: ["ide", "other"] });
+    useUiStore.getState().select({ kind: "more", id: "ide" });
+    await expect(removeProject("ide")).resolves.toBe(true);
+    expect(useUiStore.getState().selection).toBeNull();
+    expect(useUiStore.getState().showAll).toEqual(["other"]);
+
+    workspaceRemoveProject.mockRejectedValueOnce(new Error("unknown project"));
+    useUiStore.getState().select({ kind: "more", id: "other" });
+    await expect(removeProject("other")).resolves.toBe(false);
+    expect(useUiStore.getState().selection).toEqual({ kind: "more", id: "other" });
+    expect(useUiStore.getState().showAll).toEqual(["other"]);
   });
 
   it("removeProject leaves a node selected meanwhile alone, and a failure keeps the selection with the banner", async () => {
