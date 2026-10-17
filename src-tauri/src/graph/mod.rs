@@ -1255,9 +1255,11 @@ mod tests {
 
     #[test]
     fn folder_label_is_the_last_component_or_the_whole_root() {
-        assert_eq!(folder_label(r"B:\projects\guild-auth"), "guild-auth");
         assert_eq!(folder_label("/home/emils/src"), "src");
+        // A backslash is a separator only on Windows; paths reach `folder_label` canonicalised
+        // by the host OS, so a Windows-style path is only ever seen there.
         if cfg!(windows) {
+            assert_eq!(folder_label(r"B:\projects\guild-auth"), "guild-auth");
             assert_eq!(folder_label(r"C:\"), r"C:\");
         } else {
             assert_eq!(folder_label("/"), "/");
