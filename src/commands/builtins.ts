@@ -1,9 +1,9 @@
 // The built-in commands. Everything the shell can do is here; `App` registers them once at
-// startup. Escape is shared by four commands whose `when`s are mutually exclusive, which is
-// what gives Esc its precedence: the context menu first, then the palette, then whichever
-// pane is open (`pane.close`, which both panes' Close buttons run too), then the selection.
-// The arrows and Enter are the selection's: enabled only while no palette, pane or menu is
-// open, so an open surface keeps its own handling of them. Key-only carriers (the Escape
+// startup. Escape is shared by five commands whose `when`s are mutually exclusive, which is
+// what gives Esc its precedence: the context menu first, then the Elsewhere tray, then the
+// palette, then whichever pane is open (`pane.close`, which both panes' Close buttons run
+// too), then the selection. The arrows and Enter are the selection's: enabled only while no
+// palette, pane, menu or tray is open, so an open surface keeps its own handling of them. Key-only carriers (the Escape
 // commands, the `ctrl+,` toggle, the arrows, Enter) are `hidden`: the dispatcher sees them,
 // the palette does not. The project commands act on the selected project and are tagged
 // `menu: "node"` with a `menuOrder`, which is what the right-click menu lists, in that order.
@@ -13,10 +13,12 @@ import { appQuit } from "../ipc";
 import { isCanvasReady, useCanvasStore } from "../state/canvas";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
-import { hasSelection, isContextMenuOpen, isPaneOpen, selectedProject, useUiStore } from "../state/ui";
+import { elsewhereCount } from "../state/live";
+import { hasSelection, isContextMenuOpen, isElsewhereOpen, isPaneOpen, selectedProject, useUiStore } from "../state/ui";
 import { projectHasChildren } from "../state/workspace";
 import {
   activateSelection,
+  attachStub,
   canToggleShowAll,
   moveSelection,
   newSessionStub,
@@ -24,6 +26,7 @@ import {
   openProjectInEditor,
   plainTerminalStub,
   revealClaudeProjectDir,
+  selectedLiveSessionId,
   toggleShowAllOfSelected,
 } from "./navigation";
 import { relayoutChildren, removeProject, setExpanded } from "./nodes";
@@ -36,9 +39,9 @@ function isPaletteOpen(): boolean {
   return usePaletteStore.getState().isOpen;
 }
 
-/** True while the canvas has the keyboard: no palette, pane or context menu is open. */
+/** True while the canvas has the keyboard: no palette, pane, context menu or Elsewhere tray is open. */
 function noSurfaceOpen(): boolean {
-  return !isPaletteOpen() && !isPaneOpen() && !isContextMenuOpen();
+  return !isPaletteOpen() && !isPaneOpen() && !isContextMenuOpen() && !isElsewhereOpen();
 }
 
 /** The `when` of the project actions: a project card is selected. */
@@ -85,11 +88,19 @@ export function builtinCommands(): Command[] {
       run: () => useUiStore.getState().closeContextMenu(),
     },
     {
+      id: "elsewhere.close",
+      title: "Close Elsewhere tray",
+      keybinding: "escape",
+      hidden: true,
+      when: () => isElsewhereOpen() && !isContextMenuOpen(),
+      run: () => useUiStore.getState().closeElsewhere(),
+    },
+    {
       id: "palette.close",
       title: "Close command palette",
       keybinding: "escape",
       hidden: true,
-      when: () => isPaletteOpen() && !isContextMenuOpen(),
+      when: () => isPaletteOpen() && !isContextMenuOpen() && !isElsewhereOpen(),
       run: () => usePaletteStore.getState().close(),
     },
     {
@@ -109,7 +120,7 @@ export function builtinCommands(): Command[] {
       title: "Close pane",
       keybinding: "escape",
       hidden: true,
-      when: () => isPaneOpen() && !isPaletteOpen() && !isContextMenuOpen(),
+      when: () => isPaneOpen() && !isPaletteOpen() && !isContextMenuOpen() && !isElsewhereOpen(),
       run: closeOpenPane,
     },
     {
@@ -117,8 +128,14 @@ export function builtinCommands(): Command[] {
       title: "Clear selection",
       keybinding: "escape",
       hidden: true,
-      when: () => hasSelection() && !isPaneOpen() && !isPaletteOpen() && !isContextMenuOpen(),
+      when: () => hasSelection() && !isPaneOpen() && !isPaletteOpen() && !isContextMenuOpen() && !isElsewhereOpen(),
       run: () => useUiStore.getState().clearSelection(),
+    },
+    {
+      id: "elsewhere.toggle",
+      title: "Toggle Elsewhere sessions",
+      when: () => elsewhereCount() > 0,
+      run: () => useUiStore.getState().toggleElsewhere(),
     },
     {
       id: "settings.reveal",
@@ -167,6 +184,14 @@ export function builtinCommands(): Command[] {
       run: async () => {
         await activateSelection();
       },
+    },
+    {
+      id: "session.attach",
+      title: "Attach in terminal",
+      menu: "node",
+      menuOrder: 10,
+      when: () => selectedLiveSessionId() !== null,
+      run: attachStub,
     },
     {
       id: "project.newSession",

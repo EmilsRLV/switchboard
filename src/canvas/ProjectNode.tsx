@@ -2,19 +2,20 @@ import { memo, type MouseEvent as ReactMouseEvent } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { runCommand } from "../commands/registry";
 import { useUiStore } from "../state/ui";
-import { LIVE_SESSIONS, aheadBehind, chevronCommandId, shortenPath, statusLine, type ProjectFlowNode } from "./nodes";
+import { aheadBehind, chevronCommandId, shortenPath, statusLine, type ProjectFlowNode } from "./nodes";
 
 /**
  * A project node: a compact card with the folder name, a shortened path (full path on
  * hover), the git line (`branch · N changed`, or why there is none), `↑n ↓m` when the
- * upstream differs, a live-session badge (hidden at 0; wired in Epic 3) and, for git repos
+ * upstream differs, a live-session badge (`N live`: its busy, idle or unrecognised sessions
+ * from the live poll; hidden at 0) and, for git repos
  * only, a "branches" affordance that does nothing until Epic 5. When the project has
  * children, a chevron (with the count while collapsed) selects the card and runs
  * `project.expand` / `project.collapse`. Dragging, selection and the right-click menu are
  * the canvas's; the selected card shows an outline in `--fg`.
  */
 export const ProjectNode = memo(function ProjectNode({ data }: NodeProps<ProjectFlowNode>) {
-  const { project, status, flashed, selected, childCount } = data;
+  const { project, status, flashed, selected, childCount, liveCount } = data;
   const line = statusLine(status);
   const divergence = aheadBehind(status);
   const isRepo = status?.kind === "repo";
@@ -50,9 +51,9 @@ export const ProjectNode = memo(function ProjectNode({ data }: NodeProps<Project
           </button>
         )}
         <span className="project-node-label">{project.label}</span>
-        {LIVE_SESSIONS > 0 && (
+        {liveCount > 0 && (
           <span className="project-node-live" title="live sessions">
-            {LIVE_SESSIONS} live
+            {liveCount} live
           </span>
         )}
       </div>

@@ -267,6 +267,15 @@ describe("design lint: the tree", () => {
     const violations = Object.entries(components).flatMap(([file, source]) => lintTsx(file, source));
     expect(format(violations)).toEqual([]);
   });
+
+  it("the busy pulse animates opacity only and is static under reduced motion", () => {
+    const nodes = stylesheets["/src/canvas/nodes.css"] ?? "";
+    const block = /@keyframes session-pulse\s*\{([\s\S]*?)\n\}/.exec(nodes)?.[1] ?? "";
+    const properties = [...block.matchAll(/([a-z-]+)\s*:/g)].map((m) => m[1]);
+    expect(properties.length).toBeGreaterThan(0);
+    expect(new Set(properties)).toEqual(new Set(["opacity"]));
+    expect(nodes).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\s*\.session-state-busy \.session-dot \{\s*animation: none;/);
+  });
 });
 
 describe("design lint: each rule fires", () => {

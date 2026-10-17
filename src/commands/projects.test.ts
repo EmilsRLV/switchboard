@@ -6,6 +6,7 @@ import { FLASH_MS, useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 import { openPane } from "./panes";
 import {
+  addElsewhereFolder,
   addProjectFromPicker,
   addProjectsAt,
   addSelectedImports,
@@ -137,6 +138,17 @@ describe("project actions", () => {
     workspaceAddProjects.mockRejectedValueOnce("position is not finite");
     await addProjectsAt(["B:\\x"], { x: 0, y: 0 }, sink);
     expect(sink).toHaveBeenCalledWith("position is not finite");
+  });
+
+  it("addElsewhereFolder adds the session's cwd centred on the view; a failure is the project add banner", async () => {
+    const other = project("other", "C:\\work\\other");
+    workspaceAddProjects.mockResolvedValueOnce(result([other], ["other"]));
+    await expect(addElsewhereFolder("C:\\work\\other")).resolves.not.toBeNull();
+    expect(workspaceAddProjects).toHaveBeenCalledWith(["C:\\work\\other"], CENTRED_CARD);
+    expect(useWorkspaceStore.getState().snapshot?.workspace.projects).toEqual([other]);
+    workspaceAddProjects.mockRejectedValueOnce("not a directory");
+    await expect(addElsewhereFolder("C:\\gone")).resolves.toBeNull();
+    expect(useWorkspaceStore.getState().loadError).toBe("project add failed: not a directory");
   });
 
   it("a success clears an earlier load error", async () => {

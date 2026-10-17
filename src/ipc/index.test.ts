@@ -3,6 +3,7 @@ import {
   appInfo,
   claudeProjectsList,
   hasTauriRuntime,
+  liveSessionsGet,
   NoTauriRuntimeError,
   projectOpenEditor,
   projectOpenFolder,
@@ -156,5 +157,9 @@ describe("workspace command wrappers", () => {
     invoke.mockResolvedValue({});
     await expect(projectsStatusGet()).resolves.toEqual({});
     expect(invoke).toHaveBeenCalledWith("projects_status_get", {}, undefined);
+    const live = { sessions: {}, elsewhere: [], banner: null };
+    invoke.mockResolvedValue(live);
+    await expect(liveSessionsGet()).resolves.toEqual(live);
+    expect(invoke).toHaveBeenCalledWith("live_sessions_get", {}, undefined);
   });
 });

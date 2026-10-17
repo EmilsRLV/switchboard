@@ -31,6 +31,7 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::workspace_relayout_children,
             ipc::claude_projects_list,
             ipc::projects_status_get,
+            ipc::live_sessions_get,
             ipc::workspace_remove_project,
             ipc::project_open_editor,
             ipc::project_open_folder,
@@ -79,6 +80,7 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             }
             git::poll::start(app.handle().clone());
             claude::sessions::start(app.handle().clone());
+            claude::live::start(app.handle().clone());
             Ok(())
         })
 }
@@ -691,6 +693,36 @@ mod tests {
         let body = invoke(&webview, "projects_status_get").unwrap();
         let value: serde_json::Value = body.deserialize().unwrap();
         assert_eq!(value, serde_json::json!({ "p1": { "kind": "not_repo" } }));
+    }
+
+    #[test]
+    fn live_sessions_get_is_registered_and_reads_the_live_map() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+
+        let body = invoke(&webview, "live_sessions_get").expect("live_sessions_get should be registered");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value, serde_json::json!({ "sessions": {}, "elsewhere": [], "banner": null }));
+
+        let rows = super::claude::live::parse_rows(
+            r#"[{"pid":7,"cwd":"/nowhere","kind":"interactive","startedAt":1791553254656,"sessionId":"s1","name":"n","status":"busy"}]"#,
+        );
+        super::claude::live::apply_and_emit(app.handle(), rows);
+        let body = invoke(&webview, "live_sessions_get").unwrap();
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "sessions": { "s1": {
+                    "state": { "kind": "busy" }, "source": "poll", "pid": 7, "kind": "interactive", "name": "n",
+                    "project_id": null, "cwd": "/nowhere", "started_at": 1791553254656_i64
+                } },
+                "elsewhere": [{ "session_id": "s1", "state": { "kind": "busy" }, "name": "n", "cwd": "/nowhere", "started_at": 1791553254656_i64 }],
+                "banner": null
+            })
+        );
     }
 
     #[test]

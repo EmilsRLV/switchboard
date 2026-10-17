@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import {
   hasTauriRuntime,
+  liveSessionsGet,
+  onLiveSessions,
   onProjectsStatus,
   onSettingsChanged,
   onWorkspaceChanged,
@@ -11,6 +13,7 @@ import {
 import { mirror } from "./ipc/mirror";
 import { registerBuiltins } from "./commands/builtins";
 import { useKeybindings } from "./commands/keybindings";
+import { useLiveStore } from "./state/live";
 import { useSettingsStore } from "./state/settings";
 import { useStatusStore } from "./state/status";
 import { useUiStore } from "./state/ui";
@@ -18,6 +21,7 @@ import { useWorkspaceStore } from "./state/workspace";
 import { Canvas } from "./canvas/Canvas";
 import { Banners } from "./components/Banners";
 import { ContextMenu } from "./components/ContextMenu";
+import { ElsewhereTray } from "./components/ElsewhereTray";
 import { ImportPane } from "./components/ImportPane";
 import { Notice } from "./components/Notice";
 import { Palette } from "./components/Palette";
@@ -29,7 +33,7 @@ registerBuiltins();
 
 /**
  * The shell: banner strip on top, the canvas filling the rest with the transient notice laid
- * over its top edge, one pane (settings or import) on the right when open, the command
+ * over its top edge and the Elsewhere tray at its bottom-left, one pane (settings or import) on the right when open, the command
  * palette over everything when open, the node context menu at the pointer when open. Every
  * key goes through the command registry's dispatcher (`useKeybindings`).
  */
@@ -41,8 +45,10 @@ export default function App() {
   const setWorkspaceLoadError = useWorkspaceStore((s) => s.setLoadError);
   const applyStatuses = useStatusStore((s) => s.applyStatuses);
   const setStatusLoadError = useStatusStore((s) => s.setLoadError);
+  const applyLive = useLiveStore((s) => s.applySnapshot);
+  const setLiveLoadError = useLiveStore((s) => s.setLoadError);
 
-  // Rust is the source of truth for all three; `mirror` subscribes, then reads.
+  // Rust is the source of truth for all four; `mirror` subscribes, then reads.
   useEffect(() => {
     if (!hasTauriRuntime()) return;
     return mirror({
@@ -77,6 +83,17 @@ export default function App() {
     });
   }, [applyStatuses, setStatusLoadError]);
 
+  useEffect(() => {
+    if (!hasTauriRuntime()) return;
+    return mirror({
+      listen: onLiveSessions,
+      get: liveSessionsGet,
+      apply: applyLive,
+      hasSnapshot: () => useLiveStore.getState().received,
+      fail: (message) => setLiveLoadError(`live sessions load failed: ${message}`),
+    });
+  }, [applyLive, setLiveLoadError]);
+
   useKeybindings();
 
   return (
@@ -84,6 +101,7 @@ export default function App() {
       <Banners />
       <div className="shell-body">
         <Canvas />
+        <ElsewhereTray />
         <Notice />
         {pane === "settings" && <SettingsPane />}
         {pane === "import" && <ImportPane />}

@@ -78,6 +78,15 @@ export async function addProjectsAt(
   return result;
 }
 
+/**
+ * The Elsewhere tray's Add folder: put a live session's `cwd` on the canvas, centred on the
+ * view. The session moves under it on the next poll; a failure is the `project add failed`
+ * banner.
+ */
+export function addElsewhereFolder(cwd: string): Promise<AddProjectsResult | null> {
+  return addProjectsAt([cwd], centredCardPosition());
+}
+
 /** A folder (or several) dropped on the canvas at `position`. */
 export function dropProjects(paths: readonly string[], position: Position): Promise<AddProjectsResult | null> {
   return addProjectsAt(paths, position);

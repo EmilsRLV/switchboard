@@ -4,8 +4,20 @@
 // `panToReveal`). No React, no DOM, so all of it is unit-tested in vitest's node environment.
 
 import type { Node } from "@xyflow/react";
-import type { ChildNode, NodeTarget, Position, Project, ProjectStatus, ProjectStatusMap, SessionMeta, Viewport } from "../ipc";
+import type {
+  ChildNode,
+  LiveSession,
+  NodeTarget,
+  Position,
+  Project,
+  ProjectStatus,
+  ProjectStatusMap,
+  SessionMeta,
+  SessionState,
+  Viewport,
+} from "../ipc";
 import type { DragOverrides } from "../state/canvas";
+import { isLiveState, sameState, stateWord } from "../state/live";
 
 /** What a `ProjectNode` renders from. */
 export type ProjectNodeData = {
@@ -18,12 +30,19 @@ export type ProjectNodeData = {
   selected: boolean;
   /** How many children the project has; the chevron and badge show only above 0. */
   childCount: number;
+  /**
+   * How many of its session children are live (busy, idle or unrecognised) by the live map,
+   * looked up by session id; the `N live` badge shows only above 0.
+   */
+  liveCount: number;
 };
 
 /** What a `SessionNode` / `BranchNode` renders from. */
 export type ChildNodeData = {
   child: ChildNode;
   selected: boolean;
+  /** The session's state when the poll has seen it this run (live or exited); `null` for a historic session, a stub or a branch. */
+  state: SessionState | null;
 };
 
 /** What a `MoreNode` (the `show all (N)` / `show fewer` row) renders from. */
@@ -78,9 +97,6 @@ export const DRAG_THRESHOLD = 4;
  * z + 1 when the parent is higher, so an elevated project keeps its children above it.
  */
 export const ELEVATED_Z = 1000;
-
-/** Live-session count on the badge; a constant 0 (hidden) until Epic 3 wires sessions. */
-export const LIVE_SESSIONS: number = 0;
 
 /** Longest path shown on a card before the middle is elided. */
 export const PATH_MAX_CHARS = 36;
@@ -175,6 +191,15 @@ export function rightClickTarget(press: RightPress | null, release: Position): C
 }
 
 /**
+ * What a right-click release on `target` does once it is selected: open the node menu for a
+ * project or session card that has enabled entries, else only select (a historic session,
+ * a branch, a `more` row).
+ */
+export function rightClickAction(target: CanvasTarget, hasMenuItems: boolean): "menu" | "select" {
+  return (target.kind === "project" || target.kind === "session") && hasMenuItems ? "menu" : "select";
+}
+
+/**
  * What a drop writes: the node target of `flowId` and where it is, preferring the drag
  * override (the last position xyflow reported) over `nodePosition`, which may lag a frame.
  */
@@ -201,6 +226,8 @@ export type FlowInputs = {
   dragging: DragOverrides;
   /** Project ids showing all their children (UI-only); absent means none. */
   showAll?: readonly string[];
+  /** Every session the live poll has seen this run, by id (the live store); absent means none. */
+  live?: Readonly<Record<string, LiveSession>>;
 };
 
 /**
@@ -222,6 +249,10 @@ export type FlowInputs = {
 export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNode[] = []): CanvasFlowNode[] {
   const { projects, statuses, flashed, children, selection, dragging } = inputs;
   const showAll = inputs.showAll ?? [];
+  const live = inputs.live ?? NO_LIVE;
+  // The card's state by session id, whatever project the live row's cwd maps to.
+  const stateOf = (child: ChildNode): SessionState | null =>
+    child.kind === "session" && Object.hasOwn(live, child.id) ? (live[child.id]?.state ?? null) : null;
   const before = new Map<string, CanvasFlowNode>();
   for (const node of previous) before.set(node.id, node);
 
@@ -247,6 +278,11 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
         flashed: flashed.includes(project.id),
         selected: projectSelected,
         childCount: kids.length,
+        // The badge counts the project's own session children in a live state.
+        liveCount: kids.filter((child) => {
+          const state = stateOf(child);
+          return state !== null && isLiveState(state);
+        }).length,
       },
       zIndex: layer(projectSelected, projectDrag),
       draggable: true,
@@ -267,7 +303,7 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
         type: child.kind,
         parentId: project.id,
         position: childDrag ?? slots[index] ?? columnSlot(index),
-        data: { child, selected: childSelected },
+        data: { child, selected: childSelected, state: stateOf(child) },
         zIndex: layer(childSelected, childDrag),
         draggable: true,
         selectable: false,
@@ -295,6 +331,8 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
   return out;
 }
 
+const NO_LIVE: Readonly<Record<string, LiveSession>> = Object.freeze({});
+
 /** A node's `zIndex`: {@link ELEVATED_Z} + 1 while dragged, {@link ELEVATED_Z} while selected, else 0. */
 function layer(selected: boolean, drag: Position | undefined): number {
   if (drag !== undefined) return ELEVATED_Z + 1;
@@ -315,6 +353,7 @@ function sameNode(a: CanvasFlowNode, b: CanvasFlowNode): boolean {
       a.data.flashed === b.data.flashed &&
       a.data.selected === b.data.selected &&
       a.data.childCount === b.data.childCount &&
+      a.data.liveCount === b.data.liveCount &&
       sameProject(a.data.project, b.data.project) &&
       sameStatus(a.data.status, b.data.status)
     );
@@ -328,7 +367,7 @@ function sameNode(a: CanvasFlowNode, b: CanvasFlowNode): boolean {
     );
   }
   if ((a.type === "session" || a.type === "branch") && (b.type === "session" || b.type === "branch")) {
-    return a.data.selected === b.data.selected && sameChild(a.data.child, b.data.child);
+    return a.data.selected === b.data.selected && sameState(a.data.state, b.data.state) && sameChild(a.data.child, b.data.child);
   }
   return false;
 }
@@ -398,22 +437,59 @@ export function formatAge(lastActive: string, now: number): string {
   return date.getFullYear() === new Date(now).getFullYear() ? day : `${day} ${date.getFullYear()}`;
 }
 
-/** A session card's second line: `branch · N msgs · age`, the branch left out when `null`. */
-export function sessionMetaLine(meta: SessionMeta, now: number): string {
-  const parts: string[] = [];
-  if (meta.branch !== null && meta.branch !== "") parts.push(meta.branch);
-  parts.push(`${meta.messages} ${meta.messages === 1 ? "msg" : "msgs"}`);
-  parts.push(formatAge(meta.lastActive, now));
-  return parts.join(" · ");
+/** The parts of a session card's meta line, as the card lays them out. */
+export type SessionCardMeta = {
+  /** The state word while the poll has seen the session this run; `null` for a historic one. */
+  state: { word: string; tone: "busy" | "muted"; dot: boolean } | null;
+  /** The git branch, the one part that shrinks (ellipsis); `null` when there is none. */
+  branch: string | null;
+  /** `N msgs` / `1 msg`. */
+  count: string;
+  /** `now`, `5m`, …; `null` when the last activity is unknown (a live session without a transcript). */
+  age: string | null;
+};
+
+/**
+ * The parts of a session card's meta line: `[state] · [branch] · N msgs · [age]`. The state
+ * word leads while the session is live or exited (`busy` with the pulsing dot, the rest
+ * muted); the branch is left out when the transcript names none; the age when `lastActive`
+ * is unknown.
+ */
+export function sessionCardMeta(meta: SessionMeta, now: number, state: SessionState | null): SessionCardMeta {
+  const tone = sessionStateTone(state);
+  return {
+    state: state === null || tone === null ? null : { word: stateWord(state), tone, dot: tone === "busy" },
+    branch: meta.branch !== null && meta.branch !== "" ? meta.branch : null,
+    count: `${meta.messages} ${meta.messages === 1 ? "msg" : "msgs"}`,
+    age: meta.lastActive === "" ? null : formatAge(meta.lastActive, now),
+  };
 }
 
-/** A session card's hover text: the full title and the exact local start and last-active times. */
+/** The meta line as one string (the parts of {@link sessionCardMeta} joined by ` · `). */
+export function sessionMetaLine(meta: SessionMeta, now: number, state: SessionState | null = null): string {
+  const parts = sessionCardMeta(meta, now, state);
+  return [parts.state?.word, parts.branch, parts.count, parts.age].filter((p): p is string => p !== null && p !== undefined).join(" · ");
+}
+
+/**
+ * How a session's state word is drawn: `busy` in `--fg` with the pulsing dot, every other
+ * state (idle, exited, unrecognised) muted. `null` for a historic session (no word).
+ */
+export function sessionStateTone(state: SessionState | null): "busy" | "muted" | null {
+  if (state === null) return null;
+  return state.kind === "busy" ? "busy" : "muted";
+}
+
+/** A session card's hover text: the full title and the exact local start and last-active times (each only when known). */
 export function sessionHoverText(title: string, meta: SessionMeta): string {
   const exact = (iso: string) => {
     const ms = Date.parse(iso);
     return Number.isNaN(ms) ? iso : new Date(ms).toLocaleString();
   };
-  return `${title}\nstarted ${exact(meta.startedAt)}\nlast active ${exact(meta.lastActive)}`;
+  const lines = [title];
+  if (meta.startedAt !== "") lines.push(`started ${exact(meta.startedAt)}`);
+  if (meta.lastActive !== "") lines.push(`last active ${exact(meta.lastActive)}`);
+  return lines.join("\n");
 }
 
 function sameStatus(a: ProjectStatus | null, b: ProjectStatus | null): boolean {

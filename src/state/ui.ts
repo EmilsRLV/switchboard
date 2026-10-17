@@ -9,6 +9,7 @@
 import { create } from "zustand";
 import type { CanvasTarget } from "../canvas/nodes";
 import type { Position, Project } from "../ipc";
+import { elsewhereCount, useLiveStore } from "./live";
 import { useWorkspaceStore } from "./workspace";
 
 export type Pane = "settings" | "import";
@@ -45,6 +46,8 @@ export type UiState = {
    * only, never persisted; reference-stable while unchanged.
    */
   showAll: readonly string[];
+  /** Whether the Elsewhere tray's list is open (it shows only while it has rows). */
+  elsewhereOpen: boolean;
   openPane: (pane: Pane) => void;
   /** Close whichever pane is open (no-op when none is). */
   closePane: () => void;
@@ -64,6 +67,8 @@ export type UiState = {
   clearNotice: () => void;
   /** Show all of a project's children, or only the first ten again. */
   toggleShowAll: (projectId: string) => void;
+  toggleElsewhere: () => void;
+  closeElsewhere: () => void;
 };
 
 const NO_IDS: readonly string[] = Object.freeze([]);
@@ -75,6 +80,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   contextMenu: null,
   notice: null,
   showAll: NO_IDS,
+  elsewhereOpen: false,
   openPane: (pane) => set({ pane }),
   closePane: () => set({ pane: null }),
   togglePane: (pane) => set({ pane: get().pane === pane ? null : pane }),
@@ -107,7 +113,15 @@ export const useUiStore = create<UiState>()((set, get) => ({
       const next = s.showAll.filter((id) => id !== projectId);
       return { showAll: next.length === 0 ? NO_IDS : next };
     }),
+  toggleElsewhere: () => set((s) => ({ elsewhereOpen: !s.elsewhereOpen })),
+  closeElsewhere: () => set((s) => (s.elsewhereOpen ? { elsewhereOpen: false } : {})),
 }));
+
+// The tray's list closes for good when its last row leaves, so a later row shows the chip
+// alone instead of popping the list open again.
+useLiveStore.subscribe((live) => {
+  if (live.snapshot.elsewhere.length === 0 && useUiStore.getState().elsewhereOpen) useUiStore.getState().closeElsewhere();
+});
 
 /** True when both name the same node (or both are `null`). */
 export function sameTarget(a: CanvasTarget | null, b: CanvasTarget | null): boolean {
@@ -127,6 +141,14 @@ export function hasSelection(): boolean {
 /** True while the context menu shows: the `when` of `contextMenu.close`, first in the Esc order. */
 export function isContextMenuOpen(): boolean {
   return useUiStore.getState().contextMenu !== null;
+}
+
+/**
+ * True while the Elsewhere tray's list shows: opened and with at least one row (a tray whose
+ * last row left closes with its chip). The `when` of `elsewhere.close`, second in the Esc order.
+ */
+export function isElsewhereOpen(): boolean {
+  return useUiStore.getState().elsewhereOpen && elsewhereCount() > 0;
 }
 
 /**

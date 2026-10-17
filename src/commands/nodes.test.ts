@@ -3,7 +3,8 @@ import type { ChildNode, Project, WorkspaceSnapshot } from "../ipc";
 import { useCanvasStore } from "../state/canvas";
 import { useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
-import { menuGroup, moveNode, openContextMenuFor, relayoutChildren, removeProject, setExpanded } from "./nodes";
+import { menuGroup, moveNode, openContextMenuFor, relayoutChildren, removeProject, rightClickNode, setExpanded } from "./nodes";
+import { clearCommands, registerCommand } from "./registry";
 
 vi.mock("../ipc", () => ({
   workspaceSetExpanded: vi.fn(),
@@ -204,6 +205,29 @@ describe("node actions", () => {
     await setExpanded("ide", true);
     expect(useWorkspaceStore.getState().snapshot).toBe(shown);
     expect(useWorkspaceStore.getState().loadError).toBeNull();
+  });
+
+  it("rightClickNode opens the menu only for a project or session card with enabled entries", () => {
+    clearCommands();
+    useUiStore.setState({ selection: null, contextMenu: null });
+    // Nothing enabled (a historic session): selected, no menu at all.
+    rightClickNode({ kind: "session", id: "historic" }, { x: 5, y: 6 });
+    expect(useUiStore.getState().selection).toEqual({ kind: "session", id: "historic" });
+    expect(useUiStore.getState().contextMenu).toBeNull();
+
+    registerCommand({
+      id: "test.sessionOnly",
+      title: "Session only",
+      menu: "node",
+      when: () => useUiStore.getState().selection?.id === "live",
+      run: () => {},
+    });
+    rightClickNode({ kind: "session", id: "live" }, { x: 7, y: 8 });
+    expect(useUiStore.getState().contextMenu).toEqual({ x: 7, y: 8 });
+    useUiStore.getState().closeContextMenu();
+    rightClickNode({ kind: "session", id: "historic" }, { x: 1, y: 1 });
+    expect(useUiStore.getState().contextMenu).toBeNull();
+    clearCommands();
   });
 
   it("openContextMenuFor selects the node and opens the menu at the point", () => {

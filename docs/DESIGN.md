@@ -119,7 +119,15 @@ them). Inline styles never use the accent.
 - **The palette** is centred near the top over a dimmed page (`--bg` at 55%): `--bg-raised`, 1-px border,
   `--radius-md`; rows in `--text-base`, key hints in `--text-sm` `--fg-muted`.
 - **The context menu** is the palette's row look at the pointer: `--bg-raised`, 1-px border,
-  `--radius-md`, items in `--text-md`, groups split by a 1-px `--border` line.
+  `--radius-md`, items in `--text-md`, groups split by a 1-px `--border` line. Project and session cards
+  have one; it lists only enabled entries and does not open when there are none.
+- **The Elsewhere tray** (live sessions in folders not on the canvas) sits at the canvas's bottom-left, over
+  it and below the notice, panes, palette and menu. A chip `elsewhere N` (mono `--text-xs`, `--fg-muted`,
+  `--bg-raised`, 1-px `--border`, `--radius-sm`; `--fg` text and a `--fg-muted` border on hover or while
+  open) shows only when N > 0. Open, a list above it: a `--bg-raised` box with a 1-px `--border` and
+  `--radius-md`, rows split by a 1-px `--border` line, each with the state word (mono `--text-xs`, `busy` in
+  `--fg`, the rest `--fg-muted`; no pulse), the name (`--text-md`, ellipsis), the shortened cwd (mono
+  `--text-xs` `--fg-muted`, full path on hover) and an **Add folder** button. No accent.
 - **The canvas** is `--bg` with a dot grid in `--fg-faint`; empty, it shows a centred mono hint in
   `--fg-muted`. Nothing on the canvas uses the accent.
 
@@ -132,7 +140,8 @@ them). Inline styles never use the accent.
 1. **Head row:** the **chevron** (`▸` collapsed / `▾` expanded, `--fg-muted`, `--fg` on hover), shown
    only when the project has children, with the **count badge** beside it while collapsed (mono
    `--text-xs`, 1-px border, `--radius-sm`); the **label** (folder name, `--text-base` / 500, ellipsis);
-   the **live badge** (`N live`, same look as the count badge, `--fg-muted`), shown only above 0 (Epic 3).
+   the **live badge** (`N live`, same look as the count badge, `--fg-muted`), shown only above 0: the
+   project's sessions in a live state (busy, idle or unrecognised; not exited).
 2. **Path:** mono `--text-xs` `--fg-muted`, middle-elided, full path on hover.
 3. **Status line:** mono `--text-sm`: the git line (see [Status colours](#status-colours)), `↑n ↓m` in
    `--fg-muted` when it differs from the upstream, and, for git repos only, the **branches** affordance at
@@ -149,7 +158,16 @@ session and branch children; the size is fixed like the project card's.
   1. the **title** in `--text-md`, ellipsis;
   2. the **meta** in mono `--text-xs` `--fg-muted`, ellipsis: `branch · N msgs · <age>`. The branch is left
      out when the transcript names none. The age reads `now`, `5m`, `3h`, `2d`, then `12 Oct` (this year) or
-     `12 Oct 2025`, and is recomputed each minute.
+     `12 Oct 2025`, and is recomputed each minute. While the live poll has seen the session this run, the
+     line starts with its **state word**, `busy · master · 12 msgs · now` / `exited · …` (see
+     [Status colours](#status-colours)); a historic session shows none.
+
+  The meta line's parts sit in a row: only the branch shrinks and ends in an ellipsis; the state word,
+  the message count and the age always show whole.
+
+  A live session with no transcript yet has the same card: its `name` from the poll (or `new session`) as
+  the title and `0 msgs`, with no age (no activity is known) and only the start time on hover (none
+  when the poll gave none).
 
   The full title and the exact start and last-active times are on hover (`title`).
 - **Branch, stub:** one row: the **label** in `--text-md` (ellipsis) and, at the right, the **detail** in mono
@@ -181,25 +199,29 @@ Monochrome steps; the accent only for attention.
 | `git error` | `--fg-muted`, its message on hover |
 | `…` (not polled yet) | `--fg-muted` |
 
-**Session states (documented now, built in Epic 3):**
+**Session states** (the state word that leads a session card's meta line, Story 3.2):
 
 | State | Colour |
 |---|---|
-| busy | `--fg`, with a 1-px pulse |
+| busy | `--fg`, after a small `currentColor` dot (4 px, round) that pulses: opacity 1 → 0.35, 1.2 s, ease-in-out, alternating; static under reduced motion |
 | idle, exited | `--fg-muted` |
-| waiting, finished | `--accent` (attention) |
+| any other status the poll reports (`compacting`), kept verbatim | `--fg-muted` |
+| waiting, finished | `--accent` (attention; set only by hooks, Story 4.3) |
+
+Historic sessions show no state word. Nothing in Story 3.2 uses the accent.
 
 ## Motion
 
-Only three motions exist; every one is instant under `prefers-reduced-motion: reduce`.
+Only four motions exist; every one is instant (or static) under `prefers-reduced-motion: reduce`.
 
 | Motion | Duration |
 |---|---|
 | Duplicate-add flash (outline fades out) | 1.5 s |
 | Reveal pan (arrow keys bring an off-screen node into view) | 150 ms |
 | Palette fade-in | 100 ms |
+| Busy pulse (the dot before `busy`: opacity 1 → 0.35, ease-in-out, alternating, looping; opacity only) | 1.2 s |
 
-Panes, banners, the notice and the menu appear without animation.
+Panes, banners, the notice, the menu and the Elsewhere tray appear without animation.
 
 ## Icons
 

@@ -1,8 +1,10 @@
 //! Read-only view of Claude Code's own files under `~/.claude`. This module never writes
 //! there. Project discovery (`discover`, Story 2.2), transcript summaries (`transcript`) and
-//! the historic sessions per project (`sessions`, Story 3.1); live sessions follow in 3.2.
+//! the historic sessions per project (`sessions`, Story 3.1) and the live sessions polled from
+//! `claude agents --json --all` (`live`, Story 3.2).
 
 pub mod discover;
+pub mod live;
 pub mod sessions;
 pub mod transcript;
 

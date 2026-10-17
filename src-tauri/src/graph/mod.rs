@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::claude::SessionSummary;
+use crate::claude::transcript::format_iso_ms;
 use crate::persist::{self, LoadError};
 use crate::settings::{AppState, Banner, paths};
 
@@ -270,13 +271,47 @@ pub fn stub_session_id(index: usize, project_id: &str) -> String {
     format!("stub-{index}-{project_id}")
 }
 
+/// A session the live poll (`crate::claude::live`, Story 3.2) places under a project: what
+/// [`children`] needs to order it and, when no transcript has been discovered for it yet, to
+/// draw it as a **live-only child**. `live` is false for a session that has exited this run;
+/// it is kept (memory only) so a session that exited before its transcript was found stays on
+/// the canvas as a historic node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveChild {
+    pub id: String,
+    /// The row's `name`; `None` when it had none.
+    pub name: Option<String>,
+    /// The row's `startedAt` (milliseconds since the epoch).
+    pub started_at_ms: Option<i64>,
+    pub cwd: String,
+    pub live: bool,
+}
+
+/// The label of a live-only child that has no `name`.
+pub const NEW_SESSION_LABEL: &str = "new session";
+
 /// Every child of every project, collapsed ones included, in layout order: the project's
-/// discovered sessions (`discovered`, by project id) ordered pinned first, then `startedAt`
-/// newest first, then id; then `stubs` stub sessions (`session 1..n`, detail `stub`, only
-/// when asked for); then its branches. A session takes its position (and label, pin) from the
-/// matching [`SessionRef`] -- same `sessionId` and `projectId` -- when one exists; a ref whose
-/// session is not discovered yields nothing. Branch children carry the worktree path as detail.
-pub fn children(workspace: &Workspace, discovered: &HashMap<String, Vec<SessionSummary>>, stubs: usize) -> Vec<ChildNode> {
+/// sessions -- discovered (`discovered`, by project id) and live-only (`live`, by project id:
+/// a live row with no discovered transcript yet) -- ordered live first, then pinned, then
+/// `startedAt` newest first, then id; then `stubs` stub sessions (`session 1..n`, detail
+/// `stub`, only when asked for); then its branches. A session takes its position (and label,
+/// pin) from the matching [`SessionRef`] -- same `sessionId` and `projectId` -- when one
+/// exists; a ref whose session is neither discovered nor live yields nothing. A live-only
+/// child is labelled with the row's name (else [`NEW_SESSION_LABEL`]) and carries a
+/// [`SessionMeta`] with `startedAt` = the row's start (empty when it has none), an empty
+/// `lastActive` (no activity known: the card shows no age), no branch, 0 messages;
+/// it is not drawn when its id is discovered under any project (one node per session id).
+/// Branch children carry the worktree path as detail.
+pub fn children(
+    workspace: &Workspace,
+    discovered: &HashMap<String, Vec<SessionSummary>>,
+    live: &HashMap<String, Vec<LiveChild>>,
+    stubs: usize,
+) -> Vec<ChildNode> {
+    let discovered_ids: HashSet<&str> = discovered.values().flatten().map(|s| s.id.as_str()).collect();
+    // Live by session id, under whichever project the row's cwd maps to: a transcript under
+    // one project and a live row under another still sort that card first.
+    let live_ids: HashSet<&str> = live.values().flatten().filter(|l| l.live).map(|l| l.id.as_str()).collect();
     let mut out = Vec::new();
     for project in &workspace.projects {
         let session_ref = |id: &str| {
@@ -286,47 +321,81 @@ pub fn children(workspace: &Workspace, discovered: &HashMap<String, Vec<SessionS
                 .find(|s| s.session_id == id && s.project_id == project.id)
         };
         let branches: Vec<&BranchNode> = workspace.branches.iter().filter(|b| b.project_id == project.id).collect();
+        let live_here: &[LiveChild] = live.get(&project.id).map(Vec::as_slice).unwrap_or_default();
+        let is_live = |id: &str| live_ids.contains(id);
 
-        let mut real: Vec<(&SessionSummary, Option<&SessionRef>)> = discovered
-            .get(&project.id)
-            .map(|list| list.iter().map(|s| (s, session_ref(&s.id))).collect())
-            .unwrap_or_default();
+        let mut real: Vec<&SessionSummary> = discovered.get(&project.id).map(|list| list.iter().collect()).unwrap_or_default();
         // One node per session id, even if two project dirs hold the same transcript: the
         // newer copy (later activity, then more messages) wins.
-        real.sort_by(|(a, _), (b, _)| {
+        real.sort_by(|a, b| {
             a.id.cmp(&b.id)
                 .then_with(|| b.last_active.cmp(&a.last_active))
                 .then_with(|| b.messages.cmp(&a.messages))
         });
-        real.dedup_by(|(a, _), (b, _)| a.id == b.id);
-        // Started-at, not last activity: two running sessions must not swap slots every pass.
-        let pinned = |r: Option<&SessionRef>| r.is_some_and(|r| r.pinned);
-        real.sort_by(|(a, ra), (b, rb)| {
-            pinned(*rb)
-                .cmp(&pinned(*ra))
-                .then_with(|| b.started_at.cmp(&a.started_at))
-                .then_with(|| a.id.cmp(&b.id))
-        });
-        for (summary, session_ref) in real {
-            let worktree_branch = summary.cwd.as_deref().and_then(|cwd| branch_for_cwd(cwd, &branches));
-            out.push(ChildNode {
-                id: summary.id.clone(),
+        real.dedup_by(|a, b| a.id == b.id);
+
+        let mut sessions: Vec<ChildNode> = real
+            .into_iter()
+            .map(|summary| {
+                let session_ref = session_ref(&summary.id);
+                let worktree_branch = summary.cwd.as_deref().and_then(|cwd| branch_for_cwd(cwd, &branches));
+                ChildNode {
+                    id: summary.id.clone(),
+                    project_id: project.id.clone(),
+                    kind: ChildKind::Session,
+                    label: session_ref
+                        .and_then(|r| r.label.clone())
+                        .unwrap_or_else(|| summary.title.clone()),
+                    detail: None,
+                    position: session_ref.and_then(|r| r.position),
+                    session: Some(SessionMeta {
+                        started_at: summary.started_at.clone(),
+                        last_active: summary.last_active.clone(),
+                        branch: summary.branch.clone(),
+                        messages: summary.messages,
+                    }),
+                    branch_id: worktree_branch.or_else(|| session_ref.and_then(|r| r.branch_id.clone())),
+                }
+            })
+            .collect();
+        let mut live_only: Vec<&LiveChild> = live_here.iter().filter(|l| !discovered_ids.contains(l.id.as_str())).collect();
+        live_only.sort_by(|a, b| a.id.cmp(&b.id));
+        live_only.dedup_by(|a, b| a.id == b.id);
+        for row in live_only {
+            let session_ref = session_ref(&row.id);
+            let started = row.started_at_ms.map(format_iso_ms).unwrap_or_default();
+            sessions.push(ChildNode {
+                id: row.id.clone(),
                 project_id: project.id.clone(),
                 kind: ChildKind::Session,
                 label: session_ref
                     .and_then(|r| r.label.clone())
-                    .unwrap_or_else(|| summary.title.clone()),
+                    .or_else(|| row.name.clone().filter(|n| !n.trim().is_empty()))
+                    .unwrap_or_else(|| NEW_SESSION_LABEL.to_string()),
                 detail: None,
                 position: session_ref.and_then(|r| r.position),
                 session: Some(SessionMeta {
-                    started_at: summary.started_at.clone(),
-                    last_active: summary.last_active.clone(),
-                    branch: summary.branch.clone(),
-                    messages: summary.messages,
+                    started_at: started,
+                    // No activity is known for a session without a transcript: no age.
+                    last_active: String::new(),
+                    branch: None,
+                    messages: 0,
                 }),
-                branch_id: worktree_branch.or_else(|| session_ref.and_then(|r| r.branch_id.clone())),
+                branch_id: branch_for_cwd(&row.cwd, &branches).or_else(|| session_ref.and_then(|r| r.branch_id.clone())),
             });
         }
+        // Live first; then pinned; then started-at, not last activity: two running sessions
+        // must not swap slots every pass.
+        let pinned = |id: &str| session_ref(id).is_some_and(|r| r.pinned);
+        let started = |c: &ChildNode| c.session.as_ref().map(|m| m.started_at.clone()).unwrap_or_default();
+        sessions.sort_by(|a, b| {
+            is_live(&b.id)
+                .cmp(&is_live(&a.id))
+                .then_with(|| pinned(&b.id).cmp(&pinned(&a.id)))
+                .then_with(|| started(b).cmp(&started(a)))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        out.extend(sessions);
         for i in 1..=stubs {
             let id = stub_session_id(i, &project.id);
             let position = session_ref(&id).and_then(|s| s.position);
@@ -355,6 +424,33 @@ pub fn children(workspace: &Workspace, discovered: &HashMap<String, Vec<SessionS
         }
     }
     out
+}
+
+/// The project a live row with working directory `cwd` belongs to: the project whose path is
+/// `cwd` ([`same_path`]), else the project with a branch whose `worktreePath` holds `cwd`
+/// (Story 3.1's worktree rule; the deepest worktree wins). `None` puts the row in the
+/// Elsewhere tray.
+pub fn project_for_cwd(workspace: &Workspace, cwd: &str) -> Option<String> {
+    // Project paths are canonical (`canonical_dir`); a row's cwd may differ in separators, a
+    // trailing separator or a symlink. The raw cwd stands when it cannot be canonicalised.
+    let canonical = dunce::canonicalize(cwd.trim())
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| cwd.to_string());
+    if let Some(project) = workspace
+        .projects
+        .iter()
+        .find(|p| same_path(&p.path, &canonical) || same_path(&p.path, cwd))
+    {
+        return Some(project.id.clone());
+    }
+    workspace
+        .branches
+        .iter()
+        .filter(|b| workspace.projects.iter().any(|p| p.id == b.project_id))
+        .filter_map(|b| b.worktree_path.as_deref().map(|w| (b, w)))
+        .filter(|(_, worktree)| path_within(&canonical, worktree) || path_within(cwd, worktree))
+        .max_by_key(|(_, worktree)| worktree.len())
+        .map(|(b, _)| b.project_id.clone())
 }
 
 /// The id of the branch whose `worktreePath` holds `cwd` (the folder itself or anything in
@@ -444,6 +540,9 @@ pub struct WorkspaceState {
     /// Sessions discovered from Claude's transcripts, by project id (`crate::claude::sessions`
     /// via [`set_discovered`]). Never persisted.
     pub discovered: HashMap<String, Vec<SessionSummary>>,
+    /// Sessions the live poll placed under a project, by project id (`crate::claude::live`
+    /// via [`set_live_children`]), each list ordered by id. Never persisted.
+    pub live_children: HashMap<String, Vec<LiveChild>>,
 }
 
 impl WorkspaceState {
@@ -458,8 +557,13 @@ impl WorkspaceState {
                 .cloned()
                 .collect(),
             revision: self.revision,
-            children: children(&self.workspace, &self.discovered, self.stub_children),
+            children: self.children(),
         }
+    }
+
+    /// Every project's children as [`children`] derives them from this state.
+    pub fn children(&self) -> Vec<ChildNode> {
+        children(&self.workspace, &self.discovered, &self.live_children, self.stub_children)
     }
 
     /// Replace the workspace with a freshly parsed, validated one.
@@ -673,7 +777,8 @@ pub fn move_node<R: Runtime>(app: &AppHandle<R>, target: &NodeTarget, position: 
                 project.position = position;
             }
             NodeKind::Session => {
-                let project_id = children(&st.workspace, &st.discovered, st.stub_children)
+                let project_id = st
+                    .children()
                     .into_iter()
                     .find(|c| c.kind == ChildKind::Session && c.id == target.id)
                     .map(|c| c.project_id)
@@ -747,7 +852,8 @@ pub fn remove_project<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Resul
         if !st.workspace.projects.iter().any(|p| p.id == project_id) {
             return Err("unknown project".to_string());
         }
-        let session_ids: HashSet<String> = children(&st.workspace, &st.discovered, st.stub_children)
+        let session_ids: HashSet<String> = st
+            .children()
             .into_iter()
             .filter(|c| c.project_id == project_id && c.kind == ChildKind::Session)
             .map(|c| c.id)
@@ -794,6 +900,27 @@ pub fn set_discovered<R: Runtime>(app: &AppHandle<R>, discovered: HashMap<String
             return None;
         }
         st.discovered = discovered;
+        st.revision += 1;
+        st.snapshot()
+    };
+    emit(app, &snapshot);
+    Some(snapshot)
+}
+
+/// Store which sessions the live poll places under which project (project id → its live
+/// children, each list ordered by id). When that differs from what is stored -- a session
+/// went live or exited, moved project, or a live-only child's name changed -- the revision is
+/// bumped and `workspace://changed` emitted; the file is not written. A busy ↔ idle flip does
+/// not reach here (it travels as `sessions://live`). Returns the new snapshot, or `None` when
+/// nothing changed.
+pub fn set_live_children<R: Runtime>(app: &AppHandle<R>, live: HashMap<String, Vec<LiveChild>>) -> Option<WorkspaceSnapshot> {
+    let state = app.state::<AppState>();
+    let snapshot = {
+        let mut st = state.write_workspace();
+        if st.live_children == live {
+            return None;
+        }
+        st.live_children = live;
         st.revision += 1;
         st.snapshot()
     };
@@ -970,6 +1097,7 @@ mod tests {
             revision: 3,
             stub_children: 0,
             discovered: HashMap::new(),
+            live_children: HashMap::new(),
         };
         assert_eq!(
             serde_json::to_value(st.snapshot()).unwrap(),
@@ -1815,7 +1943,7 @@ mod tests {
             ],
             ..Workspace::default()
         };
-        let kids = children(&ws, &HashMap::new(), 2);
+        let kids = children(&ws, &HashMap::new(), &HashMap::new(), 2);
         type Row<'a> = (&'a str, &'a str, ChildKind, &'a str, Option<&'a str>, Option<Position>);
         let summary: Vec<Row<'_>> = kids
             .iter()
@@ -1839,8 +1967,8 @@ mod tests {
                 ),
             ]
         );
-        assert!(children(&ws, &HashMap::new(), 0).iter().all(|c| c.kind == ChildKind::Branch), "no stubs unless asked");
-        assert!(children(&Workspace::default(), &HashMap::new(), 3).is_empty(), "no projects, no children");
+        assert!(children(&ws, &HashMap::new(), &HashMap::new(), 0).iter().all(|c| c.kind == ChildKind::Branch), "no stubs unless asked");
+        assert!(children(&Workspace::default(), &HashMap::new(), &HashMap::new(), 3).is_empty(), "no projects, no children");
     }
 
     #[test]
@@ -1977,7 +2105,7 @@ mod tests {
         let disk = on_disk(&path);
         assert_eq!(disk.sessions.len(), 1);
         assert_eq!(disk.sessions[0].position, Some(Position { x: 260.0, y: 40.0 }));
-        assert_eq!(children(&disk, &HashMap::new(), 3)[1].position, Some(Position { x: 260.0, y: 40.0 }), "survives a reload");
+        assert_eq!(children(&disk, &HashMap::new(), &HashMap::new(), 3)[1].position, Some(Position { x: 260.0, y: 40.0 }), "survives a reload");
 
         // Second drag: the same ref is updated, not duplicated.
         let snapshot = move_node(app.handle(), &target, Position { x: 10.0, y: 10.0 }).unwrap();
@@ -2372,7 +2500,7 @@ mod tests {
                 started("new-a", "2026-10-16T00:00:00.000Z", "2026-10-16T11:00:00.000Z"),
             ],
         );
-        let kids = children(&ws, &found, 1);
+        let kids = children(&ws, &found, &HashMap::new(), 1);
         let ids: Vec<&str> = kids.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, ["old", "new-a", "new-b", "mid", "stub-1-a"]);
         assert_eq!(kids[0].label, "my label", "the ref's label wins over the title");
@@ -2390,8 +2518,8 @@ mod tests {
         );
         assert_eq!(kids[4].session, None, "stubs carry no meta");
         assert!(kids.iter().all(|c| c.kind == ChildKind::Session && c.branch_id.is_none()));
-        assert_eq!(children(&ws, &found, 0).len(), 4, "no stubs unless asked");
-        assert_eq!(children(&ws, &discovered_of("zzz", vec![summary("x", "")]), 0).len(), 0, "unknown project ids are ignored");
+        assert_eq!(children(&ws, &found, &HashMap::new(), 0).len(), 4, "no stubs unless asked");
+        assert_eq!(children(&ws, &discovered_of("zzz", vec![summary("x", "")]), &HashMap::new(), 0).len(), 0, "unknown project ids are ignored");
     }
 
     #[test]
@@ -2443,7 +2571,7 @@ mod tests {
         inside.cwd = Some(format!("{wt}{sep}src"));
         let mut outside = summary("s-out", "2026-10-16T09:00:00.000Z");
         outside.cwd = Some(root.clone());
-        let kids = children(&ws, &discovered_of("a", vec![inside, outside]), 0);
+        let kids = children(&ws, &discovered_of("a", vec![inside, outside]), &HashMap::new(), 0);
         assert_eq!(kids[0].branch_id.as_deref(), Some("br-feature"));
         assert_eq!(kids[0].project_id, "a");
         assert_eq!(kids[1].branch_id, None);
@@ -2534,7 +2662,7 @@ mod tests {
             ..summary("dup", "2026-10-16T12:00:00.000Z")
         };
         for list in [vec![older.clone(), newer.clone()], vec![newer.clone(), older.clone()]] {
-            let kids = children(&app.state::<AppState>().read_workspace().workspace, &discovered_of("ide", list), 0);
+            let kids = children(&app.state::<AppState>().read_workspace().workspace, &discovered_of("ide", list), &HashMap::new(), 0);
             assert_eq!(kids.len(), 1);
             assert_eq!(kids[0].session.as_ref().unwrap().messages, 7, "whatever the input order");
         }
@@ -2572,5 +2700,178 @@ mod tests {
         let snapshot = set_discovered(app.handle(), discovered_of("ide", vec![in_worktree])).expect("changed");
         assert_eq!(snapshot.children[0].branch_id.as_deref(), Some("br-f"));
         assert_eq!(rx.try_recv().expect("one event"), snapshot);
+    }
+
+    // -- live sessions (Story 3.2) ---------------------------------------------------------
+
+    fn live(id: &str, name: Option<&str>, started_at_ms: Option<i64>, live: bool) -> LiveChild {
+        LiveChild {
+            id: id.into(),
+            name: name.map(str::to_string),
+            started_at_ms,
+            cwd: "/p/a".into(),
+            live,
+        }
+    }
+
+    #[test]
+    fn live_sessions_sort_first_and_a_live_row_without_a_transcript_is_a_live_only_child() {
+        let ws = Workspace {
+            projects: vec![project_with("a")],
+            sessions: vec![SessionRef {
+                session_id: "pinned".into(),
+                project_id: "a".into(),
+                pinned: true,
+                ..SessionRef::default()
+            }],
+            ..Workspace::default()
+        };
+        let started = |id: &str, started_at: &str| SessionSummary {
+            started_at: started_at.into(),
+            ..summary(id, started_at)
+        };
+        let found = discovered_of(
+            "a",
+            vec![
+                started("pinned", "2026-10-01T00:00:00.000Z"),
+                started("newest", "2026-10-17T00:00:00.000Z"),
+                started("running", "2026-10-02T00:00:00.000Z"),
+                started("gone", "2026-10-03T00:00:00.000Z"),
+            ],
+        );
+        let live_rows = HashMap::from([(
+            "a".to_string(),
+            vec![
+                live("gone", Some("x"), None, false),
+                live("new-1", Some("ide-6e"), Some(1_792_160_868_400), true),
+                live("new-2", None, Some(1_792_160_000_000), true),
+                live("running", Some("ignored"), Some(1), true),
+            ],
+        )]);
+        let kids = children(&ws, &found, &live_rows, 0);
+        let ids: Vec<&str> = kids.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["new-1", "new-2", "running", "pinned", "newest", "gone"]);
+        assert_eq!(kids[0].label, "ide-6e");
+        assert_eq!(
+            kids[0].session,
+            Some(SessionMeta {
+                started_at: "2026-10-16T14:27:48.400Z".into(),
+                last_active: String::new(),
+                branch: None,
+                messages: 0,
+            })
+        );
+        assert_eq!(kids[1].label, NEW_SESSION_LABEL);
+        assert_eq!(kids[2].label, "title running", "a discovered session keeps its transcript title");
+        assert_eq!(kids[2].session.as_ref().unwrap().messages, 2);
+        assert_eq!(kids.iter().filter(|c| c.id == "gone").count(), 1, "one node per id");
+
+        // An exited session that never got a transcript stays as a historic child.
+        let exited = HashMap::from([("a".to_string(), vec![live("left", Some("left"), Some(1_792_160_868_400), false)])]);
+        let kids = children(&ws, &found, &exited, 0);
+        let ids: Vec<&str> = kids.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["pinned", "newest", "left", "gone", "running"]);
+
+        // Discovered under another project: no second node here.
+        let elsewhere_found = discovered_of("zzz", vec![summary("new-1", "2026-10-16T10:00:00.000Z")]);
+        let kids = children(&ws, &elsewhere_found, &live_rows, 0);
+        assert!(!kids.iter().any(|c| c.id == "new-1"));
+
+        // A transcript under `a` whose live row maps to another project still sorts first in `a`.
+        let ws2 = Workspace {
+            projects: vec![project_with("a"), project_with("b")],
+            ..ws.clone()
+        };
+        let live_in_b = HashMap::from([("b".to_string(), vec![live("gone", None, None, true)])]);
+        let kids = children(&ws2, &found, &live_in_b, 0);
+        assert_eq!(kids[0].id, "gone");
+        assert_eq!(kids[0].project_id, "a");
+        assert_eq!(kids.iter().filter(|c| c.id == "gone").count(), 1, "no live-only twin under b");
+
+        // A row without a start: empty times.
+        let no_start = HashMap::from([("a".to_string(), vec![live("bare", None, None, true)])]);
+        let kids = children(&ws, &HashMap::new(), &no_start, 0);
+        assert_eq!(kids[0].session.as_ref().map(|m| (m.started_at.as_str(), m.last_active.as_str())), Some(("", "")));
+    }
+
+    #[test]
+    fn project_for_cwd_matches_the_project_path_then_a_branch_worktree() {
+        let sep = std::path::MAIN_SEPARATOR;
+        let root = if cfg!(windows) { r"C:\p\a".to_string() } else { "/p/a".to_string() };
+        let wt = format!("{root}-wt{sep}feature");
+        let ws = Workspace {
+            projects: vec![Project {
+                path: root.clone(),
+                ..project_with("a")
+            }],
+            branches: vec![BranchNode {
+                id: "br".into(),
+                project_id: "a".into(),
+                name: "feature".into(),
+                worktree_path: Some(wt.clone()),
+                position: None,
+            }],
+            ..Workspace::default()
+        };
+        assert_eq!(project_for_cwd(&ws, &root).as_deref(), Some("a"));
+        if cfg!(windows) {
+            assert_eq!(project_for_cwd(&ws, &root.to_uppercase()).as_deref(), Some("a"), "case-insensitive on Windows");
+        }
+        assert_eq!(project_for_cwd(&ws, &format!("{wt}{sep}src")).as_deref(), Some("a"), "inside a worktree");
+        assert_eq!(project_for_cwd(&ws, &format!("{root}{sep}sub")), None, "a subfolder of the project is elsewhere");
+        assert_eq!(project_for_cwd(&ws, "/somewhere/else"), None);
+
+        // A real folder spelled differently (trailing separator, `.` segment) still matches.
+        let dir = tempfile::tempdir().unwrap();
+        let canonical = dunce::canonicalize(dir.path()).unwrap().display().to_string();
+        let real = Workspace {
+            projects: vec![Project {
+                path: canonical.clone(),
+                ..project_with("r")
+            }],
+            ..Workspace::default()
+        };
+        assert_eq!(project_for_cwd(&real, &format!("{canonical}{sep}")).as_deref(), Some("r"));
+        assert_eq!(project_for_cwd(&real, &format!("{canonical}{sep}.")).as_deref(), Some("r"));
+        assert_eq!(project_for_cwd(&real, &dir.path().display().to_string()).as_deref(), Some("r"));
+
+        // A live-only child in the worktree takes that branch.
+        let rows = HashMap::from([(
+            "a".to_string(),
+            vec![LiveChild {
+                cwd: wt.clone(),
+                ..live("s", None, None, true)
+            }],
+        )]);
+        assert_eq!(children(&ws, &HashMap::new(), &rows, 0)[0].branch_id.as_deref(), Some("br"));
+    }
+
+    #[test]
+    fn set_live_children_bumps_the_revision_and_emits_without_writing_and_only_on_change() {
+        let (app, _cfg, path) = app_with_ide(0);
+        let before = std::fs::read_to_string(&path).unwrap();
+        let rx = listen(&app);
+        let rows = HashMap::from([("ide".to_string(), vec![live("s1", Some("n"), Some(0), true)])]);
+
+        let snapshot = set_live_children(app.handle(), rows.clone()).expect("changed");
+        assert_eq!(snapshot.revision, 1);
+        assert_eq!(snapshot.children[0].id, "s1");
+        assert_eq!(rx.try_recv().expect("one event"), snapshot);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "not written");
+
+        assert_eq!(set_live_children(app.handle(), rows.clone()), None, "same set: nothing");
+        assert!(rx.try_recv().is_err());
+
+        let mut exited = rows;
+        exited.get_mut("ide").unwrap()[0].live = false;
+        let snapshot = set_live_children(app.handle(), exited).expect("changed");
+        assert_eq!(snapshot.revision, 2);
+        assert_eq!(snapshot.children.len(), 1, "an exited live-only child stays");
+        // A live-only child can be dragged like any session.
+        let target = NodeTarget {
+            kind: NodeKind::Session,
+            id: "s1".into(),
+        };
+        assert!(move_node(app.handle(), &target, Position { x: 1.0, y: 2.0 }).is_ok());
     }
 }

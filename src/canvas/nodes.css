@@ -1,5 +1,5 @@
 /* Project and child node cards (anatomy in docs/DESIGN.md). Tokens only; no accent (nothing
-   here is an attention state). The selection and focus rings are outlines in --focus; the
+   here is an attention state; waiting/finished arrive with the hooks of Story 4.3). The selection and focus rings are outlines in --focus; the
    duplicate-add flash is an outline in --fg that fades out. Card sizes (240 x 80, 208 x 40)
    are fixed by nodes.ts and the arrow-key geometry. */
 
@@ -209,13 +209,29 @@
   flex: none;
 }
 
+/* The meta line's parts sit in a row; only the branch shrinks and ellipsizes, so the state
+   word, the message count and the age always show whole. */
 .child-node-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35em;
+  min-width: 0;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--fg-muted);
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.child-node-meta > * {
+  flex: none;
+}
+
+.child-node-meta > .child-node-meta-branch {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* --- the `show all (N)` / `show fewer` row after the tenth child: muted, no border --------- */
@@ -237,4 +253,48 @@
 
 .more-node:hover {
   color: var(--fg);
+}
+
+/* --- session state word (Story 3.2): leads the meta line while the poll has seen the session.
+   busy in --fg after a pulsing dot; idle, exited and unrecognised states muted. No accent. --- */
+
+.session-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.session-state-busy {
+  color: var(--fg);
+}
+
+.session-state-muted {
+  color: var(--fg-muted);
+}
+
+.session-dot {
+  flex: none;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+@keyframes session-pulse {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.35;
+  }
+}
+
+.session-state-busy .session-dot {
+  animation: session-pulse 1.2s ease-in-out infinite alternate;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-state-busy .session-dot {
+    animation: none;
+  }
 }

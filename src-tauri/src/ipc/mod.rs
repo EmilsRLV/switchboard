@@ -8,6 +8,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime, State};
 use tauri_plugin_opener::OpenerExt;
 
+use crate::claude::live::LiveSnapshot;
 use crate::claude::{self, ClaudeProject};
 use crate::git::{self, ProjectStatus};
 use crate::graph::{self, AddProjectsResult, NodeTarget, Position, Viewport, WorkspaceSnapshot};
@@ -136,6 +137,8 @@ pub async fn workspace_add_projects<R: Runtime>(
         // The new cards' sessions fill in now, not at the next 5 s tick.
         tauri::async_runtime::spawn(async move {
             claude::sessions::refresh(&sessions_app).await;
+            // Live rows in the new folders leave the Elsewhere tray now.
+            claude::live::refresh(&sessions_app).await;
         });
     }
     Ok(result)
@@ -185,6 +188,8 @@ pub async fn workspace_remove_project<R: Runtime>(app: AppHandle<R>, project_id:
     let sessions_app = app.clone();
     tauri::async_runtime::spawn(async move {
         claude::sessions::refresh(&sessions_app).await;
+        // Its live sessions move to the Elsewhere tray now.
+        claude::live::refresh(&sessions_app).await;
     });
     Ok(snapshot)
 }
@@ -348,6 +353,13 @@ pub async fn claude_projects_list<R: Runtime>(app: AppHandle<R>) -> Result<Vec<C
 #[tauri::command]
 pub fn projects_status_get(state: State<'_, AppState>) -> HashMap<String, ProjectStatus> {
     state.read_live().statuses.clone()
+}
+
+/// The live-session map as the poller last stored it (`sessions://live` carries the same on
+/// every change): every session seen this run by id, the Elsewhere rows and the poll banner.
+#[tauri::command]
+pub fn live_sessions_get(state: State<'_, AppState>) -> LiveSnapshot {
+    state.read_sessions_live().snapshot()
 }
 
 /// Exit the app with status 0 (the `app.quit` command, `ctrl+q`). Under `cfg(test)` it only

@@ -462,3 +462,102 @@
   margin: 0.25rem 0;
   background: var(--border);
 }
+
+/* --- Elsewhere tray (Story 3.2) --------------------------------------------------------- */
+/* Live sessions in folders not on the canvas: a chip at the canvas's bottom-left and, when
+   open, a list above it. Over the canvas, below the notice, panes, palette and menu. */
+
+.elsewhere {
+  position: absolute;
+  left: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+  max-width: calc(100% - 1.5rem);
+}
+
+.elsewhere-chip {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  background: var(--bg-raised);
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.45rem;
+  cursor: pointer;
+}
+
+.elsewhere-chip:hover,
+.elsewhere-chip[aria-expanded="true"] {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.elsewhere-chip:focus-visible {
+  outline: var(--line) solid var(--focus);
+  outline-offset: 1px;
+}
+
+.elsewhere-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0;
+  width: 34rem;
+  max-width: 100%;
+  max-height: 40vh;
+  overflow-y: auto;
+  background: var(--bg-raised);
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.elsewhere-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.3rem 0.75rem;
+  font-size: var(--text-md);
+}
+
+.elsewhere-row + .elsewhere-row {
+  border-top: var(--line) solid var(--border);
+}
+
+.elsewhere-state {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+
+.elsewhere-state.is-busy {
+  color: var(--fg);
+}
+
+.elsewhere-name {
+  flex: 1 1 30%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.elsewhere-path {
+  flex: 1 1 50%;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.elsewhere-add {
+  flex: none;
+  font-size: var(--text-xs);
+  padding: 0.1rem 0.45rem;
+}

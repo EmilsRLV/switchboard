@@ -3,7 +3,7 @@
 // workspace store. Nothing rejects: `runCommand` has no error UI, so a failure lands in the
 // workspace load-error banner.
 
-import { flowIdOf } from "../canvas/nodes";
+import { flowIdOf, rightClickAction, type CanvasTarget } from "../canvas/nodes";
 import {
   workspaceMoveNode,
   workspaceRelayoutChildren,
@@ -110,7 +110,22 @@ export async function removeProject(projectId: string): Promise<boolean> {
   return removed;
 }
 
-/** A right-click on a node: select it, then open the menu at the pointer. */
+/**
+ * A right-click release on a canvas node (the canvas's guard decided it was a click): select
+ * it, then open the menu at the pointer when {@link rightClickAction} says so -- a project or
+ * session card with at least one enabled entry. A historic session, a branch or a `more` row
+ * is only selected; no menu opens.
+ */
+export function rightClickNode(target: CanvasTarget, at: MenuPoint): void {
+  const ui = useUiStore.getState();
+  ui.select(target);
+  if (rightClickAction(target, nodeMenuCommands().length > 0) === "menu") ui.openContextMenu(at);
+}
+
+/**
+ * A right-click on a node: select it, then open the menu at the pointer. A menu with no
+ * enabled rows for it (a historic session) draws nothing and closes itself (`ContextMenu`).
+ */
 export function openContextMenuFor(target: NodeTarget, at: MenuPoint): void {
   const ui = useUiStore.getState();
   ui.select(target);

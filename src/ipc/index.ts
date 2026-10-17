@@ -239,6 +239,58 @@ export type ClaudeProject = {
   on_canvas: boolean;
 };
 
+// --- live sessions (`src-tauri/src/claude/live.rs`, Story 3.2) -----------------------------
+
+/**
+ * Mirrors `live::SessionState` (internally tagged on `kind`). The poll gives `busy`, `idle`
+ * and `other` (any other status, kept verbatim in `raw`); `exited` is a session that left the
+ * poll this run. `waiting` and `finished` come only from hooks (Story 4.3).
+ */
+export type SessionState =
+  | { kind: "busy" }
+  | { kind: "idle" }
+  | { kind: "waiting" }
+  | { kind: "finished" }
+  | { kind: "exited" }
+  | { kind: "other"; raw: string };
+
+/** Mirrors `live::LiveSession`: one session the poll has seen this run. */
+export type LiveSession = {
+  state: SessionState;
+  /** Where the state came from; only `poll` until Epic 4. */
+  source: "poll";
+  pid: number | null;
+  kind: string | null;
+  name: string | null;
+  /** The project whose folder is the session's `cwd`; `null` for an Elsewhere row. */
+  project_id: string | null;
+  cwd: string;
+  /** Milliseconds since the epoch. */
+  started_at: number | null;
+};
+
+/** Mirrors `live::ElsewhereRow`: a live session in a folder that is not on the canvas. */
+export type ElsewhereRow = {
+  session_id: string;
+  state: SessionState;
+  name: string | null;
+  cwd: string;
+  started_at: number | null;
+};
+
+/** Mirrors `live::LiveSnapshot`: what `live_sessions_get` returns and `sessions://live` carries. */
+export type LiveSnapshot = {
+  /** Every session seen this run, by id; exited ones have state `exited`. */
+  sessions: Record<string, LiveSession>;
+  /** Live sessions in no project's folder, newest first. */
+  elsewhere: ElsewhereRow[];
+  /** Why live status is unavailable, after three failed polls in a row; `null` otherwise. */
+  banner: string | null;
+};
+
+/** Event name Rust emits with a fresh `LiveSnapshot` whenever it changes. */
+export const LIVE_SESSIONS_EVENT = "sessions://live";
+
 /** Return type of every command, keyed by command name. */
 type Commands = {
   app_info: AppInfo;
@@ -254,6 +306,7 @@ type Commands = {
   workspace_relayout_children: WorkspaceSnapshot;
   claude_projects_list: ClaudeProject[];
   projects_status_get: ProjectStatusMap;
+  live_sessions_get: LiveSnapshot;
   workspace_remove_project: WorkspaceSnapshot;
   project_open_editor: void;
   project_open_folder: void;
@@ -406,6 +459,11 @@ export function projectsStatusGet(): Promise<ProjectStatusMap> {
   return call("projects_status_get");
 }
 
+/** `ipc::live_sessions_get` -- the live-session poller's last snapshot. */
+export function liveSessionsGet(): Promise<LiveSnapshot> {
+  return call("live_sessions_get");
+}
+
 /** `ipc::app_quit` -- exit the app with status 0. Resolves only if the exit did not happen. */
 export function appQuit(): Promise<void> {
   return call("app_quit");
@@ -440,6 +498,14 @@ export async function onProjectsStatus(callback: (statuses: ProjectStatusMap) =>
     return () => {};
   }
   return listen<ProjectStatusMap>(PROJECTS_STATUS_EVENT, (event) => callback(event.payload));
+}
+
+/** Subscribe to `sessions://live`; same contract as {@link onSettingsChanged}. */
+export async function onLiveSessions(callback: (snapshot: LiveSnapshot) => void): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return listen<LiveSnapshot>(LIVE_SESSIONS_EVENT, (event) => callback(event.payload));
 }
 
 /**

@@ -12,7 +12,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
 import { clickNode } from "../commands/navigation";
-import { moveNode, openContextMenuFor } from "../commands/nodes";
+import { moveNode, rightClickNode } from "../commands/nodes";
 import { dropProjects } from "../commands/projects";
 import {
   hasTauriRuntime,
@@ -24,6 +24,7 @@ import {
   type Viewport,
 } from "../ipc";
 import { HOME_VIEWPORT, clientToFlow, useCanvasStore, type CanvasElement } from "../state/canvas";
+import { useLiveStore } from "../state/live";
 import { useStatusStore } from "../state/status";
 import { useUiStore } from "../state/ui";
 import { persistViewport, useWorkspaceStore } from "../state/workspace";
@@ -58,7 +59,7 @@ const DOT_SIZE = 1;
  * The home surface: an infinite canvas with a dot grid holding one card per project and,
  * under an expanded project, a column of its children. Pan with middle/right drag or Space +
  * left drag, zoom with the wheel, `ctrl+0` fits the view. Drag any node to move it (a child
- * moves with its parent); click to select; right-click a project card for its menu. The
+ * moves with its parent); click to select; right-click a project or session card for its menu. The
  * viewport and every position come from Rust's snapshot and go back to it at the end of each
  * gesture. Projects come from Rust's snapshot (`ctrl+o`, a folder dropped from the OS, or
  * Import from Claude); their git lines from the status store.
@@ -112,7 +113,7 @@ function suppress(event: { preventDefault(): void }): void {
  * The right-click guard. A right button press is a pan (xyflow pans on button 2) or a
  * context-menu request; which one is known only at release (`rightClickTarget`): moved at
  * most `DRAG_THRESHOLD` since the press on a node, it selects the node and, for a project
- * card, opens its menu (child cards have no menu yet). Deciding at release also works where
+ * or session card, opens its menu. Deciding at release also works where
  * the webview fires `contextmenu` on press (webkit2gtk), which a `contextmenu`-driven menu
  * would open at the start of every right-drag pan.
  */
@@ -129,8 +130,9 @@ function onPointerUpCapture(event: ReactPointerEvent): void {
   const target = rightClickTarget(rightPress, release);
   rightPress = null;
   if (target === null) return;
-  if (target.kind === "project") openContextMenuFor(target, release);
-  else useUiStore.getState().select(target);
+  // A project or session card with enabled entries gets the menu (Attach for a live
+  // session); anything else, a historic session included, is only selected.
+  rightClickNode(target, release);
 }
 
 /** The flow id of the node wrapper containing `target`, if any (xyflow's `data-id`). */
@@ -158,6 +160,7 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
   const projects = useWorkspaceStore((s) => s.snapshot?.workspace.projects ?? NO_PROJECTS);
   const children = useWorkspaceStore((s) => s.snapshot?.children ?? NO_CHILDREN);
   const statuses = useStatusStore((s) => s.statuses);
+  const live = useLiveStore((s) => s.snapshot.sessions);
   const flashed = useUiStore((s) => s.flashed);
   const selection = useUiStore((s) => s.selection);
   const showAll = useUiStore((s) => s.showAll);
@@ -166,10 +169,10 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
   // The previous derivation, so unchanged nodes keep their identity (and skip re-rendering).
   const previousRef = useRef<CanvasFlowNode[]>([]);
   const nodes = useMemo(() => {
-    const next = toFlowNodes({ projects, statuses, flashed, children, selection, dragging, showAll }, previousRef.current);
+    const next = toFlowNodes({ projects, statuses, flashed, children, selection, dragging, showAll, live }, previousRef.current);
     previousRef.current = next;
     return next;
-  }, [projects, statuses, flashed, children, selection, dragging, showAll]);
+  }, [projects, statuses, flashed, children, selection, dragging, showAll, live]);
 
   // The viewport most recently sent to Rust, acknowledged or not: a gesture that ends where
   // an in-flight write is going is skipped; one that comes back to the stored viewport goes.

@@ -12,7 +12,9 @@ surface is an infinite canvas whose viewport persists, holding one card per proj
 state; cards expand into a column of children, every node drags and remembers where it was put, the arrow
 keys walk the selection from card to card, and a right-click menu (or the palette) holds the project actions:
 open the folder in the editor or file manager, reveal its Claude project directory, remove it from the canvas,
-with New session and Plain terminal as stubs until Epic 4. Everything on screen follows one quiet visual
+with New session and Plain terminal as stubs until Epic 4. Expanded, a project lists its Claude Code
+sessions, past and running: a running session shows `busy` or `idle` and the card counts it in its `N live`
+badge; sessions running in folders not on the canvas wait in the Elsewhere tray. Everything on screen follows one quiet visual
 language (see [Design](#design)).
 
 ## Design
@@ -82,20 +84,22 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | `ctrl+,` | Open (toggle) the settings pane. |
 | `ctrl+0` | Fit view: fit every node into the canvas; with no nodes, back to the home viewport (`x 0, y 0, zoom 1`). |
 | `ctrl+q` | Quit. |
-| `←` `→` `↑` `↓` | Move the selection to the nearest node in that direction (see [Keyboard navigation](#keyboard-navigation)); with nothing selected, select the node nearest the middle of the view. Only while no palette, pane or menu is open: those keep their own arrow handling. |
+| `←` `→` `↑` `↓` | Move the selection to the nearest node in that direction (see [Keyboard navigation](#keyboard-navigation)); with nothing selected, select the node nearest the middle of the view. Only while no palette, pane, menu or Elsewhere list is open: those keep their own arrow handling. |
 | Enter | The selected node's default action: a project with children expands or collapses (persisted); a `show all (N)` / `show fewer` row toggles the column (see [Sessions](#sessions)); a childless project or a child card does nothing yet (resume and fork arrive in Epic 4). Same condition as the arrows. |
-| Esc | One step back, in this order: closes the node context menu, else the palette, else the open pane (settings or import), else clears the selected node. With all of them open, four presses. |
+| Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings or import), else clears the selected node. With all of them open, five presses. |
 
 `n`, `e` and `/` are reserved for later epics and deliberately unbound; so is Delete (removal is a menu action).
 
-The palette lists eighteen commands: Toggle command palette, Add project folder…, Import from Claude…, Open
+The palette lists twenty commands: Toggle command palette, Add project folder…, Import from Claude…, Open
 settings, Reveal settings file (only when the file's location is known), Re-detect binaries (not while one
-runs), Fit view (once the canvas has mounted; the two project commands need it too), Quit, and, while a
+runs), Fit view (once the canvas has mounted; the two project commands need it too), Quit, Toggle Elsewhere
+sessions (only while the Elsewhere tray has rows), Attach in terminal (only while a live session card is
+selected; see [Live sessions](#live-sessions)), and, while a
 project card is selected, the project actions: New session…, Plain terminal…, Open in external editor, Open
 in file manager, Reveal Claude project dir, Re-layout children, Remove from canvas, plus exactly one of Expand
 project / Collapse project (neither for a project without children) and Show all sessions (only for an
 expanded project with more than ten children). The palette sorts by title. The key-only
-carriers (the `ctrl+,` toggle, the four Esc commands, the four arrows and Enter) are registered but hidden from
+carriers (the `ctrl+,` toggle, the five Esc commands, the four arrows and Enter) are registered but hidden from
 the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron on a card runs
 Expand/Collapse, and the context menu lists the commands tagged for it in its own fixed order. Keybindings are
 not editable yet (Epic 9).
@@ -161,8 +165,10 @@ inside the window, in a fixed order with a 1-px rule between the groups:
 | Layout | Expand project or Collapse project (whichever applies, only when the project has children), Re-layout children | As before. |
 | Remove | Remove from canvas | Immediate: no confirmation, no undo. The card, its children, its `sessions[]` refs and `branches`, every edge touching any of them and its live git status go; the selection is cleared if it pointed at the project or one of its children; a relaunch does not bring it back. On a read-only or newer-version `workspace.json` the removal applies in memory only, and the project comes back on relaunch. |
 
-`↑`/`↓` move, Enter or a click runs, Esc, a click elsewhere or losing focus closes. Child cards have no menu
-yet. The same commands are in the palette (by title) while a project card is selected.
+`↑`/`↓` move, Enter or a click runs, Esc, a click elsewhere or losing focus closes. The same commands are in
+the palette (by title) while a project card is selected. A right-click on a **session card** selects it and
+opens a menu with its enabled entries only: **Attach in terminal** while the session is live, nothing (no
+menu) for a historic or exited one. Branch cards have no menu yet.
 
 An action that cannot run is a **notice**: a muted line laid over the top edge of the canvas (so it never
 moves or resizes the canvas), without the accent (it is information, not attention), gone after 3 s, one at
@@ -219,8 +225,8 @@ session, keyed by the session id (the file name); per-session folders (`subagent
 and a muted meta line, `branch · N msgs · 3h`: the latest git branch the transcript names (left out when
 none), prompts plus assistant replies, and the time since the last record (`now`, `5m`, `3h`, `2d`, then
 `12 Oct` or `12 Oct 2025`, updated each minute). Hovering shows the full title and the exact start and
-last-active times. The order is pinned sessions first, then the most recently started (so running sessions
-keep their slots); the collapsed badge counts them all. Past ten, a **`show all (N)`** row follows the tenth
+last-active times. The order is live sessions first (see [Live sessions](#live-sessions)), then pinned ones,
+then the most recently started (so running sessions keep their slots); the collapsed badge counts them all. Past ten, a **`show all (N)`** row follows the tenth
 card; clicking it, Enter while it is selected, or **Show all sessions** in the palette or the
 card's menu shows the rest and the row becomes **`show fewer`** (a per-project view choice, not saved). A
 session card can be dragged like any child and keeps its spot; a dragged child past the tenth is drawn even
@@ -232,6 +238,48 @@ line are skipped. The results are cached in memory only, by file size and modifi
 pass re-checks the files and re-reads only those that changed, so a running session's count and age stay
 current and a new session appears on its own; adding or removing a project runs a pass at once. A pass that
 finds nothing new changes nothing on screen.
+
+### Live sessions
+
+Every `poll.agents_ms` (default 2 s, re-read each tick, floor 500 ms) Rust runs the detected `claude` as
+`claude agents --json --all` on a background thread with a 5 s timeout, and keeps the rows in memory, keyed by
+session id. Nothing is persisted and nothing under `~/.claude` is touched; the poll does not run while
+`claude` is not found (badges stay at 0, no tray). A row whose `cwd` is a project folder (or lies in one of its
+branch worktrees) belongs to that project:
+
+- its **session card** shows the state as the first word of the meta line, `busy · master · 12 msgs · now`:
+  `busy` in full text colour after a small pulsing dot (static under reduced motion), `idle` muted, and any other
+  status Claude reports kept as it is (`compacting`) and muted. Live sessions sort first in the column. A
+  running session with no transcript yet gets a card at once, labelled with the row's `name` (or "new
+  session"), with no age, replaced by the transcript summary once the 5 s pass finds it;
+- the project card's **`N live`** badge counts its session cards in a live state (hidden at 0);
+- when the session ends it drops out of the poll and its card turns **`exited`** (muted) and stays as a
+  historic session; it is live again if it comes back. Exited sessions are remembered until the app quits.
+
+A busy ↔ idle flip travels on its own event (`sessions://live`) and never bumps the workspace revision; only a
+change to which sessions are live, or to where they belong, re-derives the children (`workspace://changed`, no
+file write).
+
+Rows whose `cwd` is **no project on the canvas** go to the **Elsewhere tray**: a chip `elsewhere N` at the
+bottom-left of the canvas, shown only when N > 0. Clicking it (or **Toggle Elsewhere sessions** in the
+palette) opens a list above it with one row per session: state, name, shortened folder and an **Add folder**
+button, which adds that folder at the centre of the view (a failure is the `project add failed` banner); on
+the next poll the session sits under its new project and leaves the tray. Esc or a press outside closes the
+list. A project removed from the canvas sends its live sessions to the tray on the next poll. A session
+running in a **subfolder** of a project also shows in the tray (its `cwd` is not the project folder), and
+Add folder there adds the subfolder as a project of its own.
+
+If `claude` stops being found (settings changed, binary removed), the live state is cleared: no states,
+badges, tray or banner until it is found again.
+
+The app started none of these sessions, so all are read-only. **Attach in terminal** (palette, or the session
+card's right-click menu, for a live session only) is a stub until the terminal pane of Epic 4: it shows the
+notice "Attach arrives in Epic 4 (claude attach <id>)".
+
+One failed poll (the CLI cannot start, exits non-zero, times out or prints something that is not a JSON array)
+keeps the last state, so nothing turns exited on a hiccup. After three failures in a row a banner reads
+"live session status unavailable: <cause>"; the next successful poll clears it. Rows without a `sessionId` or
+`cwd` are skipped and unknown fields ignored.
 
 ### The project card
 
@@ -248,8 +296,8 @@ with one `git status --porcelain=v2 --branch` per project:
 | `git error` | `git` ran but failed (for example a `safe.directory` refusal); hover for its message. A `git status` that times out keeps the card's previous line. |
 | `…` | Not polled yet. |
 
-Git repos also show an inert "branches" affordance (Epic 5) and the card reserves a live-session badge,
-hidden while the count is 0 (Epic 3). Git status is **live state**: it is never written to disk. A poller
+Git repos also show an inert "branches" affordance (Epic 5); the `N live` badge counts the project's live
+sessions (see [Live sessions](#live-sessions)) and is hidden at 0. Git status is **live state**: it is never written to disk. A poller
 on Tauri's async runtime refreshes every project every `poll.git_ms` (default 5 s, re-read from settings
 each tick, floor 250 ms) and right after an add, running `git` off the UI thread with a 5 s timeout and
 `GIT_OPTIONAL_LOCKS=0` so it never blocks a `git` you are running yourself. The binary is the one detection
@@ -321,7 +369,7 @@ The location is `dirs::config_dir()/switchboard`, so it also resolves on macOS
 | `external_editor` | `"code -g {file}:{line}"` when `code` is on PATH, else `null` | Command template for "open in editor". The `{file}`/`{line}` form is for Epic 7's file opens; "Open in external editor" on a project card runs only the **first token** with the project folder as its single argument. A path with spaces must be quoted (`"C:\Program Files\…\code.cmd" -g {file}:{line}`). A bare name is resolved like binary detection (PATH, with `PATHEXT` on Windows, so `code` finds `code.cmd`); a path (or `~/…`) is used as given. A `.cmd`/`.bat` runs through `cmd.exe` without a console window; the child is detached, never waited on. `null` makes the action a notice. |
 | `shell` | Windows: `"pwsh"` if present, else `"powershell"`; Linux: `$SHELL` (`null` when unset) | Shell for plain terminals. |
 | `theme` | `"dark"` | UI theme. Reserved; not applied yet (the UI is dark-only). |
-| `poll.agents_ms` | `2000` | `claude agents --json` poll interval. |
+| `poll.agents_ms` | `2000` | `claude agents --json --all` poll interval (live sessions); floor 500 ms. |
 | `poll.git_ms` | `5000` | Git status poll interval. |
 
 Binary detection: `claude` is searched on PATH, then `~/.local/bin`; `git` on PATH. Each one found is run

@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::claude::SessionCache;
+use crate::claude::live::LiveMap;
 use crate::git::ProjectStatus;
 use crate::graph::WorkspaceState;
 use detect::{ProcessRunner, Runner, Search};
@@ -325,6 +326,11 @@ pub struct AppState {
     /// Serialises session discovery passes (the timer's and the ones after an add or remove),
     /// so an older pass can never overwrite a newer result.
     pub sessions_lock: tauri::async_runtime::Mutex<()>,
+    /// What the `claude agents --json --all` poll last saw (`crate::claude::live`, Story 3.2):
+    /// live and exited sessions, the Elsewhere rows, the failure count. Memory only.
+    pub sessions_live: RwLock<LiveMap>,
+    /// Serialises live-session polls, so an older, slower poll never overwrites a newer one.
+    pub live_lock: tauri::async_runtime::Mutex<()>,
 }
 
 impl AppState {
@@ -353,6 +359,15 @@ impl AppState {
 
     pub fn write_live(&self) -> RwLockWriteGuard<'_, LiveState> {
         self.live.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Read the live-session map; a poisoned lock is recovered rather than propagated.
+    pub fn read_sessions_live(&self) -> RwLockReadGuard<'_, LiveMap> {
+        self.sessions_live.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn write_sessions_live(&self) -> RwLockWriteGuard<'_, LiveMap> {
+        self.sessions_live.write().unwrap_or_else(|e| e.into_inner())
     }
 }
 

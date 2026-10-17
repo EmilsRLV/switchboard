@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChildNode, Position, Project, SettingsSnapshot, Viewport, WorkspaceSnapshot } from "../ipc";
+import type { ChildNode, LiveSession, LiveSnapshot, Position, Project, SessionState, SettingsSnapshot, Viewport, WorkspaceSnapshot } from "../ipc";
 import { useCanvasStore, type CanvasInstance } from "../state/canvas";
 import { useImportStore } from "../state/import";
+import { EMPTY_LIVE, useLiveStore } from "../state/live";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
 import { useUiStore } from "../state/ui";
@@ -31,7 +32,8 @@ describe("built-in commands", () => {
     useWorkspaceStore.setState({ snapshot: null, loadError: null });
     usePaletteStore.setState({ isOpen: false, query: "", selected: 0 });
     useSettingsStore.setState({ snapshot: null, loadError: null, actionBusy: false, actionError: null });
-    useUiStore.setState({ pane: null, flashed: [], selection: null, contextMenu: null, notice: null, showAll: [] });
+    useUiStore.setState({ pane: null, flashed: [], selection: null, contextMenu: null, notice: null, showAll: [], elsewhereOpen: false });
+    useLiveStore.setState({ snapshot: EMPTY_LIVE, received: false, loadError: null });
     useImportStore.getState().reset();
     useCanvasStore.setState({ instance: null, element: null, dragging: {} });
     registerBuiltins();
@@ -46,12 +48,14 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the twenty-eight commands with the spec's keybindings", () => {
+  it("register the thirty-one commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "app.quit",
       "binaries.redetect",
       "canvas.fitView",
       "contextMenu.close",
+      "elsewhere.close",
+      "elsewhere.toggle",
       "palette.close",
       "palette.toggle",
       "pane.close",
@@ -73,10 +77,14 @@ describe("built-in commands", () => {
       "selection.move.left",
       "selection.move.right",
       "selection.move.up",
+      "session.attach",
       "settings.open",
       "settings.reveal",
       "settings.toggle",
     ]);
+    expect(getCommand("elsewhere.close")?.keybinding).toBe("escape");
+    expect(getCommand("elsewhere.toggle")?.keybinding).toBeUndefined();
+    expect(getCommand("session.attach")?.keybinding).toBeUndefined();
     expect(getCommand("selection.move.left")?.keybinding).toBe("arrowleft");
     expect(getCommand("selection.move.right")?.keybinding).toBe("arrowright");
     expect(getCommand("selection.move.up")?.keybinding).toBe("arrowup");
@@ -106,11 +114,12 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the eighteen actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the twenty actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "app.quit",
       "binaries.redetect",
       "canvas.fitView",
+      "elsewhere.toggle",
       "palette.toggle",
       "project.add",
       "project.collapse",
@@ -124,12 +133,13 @@ describe("built-in commands", () => {
       "project.revealClaudeDir",
       "project.terminal",
       "project.toggleShowAll",
+      "session.attach",
       "settings.open",
       "settings.reveal",
     ]);
   });
 
-  it("exactly the ten project commands are tagged for the node menu, and the menu lists none without a selection", () => {
+  it("exactly the ten project commands and Attach are tagged for the node menu, and the menu lists none without a selection", () => {
     expect(
       listCommands()
         .filter((c) => c.menu === "node")
@@ -146,13 +156,14 @@ describe("built-in commands", () => {
       "project.revealClaudeDir",
       "project.terminal",
       "project.toggleShowAll",
+      "session.attach",
     ]);
     expect(nodeMenuCommands()).toEqual([]);
   });
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(28);
+    expect(listCommands()).toHaveLength(31);
   });
 
   const PROJECT_ACTIONS = [
@@ -655,6 +666,104 @@ describe("built-in commands", () => {
     await flush();
     expect(useSettingsStore.getState().actionError).toMatch(/no Tauri runtime/);
     expect(useSettingsStore.getState().actionBusy).toBe(false);
+  });
+  // -- live sessions (Story 3.2) ---------------------------------------------------------
+
+  function liveSnapshot(states: Record<string, SessionState>, elsewhere = 0): LiveSnapshot {
+    const sessions: Record<string, LiveSession> = {};
+    for (const [id, state] of Object.entries(states)) {
+      sessions[id] = { state, source: "poll", pid: 1, kind: "interactive", name: id, project_id: "ide", cwd: "/p/ide", started_at: 1 };
+    }
+    const rows = Array.from({ length: elsewhere }, (_, i) => ({
+      session_id: `e${i}`,
+      state: { kind: "idle" } as SessionState,
+      name: `e${i}`,
+      cwd: `/work/other${i}`,
+      started_at: 1,
+    }));
+    return { sessions, elsewhere: rows, banner: null };
+  }
+
+  it("Attach in terminal is offered for a selected live session only, in the palette and the menu, and shows the Epic 4 notice", () => {
+    vi.useFakeTimers();
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(true)], stubs(3)) });
+    useLiveStore.getState().applySnapshot(
+      liveSnapshot({ "stub-1-ide": { kind: "busy" }, "stub-2-ide": { kind: "exited" }, "stub-3-ide": { kind: "other", raw: "compacting" } }),
+    );
+    const enabled = () => listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.id);
+
+    expect(enabled()).not.toContain("session.attach");
+    useUiStore.getState().select({ kind: "session", id: "stub-1-ide" });
+    expect(enabled()).toContain("session.attach");
+    expect(nodeMenuCommands().map((c) => [c.title, c.menuOrder])).toEqual([["Attach in terminal", 10]]);
+    expect(runCommand("session.attach")).toBe(true);
+    expect(useUiStore.getState().notice).toEqual({ text: "Attach arrives in Epic 4 (claude attach stub-1-ide)" });
+    vi.advanceTimersByTime(3000);
+    expect(useUiStore.getState().notice).toBeNull();
+
+    // An unrecognised status is live too.
+    useUiStore.getState().select({ kind: "session", id: "stub-3-ide" });
+    expect(enabled()).toContain("session.attach");
+
+    // Exited, historic (never seen by the poll) and project selections: nothing.
+    for (const target of [
+      { kind: "session", id: "stub-2-ide" },
+      { kind: "session", id: "never-polled" },
+      { kind: "project", id: "ide" },
+    ] as const) {
+      useUiStore.getState().select(target);
+      expect(enabled(), target.id).not.toContain("session.attach");
+      expect(runCommand("session.attach"), target.id).toBe(false);
+    }
+    useUiStore.getState().select({ kind: "session", id: "stub-2-ide" });
+    expect(nodeMenuCommands()).toEqual([]);
+  });
+
+  it("Toggle Elsewhere sessions is offered only while the tray has rows and opens and closes the list", () => {
+    const enabled = () => listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.id);
+    expect(enabled()).not.toContain("elsewhere.toggle");
+    expect(runCommand("elsewhere.toggle")).toBe(false);
+    useLiveStore.getState().applySnapshot(liveSnapshot({}, 2));
+    expect(enabled()).toContain("elsewhere.toggle");
+    expect(runCommand("elsewhere.toggle")).toBe(true);
+    expect(useUiStore.getState().elsewhereOpen).toBe(true);
+    expect(runCommand("elsewhere.toggle")).toBe(true);
+    expect(useUiStore.getState().elsewhereOpen).toBe(false);
+  });
+
+  it("Esc closes the menu, then the tray, then the palette, the pane and the selection; arrows wait while the tray is open", () => {
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(false)], stubs(3)) });
+    useLiveStore.getState().applySnapshot(liveSnapshot({}, 1));
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    useUiStore.getState().openPane("settings");
+    usePaletteStore.getState().open();
+    useUiStore.getState().toggleElsewhere();
+    useUiStore.getState().openContextMenu({ x: 1, y: 1 });
+    const enabledEsc = () =>
+      listCommands({ enabledOnly: true })
+        .filter((c) => c.keybinding === "escape")
+        .map((c) => c.id);
+
+    expect(enabledEsc()).toEqual(["contextMenu.close"]);
+    expect(handleKeydown(key("Escape"))).toBe(true);
+    expect(enabledEsc()).toEqual(["elsewhere.close"]);
+    expect(handleKeydown(key("Escape"))).toBe(true);
+    expect(useUiStore.getState().elsewhereOpen).toBe(false);
+    expect(usePaletteStore.getState().isOpen).toBe(true);
+    expect(enabledEsc()).toEqual(["palette.close"]);
+    expect(handleKeydown(key("Escape"))).toBe(true);
+    expect(enabledEsc()).toEqual(["pane.close"]);
+    expect(handleKeydown(key("Escape"))).toBe(true);
+    expect(enabledEsc()).toEqual(["selection.clear"]);
+
+    // The tray alone: Esc closes it before the selection; arrows and Enter are inert meanwhile.
+    useUiStore.getState().toggleElsewhere();
+    expect(enabledEsc()).toEqual(["elsewhere.close"]);
+    expect(listCommands({ enabledOnly: true }).map((c) => c.id)).not.toContain("selection.move.left");
+    expect(listCommands({ enabledOnly: true }).map((c) => c.id)).not.toContain("selection.activate");
+    // A tray whose last row left is closed, whatever the flag says.
+    useLiveStore.getState().applySnapshot(liveSnapshot({}, 0));
+    expect(enabledEsc()).toEqual(["selection.clear"]);
   });
 });
 

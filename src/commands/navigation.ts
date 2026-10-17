@@ -20,6 +20,7 @@ import {
 } from "../canvas/nodes";
 import { projectOpenEditor, projectOpenFolder, projectRevealClaudeDir } from "../ipc";
 import { useCanvasStore, viewportCentre, type CanvasElement } from "../state/canvas";
+import { liveSession } from "../state/live";
 import { NOTICE_MS, sameTarget, selectedProject, useUiStore, type Size } from "../state/ui";
 import { projectHasChildren, useWorkspaceStore } from "../state/workspace";
 import { setExpanded } from "./nodes";
@@ -28,6 +29,11 @@ import type { Timers } from "./projects";
 /** The notices the two Epic 4 stubs show. */
 export const NEW_SESSION_NOTICE = "New session arrives in Epic 4";
 export const PLAIN_TERMINAL_NOTICE = "Plain terminal arrives in Epic 4";
+
+/** The notice of the `session.attach` stub for session `id`. */
+export function attachNotice(id: string): string {
+  return `Attach arrives in Epic 4 (claude attach ${id})`;
+}
 
 /** The pending end of the notice showing, so a newer notice restarts the clock. */
 let noticeTimer: unknown;
@@ -168,6 +174,27 @@ export function newSessionStub(): void {
 /** `project.terminal`: a stub until Epic 4; says so. */
 export function plainTerminalStub(): void {
   notify(PLAIN_TERMINAL_NOTICE);
+}
+
+/**
+ * The id of the selected session when the live poll has it in a live state (busy, idle or
+ * unrecognised); `null` for anything else, an exited or historic session included. The
+ * `when` of `session.attach`.
+ */
+export function selectedLiveSessionId(): string | null {
+  const selection = useUiStore.getState().selection;
+  if (selection === null || selection.kind !== "session") return null;
+  return liveSession(selection.id) === null ? null : selection.id;
+}
+
+/**
+ * `session.attach` ("Attach in terminal"): a stub until the terminal pane of Epic 4; says
+ * which `claude attach` it will run. Every live session is read-only here: the app started
+ * none of them.
+ */
+export function attachStub(): void {
+  const id = selectedLiveSessionId();
+  if (id !== null) notify(attachNotice(id));
 }
 
 /** Run one external action; its rejection (Rust's message, or no runtime) is the notice. */

@@ -6,7 +6,7 @@ import { clampSelection, paletteKeyAction } from "../state/palette";
 import { clampToArea, useUiStore, type MenuPoint } from "../state/ui";
 
 /**
- * The node context menu (right-click on a project card): the enabled commands tagged
+ * The node context menu (right-click on a project or session card): the enabled commands tagged
  * `menu: "node"` in their fixed `menuOrder`, a 1-px separator between groups, at the pointer
  * and kept inside the window. ↑/↓ move, Enter (or a click) runs the item and closes, Esc
  * closes through the `contextMenu.close` command (so the dispatcher owns that key and its
@@ -93,6 +93,9 @@ function ContextMenuPopup({ at }: { at: MenuPoint }) {
     else if (action === "run") run(selected);
     // "trap": Tab stays inside; the menu is modal to the keyboard while it shows.
   };
+
+  // Not even for one frame: the effect above closes it.
+  if (items.length === 0) return null;
 
   return (
     <div

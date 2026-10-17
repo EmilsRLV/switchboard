@@ -6,11 +6,13 @@ import {
   clampToArea,
   hasSelection,
   isContextMenuOpen,
+  isElsewhereOpen,
   isPaneOpen,
   sameTarget,
   selectedProject,
   useUiStore,
 } from "./ui";
+import { useLiveStore } from "./live";
 import { useWorkspaceStore } from "./workspace";
 
 describe("ui store", () => {
@@ -205,5 +207,20 @@ describe("showAll", () => {
     expect(useUiStore.getState().selection).toBe(held);
     useUiStore.getState().select({ kind: "project", id: "a" });
     expect(useUiStore.getState().selection).toEqual({ kind: "project", id: "a" });
+  });
+});
+
+describe("Elsewhere tray flag", () => {
+  const row = { session_id: "s", state: { kind: "idle" as const }, name: "n", cwd: "/w", started_at: 1 };
+
+  it("is open only with rows, and resets when the last row leaves so a later row shows the chip alone", () => {
+    useLiveStore.getState().applySnapshot({ sessions: {}, elsewhere: [row], banner: null });
+    useUiStore.setState({ elsewhereOpen: false });
+    useUiStore.getState().toggleElsewhere();
+    expect(isElsewhereOpen()).toBe(true);
+    useLiveStore.getState().applySnapshot({ sessions: {}, elsewhere: [], banner: null });
+    expect(useUiStore.getState().elsewhereOpen).toBe(false);
+    useLiveStore.getState().applySnapshot({ sessions: {}, elsewhere: [row], banner: null });
+    expect(isElsewhereOpen()).toBe(false);
   });
 });

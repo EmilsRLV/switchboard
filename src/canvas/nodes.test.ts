@@ -10,7 +10,6 @@ import {
   COLUMN_TOP,
   DRAG_THRESHOLD,
   ELEVATED_Z,
-  LIVE_SESSIONS,
   REVEAL_MARGIN,
   REVEAL_PAN_MS,
   aheadBehind,
@@ -35,8 +34,19 @@ import {
   type NodeRect,
   type ProjectFlowNode,
 } from "./nodes";
-import { SHOW_LIMIT, formatAge, moreFlowId, moreLabel, sessionHoverText, sessionMetaLine, visibleChildren } from "./nodes";
-import type { SessionMeta } from "../ipc";
+import {
+  SHOW_LIMIT,
+  formatAge,
+  moreFlowId,
+  moreLabel,
+  rightClickAction,
+  sessionCardMeta,
+  sessionHoverText,
+  sessionMetaLine,
+  sessionStateTone,
+  visibleChildren,
+} from "./nodes";
+import type { LiveSession, SessionMeta, SessionState } from "../ipc";
 
 function project(id: string, path: string, x = 0, y = 0, expanded = false): Project {
   return {
@@ -278,6 +288,17 @@ describe("layoutChildren / columnSlot", () => {
   });
 });
 
+describe("rightClickAction", () => {
+  it("opens the menu for a project or session card with enabled entries, else only selects", () => {
+    expect(rightClickAction({ kind: "project", id: "a" }, true)).toBe("menu");
+    expect(rightClickAction({ kind: "session", id: "s" }, true)).toBe("menu");
+    expect(rightClickAction({ kind: "session", id: "historic" }, false)).toBe("select");
+    expect(rightClickAction({ kind: "project", id: "a" }, false)).toBe("select");
+    expect(rightClickAction({ kind: "branch", id: "b" }, true)).toBe("select");
+    expect(rightClickAction({ kind: "more", id: "a" }, true)).toBe("select");
+  });
+});
+
 describe("rightClickTarget", () => {
   const press = (flowId: string | null, x = 100, y = 100) => ({ x, y, flowId });
 
@@ -403,8 +424,64 @@ describe("statusLine / aheadBehind", () => {
     expect(aheadBehind(null)).toBeNull();
   });
 
-  it("the live badge is wired to 0 until Epic 3", () => {
-    expect(LIVE_SESSIONS).toBe(0);
+  it("the live badge counts the project's session children in a live state, by session id", () => {
+    const projects = [project("a", "/p/a"), project("b", "/p/b", 300)];
+    const session = (state: SessionState, project_id: string | null): LiveSession => ({
+      state,
+      source: "poll",
+      pid: 1,
+      kind: "interactive",
+      name: null,
+      project_id,
+      cwd: "/x",
+      started_at: 0,
+    });
+    const child = (id: string, projectId: string): ChildNode => ({ ...stub(1, projectId), id });
+    const children = [child("s1", "a"), child("s2", "a"), child("s3", "a"), child("s4", "a"), child("historic", "a"), child("moved", "a")];
+    const live: Record<string, LiveSession> = {
+      s1: session({ kind: "busy" }, "a"),
+      s2: session({ kind: "idle" }, "a"),
+      s3: session({ kind: "other", raw: "compacting" }, "a"),
+      s4: session({ kind: "exited" }, "a"),
+      // Its transcript sits under `a`, its live cwd maps to `b`: it counts where it is drawn.
+      moved: session({ kind: "busy" }, "b"),
+      elsewhere: session({ kind: "busy" }, null),
+    };
+    const nodes = toFlowNodes(inputs({ projects, children, live }));
+    expect(asProject(nodes[0]).data.liveCount).toBe(4);
+    expect(asProject(nodes[1]).data.liveCount).toBe(0);
+    expect(asProject(toFlowNodes(inputs({ projects, children }))[0]).data.liveCount).toBe(0);
+  });
+
+  it("a session child carries its live state, and a state flip re-renders only that child", () => {
+    const expanded = [project("a", "/p/a", 0, 0, true)];
+    const children = [stub(1, "a"), stub(2, "a")];
+    const session = (state: SessionState): LiveSession => ({
+      state,
+      source: "poll",
+      pid: 1,
+      kind: "interactive",
+      name: null,
+      project_id: "a",
+      cwd: "/p/a",
+      started_at: 0,
+    });
+    const first = toFlowNodes(inputs({ projects: expanded, children, live: { "stub-1-a": session({ kind: "busy" }) } }));
+    const kid = (nodes: typeof first, i: number) => {
+      const node = nodes[i];
+      if (node === undefined || node.type !== "session") throw new Error("not a session node");
+      return node;
+    };
+    expect(kid(first, 1).data.state).toEqual({ kind: "busy" });
+    expect(kid(first, 2).data.state).toBeNull();
+    const same = toFlowNodes(inputs({ projects: expanded, children, live: { "stub-1-a": session({ kind: "busy" }) } }), first);
+    expect(same[1]).toBe(first[1]);
+    const flipped = toFlowNodes(inputs({ projects: expanded, children, live: { "stub-1-a": session({ kind: "idle" }) } }), first);
+    expect(flipped[1]).not.toBe(first[1]);
+    expect(kid(flipped, 1).data.state).toEqual({ kind: "idle" });
+    expect(flipped[2]).toBe(first[2]);
+    // busy -> idle is still one live session: the card keeps its identity.
+    expect(flipped[0]).toBe(first[0]);
   });
 });
 
@@ -711,6 +788,38 @@ describe("formatAge / sessionMetaLine", () => {
     expect(sessionMetaLine(meta, now)).toBe("master · 12 msgs · 3h");
     expect(sessionMetaLine({ ...meta, branch: null }, now)).toBe("12 msgs · 3h");
     expect(sessionMetaLine({ ...meta, branch: "", messages: 1 }, now)).toBe("1 msg · 3h");
+  });
+
+  it("sessionCardMeta splits the line into its parts; no age without a last activity", () => {
+    const meta: SessionMeta = { startedAt: ago(0), lastActive: ago(0), branch: "HEAD", messages: 455 };
+    expect(sessionCardMeta(meta, now, { kind: "busy" })).toEqual({
+      state: { word: "busy", tone: "busy", dot: true },
+      branch: "HEAD",
+      count: "455 msgs",
+      age: "now",
+    });
+    expect(sessionCardMeta(meta, now, { kind: "other", raw: "compacting" }).state).toEqual({ word: "compacting", tone: "muted", dot: false });
+    expect(sessionCardMeta(meta, now, { kind: "exited" }).state).toEqual({ word: "exited", tone: "muted", dot: false });
+    expect(sessionCardMeta({ ...meta, branch: "", messages: 1 }, now, null)).toEqual({ state: null, branch: null, count: "1 msg", age: "now" });
+    const liveOnly: SessionMeta = { startedAt: "", lastActive: "", branch: null, messages: 0 };
+    expect(sessionCardMeta(liveOnly, now, { kind: "idle" }).age).toBeNull();
+    expect(sessionMetaLine(liveOnly, now, { kind: "idle" })).toBe("idle · 0 msgs");
+    expect(sessionHoverText("new session", liveOnly)).toBe("new session");
+    const started = { ...liveOnly, startedAt: "2026-10-16T09:00:00.000Z" };
+    expect(sessionHoverText("t", started)).toBe(`t\nstarted ${new Date("2026-10-16T09:00:00.000Z").toLocaleString()}`);
+  });
+
+  it("the meta line starts with the state word when the session is live or exited", () => {
+    const meta: SessionMeta = { startedAt: ago(0), lastActive: ago(0), branch: "master", messages: 12 };
+    expect(sessionMetaLine(meta, now, { kind: "busy" })).toBe("busy · master · 12 msgs · now");
+    expect(sessionMetaLine(meta, now, { kind: "exited" })).toBe("exited · master · 12 msgs · now");
+    expect(sessionMetaLine(meta, now, { kind: "other", raw: "compacting" })).toBe("compacting · master · 12 msgs · now");
+    expect(sessionMetaLine(meta, now, null)).toBe("master · 12 msgs · now");
+    expect(sessionStateTone({ kind: "busy" })).toBe("busy");
+    expect(sessionStateTone({ kind: "idle" })).toBe("muted");
+    expect(sessionStateTone({ kind: "exited" })).toBe("muted");
+    expect(sessionStateTone({ kind: "other", raw: "compacting" })).toBe("muted");
+    expect(sessionStateTone(null)).toBeNull();
   });
 
   it("the hover text carries the full title and both times", () => {
