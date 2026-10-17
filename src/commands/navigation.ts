@@ -3,7 +3,7 @@
 // same geometry the canvas draws, `canvas/nodes`), panning the viewport minimally when the new
 // node is off screen; Enter runs the selected node's default action. The external actions
 // (editor, file manager, Claude project dir) are thin calls into Rust, which performs them;
-// what cannot run is a transient notice in the banner strip, never a banner and never a throw
+// what cannot run is a transient notice over the canvas top, never a banner and never a throw
 // (`runCommand` has no error UI). The two Epic 4 stubs only show what they will do.
 
 import { nearestInDirection, nearestToPoint, nodeRects, panToReveal, REVEAL_MARGIN, REVEAL_PAN_MS, type Direction, type NodeRect } from "../canvas/nodes";
@@ -21,7 +21,10 @@ export const PLAIN_TERMINAL_NOTICE = "Plain terminal arrives in Epic 4";
 /** The pending end of the notice showing, so a newer notice restarts the clock. */
 let noticeTimer: unknown;
 
-/** Show `text` in the banner strip for `NOTICE_MS`; a newer notice replaces it and restarts the clock. */
+/**
+ * Show `text` as the notice over the canvas top for `NOTICE_MS`; a newer notice replaces it
+ * and restarts the clock.
+ */
 export function notify(text: string, timers: Timers = globalThis as Timers): void {
   useUiStore.getState().showNotice(text);
   if (noticeTimer !== undefined) timers.clearTimeout(noticeTimer);
@@ -57,8 +60,9 @@ export function moveSelection(direction: Direction): boolean {
 
 /**
  * Pan the canvas by the smallest delta that puts `rect` fully inside it (`REVEAL_MARGIN`),
- * zoom unchanged, over `REVEAL_PAN_MS`; nothing when it is already in view or there is no
- * canvas. The move ends in xyflow's `onMoveEnd`, which persists it like any other pan.
+ * zoom unchanged, over `REVEAL_PAN_MS` (instantly under reduced motion); nothing when it is
+ * already in view or there is no canvas. The move ends in xyflow's `onMoveEnd`, which
+ * persists it like any other pan.
  */
 function revealRect(rect: NodeRect): boolean {
   const { instance, element } = useCanvasStore.getState();
@@ -67,8 +71,14 @@ function revealRect(rect: NodeRect): boolean {
   if (size === null) return false;
   const next = panToReveal(rect, instance.getViewport(), size, REVEAL_MARGIN);
   if (next === null) return false;
-  void instance.setViewport(next, { duration: REVEAL_PAN_MS });
+  void instance.setViewport(next, { duration: prefersReducedMotion() ? 0 : REVEAL_PAN_MS });
   return true;
+}
+
+/** The OS asks for reduced motion (`prefers-reduced-motion: reduce`); false without a window. */
+function prefersReducedMotion(): boolean {
+  const media = (globalThis as { matchMedia?: (query: string) => { matches: boolean } }).matchMedia;
+  return typeof media === "function" && media("(prefers-reduced-motion: reduce)").matches;
 }
 
 /** The canvas's on-screen size: its element's, else the window's; `null` with neither (tests). */

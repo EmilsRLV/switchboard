@@ -9,6 +9,7 @@ import {
   COLUMN_INDENT,
   COLUMN_TOP,
   DRAG_THRESHOLD,
+  ELEVATED_Z,
   LIVE_SESSIONS,
   REVEAL_MARGIN,
   REVEAL_PAN_MS,
@@ -151,6 +152,38 @@ describe("toFlowNodes", () => {
     const other = toFlowNodes(inputs({ projects: expanded, children, selection: { kind: "session", id: "a" } }));
     expect(other.map((n) => n.data.selected)).toEqual([false, false, false, false]);
     expect(projectSelected.every((n) => n.selected === undefined)).toBe(true);
+  });
+
+  it("lifts the selected node and every dragged node above their siblings, and only those", () => {
+    const expanded = [project("a", "/p/a", 0, 0, true), projects[1]!];
+    const children = [stub(1, "a"), stub(2, "a"), stub(3, "a")];
+    const none = toFlowNodes(inputs({ projects: expanded, children }));
+    expect(none.map((n) => n.zIndex)).toEqual([0, 0, 0, 0, 0]);
+    // Dragging `session 3` (over `session 1`) while `session 1` is selected: both lifted.
+    const dragged = toFlowNodes(
+      inputs({
+        projects: expanded,
+        children,
+        selection: { kind: "session", id: "stub-1-a" },
+        dragging: { "session:stub-3-a": { x: 16, y: 92 } },
+      }),
+      none,
+    );
+    expect(dragged.map((n) => n.zIndex)).toEqual([0, ELEVATED_Z, 0, ELEVATED_Z + 1, 0]);
+    // The reverse: dragging `session 1` while `session 3` is selected; the dragged one is higher.
+    const reverse = toFlowNodes(
+      inputs({
+        projects: expanded,
+        children,
+        selection: { kind: "session", id: "stub-3-a" },
+        dragging: { "session:stub-1-a": { x: 16, y: 188 } },
+      }),
+    );
+    expect(reverse.map((n) => n.zIndex)).toEqual([0, ELEVATED_Z + 1, 0, ELEVATED_Z, 0]);
+    // The layer is part of a node's identity: the lifted nodes are new, the rest reused.
+    expect(dragged.map((n, i) => n === none[i])).toEqual([true, false, true, false, true]);
+    const projectLifted = toFlowNodes(inputs({ projects: expanded, children, selection: { kind: "project", id: "b" } }));
+    expect(projectLifted.map((n) => n.zIndex)).toEqual([0, 0, 0, 0, ELEVATED_Z]);
   });
 
   it("drag overrides win over stored positions, by flow id", () => {

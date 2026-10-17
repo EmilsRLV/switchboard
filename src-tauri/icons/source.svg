@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Switchboard app mark (docs/DESIGN.md, Icons). Three outlined node squares joined by two
+       lines, fg (#d7dae0) on a bg (#0f1115) rounded square. No accent, no gradient.
+       The outline is the 1-px line of the UI scaled for an icon that must read at 16 px.
+       Every file in this folder is generated from this one with `npx tauri icon`. -->
+  <rect width="1024" height="1024" rx="200" fill="#0f1115"/>
+  <g fill="none" stroke="#d7dae0" stroke-width="40" stroke-linejoin="miter" stroke-linecap="butt">
+    <rect x="176" y="176" width="240" height="240"/>
+    <rect x="608" y="176" width="240" height="240"/>
+    <rect x="392" y="608" width="240" height="240"/>
+    <path d="M416 296 H608"/>
+    <path d="M296 416 V728 H392"/>
+  </g>
+</svg>

@@ -153,6 +153,25 @@ describe("moveSelection", () => {
     expect(instance.setViewport).toHaveBeenCalledTimes(2);
   });
 
+  it("pans instantly when the OS asks for reduced motion", () => {
+    const queries: string[] = [];
+    vi.stubGlobal("matchMedia", (query: string) => {
+      queries.push(query);
+      return { matches: true };
+    });
+    try {
+      const instance = fakeCanvas({ x: 0, y: 0, zoom: 1 });
+      useCanvasStore.getState().setInstance(instance);
+      useCanvasStore.getState().setElement({ getBoundingClientRect: () => ({ left: 0, top: 0, width: 500, height: 600 }) });
+      useUiStore.getState().select({ kind: "project", id: "ide" });
+      expect(moveSelection("right")).toBe(true);
+      expect(instance.setViewport).toHaveBeenCalledWith({ x: -236, y: 0, zoom: 1 }, { duration: 0 });
+      expect(queries).toEqual(["(prefers-reduced-motion: reduce)"]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("without a canvas or a measurable size the selection still moves, without panning", () => {
     useUiStore.getState().select({ kind: "project", id: "ide" });
     expect(moveSelection("right")).toBe(true);

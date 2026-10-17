@@ -49,6 +49,13 @@ export const COLUMN_TOP = 92;
  */
 export const DRAG_THRESHOLD = 4;
 
+/**
+ * The `zIndex` of a node that is selected or being dragged, so it draws above its siblings
+ * (a dragged child is never hidden under its column). xyflow lifts a child to its parent's
+ * z + 1 when the parent is higher, so an elevated project keeps its children above it.
+ */
+export const ELEVATED_Z = 1000;
+
 /** Live-session count on the badge; a constant 0 (hidden) until Epic 3 wires sessions. */
 export const LIVE_SESSIONS: number = 0;
 
@@ -138,6 +145,8 @@ export type FlowInputs = {
  * relative to the card) when it is expanded. A collapsed project's children are not in the
  * list. Nodes are draggable; selection is the app's, never xyflow's, so `selectable` is off
  * and the selected node is marked in its `data`. Drag overrides win over stored positions.
+ * The selected node gets `zIndex` {@link ELEVATED_Z}; a node with a drag override one more,
+ * so a dragged card is never covered by a selected sibling.
  *
  * Pass the previous result to keep the identity of every node whose inputs did not change,
  * so a drag frame or a status tick re-renders only the nodes it touched.
@@ -157,17 +166,20 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
   const out: CanvasFlowNode[] = [];
   for (const project of projects) {
     const kids = byProject.get(project.id) ?? [];
+    const projectDrag = override(dragging, project.id);
+    const projectSelected = selection !== null && selection.kind === "project" && selection.id === project.id;
     const next: ProjectFlowNode = {
       id: project.id,
       type: "project",
-      position: override(dragging, project.id) ?? { x: project.position.x, y: project.position.y },
+      position: projectDrag ?? { x: project.position.x, y: project.position.y },
       data: {
         project,
         status: statuses[project.id] ?? null,
         flashed: flashed.includes(project.id),
-        selected: selection !== null && selection.kind === "project" && selection.id === project.id,
+        selected: projectSelected,
         childCount: kids.length,
       },
+      zIndex: layer(projectSelected, projectDrag),
       draggable: true,
       selectable: false,
       connectable: false,
@@ -177,15 +189,15 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
     const slots = layoutChildren(kids);
     kids.forEach((child, index) => {
       const id = childFlowId(child);
+      const childDrag = override(dragging, id);
+      const childSelected = selection !== null && selection.kind === child.kind && selection.id === child.id;
       const next: SessionFlowNode | BranchFlowNode = {
         id,
         type: child.kind,
         parentId: project.id,
-        position: override(dragging, id) ?? slots[index] ?? columnSlot(index),
-        data: {
-          child,
-          selected: selection !== null && selection.kind === child.kind && selection.id === child.id,
-        },
+        position: childDrag ?? slots[index] ?? columnSlot(index),
+        data: { child, selected: childSelected },
+        zIndex: layer(childSelected, childDrag),
         draggable: true,
         selectable: false,
         connectable: false,
@@ -196,13 +208,21 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
   return out;
 }
 
+/** A node's `zIndex`: {@link ELEVATED_Z} + 1 while dragged, {@link ELEVATED_Z} while selected, else 0. */
+function layer(selected: boolean, drag: Position | undefined): number {
+  if (drag !== undefined) return ELEVATED_Z + 1;
+  return selected ? ELEVATED_Z : 0;
+}
+
 /** `prev` when it would render exactly as `next`, else `next`. */
 function reuse<N extends CanvasFlowNode>(prev: CanvasFlowNode | undefined, next: N): N {
   return prev !== undefined && sameNode(prev, next) ? (prev as N) : next;
 }
 
 function sameNode(a: CanvasFlowNode, b: CanvasFlowNode): boolean {
-  if (a.type !== b.type || a.parentId !== b.parentId || !samePosition(a.position, b.position)) return false;
+  if (a.type !== b.type || a.parentId !== b.parentId || a.zIndex !== b.zIndex || !samePosition(a.position, b.position)) {
+    return false;
+  }
   if (a.type === "project" && b.type === "project") {
     return (
       a.data.flashed === b.data.flashed &&

@@ -1,13 +1,38 @@
-/* Design tokens. Dark default, one accent. Story 2.5 extends this. */
+/* Design tokens: the only place a colour, a type size or a radius is written as a value.
+   Dark only, one accent reserved for attention. docs/DESIGN.md is the statement of these
+   rules; src/theme/design.test.ts enforces them on every stylesheet. */
 :root {
   color-scheme: dark;
 
-  --bg: #0f1115;
-  --bg-raised: #161920;
+  /* Surfaces. */
+  --bg: #0f1115; /* canvas, page */
+  --bg-raised: #161920; /* cards, panes, banners, palette, menu */
+  --bg-hover: #1d2129; /* hovered and selected rows */
+
+  /* Text. */
   --fg: #d7dae0;
   --fg-muted: #8b919c;
+  --fg-faint: #3d424b; /* dot grid, disabled text */
+
+  /* Lines and the one accent (attention only). */
   --border: #262a33;
   --accent: #e8a33d;
+
+  /* Focus rings, the node selection outline, text selection: never the accent. */
+  --focus: var(--fg);
+  --selection: var(--fg-muted);
+
+  /* Type scale. Every font-size is one of these. */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-base: 14px; /* body */
+  --text-lg: 16px; /* pane titles */
+
+  /* Radii and line width. */
+  --radius-sm: 3px; /* badges, keys, buttons */
+  --radius-md: 4px; /* cards, panes, palette, menu */
+  --line: 1px;
 
   --font-sans:
     system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;

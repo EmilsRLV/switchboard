@@ -1,6 +1,6 @@
 /* Shell layout: banner strip on top, the canvas (canvas/canvas.css) filling the rest, panes
-   slide in from the right over it. Colours come from theme/tokens.css only; the accent is
-   reserved for attention states. */
+   on the right over it. Colours, type sizes and radii come from theme/tokens.css only; the
+   accent is reserved for attention states (docs/DESIGN.md, enforced by theme/design.test.ts). */
 
 .shell {
   height: 100%;
@@ -28,8 +28,10 @@
 
 .banners {
   flex: none;
+  max-height: 30vh;
+  overflow-y: auto;
   background: var(--bg-raised);
-  border-bottom: 1px solid var(--border);
+  border-bottom: var(--line) solid var(--border);
 }
 
 .banner {
@@ -41,7 +43,7 @@
 }
 
 .banner + .banner {
-  border-top: 1px solid var(--border);
+  border-top: var(--line) solid var(--border);
 }
 
 .banner-mark {
@@ -54,19 +56,53 @@
 }
 
 .banner-text {
+  min-width: 0;
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: var(--text-md);
   overflow-wrap: anywhere;
 }
 
-/* The transient notice: information, not attention, so muted and without the accent. */
-.banner.is-notice {
-  border-left-color: var(--fg-muted);
+/* The transient notice: information, not attention, so muted and without the accent. It is
+   laid over the top edge of the canvas, out of the strip's flow, so its arrival and exit
+   never resize the canvas; clicks pass through it; panes and the palette draw above it. The
+   region is the always-present live region, empty (no height) while there is no notice. */
+.notice-region {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.notice {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.4rem 0.75rem;
+  background: var(--bg-raised);
+  border-bottom: var(--line) solid var(--border);
+  border-left: 2px solid var(--fg-muted);
   color: var(--fg-muted);
 }
 
-.banner.is-notice .banner-mark {
+/* One row, always: a multi-line message is cut, its full text in the title. */
+.notice-text {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notice-mark {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
   background: var(--fg-muted);
+  transform: translateY(-1px);
 }
 
 /* --- pane ---------------------------------------------------------------------------- */
@@ -78,30 +114,13 @@
   bottom: 0;
   width: min(440px, 90vw);
   background: var(--bg-raised);
-  border-left: 1px solid var(--border);
+  border-left: var(--line) solid var(--border);
   padding: 0.75rem 1rem 1rem;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  animation: pane-in 120ms ease-out;
-}
-
-@keyframes pane-in {
-  from {
-    transform: translateX(16px);
-    opacity: 0;
-  }
-  to {
-    transform: none;
-    opacity: 1;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .pane {
-    animation: none;
-  }
+  z-index: 10;
 }
 
 .pane-header {
@@ -112,7 +131,7 @@
 
 .pane-title {
   margin: 0;
-  font-size: 1rem;
+  font-size: var(--text-lg);
   font-weight: 500;
 }
 
@@ -124,7 +143,7 @@
 
 .pane-heading {
   margin: 0;
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -132,19 +151,19 @@
 }
 
 .pane .muted {
-  font-size: 0.8rem;
+  font-size: var(--text-md);
 }
 
 .pane-error {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: var(--text-md);
   color: var(--accent);
 }
 
 .path,
 .leaf {
-  font-size: 0.8rem;
+  font-size: var(--text-md);
   overflow-wrap: anywhere;
 }
 
@@ -155,11 +174,11 @@
 
 .btn {
   font: inherit;
-  font-size: 0.8rem;
+  font-size: var(--text-md);
   color: var(--fg);
   background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 3px;
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-sm);
   padding: 0.25rem 0.6rem;
   cursor: pointer;
 }
@@ -169,12 +188,12 @@
 }
 
 .btn:focus-visible {
-  outline: 1px solid var(--accent);
+  outline: var(--line) solid var(--focus);
   outline-offset: 1px;
 }
 
 .btn:disabled {
-  color: var(--fg-muted);
+  color: var(--fg-faint);
   cursor: default;
 }
 
@@ -182,7 +201,7 @@
   display: grid;
   grid-template-columns: 4.5rem 1fr;
   gap: 0.5rem;
-  font-size: 0.8rem;
+  font-size: var(--text-md);
 }
 
 .binary-name {
@@ -197,12 +216,12 @@
   list-style: none;
   margin: 0;
   padding: 0;
-  font-size: 0.8rem;
+  font-size: var(--text-md);
 }
 
 .tree .tree {
   padding-left: 1rem;
-  border-left: 1px solid var(--border);
+  border-left: var(--line) solid var(--border);
   margin-left: 0.25rem;
 }
 
@@ -232,19 +251,19 @@
   list-style: none;
   margin: 0;
   padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 3px;
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-sm);
   max-height: 50vh;
   overflow-y: auto;
 }
 
 .import-list:focus-visible {
-  outline: 1px solid var(--accent);
+  outline: var(--line) solid var(--focus);
   outline-offset: 1px;
 }
 
 .import-row + .import-row {
-  border-top: 1px solid var(--border);
+  border-top: var(--line) solid var(--border);
 }
 
 .import-row-label {
@@ -267,7 +286,7 @@
 }
 
 .import-row-label input:focus-visible {
-  outline: 1px solid var(--accent);
+  outline: var(--line) solid var(--focus);
   outline-offset: 1px;
 }
 
@@ -278,12 +297,12 @@
 }
 
 .import-row-name {
-  font-size: 0.85rem;
+  font-size: var(--text-md);
 }
 
 .import-row-path {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
   color: var(--fg-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -292,7 +311,7 @@
 
 .import-row-meta {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
   color: var(--fg-muted);
   white-space: nowrap;
 }
@@ -302,6 +321,7 @@
 .palette-backdrop {
   position: fixed;
   inset: 0;
+  z-index: 15;
   display: flex;
   justify-content: center;
   align-items: flex-start;
@@ -316,19 +336,17 @@
   display: flex;
   flex-direction: column;
   background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: 4px;
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-md);
   overflow: hidden;
   animation: palette-in 100ms ease-out;
 }
 
 @keyframes palette-in {
   from {
-    transform: translateY(-6px);
     opacity: 0;
   }
   to {
-    transform: none;
     opacity: 1;
   }
 }
@@ -344,7 +362,7 @@
   color: var(--fg);
   background: var(--bg);
   border: none;
-  border-bottom: 1px solid var(--border);
+  border-bottom: var(--line) solid var(--border);
   padding: 0.6rem 0.75rem;
   /* No focus ring: the input always has focus while the dialog is open, so the dialog's
      border is the deliberate focus cue. */
@@ -369,20 +387,23 @@
   justify-content: space-between;
   gap: 1rem;
   padding: 0.4rem 0.75rem;
-  font-size: 0.9rem;
+  font-size: var(--text-base);
 }
 
+/* The row indicator is a 2-px left border, transparent until the row is selected, so the
+   selection never shifts the text. */
 .palette-row {
   cursor: pointer;
+  border-left: 2px solid transparent;
 }
 
 .palette-row:hover {
-  background: var(--bg);
+  background: var(--bg-hover);
 }
 
 .palette-row.is-selected {
-  background: var(--bg);
-  box-shadow: inset 2px 0 0 var(--accent);
+  background: var(--bg-hover);
+  border-left-color: var(--fg-muted);
 }
 
 .palette-row-title {
@@ -393,7 +414,7 @@
 
 .palette-row-key {
   flex: none;
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
   color: var(--fg-muted);
 }
 
@@ -409,8 +430,8 @@
   min-width: 180px;
   padding: 0.25rem 0;
   background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: 4px;
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-md);
   outline: none;
 }
 
@@ -419,27 +440,25 @@
   width: 100%;
   text-align: left;
   font: inherit;
-  font-size: 0.85rem;
+  font-size: var(--text-md);
   color: var(--fg);
   background: none;
   border: none;
+  border-left: 2px solid transparent;
   padding: 0.35rem 0.75rem;
   white-space: nowrap;
-}
-
-.context-menu-item {
   cursor: pointer;
   outline: none;
 }
 
 .context-menu-item.is-selected {
-  background: var(--bg);
-  box-shadow: inset 2px 0 0 var(--fg-muted);
+  background: var(--bg-hover);
+  border-left-color: var(--fg-muted);
 }
 
 /* Between menu groups (the tens of `menuOrder`). */
 .context-menu-separator {
-  height: 1px;
+  height: var(--line);
   margin: 0.25rem 0;
   background: var(--border);
 }

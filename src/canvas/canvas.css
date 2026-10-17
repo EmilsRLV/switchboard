@@ -1,6 +1,7 @@
 /* The canvas fills the shell body under the banners; panes and the palette sit over it.
    xyflow ships unstyled (`base.css`); colours come from theme/tokens.css through xyflow's
-   own CSS variables. No accent anywhere here: an empty canvas is calm. */
+   own CSS variables. No accent anywhere here: an empty canvas is calm. The dot grid is
+   drawn in --fg-faint (Canvas.tsx). */
 
 .canvas {
   flex: 1;
@@ -28,7 +29,7 @@
 
 .canvas .react-flow__attribution {
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   padding: 0.15rem 0.4rem;
 }
 
@@ -50,7 +51,7 @@
   user-select: none;
   color: var(--fg-muted);
   font-family: var(--font-mono);
-  font-size: 0.85rem;
+  font-size: var(--text-md);
   text-align: center;
   padding: 0 1rem;
 }

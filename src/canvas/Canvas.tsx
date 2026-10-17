@@ -289,7 +289,7 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
       onNodeClick={onNodeClick}
       onPaneClick={onPaneClick}
     >
-      <Background variant={BackgroundVariant.Dots} gap={DOT_GAP} size={DOT_SIZE} color="var(--border)" />
+      <Background variant={BackgroundVariant.Dots} gap={DOT_GAP} size={DOT_SIZE} color="var(--fg-faint)" />
     </ReactFlow>
   );
 }

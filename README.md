@@ -6,13 +6,24 @@ A small desktop app for Windows and Linux whose main surface is a **graph of pro
 sessions and branches**. It starts, watches, connects and reviews Claude Code sessions. It is not a
 text editor.
 
-Status: **Epic 2 in progress**. The Tauri 2 shell (Rust core, React 19 + TypeScript + Vite UI) builds
+Status: **Epic 2 complete**. The Tauri 2 shell (Rust core, React 19 + TypeScript + Vite UI) builds
 and tests on Windows and Linux (CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). The home
 surface is an infinite canvas whose viewport persists, holding one card per project folder with its git
 state; cards expand into a column of children, every node drags and remembers where it was put, the arrow
 keys walk the selection from card to card, and a right-click menu (or the palette) holds the project actions:
 open the folder in the editor or file manager, reveal its Claude project directory, remove it from the canvas,
-with New session and Plain terminal as stubs until Epic 4.
+with New session and Plain terminal as stubs until Epic 4. Everything on screen follows one quiet visual
+language (see [Design](#design)).
+
+## Design
+
+[`docs/DESIGN.md`](docs/DESIGN.md) is the visual system: the tokens in
+[`src/theme/tokens.css`](src/theme/tokens.css) (surfaces, text, lines, one amber accent reserved for
+attention, type scale, radii), 1-px lines, no gradients or shadows, node anatomy, status colours, motion and
+the monochrome app icon (`src-tauri/icons/source.svg`, every other icon generated from it with
+`npx tauri icon src-tauri/icons/source.svg`). A design lint ([`src/theme/design.test.ts`](src/theme/design.test.ts),
+part of `npm test`) fails CI when a stylesheet or inline style writes a colour literal, a gradient or
+shadow, a font size or radius off the tokens, or uses the accent outside the attention allow-list.
 
 ## Plans
 
@@ -152,12 +163,13 @@ inside the window, in a fixed order with a 1-px rule between the groups:
 `↑`/`↓` move, Enter or a click runs, Esc, a click elsewhere or losing focus closes. Child cards have no menu
 yet. The same commands are in the palette (by title) while a project card is selected.
 
-An action that cannot run is a **notice**: a muted line in the banner strip, without the accent (it is
-information, not attention), gone after 3 s, one at a time with the newest winning. "No external editor
-configured — set external_editor in settings", "external editor code not found on PATH", "external editor
-C:\Tools\code.exe does not exist", "could not start
-external editor: …", "could not open folder: …", "No Claude project directory for this folder". Only a failed
-removal is a banner (`remove failed: …`, like the other mutations), since the workspace itself did not change.
+An action that cannot run is a **notice**: a muted line laid over the top edge of the canvas (so it never
+moves or resizes the canvas), without the accent (it is information, not attention), gone after 3 s, one at
+a time with the newest winning. "No external editor configured — set external_editor in settings",
+"external editor code not found on PATH", "external editor C:\Tools\code.exe does not exist",
+"could not start external editor: …", "could not open folder: …", "No Claude project directory for this
+folder". Only a failed removal is a banner (`remove failed: …`, like the other mutations), since the
+workspace itself did not change.
 
 ### Keyboard navigation
 
