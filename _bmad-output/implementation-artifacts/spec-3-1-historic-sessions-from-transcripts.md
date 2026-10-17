@@ -2,7 +2,7 @@
 title: 'Story 3.1: Historic sessions from transcripts'
 type: 'feature'
 created: '2026-10-17'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '01e8ac2b19a3b88f2217417c56a37e2c722bf508'
@@ -149,6 +149,7 @@ context:
 - **Review patch round:** order by `startedAt` (amended decision); command wrappers, local-command output, interrupt markers and compact summaries are not prompts; `startedAt`/`lastActive` are the min/max timestamp; a grown transcript resumes from the last complete line (`Progress`, `summarise_from`); a failed re-read keeps the cached summary and an unlistable `projects/` keeps the last list; sessions use only a transcript-confirmed `cwd`; the cache stamp includes `custom-title.json`'s mtime; the cut hides list indices ≥ 10 unless `showAll`, except a child with a stored position, which is always drawn (slots stay by list index, so Story 2.3's gap behaviour is unchanged; the `more` row sits at `columnSlot(min(total, 10))`, or after the last while all show, and N is the total child count); Enter acts only on a drawn target; `project.toggleShowAll` ("Show all sessions", menu order 32); `clickNode`; removal forgets the project's `showAll`.
 - **Verification run:** `cargo test` (227 pass), `cargo clippy --all-targets -- -D warnings` (clean), `npm test` (289 pass, design lint included), `npx tsc --noEmit` (clean). Not run (per session constraints): `npm run tauri build`, and the manual GUI checks.
 - Orchestrator (2026-10-18, review + GUI): three review layers on Opus triaged below (one owner decision: order by `startedAt`); the patch round re-verified (`cargo test` 239, vitest 293, clippy and `tsc` clean, debug build). One patch instruction of mine briefly made the column close up after a drag, contrary to Story 2.3's frozen matrix; corrected in the same round (slots stay by list index). A first GUI attempt aborted before any input because a game held the foreground; rerun after Emils freed the screen. GUI pass (foreground-guarded): `ide` (1 session, this one), `map-maker` (9: no `show all`) and `Novels\AI` (15) expanded; cards show real titles and `branch · N msgs · age`, newest-started first; `AI` shows ten cards and `show all (15)`, a click shows all 15 and `show fewer`; the hover shows the full title and exact times; `~/.claude/projects` (excluding this session's live dir) had 480 files with identical size and mtime before and after the run.
+- Orchestrator (2026-10-18, close): committed `bf33b58`, pushed; CI run 39069219947 green on ubuntu-24.04 and windows-latest at the first attempt. Deferred: two `deferred-work.md` entries (IPC-path test of the post-add sessions pass; meaning of `.session-aliases`).
 
 ## Spec Change Log
 
