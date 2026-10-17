@@ -2,7 +2,7 @@
 title: 'Story 2.5: Visual language'
 type: 'feature'
 created: '2026-10-17'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '6846f3634239999da8dbbed6829f519b28e14c2d'
@@ -119,6 +119,7 @@ context:
 - **Icon.** The stroke width is 40 at 1024 (about 1.25 px at 32 px), so the "1-px outline" reads at small sizes. SVG comments can't contain `--`, so the source comment names the colours without the dashes. `npx tauri icon` also wrote `64x64.png`, which was kept, and `android/` and `ios/` folders, which were deleted (desktop only). `tauri.conf.json` was not changed.
 - **Not run here:** `npm run tauri build -- --debug --no-bundle` and every manual or screenshot check (no GUI in this session). `npm run build` (tsc + vite) passes.
 - Orchestrator (2026-10-17, review + GUI): three review layers on Opus triaged below; 8 patch items applied and re-verified (`cargo test` 207, vitest 271, clippy and `tsc` clean, debug build). The notice's `title` is unreachable while the overlay keeps `pointer-events: none` (the frozen pass-through rule wins); a long notice is cut with an ellipsis and has no hover. GUI pass (foreground-guarded, five planted projects, `SWITCHBOARD_STUB_CHILDREN=3`): canvas with two repos, a non-git folder, a missing folder and `ide` expanded, no accent anywhere; palette selected row in `--bg-hover` with the muted 2-px left bar; settings pane with "Reveal file" focused showing a light 1-px ring, not the accent; New session… notice laid over the canvas top with the cards at the same y as before it (label at y 130 in both shots); `session 3` dragged over `session 1` draws on top and keeps the selection outline. The first run still showed Tauri's placeholder in the title bar: the window icon is embedded by `generate_context!` when the library compiles and Cargo does not track the icon files, so the incremental build kept the old one; after `cargo clean -p switchboard` the title bar shows the new mark (recorded in DESIGN.md's Icons section; CI builds from scratch).
+- Orchestrator (2026-10-17, close): committed `e7cb80a`, pushed; CI run 39047785631 green on ubuntu-24.04 and windows-latest at the first attempt. Deferred: three `deferred-work.md` entries (render test for `Notice`, lint of component colour props, `Banners` live region). Epic 2 complete.
 
 ## Spec Change Log
 
