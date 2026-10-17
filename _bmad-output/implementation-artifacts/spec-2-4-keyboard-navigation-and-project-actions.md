@@ -2,7 +2,7 @@
 title: 'Story 2.4: Keyboard navigation and project actions'
 type: 'feature'
 created: '2026-10-17'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '50a159085bbad9ec33b4a883db1cfd89825cc36c'
@@ -92,6 +92,7 @@ context:
 - `panToReveal` returns the whole viewport, not a delta; a rect larger than the available area is aligned on its left/top edge.
 - Verified with `cargo test` (207 tests), `cargo clippy --all-targets -- -D warnings`, `npm test` (259 tests), `npx tsc --noEmit`; the debug `tauri build` was not run in this session (no GUI / no build permitted), so the manual checks are still open.
 - Orchestrator (2026-10-17, review + GUI): three review layers (re-run on Opus after the Fable limit cut the first run short) triaged in the log below; 7 patch items applied and re-verified (`cargo test` 207, vitest 260, clippy and `tsc` clean, debug build). GUI pass (foreground-guarded, `SWITCHBOARD_STUB_CHILDREN=2`, `ide` at (80,80) and `projects` at (480,80)): `→` moved the outline to `projects`, `←` back; Enter expanded `ide` (`expanded: true` on disk), `↓` selected `session 1`, `↑` returned, Enter collapsed; `→` past the last card left the selection and the viewport unchanged; the menu showed the eight entries in the fixed order with three separators; New session… showed the muted notice "New session arrives in Epic 4", gone after 3 s; Open in file manager opened `B:\projects\ide` and Reveal Claude project dir opened `~/.claude/projects/B--projects-ide` (both Explorer windows detected and closed by the script; the operator's own windows untouched); Remove from canvas removed `ide` with its children (`projects` 1, `sessions` 0 on disk) and a relaunch showed only `projects`. A first script's "0 Explorer windows" was its own matching bug, re-checked with a probe. Open in external editor is left to Emils by hand.
+- Orchestrator (2026-10-17, close): committed `a245859`, pushed; CI run 39045515131 green on ubuntu-24.04 and windows-latest at the first attempt (the first compile of the Unix `process_group` line). Deferred: one `deferred-work.md` entry (component tests for `Banners`/`ContextMenu`). Open in external editor remains a hand test for Emils.
 
 ## Spec Change Log
 
