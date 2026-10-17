@@ -29,6 +29,7 @@ import {
   selectedLiveSessionId,
   toggleShowAllOfSelected,
 } from "./navigation";
+import { canGoToAttention, goToNextAttention } from "./attention";
 import { relayoutChildren, removeProject, setExpanded } from "./nodes";
 import { closeOpenPane, openPane, togglePane } from "./panes";
 import { addProjectFromPicker, isPickerIdle } from "./projects";
@@ -183,6 +184,15 @@ export function builtinCommands(): Command[] {
       when: () => hasSelection() && noSurfaceOpen(),
       run: async () => {
         await activateSelection();
+      },
+    },
+    {
+      id: "attention.next",
+      title: "Go to session that needs you",
+      keybinding: "ctrl+j",
+      when: canGoToAttention,
+      run: async () => {
+        await goToNextAttention();
       },
     },
     {

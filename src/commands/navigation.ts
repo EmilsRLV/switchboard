@@ -15,13 +15,14 @@ import {
   REVEAL_MARGIN,
   REVEAL_PAN_MS,
   visibleChildren,
+  type CanvasTarget,
   type Direction,
   type NodeRect,
 } from "../canvas/nodes";
 import { projectOpenEditor, projectOpenFolder, projectRevealClaudeDir } from "../ipc";
 import { useCanvasStore, viewportCentre, type CanvasElement } from "../state/canvas";
 import { liveSession } from "../state/live";
-import { NOTICE_MS, sameTarget, selectedProject, useUiStore, type Size } from "../state/ui";
+import { acknowledgeIfNeeded, NOTICE_MS, sameTarget, selectedProject, useUiStore, type Size } from "../state/ui";
 import { projectHasChildren, useWorkspaceStore } from "../state/workspace";
 import { setExpanded } from "./nodes";
 import type { Timers } from "./projects";
@@ -73,6 +74,20 @@ export function moveSelection(direction: Direction): boolean {
   ui.select(next.target);
   revealRect(next);
   return true;
+}
+
+/**
+ * Pan the canvas just enough to show `target` when it is drawn (the arrow keys' reveal, used
+ * by the focus reveal and `attention.next` too). Resolves whether it panned: nothing when the
+ * target is not drawn, already in view, or there is no canvas.
+ */
+export function revealTarget(target: CanvasTarget): boolean {
+  const snapshot = useWorkspaceStore.getState().snapshot;
+  if (snapshot === null) return false;
+  const rect = nodeRects(snapshot.workspace.projects, snapshot.children, useUiStore.getState().showAll).find((r) =>
+    sameTarget(r.target, target),
+  );
+  return rect === undefined ? false : revealRect(rect);
 }
 
 /**
@@ -133,13 +148,17 @@ export async function activateSelection(): Promise<boolean> {
 
 /**
  * A click on a node (the canvas's `onNodeClick`): close the menu and select it; on a `more`
- * row, also show all (or fewer) of that project's children.
+ * row, also show all (or fewer) of that project's children. A click on the session already
+ * selected acknowledges it too when it needs attention (it finished while selected), since
+ * the selection itself does not change.
  */
 export function clickNode(flowId: string): void {
   const ui = useUiStore.getState();
   ui.closeContextMenu();
   const target = parseFlowId(flowId);
+  const already = sameTarget(ui.selection, target);
   ui.select(target);
+  if (already) acknowledgeIfNeeded(target);
   if (target.kind === "more") ui.toggleShowAll(target.id);
 }
 

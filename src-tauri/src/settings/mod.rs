@@ -62,6 +62,8 @@ pub struct Settings {
     pub shell: Option<String>,
     pub theme: String,
     pub poll: PollSettings,
+    /// Which attention states send an OS toast while the window is unfocused (Story 3.3).
+    pub notifications: NotificationSettings,
 }
 
 impl Default for Settings {
@@ -76,6 +78,7 @@ impl Default for Settings {
             shell: None,
             theme: "dark".to_string(),
             poll: PollSettings::default(),
+            notifications: NotificationSettings::default(),
         }
     }
 }
@@ -118,6 +121,26 @@ impl Default for PollSettings {
         Self {
             agents_ms: DEFAULT_AGENTS_POLL_MS,
             git_ms: DEFAULT_GIT_POLL_MS,
+        }
+    }
+}
+
+/// The OS toast toggles, one per attention state; both on by default. A missing key takes its
+/// default like every other settings key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationSettings {
+    /// A session finished its turn (busy → idle).
+    pub finished: bool,
+    /// A session waits for input (hooks, Story 4.3).
+    pub waiting: bool,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            finished: true,
+            waiting: true,
         }
     }
 }
@@ -331,6 +354,9 @@ pub struct AppState {
     pub sessions_live: RwLock<LiveMap>,
     /// Serialises live-session polls, so an older, slower poll never overwrites a newer one.
     pub live_lock: tauri::async_runtime::Mutex<()>,
+    /// A toast sender that replaces the notification plugin (tests inject a recorder, so no
+    /// test ever sends a real OS notification). `None` means the plugin, when registered.
+    pub notifier: Mutex<Option<std::sync::Arc<dyn crate::notify::Notifier>>>,
 }
 
 impl AppState {
@@ -624,6 +650,17 @@ mod tests {
         assert_eq!(s.theme, "dark");
         assert_eq!(s.poll.agents_ms, 2_000);
         assert_eq!(s.poll.git_ms, 5_000);
+        assert!(s.notifications.finished);
+        assert!(s.notifications.waiting);
+    }
+
+    #[test]
+    fn notification_toggles_parse_tolerantly_and_default_on() {
+        let s = store::parse(r#"{ "notifications": { "finished": false } }"#).unwrap();
+        assert_eq!(s.notifications, NotificationSettings { finished: false, waiting: true });
+        let s = store::parse(r#"{ "notifications": { "waiting": false, "sound": true } }"#).unwrap();
+        assert_eq!(s.notifications, NotificationSettings { finished: true, waiting: false });
+        assert_eq!(store::parse("{}").unwrap().notifications, NotificationSettings::default());
     }
 
     #[test]
@@ -715,7 +752,8 @@ mod tests {
                     "external_editor": null,
                     "shell": null,
                     "theme": "dark",
-                    "poll": { "agents_ms": 2000, "git_ms": 5000 }
+                    "poll": { "agents_ms": 2000, "git_ms": 5000 },
+                    "notifications": { "finished": true, "waiting": true }
                 },
                 "binaries": {
                     "claude": {

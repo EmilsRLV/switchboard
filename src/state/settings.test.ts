@@ -14,6 +14,7 @@ const snapshot: SettingsSnapshot = {
     shell: "pwsh",
     theme: "dark",
     poll: { agents_ms: 2000, git_ms: 5000 },
+    notifications: { finished: true, waiting: true },
   },
   binaries: {
     claude: {

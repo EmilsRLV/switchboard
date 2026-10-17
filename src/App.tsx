@@ -3,6 +3,7 @@ import {
   hasTauriRuntime,
   liveSessionsGet,
   onLiveSessions,
+  onNotifyReveal,
   onProjectsStatus,
   onSettingsChanged,
   onWorkspaceChanged,
@@ -11,6 +12,7 @@ import {
   workspaceGet,
 } from "./ipc";
 import { mirror } from "./ipc/mirror";
+import { revealToastSession } from "./commands/attention";
 import { registerBuiltins } from "./commands/builtins";
 import { useKeybindings } from "./commands/keybindings";
 import { useLiveStore } from "./state/live";
@@ -93,6 +95,24 @@ export default function App() {
       fail: (message) => setLiveLoadError(`live sessions load failed: ${message}`),
     });
   }, [applyLive, setLiveLoadError]);
+
+  // A click on an OS toast: Rust has focused the window; reveal and select its session
+  // (Story 3.3).
+  useEffect(() => {
+    if (!hasTauriRuntime()) return;
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    void onNotifyReveal((request) => {
+      void revealToastSession(request);
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useKeybindings();
 

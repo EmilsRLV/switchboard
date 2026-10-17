@@ -949,7 +949,7 @@ pub(crate) fn same_path(a: &str, b: &str) -> bool {
 }
 
 /// The node label: the folder's own name; for a root (`C:\`, `/`) the whole path.
-fn folder_label(path: &str) -> String {
+pub fn folder_label(path: &str) -> String {
     Path::new(path)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())

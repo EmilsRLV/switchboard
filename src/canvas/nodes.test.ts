@@ -435,6 +435,7 @@ describe("statusLine / aheadBehind", () => {
       project_id,
       cwd: "/x",
       started_at: 0,
+      attention_since: null,
     });
     const child = (id: string, projectId: string): ChildNode => ({ ...stub(1, projectId), id });
     const children = [child("s1", "a"), child("s2", "a"), child("s3", "a"), child("s4", "a"), child("historic", "a"), child("moved", "a")];
@@ -453,6 +454,49 @@ describe("statusLine / aheadBehind", () => {
     expect(asProject(toFlowNodes(inputs({ projects, children }))[0]).data.liveCount).toBe(0);
   });
 
+  it("a session in finished or waiting puts its card in attention and its project in the glow, collapsed or not", () => {
+    const session = (state: SessionState, project_id = "a"): LiveSession => ({
+      state,
+      source: "poll",
+      pid: 1,
+      kind: "interactive",
+      name: null,
+      project_id,
+      cwd: "/p/a",
+      started_at: 0,
+      attention_since: state.kind === "finished" ? 5 : null,
+    });
+    const children = [stub(1, "a"), stub(2, "a"), stub(1, "b")];
+    const collapsed = [project("a", "/p/a"), project("b", "/p/b", 300)];
+    const live = { "stub-1-a": session({ kind: "busy" }), "stub-2-a": session({ kind: "finished" }), "stub-1-b": session({ kind: "idle" }, "b") };
+    const nodes = toFlowNodes(inputs({ projects: collapsed, children, live }));
+    expect(asProject(nodes[0]).data.attention).toBe(true);
+    expect(asProject(nodes[0]).data.childCount, "the badge is unchanged").toBe(2);
+    expect(asProject(nodes[1]).data.attention).toBe(false);
+
+    const expanded = [project("a", "/p/a", 0, 0, true)];
+    const open = toFlowNodes(inputs({ projects: expanded, children, live }));
+    expect(asProject(open[0]).data.attention).toBe(true);
+    const kids = open.filter((n) => n.type === "session");
+    expect(kids.map((n) => (n.type === "session" ? n.data.attention : null))).toEqual([false, true]);
+
+    // Acknowledged (idle): the glow and the accent go, and only the nodes that changed re-render.
+    const acked = toFlowNodes(
+      inputs({ projects: expanded, children, live: { ...live, "stub-2-a": { ...session({ kind: "idle" }), source: "ack" } } }),
+      open,
+    );
+    expect(asProject(acked[0]).data.attention).toBe(false);
+    expect(acked[0]).not.toBe(open[0]);
+    expect(acked[1], "the busy sibling is untouched").toBe(open[1]);
+    expect(acked[2]).not.toBe(open[2]);
+
+    // Waiting counts too; exited does not.
+    const waiting = toFlowNodes(inputs({ projects: collapsed, children, live: { "stub-1-a": session({ kind: "waiting" }) } }));
+    expect(asProject(waiting[0]).data.attention).toBe(true);
+    const exited = toFlowNodes(inputs({ projects: collapsed, children, live: { "stub-1-a": session({ kind: "exited" }) } }));
+    expect(asProject(exited[0]).data.attention).toBe(false);
+  });
+
   it("a session child carries its live state, and a state flip re-renders only that child", () => {
     const expanded = [project("a", "/p/a", 0, 0, true)];
     const children = [stub(1, "a"), stub(2, "a")];
@@ -465,6 +509,7 @@ describe("statusLine / aheadBehind", () => {
       project_id: "a",
       cwd: "/p/a",
       started_at: 0,
+      attention_since: null,
     });
     const first = toFlowNodes(inputs({ projects: expanded, children, live: { "stub-1-a": session({ kind: "busy" }) } }));
     const kid = (nodes: typeof first, i: number) => {
@@ -820,6 +865,15 @@ describe("formatAge / sessionMetaLine", () => {
     expect(sessionStateTone({ kind: "exited" })).toBe("muted");
     expect(sessionStateTone({ kind: "other", raw: "compacting" })).toBe("muted");
     expect(sessionStateTone(null)).toBeNull();
+  });
+
+  it("finished and waiting read in the attention tone with the pulsing dot", () => {
+    const meta: SessionMeta = { startedAt: ago(0), lastActive: ago(0), branch: "master", messages: 12 };
+    expect(sessionStateTone({ kind: "finished" })).toBe("attention");
+    expect(sessionStateTone({ kind: "waiting" })).toBe("attention");
+    expect(sessionCardMeta(meta, now, { kind: "finished" }).state).toEqual({ word: "finished", tone: "attention", dot: true });
+    expect(sessionCardMeta(meta, now, { kind: "waiting" }).state).toEqual({ word: "waiting", tone: "attention", dot: true });
+    expect(sessionMetaLine(meta, now, { kind: "finished" })).toBe("finished · master · 12 msgs · now");
   });
 
   it("the hover text carries the full title and both times", () => {

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChildNode, LiveSession, LiveSnapshot, Position, Project, SessionState, SettingsSnapshot, Viewport, WorkspaceSnapshot } from "../ipc";
 import { useCanvasStore, type CanvasInstance } from "../state/canvas";
 import { useImportStore } from "../state/import";
-import { EMPTY_LIVE, useLiveStore } from "../state/live";
+import { EMPTY_LIVE, unmarkAcknowledging, useLiveStore } from "../state/live";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
 import { useUiStore } from "../state/ui";
@@ -48,9 +48,10 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the thirty-one commands with the spec's keybindings", () => {
+  it("register the thirty-two commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "app.quit",
+      "attention.next",
       "binaries.redetect",
       "canvas.fitView",
       "contextMenu.close",
@@ -104,6 +105,8 @@ describe("built-in commands", () => {
     expect(getCommand("app.quit")?.keybinding).toBe("ctrl+q");
     expect(getCommand("canvas.fitView")?.keybinding).toBe("ctrl+0");
     expect(getCommand("project.add")?.keybinding).toBe("ctrl+o");
+    expect(getCommand("attention.next")?.keybinding).toBe("ctrl+j");
+    expect(getCommand("attention.next")?.title).toBe("Go to session that needs you");
     expect(getCommand("project.import")?.keybinding).toBeUndefined();
     expect(getCommand("palette.close")?.keybinding).toBe("escape");
     expect(getCommand("pane.close")?.keybinding).toBe("escape");
@@ -114,9 +117,10 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the twenty actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the twenty-one actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "app.quit",
+      "attention.next",
       "binaries.redetect",
       "canvas.fitView",
       "elsewhere.toggle",
@@ -163,7 +167,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(31);
+    expect(listCommands()).toHaveLength(32);
   });
 
   const PROJECT_ACTIONS = [
@@ -672,7 +676,7 @@ describe("built-in commands", () => {
   function liveSnapshot(states: Record<string, SessionState>, elsewhere = 0): LiveSnapshot {
     const sessions: Record<string, LiveSession> = {};
     for (const [id, state] of Object.entries(states)) {
-      sessions[id] = { state, source: "poll", pid: 1, kind: "interactive", name: id, project_id: "ide", cwd: "/p/ide", started_at: 1 };
+      sessions[id] = { state, source: "poll", pid: 1, kind: "interactive", name: id, project_id: "ide", cwd: "/p/ide", started_at: 1, attention_since: null };
     }
     const rows = Array.from({ length: elsewhere }, (_, i) => ({
       session_id: `e${i}`,
@@ -683,6 +687,40 @@ describe("built-in commands", () => {
     }));
     return { sessions, elsewhere: rows, banner: null };
   }
+
+  it("ctrl+j goes to the session that has needed you longest, and is disabled when none does", async () => {
+    const invoke = vi.fn(async (cmd: string, args: Record<string, unknown>) => {
+      if (cmd === "workspace_set_expanded") {
+        const current = useWorkspaceStore.getState().snapshot!;
+        return { ...current, revision: current.revision + 1, workspace: { ...current.workspace, projects: [ideProject(args.expanded as boolean)] } };
+      }
+      // session_acknowledge: the session turns idle; the reply is the new snapshot.
+      const snap = useLiveStore.getState().snapshot;
+      const id = args.sessionId as string;
+      return { ...snap, sessions: { ...snap.sessions, [id]: { ...snap.sessions[id]!, state: { kind: "idle" }, source: "ack", attention_since: null } } };
+    });
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(false)], stubs(2)) });
+    useLiveStore.getState().applySnapshot(liveSnapshot({ "stub-1-ide": { kind: "busy" } }));
+    expect(getCommand("attention.next")?.when?.()).toBe(false);
+    expect(handleKeydown(key("j", { ctrlKey: true }))).toBe(false);
+
+    const snap = liveSnapshot({ "stub-1-ide": { kind: "finished" }, "stub-2-ide": { kind: "finished" } });
+    snap.sessions["stub-1-ide"]!.attention_since = 20;
+    snap.sessions["stub-2-ide"]!.attention_since = 10;
+    useLiveStore.getState().applySnapshot(snap);
+    expect(listCommands({ enabledOnly: true }).map((c) => c.id)).toContain("attention.next");
+    expect(handleKeydown(key("j", { ctrlKey: true }))).toBe(true);
+    await flush();
+    expect(useUiStore.getState().selection).toEqual({ kind: "session", id: "stub-2-ide" });
+    expect(useWorkspaceStore.getState().snapshot?.workspace.projects[0]?.expanded).toBe(true);
+    expect(handleKeydown(key("j", { ctrlKey: true }))).toBe(true);
+    await flush();
+    expect(useUiStore.getState().selection).toEqual({ kind: "session", id: "stub-1-ide" });
+    vi.unstubAllGlobals();
+    unmarkAcknowledging("stub-1-ide");
+    unmarkAcknowledging("stub-2-ide");
+  });
 
   it("Attach in terminal is offered for a selected live session only, in the palette and the menu, and shows the Epic 4 notice", () => {
     vi.useFakeTimers();
@@ -833,6 +871,7 @@ function fixtureSnapshot(): SettingsSnapshot {
       shell: null,
       theme: "dark",
       poll: { agents_ms: 2000, git_ms: 5000 },
+      notifications: { finished: true, waiting: true },
     },
     binaries: {
       claude: { name: "claude", path: null, version: null, status: "missing", configured: false },

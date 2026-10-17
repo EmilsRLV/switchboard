@@ -119,6 +119,7 @@ mod tests {
                 "defaults",
                 "external_editor",
                 "git",
+                "notifications",
                 "poll",
                 "shell",
                 "theme",
@@ -133,6 +134,8 @@ mod tests {
         }
         assert!(json["poll"].get("agents_ms").is_some());
         assert!(json["poll"].get("git_ms").is_some());
+        assert!(json["notifications"].get("finished").is_some());
+        assert!(json["notifications"].get("waiting").is_some());
     }
 
     #[test]

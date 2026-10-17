@@ -5,6 +5,8 @@ import {
   hasTauriRuntime,
   liveSessionsGet,
   NoTauriRuntimeError,
+  onNotifyReveal,
+  sessionAcknowledge,
   projectOpenEditor,
   projectOpenFolder,
   projectPickFolder,
@@ -161,5 +163,18 @@ describe("workspace command wrappers", () => {
     invoke.mockResolvedValue(live);
     await expect(liveSessionsGet()).resolves.toEqual(live);
     expect(invoke).toHaveBeenCalledWith("live_sessions_get", {}, undefined);
+  });
+
+  it("sessionAcknowledge invokes session_acknowledge with { sessionId, attentionSince }", async () => {
+    const live = { sessions: {}, elsewhere: [], banner: null };
+    const invoke = vi.fn().mockResolvedValue(live);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await expect(sessionAcknowledge("s1", 42)).resolves.toBe(live);
+    expect(invoke).toHaveBeenCalledWith("session_acknowledge", { sessionId: "s1", attentionSince: 42 }, undefined);
+  });
+
+  it("the toast-click subscription is a no-op without a runtime", async () => {
+    const unlisten = await onNotifyReveal(() => {});
+    expect(() => unlisten()).not.toThrow();
   });
 });

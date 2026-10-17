@@ -5,6 +5,7 @@ pub mod claude;
 pub mod git;
 pub mod graph;
 pub mod ipc;
+pub mod notify;
 pub mod persist;
 pub mod process;
 pub mod settings;
@@ -32,6 +33,7 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::claude_projects_list,
             ipc::projects_status_get,
             ipc::live_sessions_get,
+            ipc::session_acknowledge,
             ipc::workspace_remove_project,
             ipc::project_open_editor,
             ipc::project_open_folder,
@@ -66,7 +68,9 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
         }))
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init());
+        .plugin(tauri_plugin_dialog::init())
+        // Toasts are sent from Rust only (`notify`); no JS permission is granted.
+        .plugin(tauri_plugin_notification::init());
     with_commands(builder)
         .setup(|app| {
             use tauri::Manager;
@@ -81,13 +85,15 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             git::poll::start(app.handle().clone());
             claude::sessions::start(app.handle().clone());
             claude::live::start(app.handle().clone());
+            // A click on a toast reveals its session (Story 3.3).
+            notify::listen_for_clicks(app.handle());
             Ok(())
         })
 }
 
 /// Bring the `main` window to the front: un-minimise, show, focus. Each step is best effort;
 /// a window the OS refuses to focus is not an error worth surfacing.
-fn focus_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+pub(crate) fn focus_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     use tauri::Manager;
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -717,11 +723,146 @@ mod tests {
             serde_json::json!({
                 "sessions": { "s1": {
                     "state": { "kind": "busy" }, "source": "poll", "pid": 7, "kind": "interactive", "name": "n",
-                    "project_id": null, "cwd": "/nowhere", "started_at": 1791553254656_i64
+                    "project_id": null, "cwd": "/nowhere", "started_at": 1791553254656_i64,
+                    "attention_since": null
                 } },
                 "elsewhere": [{ "session_id": "s1", "state": { "kind": "busy" }, "name": "n", "cwd": "/nowhere", "started_at": 1791553254656_i64 }],
                 "banner": null
             })
+        );
+    }
+
+    /// One poll row for `apply_and_emit`.
+    fn live_rows(cwd: &str, id: &str, status: &str) -> Result<Vec<super::claude::live::LiveRow>, String> {
+        let row = serde_json::json!([{ "cwd": cwd, "sessionId": id, "name": "fixer", "status": status }]);
+        super::claude::live::parse_rows(&row.to_string())
+    }
+
+    #[test]
+    fn session_acknowledge_is_registered_and_clears_a_finished_session() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            use tauri::Listener;
+            app.listen_any(super::claude::live::LIVE_EVENT, move |event| {
+                let _ = tx.send(serde_json::from_str::<serde_json::Value>(event.payload()).unwrap());
+            });
+        }
+        super::claude::live::apply_and_emit(app.handle(), live_rows("/nowhere", "s1", "busy"));
+        super::claude::live::apply_and_emit(app.handle(), live_rows("/nowhere", "s1", "idle"));
+        while rx.try_recv().is_ok() {}
+        let since = {
+            let state = app.state::<super::AppState>();
+            let map = state.read_sessions_live();
+            assert_eq!(map.sessions["s1"].state, super::claude::live::SessionState::Finished);
+            map.sessions["s1"].attention_since.expect("stamped")
+        };
+
+        // An older turn than the one stored: a no-op.
+        let stale = serde_json::json!({ "sessionId": "s1", "attentionSince": since - 1 });
+        let body = invoke_with(&webview, "session_acknowledge", InvokeBody::Json(stale)).expect("registered");
+        assert_eq!(body.deserialize::<serde_json::Value>().unwrap(), serde_json::Value::Null);
+        assert!(rx.try_recv().is_err());
+
+        let args = serde_json::json!({ "sessionId": "s1", "attentionSince": since });
+        let body = invoke_with(&webview, "session_acknowledge", InvokeBody::Json(args.clone()))
+            .expect("session_acknowledge should be registered and succeed");
+        let replied: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(replied["sessions"]["s1"]["state"], serde_json::json!({ "kind": "idle" }));
+        assert_eq!(replied["sessions"]["s1"]["source"], "ack");
+        let emitted = rx.try_recv().expect("sessions://live emitted");
+        assert_eq!(emitted, replied, "the reply is the emitted snapshot");
+
+        // Already idle, or unknown: a no-op, nothing emitted.
+        let body = invoke_with(&webview, "session_acknowledge", InvokeBody::Json(args)).unwrap();
+        assert_eq!(body.deserialize::<serde_json::Value>().unwrap(), serde_json::Value::Null);
+        let body = invoke_with(
+            &webview,
+            "session_acknowledge",
+            InvokeBody::Json(serde_json::json!({ "sessionId": "nope", "attentionSince": null })),
+        )
+        .unwrap();
+        assert_eq!(body.deserialize::<serde_json::Value>().unwrap(), serde_json::Value::Null);
+        assert!(rx.try_recv().is_err());
+        invoke_with(&webview, "session_acknowledge", InvokeBody::Json(serde_json::json!({}))).expect_err("sessionId is required");
+    }
+
+    #[test]
+    fn a_session_that_finishes_while_unfocused_sends_one_toast_through_the_injected_notifier() {
+        let app = mock_app();
+        // The mock window reports itself unfocused.
+        let _webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let recorder = std::sync::Arc::new(super::notify::fixtures::Recorder::default());
+        *app.state::<super::AppState>().notifier.lock().unwrap() = Some(recorder.clone());
+        let cfg = tempfile::tempdir().unwrap();
+        super::graph::initialise_at(app.handle(), Some(cfg.path().join("workspace.json")));
+        let ide = if cfg!(windows) { "B:\\projects\\ide" } else { "/projects/ide" };
+        app.state::<super::AppState>().write_workspace().workspace.projects.push(super::graph::Project {
+            id: "p1".into(),
+            path: ide.into(),
+            label: "ide".into(),
+            ..super::graph::Project::default()
+        });
+        let id = "0b7c1234abcd";
+        // Already idle at startup, then busy: no toast.
+        super::claude::live::apply_and_emit(app.handle(), live_rows(ide, id, "idle"));
+        super::claude::live::apply_and_emit(app.handle(), live_rows(ide, id, "busy"));
+        assert!(recorder.sent.lock().unwrap().is_empty());
+        // Busy -> idle: one toast, however long it stays idle.
+        super::claude::live::apply_and_emit(app.handle(), live_rows(ide, id, "idle"));
+        super::claude::live::apply_and_emit(app.handle(), live_rows(ide, id, "idle"));
+        assert_eq!(*recorder.sent.lock().unwrap(), [("ide — finished".to_string(), "fixer".to_string())]);
+
+        // Acknowledged, then idle again: no new toast.
+        let since = app.state::<super::AppState>().read_sessions_live().sessions[id].attention_since;
+        assert!(super::claude::live::acknowledge(app.handle(), id, since).is_some());
+        super::claude::live::apply_and_emit(app.handle(), live_rows(ide, id, "idle"));
+        assert_eq!(recorder.sent.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_toast_body_is_the_discovered_transcript_title_and_never_the_untitled_placeholder() {
+        let app = mock_app();
+        let recorder = std::sync::Arc::new(super::notify::fixtures::Recorder::default());
+        *app.state::<super::AppState>().notifier.lock().unwrap() = Some(recorder.clone());
+        let cfg = tempfile::tempdir().unwrap();
+        super::graph::initialise_at(app.handle(), Some(cfg.path().join("workspace.json")));
+        let ide = if cfg!(windows) { r"B:\projects\ide" } else { "/projects/ide" };
+        app.state::<super::AppState>().write_workspace().workspace.projects.push(super::graph::Project {
+            id: "p1".into(),
+            path: ide.into(),
+            label: "ide".into(),
+            ..super::graph::Project::default()
+        });
+        let summary = |id: &str, title: &str| super::claude::SessionSummary {
+            id: id.into(),
+            title: title.into(),
+            started_at: "2026-10-18T10:00:00.000Z".into(),
+            last_active: "2026-10-18T10:05:00.000Z".into(),
+            branch: None,
+            messages: 2,
+            cwd: Some(ide.into()),
+        };
+        let discovered = std::collections::HashMap::from([(
+            "p1".to_string(),
+            vec![summary("titled", "Fix the login bug"), summary("untitled", super::claude::transcript::UNTITLED)],
+        )]);
+        super::graph::set_discovered(app.handle(), discovered);
+        for id in ["titled", "untitled"] {
+            super::claude::live::apply_and_emit(app.handle(), live_rows(ide, id, "busy"));
+            super::claude::live::apply_and_emit(app.handle(), live_rows(ide, id, "idle"));
+        }
+        assert_eq!(
+            *recorder.sent.lock().unwrap(),
+            [
+                ("ide — finished".to_string(), "Fix the login bug".to_string()),
+                ("ide — finished".to_string(), "fixer".to_string()),
+            ]
         );
     }
 

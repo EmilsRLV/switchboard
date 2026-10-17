@@ -17,7 +17,7 @@ import type {
   Viewport,
 } from "../ipc";
 import type { DragOverrides } from "../state/canvas";
-import { isLiveState, sameState, stateWord } from "../state/live";
+import { isLiveState, needsAttention, sameState, stateWord } from "../state/live";
 
 /** What a `ProjectNode` renders from. */
 export type ProjectNodeData = {
@@ -35,6 +35,11 @@ export type ProjectNodeData = {
    * looked up by session id; the `N live` badge shows only above 0.
    */
   liveCount: number;
+  /**
+   * True while any of its session children (drawn or hidden, collapsed or not) is `finished`
+   * or `waiting`: the card glows (Story 3.3).
+   */
+  attention: boolean;
 };
 
 /** What a `SessionNode` / `BranchNode` renders from. */
@@ -43,6 +48,8 @@ export type ChildNodeData = {
   selected: boolean;
   /** The session's state when the poll has seen it this run (live or exited); `null` for a historic session, a stub or a branch. */
   state: SessionState | null;
+  /** True while the session is `finished` or `waiting`: the accent card (Story 3.3). */
+  attention: boolean;
 };
 
 /** What a `MoreNode` (the `show all (N)` / `show fewer` row) renders from. */
@@ -283,6 +290,7 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
           const state = stateOf(child);
           return state !== null && isLiveState(state);
         }).length,
+        attention: kids.some((child) => needsAttention(stateOf(child))),
       },
       zIndex: layer(projectSelected, projectDrag),
       draggable: true,
@@ -303,7 +311,7 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
         type: child.kind,
         parentId: project.id,
         position: childDrag ?? slots[index] ?? columnSlot(index),
-        data: { child, selected: childSelected, state: stateOf(child) },
+        data: { child, selected: childSelected, state: stateOf(child), attention: needsAttention(stateOf(child)) },
         zIndex: layer(childSelected, childDrag),
         draggable: true,
         selectable: false,
@@ -354,6 +362,7 @@ function sameNode(a: CanvasFlowNode, b: CanvasFlowNode): boolean {
       a.data.selected === b.data.selected &&
       a.data.childCount === b.data.childCount &&
       a.data.liveCount === b.data.liveCount &&
+      a.data.attention === b.data.attention &&
       sameProject(a.data.project, b.data.project) &&
       sameStatus(a.data.status, b.data.status)
     );
@@ -367,7 +376,12 @@ function sameNode(a: CanvasFlowNode, b: CanvasFlowNode): boolean {
     );
   }
   if ((a.type === "session" || a.type === "branch") && (b.type === "session" || b.type === "branch")) {
-    return a.data.selected === b.data.selected && sameState(a.data.state, b.data.state) && sameChild(a.data.child, b.data.child);
+    return (
+      a.data.selected === b.data.selected &&
+      a.data.attention === b.data.attention &&
+      sameState(a.data.state, b.data.state) &&
+      sameChild(a.data.child, b.data.child)
+    );
   }
   return false;
 }
@@ -440,7 +454,7 @@ export function formatAge(lastActive: string, now: number): string {
 /** The parts of a session card's meta line, as the card lays them out. */
 export type SessionCardMeta = {
   /** The state word while the poll has seen the session this run; `null` for a historic one. */
-  state: { word: string; tone: "busy" | "muted"; dot: boolean } | null;
+  state: { word: string; tone: SessionStateTone; dot: boolean } | null;
   /** The git branch, the one part that shrinks (ellipsis); `null` when there is none. */
   branch: string | null;
   /** `N msgs` / `1 msg`. */
@@ -451,14 +465,14 @@ export type SessionCardMeta = {
 
 /**
  * The parts of a session card's meta line: `[state] · [branch] · N msgs · [age]`. The state
- * word leads while the session is live or exited (`busy` with the pulsing dot, the rest
- * muted); the branch is left out when the transcript names none; the age when `lastActive`
- * is unknown.
+ * word leads while the session is live or exited (`busy` with the pulsing dot, `finished` /
+ * `waiting` in the accent with the pulsing dot, the rest muted); the branch is left out when
+ * the transcript names none; the age when `lastActive` is unknown.
  */
 export function sessionCardMeta(meta: SessionMeta, now: number, state: SessionState | null): SessionCardMeta {
   const tone = sessionStateTone(state);
   return {
-    state: state === null || tone === null ? null : { word: stateWord(state), tone, dot: tone === "busy" },
+    state: state === null || tone === null ? null : { word: stateWord(state), tone, dot: tone !== "muted" },
     branch: meta.branch !== null && meta.branch !== "" ? meta.branch : null,
     count: `${meta.messages} ${meta.messages === 1 ? "msg" : "msgs"}`,
     age: meta.lastActive === "" ? null : formatAge(meta.lastActive, now),
@@ -471,13 +485,18 @@ export function sessionMetaLine(meta: SessionMeta, now: number, state: SessionSt
   return [parts.state?.word, parts.branch, parts.count, parts.age].filter((p): p is string => p !== null && p !== undefined).join(" · ");
 }
 
+/** How a session's state word is drawn (see {@link sessionStateTone}). */
+export type SessionStateTone = "busy" | "attention" | "muted";
+
 /**
- * How a session's state word is drawn: `busy` in `--fg` with the pulsing dot, every other
- * state (idle, exited, unrecognised) muted. `null` for a historic session (no word).
+ * How a session's state word is drawn: `busy` in `--fg` with the pulsing dot, `finished` and
+ * `waiting` in the accent with the pulsing dot (attention), every other state (idle, exited,
+ * unrecognised) muted. `null` for a historic session (no word).
  */
-export function sessionStateTone(state: SessionState | null): "busy" | "muted" | null {
+export function sessionStateTone(state: SessionState | null): SessionStateTone | null {
   if (state === null) return null;
-  return state.kind === "busy" ? "busy" : "muted";
+  if (state.kind === "busy") return "busy";
+  return needsAttention(state) ? "attention" : "muted";
 }
 
 /** A session card's hover text: the full title and the exact local start and last-active times (each only when known). */

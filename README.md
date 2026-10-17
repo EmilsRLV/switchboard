@@ -14,7 +14,9 @@ keys walk the selection from card to card, and a right-click menu (or the palett
 open the folder in the editor or file manager, reveal its Claude project directory, remove it from the canvas,
 with New session and Plain terminal as stubs until Epic 4. Expanded, a project lists its Claude Code
 sessions, past and running: a running session shows `busy` or `idle` and the card counts it in its `N live`
-badge; sessions running in folders not on the canvas wait in the Elsewhere tray. Everything on screen follows one quiet visual
+badge; sessions running in folders not on the canvas wait in the Elsewhere tray. A session that just finished
+its turn turns the accent and makes its project glow until it is selected, with an optional OS toast while the
+window is in the background (see [Needs you](#needs-you)). Everything on screen follows one quiet visual
 language (see [Design](#design)).
 
 ## Design
@@ -84,16 +86,18 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | `ctrl+,` | Open (toggle) the settings pane. |
 | `ctrl+0` | Fit view: fit every node into the canvas; with no nodes, back to the home viewport (`x 0, y 0, zoom 1`). |
 | `ctrl+q` | Quit. |
+| `ctrl+j` | Go to session that needs you: the session that has been `finished` (or `waiting`) longest is revealed and selected, its project expanded first when collapsed (see [Needs you](#needs-you)). Enabled only while a session on a canvas project needs you; press again for the next one. |
 | `←` `→` `↑` `↓` | Move the selection to the nearest node in that direction (see [Keyboard navigation](#keyboard-navigation)); with nothing selected, select the node nearest the middle of the view. Only while no palette, pane, menu or Elsewhere list is open: those keep their own arrow handling. |
 | Enter | The selected node's default action: a project with children expands or collapses (persisted); a `show all (N)` / `show fewer` row toggles the column (see [Sessions](#sessions)); a childless project or a child card does nothing yet (resume and fork arrive in Epic 4). Same condition as the arrows. |
 | Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings or import), else clears the selected node. With all of them open, five presses. |
 
 `n`, `e` and `/` are reserved for later epics and deliberately unbound; so is Delete (removal is a menu action).
 
-The palette lists twenty commands: Toggle command palette, Add project folder…, Import from Claude…, Open
+The palette lists twenty-one commands: Toggle command palette, Add project folder…, Import from Claude…, Open
 settings, Reveal settings file (only when the file's location is known), Re-detect binaries (not while one
 runs), Fit view (once the canvas has mounted; the two project commands need it too), Quit, Toggle Elsewhere
-sessions (only while the Elsewhere tray has rows), Attach in terminal (only while a live session card is
+sessions (only while the Elsewhere tray has rows), Go to session that needs you (only while one does),
+Attach in terminal (only while a live session card is
 selected; see [Live sessions](#live-sessions)), and, while a
 project card is selected, the project actions: New session…, Plain terminal…, Open in external editor, Open
 in file manager, Reveal Claude project dir, Re-layout children, Remove from canvas, plus exactly one of Expand
@@ -248,7 +252,8 @@ session id. Nothing is persisted and nothing under `~/.claude` is touched; the p
 branch worktrees) belongs to that project:
 
 - its **session card** shows the state as the first word of the meta line, `busy · master · 12 msgs · now`:
-  `busy` in full text colour after a small pulsing dot (static under reduced motion), `idle` muted, and any other
+  `busy` in full text colour after a small pulsing dot (static under reduced motion), `idle` muted, `finished`
+  in the accent (see [Needs you](#needs-you)), and any other
   status Claude reports kept as it is (`compacting`) and muted. Live sessions sort first in the column. A
   running session with no transcript yet gets a card at once, labelled with the row's `name` (or "new
   session"), with no age, replaced by the transcript summary once the 5 s pass finds it;
@@ -280,6 +285,43 @@ One failed poll (the CLI cannot start, exits non-zero, times out or prints somet
 keeps the last state, so nothing turns exited on a hiccup. After three failures in a row a banner reads
 "live session status unavailable: <cause>"; the next successful poll clears it. Rows without a `sessionId` or
 `cwd` are skipped and unknown fields ignored.
+
+### Needs you
+
+A session **needs you** when it is `finished` or `waiting`. Until hooks arrive (Story 4.3) only `finished`
+happens, and Rust derives it from the poll: a session polled `busy` since it was last `idle` that now reports
+`idle` is `finished` (another status in between, such as `compacting`, does not break that), and stays so while
+the poll keeps saying `idle` or another status. It turns `busy` on the next `busy` and `exited` when it drops
+out. A session already idle when first seen (at startup, say) is plain `idle`. A turn shorter than one poll
+interval (`poll.agents_ms`) is never seen `busy`, so it never finishes (until hooks).
+
+- Its **session card** goes into the accent: an accent border, `finished` in the accent and its dot pulsing.
+- Its **project card glows**, collapsed or expanded (the count badge does not change): an accent outline just
+  outside the card, pulsing; a selected card keeps its selection outline inside the glow. Both are static
+  under reduced motion.
+- **Selecting the session** (click, arrow keys, `ctrl+j`, a toast click) acknowledges it: Rust records it and
+  the session reads `idle` (accent and glow gone, unless another session of the project still needs you) until
+  it is busy again. Selecting the project does not acknowledge its sessions. A session that finishes while it
+  is already selected keeps the accent until it is clicked (or reached with `ctrl+j`). Opening the Elsewhere
+  tray acknowledges the Elsewhere sessions it lists.
+- While the Switchboard window is **not focused**, a session entering `finished` (or `waiting`) sends one OS
+  toast, if that kind is on in settings (`notifications.finished`, `notifications.waiting`): the title is the
+  project label and the state (`ide — finished`; the folder name for an Elsewhere session), the body the
+  session's title, else its name, else `session <first 8 of its id>`. No toast while focused, on startup, on
+  acknowledgement, or for a session already in that state. A toast that cannot be shown is logged, never shown
+  as a banner. No sound, badge or toast history.
+- **Clicking a toast** brings the Switchboard window forward (unminimised, shown, focused) and reveals its
+  session: its project expands if collapsed (persisted, as with the chevron), the session is selected,
+  acknowledged and panned into view. An Elsewhere session opens the Elsewhere tray instead. A session that no
+  longer needs you only gets the window focused. Focusing the window any other way moves nothing.
+- On Windows a click is reported only while the toast is on screen; a toast clicked from the Action Center may
+  report nothing, so use `ctrl+j` then. Development builds (`src-tauri\target\debug` / `release`) show toasts
+  under PowerShell's name and icon and their clicks may not reach the app; an installed build shows
+  Switchboard.
+- **Go to session that needs you** (`ctrl+j`, palette) does the same reveal for the session that has needed you
+  longest; press again for the next. When it cannot reach the session, a notice says so.
+
+Nothing of this is persisted.
 
 ### The project card
 
@@ -371,6 +413,8 @@ The location is `dirs::config_dir()/switchboard`, so it also resolves on macOS
 | `theme` | `"dark"` | UI theme. Reserved; not applied yet (the UI is dark-only). |
 | `poll.agents_ms` | `2000` | `claude agents --json --all` poll interval (live sessions); floor 500 ms. |
 | `poll.git_ms` | `5000` | Git status poll interval. |
+| `notifications.finished` | `true` | Send an OS toast when a session finishes its turn while the window is unfocused (see [Needs you](#needs-you)). |
+| `notifications.waiting` | `true` | Same for a session waiting for input (hooks, Story 4.3). |
 
 Binary detection: `claude` is searched on PATH, then `~/.local/bin`; `git` on PATH. Each one found is run
 with `--version` (5 s timeout) and its version recorded. A configured `*.path` may be absolute, start with

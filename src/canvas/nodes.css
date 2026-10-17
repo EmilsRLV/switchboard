@@ -1,9 +1,11 @@
-/* Project and child node cards (anatomy in docs/DESIGN.md). Tokens only; no accent (nothing
-   here is an attention state; waiting/finished arrive with the hooks of Story 4.3). The selection and focus rings are outlines in --focus; the
-   duplicate-add flash is an outline in --fg that fades out. Card sizes (240 x 80, 208 x 40)
-   are fixed by nodes.ts and the arrow-key geometry. */
+/* Project and child node cards (anatomy in docs/DESIGN.md). Tokens only; the accent only on
+   the attention states of Story 3.3 (.session-attention, .session-attention-word,
+   .project-glow; the design lint's allow-list). The selection and focus rings are outlines in
+   --focus; the duplicate-add flash is an outline in --fg that fades out. Card sizes
+   (240 x 80, 208 x 40) are fixed by nodes.ts and the arrow-key geometry. */
 
 .project-node {
+  position: relative;
   width: 240px;
   background: var(--bg-raised);
   border: var(--line) solid var(--border);
@@ -295,6 +297,60 @@
 
 @media (prefers-reduced-motion: reduce) {
   .session-state-busy .session-dot {
+    animation: none;
+  }
+}
+
+/* --- attention (Story 3.3): a finished or waiting session, and the project it belongs to ---
+   The session card: a 1-px accent border, the state word in the accent and its dot (drawn in
+   currentColor) pulsing like busy's. The project card glows: a 1-px accent outline 2 px
+   outside the card whose opacity pulses 1 -> 0.4 (an ::after box, so only the glow fades, not
+   the card). A selected card keeps both: its --focus outline sits at 2 px and the glow moves
+   out to 4 px around it. Everything is static under reduced motion. */
+
+.session-attention.child-node {
+  border-color: var(--accent);
+}
+
+.session-attention-word {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--accent);
+}
+
+.session-attention-word .session-dot {
+  animation: session-pulse 1.2s ease-in-out infinite alternate;
+}
+
+.project-glow::after {
+  content: "";
+  position: absolute;
+  /* The card's border box (the box is positioned inside the 1-px border). */
+  inset: calc(-1 * var(--line));
+  border-radius: var(--radius-md);
+  outline: var(--line) solid var(--accent);
+  outline-offset: 2px;
+  pointer-events: none;
+  animation: project-glow 1.2s ease-in-out infinite alternate;
+}
+
+.project-glow.is-selected::after {
+  outline-offset: 4px;
+}
+
+@keyframes project-glow {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-attention-word .session-dot,
+  .project-glow::after {
     animation: none;
   }
 }

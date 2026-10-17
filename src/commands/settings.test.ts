@@ -26,6 +26,7 @@ const snapshot: SettingsSnapshot = {
     shell: null,
     theme: "dark",
     poll: { agents_ms: 2000, git_ms: 5000 },
+    notifications: { finished: true, waiting: true },
   },
   binaries: {
     claude: { name: "claude", path: "/usr/bin/claude", version: "2.1.301", status: "found", configured: false },

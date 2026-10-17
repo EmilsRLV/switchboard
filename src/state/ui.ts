@@ -4,12 +4,23 @@
 // notice in the banner strip, and which expanded projects show all their children. Panes
 // are mutually exclusive: opening one closes the other.
 // Selection is one node or none; xyflow never owns it (`elementsSelectable` is off), the
-// canvas writes it here on click and drag, the arrow commands on a key.
+// canvas writes it here on click and drag, the arrow commands on a key. Whenever the selection
+// becomes a session that needs the operator (`finished` / `waiting`), a subscription below
+// asks Rust to acknowledge it (Story 3.3): one place, whatever selected it.
 
 import { create } from "zustand";
 import type { CanvasTarget } from "../canvas/nodes";
-import type { Position, Project } from "../ipc";
-import { elsewhereCount, useLiveStore } from "./live";
+import { sessionAcknowledge, type Position, type Project } from "../ipc";
+import {
+  applyAcknowledgement,
+  elsewhereCount,
+  isAcknowledging,
+  markAcknowledging,
+  needsAttention,
+  sessionState,
+  unmarkAcknowledging,
+  useLiveStore,
+} from "./live";
 import { useWorkspaceStore } from "./workspace";
 
 export type Pane = "settings" | "import";
@@ -68,6 +79,7 @@ export type UiState = {
   /** Show all of a project's children, or only the first ten again. */
   toggleShowAll: (projectId: string) => void;
   toggleElsewhere: () => void;
+  openElsewhere: () => void;
   closeElsewhere: () => void;
 };
 
@@ -114,6 +126,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
       return { showAll: next.length === 0 ? NO_IDS : next };
     }),
   toggleElsewhere: () => set((s) => ({ elsewhereOpen: !s.elsewhereOpen })),
+  openElsewhere: () => set((s) => (s.elsewhereOpen ? {} : { elsewhereOpen: true })),
   closeElsewhere: () => set((s) => (s.elsewhereOpen ? { elsewhereOpen: false } : {})),
 }));
 
@@ -121,6 +134,57 @@ export const useUiStore = create<UiState>()((set, get) => ({
 // alone instead of popping the list open again.
 useLiveStore.subscribe((live) => {
   if (live.snapshot.elsewhere.length === 0 && useUiStore.getState().elsewhereOpen) useUiStore.getState().closeElsewhere();
+});
+
+/**
+ * Ask Rust to acknowledge session `id` when it needs attention, whether or not an
+ * acknowledgement is already marked on its way (the reveal marks it before it awaits). It
+ * sends the `attention_since` the frontend saw, so an older turn never clears a newer one,
+ * and applies the session from the reply at once (an emit Rust failed cannot leave the
+ * accent on). Resolves whether a request was sent; a failure (no runtime) is logged, never
+ * shown.
+ */
+export function sendAcknowledge(id: string): boolean {
+  const session = Object.hasOwn(useLiveStore.getState().snapshot.sessions, id) ? useLiveStore.getState().snapshot.sessions[id] : undefined;
+  if (session === undefined || !needsAttention(session.state)) {
+    unmarkAcknowledging(id);
+    return false;
+  }
+  const since = session.attention_since;
+  markAcknowledging(id);
+  sessionAcknowledge(id, since).then(
+    (reply) => {
+      if (reply === null) unmarkAcknowledging(id);
+      else applyAcknowledgement(id, since, reply);
+    },
+    (err: unknown) => {
+      unmarkAcknowledging(id);
+      console.warn(`session acknowledge failed: ${err instanceof Error ? err.message : String(err)}`);
+    },
+  );
+  return true;
+}
+
+/**
+ * Acknowledge `target` when it is a session that needs attention and no acknowledgement for
+ * it is already on its way (see {@link sendAcknowledge}). Resolves whether a request was sent.
+ */
+export function acknowledgeIfNeeded(target: CanvasTarget | null): boolean {
+  if (target === null || target.kind !== "session") return false;
+  if (!needsAttention(sessionState(target.id)) || isAcknowledging(target.id)) return false;
+  return sendAcknowledge(target.id);
+}
+
+// The selection becoming a session in attention acknowledges it (a click, an arrow, a toast
+// click, `attention.next`). Selecting a project acknowledges nothing. Opening the Elsewhere
+// tray acknowledges every session it lists that needs attention (they cannot be selected).
+useUiStore.subscribe((ui, previous) => {
+  if (ui.selection !== previous.selection) acknowledgeIfNeeded(ui.selection);
+  if (ui.elsewhereOpen && !previous.elsewhereOpen) {
+    for (const row of useLiveStore.getState().snapshot.elsewhere) {
+      if (needsAttention(row.state)) acknowledgeIfNeeded({ kind: "session", id: row.session_id });
+    }
+  }
 });
 
 /** True when both name the same node (or both are `null`). */

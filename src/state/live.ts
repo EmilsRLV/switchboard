@@ -4,7 +4,7 @@
 // arrives here, never as a workspace revision.
 
 import { create } from "zustand";
-import type { Banner, ElsewhereRow, LiveSession, LiveSnapshot, SessionState } from "../ipc";
+import type { Banner, ChildNode, ElsewhereRow, LiveSession, LiveSnapshot, SessionState } from "../ipc";
 
 export type LiveState = {
   snapshot: LiveSnapshot;
@@ -87,4 +87,97 @@ export function selectLiveBanners(state: LiveState): readonly Banner[] {
 /** How many sessions the Elsewhere tray lists (its chip shows only above 0). */
 export function elsewhereCount(): number {
   return useLiveStore.getState().snapshot.elsewhere.length;
+}
+
+// --- attention (Story 3.3) -----------------------------------------------------------------
+
+/** `finished` and `waiting`: the session needs the operator (accent card, project glow). */
+export function needsAttention(state: SessionState | null | undefined): boolean {
+  return state !== null && state !== undefined && (state.kind === "finished" || state.kind === "waiting");
+}
+
+/** The state the poll last gave session `id` (exited included); `null` when it has not seen it this run. */
+export function sessionState(id: string, sessions: Readonly<Record<string, LiveSession>> = useLiveStore.getState().snapshot.sessions): SessionState | null {
+  return Object.hasOwn(sessions, id) ? (sessions[id]?.state ?? null) : null;
+}
+
+/**
+ * Session ids whose acknowledgement was sent and whose snapshot has not come back yet: they
+ * are left out of the `attention.next` queue so a second `ctrl+j` goes on to the next one.
+ */
+const acknowledging = new Set<string>();
+
+/**
+ * Apply Rust's reply to an acknowledgement of `id` sent with `since`: only that session (and
+ * its Elsewhere row) is taken from `reply`, and only while the store still shows the turn that
+ * was acknowledged, so a newer event already applied is never rolled back.
+ */
+export function applyAcknowledgement(id: string, since: number | null, reply: LiveSnapshot): void {
+  const current = useLiveStore.getState().snapshot;
+  const now = Object.hasOwn(current.sessions, id) ? current.sessions[id] : undefined;
+  const acked = Object.hasOwn(reply.sessions, id) ? reply.sessions[id] : undefined;
+  if (now === undefined || acked === undefined || !needsAttention(now.state) || now.attention_since !== since) return;
+  useLiveStore.getState().applySnapshot({
+    ...current,
+    sessions: { ...current.sessions, [id]: acked },
+    elsewhere: current.elsewhere.map((row) => (row.session_id === id ? { ...row, state: acked.state } : row)),
+  });
+}
+
+/** Note that `id`'s acknowledgement is on its way (see {@link attentionQueue}). */
+export function markAcknowledging(id: string): void {
+  acknowledging.add(id);
+}
+
+/** Forget a pending acknowledgement (it failed, or changed nothing). */
+export function unmarkAcknowledging(id: string): void {
+  acknowledging.delete(id);
+}
+
+/** True while `id`'s acknowledgement is on its way. */
+export function isAcknowledging(id: string): boolean {
+  return acknowledging.has(id);
+}
+
+// A snapshot in which a session no longer needs attention settles its acknowledgement.
+useLiveStore.subscribe((live) => {
+  for (const id of [...acknowledging]) {
+    if (!needsAttention(sessionState(id, live.snapshot.sessions))) acknowledging.delete(id);
+  }
+});
+
+/**
+ * Whether project `projectId` glows: any of its session children (drawn or hidden, collapsed
+ * or not) needs attention by the live map, looked up by session id as the cards do.
+ */
+export function projectAttention(
+  projectId: string,
+  children: readonly ChildNode[],
+  sessions: Readonly<Record<string, LiveSession>> = useLiveStore.getState().snapshot.sessions,
+): boolean {
+  return children.some((child) => child.projectId === projectId && child.kind === "session" && needsAttention(sessionState(child.id, sessions)));
+}
+
+/** A session on a canvas project that needs the operator, as `attention.next` visits it. */
+export type AttentionTarget = { sessionId: string; projectId: string; since: number };
+
+/**
+ * The sessions on canvas projects (session children, keyed by the child's project) that need
+ * attention and are not being acknowledged, the one waiting longest first (`attention_since`,
+ * then id).
+ */
+export function attentionQueue(
+  children: readonly ChildNode[],
+  sessions: Readonly<Record<string, LiveSession>> = useLiveStore.getState().snapshot.sessions,
+): AttentionTarget[] {
+  const out: AttentionTarget[] = [];
+  const seen = new Set<string>();
+  for (const child of children) {
+    if (child.kind !== "session" || seen.has(child.id) || acknowledging.has(child.id)) continue;
+    const session = Object.hasOwn(sessions, child.id) ? sessions[child.id] : undefined;
+    if (session === undefined || !needsAttention(session.state)) continue;
+    seen.add(child.id);
+    out.push({ sessionId: child.id, projectId: child.projectId, since: session.attention_since ?? Number.MAX_SAFE_INTEGER });
+  }
+  return out.sort((a, b) => a.since - b.since || (a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0));
 }

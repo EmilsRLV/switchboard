@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import type { WorkspaceSnapshot } from "../ipc";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { LiveSession, SessionState, WorkspaceSnapshot } from "../ipc";
 import {
   FLASH_MS,
   NOTICE_MS,
@@ -12,7 +12,7 @@ import {
   selectedProject,
   useUiStore,
 } from "./ui";
-import { useLiveStore } from "./live";
+import { EMPTY_LIVE, isAcknowledging, unmarkAcknowledging, useLiveStore } from "./live";
 import { useWorkspaceStore } from "./workspace";
 
 describe("ui store", () => {
@@ -222,5 +222,98 @@ describe("Elsewhere tray flag", () => {
     expect(useUiStore.getState().elsewhereOpen).toBe(false);
     useLiveStore.getState().applySnapshot({ sessions: {}, elsewhere: [row], banner: null });
     expect(isElsewhereOpen()).toBe(false);
+  });
+});
+
+describe("acknowledgement on selection (Story 3.3)", () => {
+  const live = (state: SessionState): LiveSession => ({
+    state,
+    source: "poll",
+    pid: 1,
+    kind: "interactive",
+    name: "s1",
+    project_id: "ide",
+    cwd: "/p/ide",
+    started_at: 1,
+    attention_since: state.kind === "finished" ? 1 : null,
+  });
+
+  beforeEach(() => {
+    useUiStore.setState({ selection: null, elsewhereOpen: false });
+    useLiveStore.setState({ snapshot: EMPTY_LIVE, received: false, loadError: null });
+    unmarkAcknowledging("s1");
+    unmarkAcknowledging("s2");
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("selecting a session in finished or waiting asks Rust to acknowledge it, once", async () => {
+    const invoke = vi.fn().mockResolvedValue(null);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    useLiveStore.getState().applySnapshot({
+      sessions: { s1: live({ kind: "finished" }), s2: { ...live({ kind: "waiting" }), attention_since: 7 }, s3: live({ kind: "busy" }) },
+      elsewhere: [],
+      banner: null,
+    });
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    useUiStore.getState().select({ kind: "session", id: "s3" });
+    expect(invoke).not.toHaveBeenCalled();
+    useUiStore.getState().select({ kind: "session", id: "s1" });
+    expect(invoke).toHaveBeenCalledWith("session_acknowledge", { sessionId: "s1", attentionSince: 1 }, undefined);
+    expect(isAcknowledging("s1")).toBe(true);
+    useUiStore.getState().select({ kind: "session", id: "s2" });
+    useUiStore.getState().select({ kind: "session", id: "s1" });
+    expect(invoke.mock.calls.filter(([, args]) => (args as { sessionId: string }).sessionId === "s1")).toHaveLength(1);
+    expect(invoke).toHaveBeenCalledWith("session_acknowledge", { sessionId: "s2", attentionSince: 7 }, undefined);
+  });
+
+  it("the reply is applied for the acknowledged session only, and never over a newer turn", async () => {
+    const finished = live({ kind: "finished" });
+    const idle = { ...live({ kind: "idle" }), source: "ack" as const };
+    const reply = { sessions: { s1: idle, s2: live({ kind: "busy" }) }, elsewhere: [], banner: null };
+    let resolve: (value: unknown) => void = () => {};
+    const invoke = vi.fn(() => new Promise((r) => (resolve = r)));
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    useLiveStore.getState().applySnapshot({ sessions: { s1: finished, s2: live({ kind: "idle" }) }, elsewhere: [], banner: null });
+    useUiStore.getState().select({ kind: "session", id: "s1" });
+    resolve(reply);
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    expect(useLiveStore.getState().snapshot.sessions.s1).toEqual(idle);
+    expect(useLiveStore.getState().snapshot.sessions.s2?.state, "other sessions are not taken from the reply").toEqual({ kind: "idle" });
+
+    // A newer turn arrived before the reply: the reply does not roll it back.
+    useUiStore.getState().clearSelection();
+    useLiveStore.getState().applySnapshot({ sessions: { s1: finished }, elsewhere: [], banner: null });
+    useUiStore.getState().select({ kind: "session", id: "s1" });
+    useLiveStore.getState().applySnapshot({ sessions: { s1: { ...finished, attention_since: 9 } }, elsewhere: [], banner: null });
+    resolve(reply);
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    expect(useLiveStore.getState().snapshot.sessions.s1?.attention_since).toBe(9);
+  });
+
+  it("opening the Elsewhere tray acknowledges every listed session that needs attention", () => {
+    const invoke = vi.fn().mockResolvedValue(null);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    const row = (id: string, state: SessionState) => ({ session_id: id, state, name: id, cwd: "/w", started_at: 1 });
+    useLiveStore.getState().applySnapshot({
+      sessions: { s1: { ...live({ kind: "finished" }), project_id: null }, s2: { ...live({ kind: "busy" }), project_id: null } },
+      elsewhere: [row("s1", { kind: "finished" }), row("s2", { kind: "busy" })],
+      banner: null,
+    });
+    useUiStore.getState().toggleElsewhere();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith("session_acknowledge", { sessionId: "s1", attentionSince: 1 }, undefined);
+  });
+
+  it("a failed acknowledgement (no runtime) is forgotten so a later selection retries", async () => {
+    vi.stubGlobal("window", {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    useLiveStore.getState().applySnapshot({ sessions: { s1: live({ kind: "finished" }) }, elsewhere: [], banner: null });
+    useUiStore.getState().select({ kind: "session", id: "s1" });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    expect(isAcknowledging("s1")).toBe(false);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

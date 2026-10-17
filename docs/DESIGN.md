@@ -87,11 +87,13 @@ styled, after the final combinator) starts with one of
 
 ```
 .banner  .banner-mark  .attention  .pane-error
+.session-attention  .session-attention-word  .project-glow
 ```
 
-That is: a banner's left border and mark, error text in a pane (`.pane-error`) and attention text
-(`.attention`). From Epic 3 the `waiting` and `finished` session states join the list (and the lint with
-them). Inline styles never use the accent.
+That is: a banner's left border and mark, error text in a pane (`.pane-error`), attention text
+(`.attention`), and the attention states of Story 3.3: a session card in `finished` / `waiting` (its border,
+`.session-attention`, and its state word, `.session-attention-word`) and the glow of its project card
+(`.project-glow`). Inline styles never use the accent.
 
 ### States
 
@@ -102,6 +104,8 @@ them). Inline styles never use the accent.
 | Selected row (palette, menu) | `--bg-hover` background and a 2-px `--fg-muted` left border (transparent when not selected, so the text never shifts). |
 | Keyboard focus | A 1-px `--focus` outline, offset 1 px. The palette input shows none: it always has focus while the palette is open, and the dialog's border is the cue. |
 | Selected node | A 1-px `--focus` outline, offset 2 px, and the node draws above its siblings. |
+| Attention (session card) | A `finished` or `waiting` session: 1-px `--accent` border, the state word in `--accent` after its 4-px dot (`currentColor`) pulsing like `busy`'s. |
+| Glow (project card) | Any of its sessions (drawn or hidden, collapsed or not) is `finished` / `waiting`: a 1-px `--accent` outline at 2-px offset whose opacity pulses 1 → 0.4. No shadow, gradient or filter. Selected and glowing, the `--focus` outline stays at 2 px and the glow moves out to 4 px around it. |
 | Text selection | `--selection` background, `--bg` text. |
 | Disabled | `--fg-faint` text. |
 
@@ -129,7 +133,7 @@ them). Inline styles never use the accent.
   `--fg`, the rest `--fg-muted`; no pulse), the name (`--text-md`, ellipsis), the shortened cwd (mono
   `--text-xs` `--fg-muted`, full path on hover) and an **Add folder** button. No accent.
 - **The canvas** is `--bg` with a dot grid in `--fg-faint`; empty, it shows a centred mono hint in
-  `--fg-muted`. Nothing on the canvas uses the accent.
+  `--fg-muted`. Nothing on the canvas uses the accent except the attention states (a `finished` / `waiting` session card and its project's glow; see [States](#states)).
 
 ## Node anatomy
 
@@ -183,7 +187,8 @@ Enter toggles it.
 ### Node states
 
 Selected: 1-px `--focus` outline, 2-px offset. Duplicate add: a 1-px `--fg` outline that fades out over
-1.5 s (instant under reduced motion; a selected card keeps its outline). A selected or dragged node draws
+1.5 s (instant under reduced motion; a selected card keeps its outline). Attention and glow: see
+[States](#states); selecting the session clears both (it reads `idle` until it is busy again). A selected or dragged node draws
 above its siblings (xyflow `zIndex`), so a dragged child is never hidden under its column.
 
 ## Status colours
@@ -206,13 +211,13 @@ Monochrome steps; the accent only for attention.
 | busy | `--fg`, after a small `currentColor` dot (4 px, round) that pulses: opacity 1 → 0.35, 1.2 s, ease-in-out, alternating; static under reduced motion |
 | idle, exited | `--fg-muted` |
 | any other status the poll reports (`compacting`), kept verbatim | `--fg-muted` |
-| waiting, finished | `--accent` (attention; set only by hooks, Story 4.3) |
+| waiting, finished | `--accent` (attention), after the 4-px dot pulsing like `busy`'s; the card's border in `--accent` too. `finished` is a busy → idle turn seen by the poll (Story 3.3); `waiting` comes from hooks (Story 4.3). |
 
-Historic sessions show no state word. Nothing in Story 3.2 uses the accent.
+Historic sessions show no state word.
 
 ## Motion
 
-Only four motions exist; every one is instant (or static) under `prefers-reduced-motion: reduce`.
+Only six motions exist; every one is instant (or static) under `prefers-reduced-motion: reduce`.
 
 | Motion | Duration |
 |---|---|
@@ -220,6 +225,8 @@ Only four motions exist; every one is instant (or static) under `prefers-reduced
 | Reveal pan (arrow keys bring an off-screen node into view) | 150 ms |
 | Palette fade-in | 100 ms |
 | Busy pulse (the dot before `busy`: opacity 1 → 0.35, ease-in-out, alternating, looping; opacity only) | 1.2 s |
+| Attention pulse (the accent dot before `finished` / `waiting`: the busy pulse) | 1.2 s |
+| Project glow (the accent outline around a project needing you: opacity 1 → 0.4, ease-in-out, alternating, looping; opacity only) | 1.2 s |
 
 Panes, banners, the notice, the menu and the Elsewhere tray appear without animation.
 
@@ -253,7 +260,7 @@ fails, naming the file, line and rule, on:
 | `shadow` | `box-shadow`, `text-shadow` (vendor-prefixed too), `drop-shadow()` |
 | `font-size` | a `font-size` that is not `var(--text-*)`, or a length literal in a `font` shorthand |
 | `border-radius` | a radius that is not `var(--radius-*)`, `0` or `50%` |
-| `accent` | `var(--accent)` (with or without a fallback) in a rule where a selector's last compound does not start with an allow-listed class (`.banner`, `.banner-mark`, `.attention`, `.pane-error`); any accent in an inline style |
+| `accent` | `var(--accent)` (with or without a fallback) in a rule where a selector's last compound does not start with an allow-listed class (`.banner`, `.banner-mark`, `.attention`, `.pane-error`, `.session-attention`, `.session-attention-word`, `.project-glow`); any accent in an inline style |
 
 Self-tests plant a bad snippet for each rule and prove it fires. Colours passed to xyflow as component
 props (the dot grid's `color="var(--fg-faint)"`) are not inline styles; keep them to tokens all the same.

@@ -26,6 +26,8 @@ export type Settings = {
   shell: string | null;
   theme: string;
   poll: { agents_ms: number; git_ms: number };
+  /** Which attention states send an OS toast while the window is unfocused (Story 3.3). */
+  notifications: { finished: boolean; waiting: boolean };
 };
 
 /** Mirrors `settings::BinaryStatus`. */
@@ -244,7 +246,8 @@ export type ClaudeProject = {
 /**
  * Mirrors `live::SessionState` (internally tagged on `kind`). The poll gives `busy`, `idle`
  * and `other` (any other status, kept verbatim in `raw`); `exited` is a session that left the
- * poll this run. `waiting` and `finished` come only from hooks (Story 4.3).
+ * poll this run; `finished` is a session the poll saw go busy → idle (Story 3.3). `waiting`
+ * comes only from hooks (Story 4.3).
  */
 export type SessionState =
   | { kind: "busy" }
@@ -257,8 +260,8 @@ export type SessionState =
 /** Mirrors `live::LiveSession`: one session the poll has seen this run. */
 export type LiveSession = {
   state: SessionState;
-  /** Where the state came from; only `poll` until Epic 4. */
-  source: "poll";
+  /** Where the state came from: the poll, or the operator's acknowledgement (`ack`). */
+  source: "poll" | "ack";
   pid: number | null;
   kind: string | null;
   name: string | null;
@@ -267,6 +270,8 @@ export type LiveSession = {
   cwd: string;
   /** Milliseconds since the epoch. */
   started_at: number | null;
+  /** When it entered `finished` / `waiting` (ms since the epoch); `null` in other states. */
+  attention_since: number | null;
 };
 
 /** Mirrors `live::ElsewhereRow`: a live session in a folder that is not on the canvas. */
@@ -291,6 +296,18 @@ export type LiveSnapshot = {
 /** Event name Rust emits with a fresh `LiveSnapshot` whenever it changes. */
 export const LIVE_SESSIONS_EVENT = "sessions://live";
 
+// --- toasts (`src-tauri/src/notify.rs`, Story 3.3) ------------------------------------------
+
+/** Mirrors `notify::RevealRequest`: the session of a toast the operator clicked. */
+export type RevealRequest = {
+  session_id: string;
+  /** The session's project; `null` for an Elsewhere session. */
+  project_id: string | null;
+};
+
+/** Event name Rust emits with a `RevealRequest` when a toast was clicked (the window is already focused). */
+export const NOTIFY_REVEAL_EVENT = "notify://reveal";
+
 /** Return type of every command, keyed by command name. */
 type Commands = {
   app_info: AppInfo;
@@ -307,6 +324,7 @@ type Commands = {
   claude_projects_list: ClaudeProject[];
   projects_status_get: ProjectStatusMap;
   live_sessions_get: LiveSnapshot;
+  session_acknowledge: LiveSnapshot | null;
   workspace_remove_project: WorkspaceSnapshot;
   project_open_editor: void;
   project_open_folder: void;
@@ -464,6 +482,16 @@ export function liveSessionsGet(): Promise<LiveSnapshot> {
   return call("live_sessions_get");
 }
 
+/**
+ * `ipc::session_acknowledge` -- the operator selected this session, seen needing attention
+ * since `attentionSince`: a `finished` / `waiting` one with that same `attention_since` turns
+ * `idle` (source `ack`) until it is next busy, and `sessions://live` follows. Resolves with
+ * the new live snapshot, or `null` when nothing changed (a newer turn than the one seen too).
+ */
+export function sessionAcknowledge(sessionId: string, attentionSince: number | null): Promise<LiveSnapshot | null> {
+  return call("session_acknowledge", { sessionId, attentionSince });
+}
+
 /** `ipc::app_quit` -- exit the app with status 0. Resolves only if the exit did not happen. */
 export function appQuit(): Promise<void> {
   return call("app_quit");
@@ -506,6 +534,14 @@ export async function onLiveSessions(callback: (snapshot: LiveSnapshot) => void)
     return () => {};
   }
   return listen<LiveSnapshot>(LIVE_SESSIONS_EVENT, (event) => callback(event.payload));
+}
+
+/** Subscribe to `notify://reveal` (a toast was clicked); same contract as {@link onSettingsChanged}. */
+export async function onNotifyReveal(callback: (request: RevealRequest) => void): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return listen<RevealRequest>(NOTIFY_REVEAL_EVENT, (event) => callback(event.payload));
 }
 
 /**

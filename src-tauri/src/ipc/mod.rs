@@ -362,6 +362,16 @@ pub fn live_sessions_get(state: State<'_, AppState>) -> LiveSnapshot {
     state.read_sessions_live().snapshot()
 }
 
+/// The operator selected session `session_id`, which they saw needing attention since
+/// `attention_since`: a session in `finished` or `waiting` with that same `attention_since`
+/// turns `idle` (source `ack`) until it is next busy, and `sessions://live` is emitted.
+/// Replies with the new live snapshot, or `None` when nothing changed (any other state, a
+/// newer turn than the one seen, an unknown id).
+#[tauri::command]
+pub fn session_acknowledge<R: Runtime>(app: AppHandle<R>, session_id: String, attention_since: Option<i64>) -> Option<LiveSnapshot> {
+    claude::live::acknowledge(&app, &session_id, attention_since)
+}
+
 /// Exit the app with status 0 (the `app.quit` command, `ctrl+q`). Under `cfg(test)` it only
 /// returns, so the wire-name test can invoke it without ending the test process.
 #[tauri::command]

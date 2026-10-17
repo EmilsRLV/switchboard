@@ -16,8 +16,19 @@
 
 import { describe, expect, it } from "vitest";
 
-/** The selectors (by their first class) that may use the accent: attention states only. */
-const ACCENT_ALLOW_LIST = [".banner", ".banner-mark", ".attention", ".pane-error"] as const;
+/**
+ * The selectors (by their first class) that may use the accent: attention states only. Story
+ * 3.3 adds the session card in attention (its border and state word) and the project glow.
+ */
+const ACCENT_ALLOW_LIST = [
+  ".banner",
+  ".banner-mark",
+  ".attention",
+  ".pane-error",
+  ".session-attention",
+  ".session-attention-word",
+  ".project-glow",
+] as const;
 
 /** The one file allowed to write colour values. */
 const TOKENS_FILE = "/src/theme/tokens.css";
@@ -276,6 +287,18 @@ describe("design lint: the tree", () => {
     expect(new Set(properties)).toEqual(new Set(["opacity"]));
     expect(nodes).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\s*\.session-state-busy \.session-dot \{\s*animation: none;/);
   });
+
+  it("the project glow animates opacity only (1 to 0.4, 1.2 s, alternating) and is static under reduced motion", () => {
+    const nodes = stylesheets["/src/canvas/nodes.css"] ?? "";
+    const block = /@keyframes project-glow\s*\{([\s\S]*?)\n\}/.exec(nodes)?.[1] ?? "";
+    const properties = [...block.matchAll(/([a-z-]+)\s*:/g)].map((m) => m[1]);
+    expect(new Set(properties)).toEqual(new Set(["opacity"]));
+    expect(block).toMatch(/to \{\s*opacity: 0\.4;/);
+    expect(nodes).toMatch(/animation: project-glow 1\.2s ease-in-out infinite alternate;/);
+    expect(nodes).toMatch(
+      /@media \(prefers-reduced-motion: reduce\) \{\s*\.session-attention-word \.session-dot,\s*\.project-glow::after \{\s*animation: none;/,
+    );
+  });
 });
 
 describe("design lint: each rule fires", () => {
@@ -339,6 +362,15 @@ describe("design lint: each rule fires", () => {
       css(".banner { border-left: 2px solid var(--accent); } .banner.is-x .banner-mark { background: var(--accent); }"),
     ).toEqual([]);
     expect(css(".attention, .pane-error { color: var(--accent); }")).toEqual([]);
+    // Story 3.3: the attention card, its state word and the project glow.
+    expect(
+      css(
+        ".session-attention.child-node { border-color: var(--accent); } .session-attention-word { color: var(--accent); } .project-glow::after { outline: 1px solid var(--accent); }",
+      ),
+    ).toEqual([]);
+    // Only as the element styled: a child of an attention card, or the card class second, is not.
+    expect(css(".session-attention .child-node-label { color: var(--accent); }")).toEqual(["1 accent"]);
+    expect(css(".child-node.session-attention { border-color: var(--accent); }")).toEqual(["1 accent"]);
   });
 
   it("inline styles in TSX", () => {

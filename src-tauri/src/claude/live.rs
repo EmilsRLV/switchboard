@@ -105,9 +105,11 @@ pub fn parse_rows(text: &str) -> Result<Vec<LiveRow>, String> {
 }
 
 /// A session's state. The poll produces `Busy`, `Idle` and `Other` (any other status string,
-/// kept verbatim and shown muted); [`SessionState::Exited`] is derived here when a session
-/// drops out. `Waiting` and `Finished` exist for the hooks of Story 4.3 and are never produced
-/// by the poll. On the wire: `{ "kind": "busy" }`, `{ "kind": "other", "raw": "compacting" }`.
+/// kept verbatim and shown muted); two states are derived here: [`SessionState::Exited`] when
+/// a session drops out, and [`SessionState::Finished`] when a session the previous poll saw
+/// `busy` is now `idle` (Story 3.3; see [`LiveMap::apply_at`]). `Waiting` exists for the hooks
+/// of Story 4.3 and is never produced by the poll. On the wire: `{ "kind": "busy" }`,
+/// `{ "kind": "other", "raw": "compacting" }`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionState {
@@ -135,13 +137,21 @@ impl SessionState {
     pub fn is_live(&self) -> bool {
         !matches!(self, SessionState::Exited)
     }
+
+    /// `Finished` and `Waiting`: the session needs the operator (accent card, project glow,
+    /// optional toast; Story 3.3).
+    pub fn needs_attention(&self) -> bool {
+        matches!(self, SessionState::Finished | SessionState::Waiting)
+    }
 }
 
-/// Where a state came from. Only the poll exists now; Story 4.3 adds hooks.
+/// Where a state came from: the poll, or the operator's acknowledgement (selecting a session
+/// that needed attention turns it `Idle` with source `Ack`). Story 4.3 adds hooks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StateSource {
     Poll,
+    Ack,
 }
 
 /// One session as the live map holds it (and `sessions://live` carries it).
@@ -157,6 +167,28 @@ pub struct LiveSession {
     pub cwd: String,
     /// The row's `startedAt`, milliseconds since the epoch.
     pub started_at: Option<i64>,
+    /// When the session entered `Finished` / `Waiting` (milliseconds since the epoch); `None`
+    /// in every other state. `attention.next` goes to the oldest first.
+    pub attention_since: Option<i64>,
+}
+
+/// A session that has just entered `Finished` or `Waiting`: what [`LiveMap::apply_at`]
+/// returns for the toast decision (`crate::notify::decide`). The two labels are filled in by
+/// [`apply_and_emit`] from the workspace (they are `None` straight out of `apply_at`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Transition {
+    pub session_id: String,
+    /// `Finished` or `Waiting`.
+    pub state: SessionState,
+    /// The project the session belongs to; `None` for an Elsewhere session.
+    pub project_id: Option<String>,
+    pub cwd: String,
+    /// The poll row's `name`.
+    pub name: Option<String>,
+    /// The project's label, when the session has a project.
+    pub project_label: Option<String>,
+    /// The discovered transcript's title, when there is one.
+    pub title: Option<String>,
 }
 
 /// A live session in a folder that is not on the canvas: one row of the Elsewhere tray.
@@ -192,16 +224,37 @@ pub struct LiveMap {
     pub failures: u32,
     /// The banner text after [`FAILURES_FOR_BANNER`] failures in a row.
     pub banner: Option<String>,
+    /// Ids of the sessions polled `busy` since they were last polled `idle` (an `Other` status
+    /// in between keeps the mark), so the next `idle` is a finished turn. Memory only.
+    pub busy_seen: HashSet<String>,
 }
 
 impl LiveMap {
-    /// Fold one poll into the map. `Ok(rows)`: every row becomes (or stays) live with its
-    /// project re-matched against `workspace`; a session known before and missing now turns
-    /// exited (and keeps its last facts; only the [`MAX_EXITED`] most recent exits are kept);
-    /// the failure count and banner reset. `Err(cause)`:
-    /// the map is kept as it is, the failure is counted and, from the third in a row, the
-    /// banner names the latest cause.
-    pub fn apply(&mut self, polled: Result<Vec<LiveRow>, String>, workspace: &Workspace) {
+    /// [`LiveMap::apply_at`] at the current time.
+    pub fn apply(&mut self, polled: Result<Vec<LiveRow>, String>, workspace: &Workspace) -> Vec<Transition> {
+        self.apply_at(polled, workspace, now_ms())
+    }
+
+    /// Fold one poll into the map at `now` (milliseconds since the epoch). `Ok(rows)`: every
+    /// row becomes (or stays) live with its project re-matched against `workspace`; a session
+    /// known before and missing now turns exited (and keeps its last facts; only the
+    /// [`MAX_EXITED`] most recent exits are kept); the failure count and banner reset.
+    /// `Err(cause)`: the map is kept as it is, the failure is counted and, from the third in a
+    /// row, the banner names the latest cause.
+    ///
+    /// The `finished` rule (Story 3.3): a row reporting `idle` for a session polled `busy`
+    /// since it was last `idle` (an `Other` status such as `compacting` in between does not
+    /// break that) turns `Finished` (stamped `attention_since = now`) and stays `Finished`
+    /// while the poll keeps reporting `idle` or an `Other` status; it becomes `Busy` on the
+    /// next `busy`, `Exited` when it drops out and `Idle` when acknowledged
+    /// ([`LiveMap::acknowledge`], which holds until the next `busy`). A session first seen
+    /// `idle` is `Idle`; an `Other` status itself never turns `Finished`. `Waiting` (hooks
+    /// only, Story 4.3) is left alone by `idle` and `Other` polls. A session listed twice in
+    /// one poll counts once (the first row wins).
+    ///
+    /// Returns the sessions that entered `Finished` / `Waiting` with this poll (none on a
+    /// failure, a startup `idle`, or for a session already in that state).
+    pub fn apply_at(&mut self, polled: Result<Vec<LiveRow>, String>, workspace: &Workspace, now: i64) -> Vec<Transition> {
         let rows = match polled {
             Ok(rows) => rows,
             Err(cause) => {
@@ -209,28 +262,60 @@ impl LiveMap {
                 if self.failures >= FAILURES_FOR_BANNER {
                     self.banner = Some(format!("live session status unavailable: {cause}"));
                 }
-                return;
+                return Vec::new();
             }
         };
+        let mut transitions = Vec::new();
         let mut next: BTreeMap<String, LiveSession> = BTreeMap::new();
         for row in rows {
+            if next.contains_key(&row.session_id) {
+                continue;
+            }
             let project_id = graph::project_for_cwd(workspace, &row.cwd);
+            let previous = self.sessions.get(&row.session_id);
+            let polled = SessionState::from_status(row.status.as_deref());
+            let busy_seen = match polled {
+                SessionState::Busy => true,
+                SessionState::Idle => false,
+                _ => self.busy_seen.contains(&row.session_id),
+            };
+            let was_busy = self.busy_seen.contains(&row.session_id) || previous.is_some_and(|p| p.state == SessionState::Busy);
+            let (state, source, attention_since) = fold_state(previous, polled, was_busy, now);
+            if busy_seen {
+                self.busy_seen.insert(row.session_id.clone());
+            } else {
+                self.busy_seen.remove(&row.session_id);
+            }
+            if state.needs_attention() && !previous.is_some_and(|p| p.state.needs_attention()) {
+                transitions.push(Transition {
+                    session_id: row.session_id.clone(),
+                    state: state.clone(),
+                    project_id: project_id.clone(),
+                    cwd: row.cwd.clone(),
+                    name: row.name.clone(),
+                    project_label: None,
+                    title: None,
+                });
+            }
             next.insert(
                 row.session_id.clone(),
                 LiveSession {
-                    state: SessionState::from_status(row.status.as_deref()),
-                    source: StateSource::Poll,
+                    state,
+                    source,
                     pid: row.pid,
                     kind: row.kind,
                     name: row.name,
                     project_id,
                     cwd: row.cwd,
                     started_at: row.started_at,
+                    attention_since,
                 },
             );
         }
         // Sessions that came back are live again; they leave the exit order.
         self.exited_order.retain(|id| !next.contains_key(id));
+        // A session that dropped out starts afresh if it comes back.
+        self.busy_seen.retain(|id| next.contains_key(id));
         for (id, previous) in &self.sessions {
             if next.contains_key(id) {
                 continue;
@@ -240,6 +325,8 @@ impl LiveMap {
                 self.exited_order.push_back(id.clone());
             }
             gone.state = SessionState::Exited;
+            gone.source = StateSource::Poll;
+            gone.attention_since = None;
             gone.project_id = graph::project_for_cwd(workspace, &gone.cwd);
             next.insert(id.clone(), gone);
         }
@@ -252,6 +339,24 @@ impl LiveMap {
         self.sessions = next;
         self.failures = 0;
         self.banner = None;
+        transitions
+    }
+
+    /// The operator selected `id`, which they saw needing attention since `seen_since`: a
+    /// session in `Finished` or `Waiting` with that same `attention_since` turns `Idle` with
+    /// source `Ack` (and stays so until the poll next reports `busy`). Returns whether anything
+    /// changed; any other state, a different `attention_since` (a newer turn the operator has
+    /// not seen) or an unknown id is a no-op.
+    pub fn acknowledge(&mut self, id: &str, seen_since: Option<i64>) -> bool {
+        match self.sessions.get_mut(id) {
+            Some(session) if session.state.needs_attention() && session.attention_since == seen_since => {
+                session.state = SessionState::Idle;
+                session.source = StateSource::Ack;
+                session.attention_since = None;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// The map as the frontend sees it.
@@ -296,6 +401,35 @@ impl LiveMap {
         }
         out
     }
+}
+
+/// The state a polled status leaves a session in, given what the map held for it before and
+/// whether it was polled `busy` since it was last `idle` (see [`LiveMap::apply_at`]):
+/// `(state, source, attention_since)`.
+fn fold_state(previous: Option<&LiveSession>, polled: SessionState, was_busy: bool, now: i64) -> (SessionState, StateSource, Option<i64>) {
+    let keep_attention = |p: &LiveSession| (p.state.clone(), p.source, p.attention_since.or(Some(now)));
+    let attention = previous.filter(|p| p.state.needs_attention());
+    match (&polled, attention) {
+        (SessionState::Idle, _) => {}
+        // An `Other` status leaves an unacknowledged `Finished` / `Waiting` in place.
+        (SessionState::Other { .. }, Some(p)) => return keep_attention(p),
+        _ => return (polled, StateSource::Poll, None),
+    }
+    match previous {
+        Some(p) if p.state.needs_attention() => keep_attention(p),
+        _ if was_busy => (SessionState::Finished, StateSource::Poll, Some(now)),
+        // An acknowledged session stays acknowledged while the poll keeps reporting `idle`.
+        Some(p) if p.state == SessionState::Idle && p.source == StateSource::Ack => (SessionState::Idle, StateSource::Ack, None),
+        _ => (SessionState::Idle, StateSource::Poll, None),
+    }
+}
+
+/// Milliseconds since the epoch.
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -379,15 +513,17 @@ pub async fn refresh<R: Runtime>(app: &AppHandle<R>) -> LiveSnapshot {
     apply_and_emit(app, polled)
 }
 
-/// Fold `polled` into the stored map and emit what changed (see [`refresh`]).
+/// Fold `polled` into the stored map and emit what changed (see [`refresh`]); then hand the
+/// sessions that entered `Finished` / `Waiting`, labelled from the workspace, to the toast
+/// decision (`crate::notify::on_transitions`).
 pub fn apply_and_emit<R: Runtime>(app: &AppHandle<R>, polled: Result<Vec<LiveRow>, String>) -> LiveSnapshot {
     let state = app.state::<AppState>();
     let workspace = state.read_workspace().workspace.clone();
-    let (before, after, children) = {
+    let (before, after, children, mut transitions) = {
         let mut map = state.write_sessions_live();
         let before = map.snapshot();
-        map.apply(polled, &workspace);
-        (before, map.snapshot(), map.live_children())
+        let transitions = map.apply(polled, &workspace);
+        (before, map.snapshot(), map.live_children(), transitions)
     };
     if after != before
         && let Err(err) = app.emit(LIVE_EVENT, &after)
@@ -395,7 +531,46 @@ pub fn apply_and_emit<R: Runtime>(app: &AppHandle<R>, polled: Result<Vec<LiveRow
         eprintln!("live sessions: emit failed: {err}");
     }
     graph::set_live_children(app, children);
+    if !transitions.is_empty() {
+        {
+            let ws = state.read_workspace();
+            for transition in &mut transitions {
+                transition.project_label = transition
+                    .project_id
+                    .as_ref()
+                    .and_then(|id| ws.workspace.projects.iter().find(|p| &p.id == id))
+                    .map(|p| p.label.clone());
+                transition.title = ws
+                    .discovered
+                    .values()
+                    .flatten()
+                    .find(|s| s.id == transition.session_id)
+                    .map(|s| s.title.clone())
+                    .filter(|t| t != super::transcript::UNTITLED);
+            }
+        }
+        crate::notify::on_transitions(app, &transitions);
+    }
     after
+}
+
+/// Acknowledge `id`, seen needing attention since `seen_since` (the operator selected it; see
+/// [`LiveMap::acknowledge`]). When that changed anything, emits `sessions://live` and returns
+/// the new snapshot (the caller applies it too, so a lost event cannot leave the accent on);
+/// else `None`.
+pub fn acknowledge<R: Runtime>(app: &AppHandle<R>, id: &str, seen_since: Option<i64>) -> Option<LiveSnapshot> {
+    let state = app.state::<AppState>();
+    let snapshot = {
+        let mut map = state.write_sessions_live();
+        if !map.acknowledge(id, seen_since) {
+            return None;
+        }
+        map.snapshot()
+    };
+    if let Err(err) = app.emit(LIVE_EVENT, &snapshot) {
+        eprintln!("live sessions: emit failed: {err}");
+    }
+    Some(snapshot)
 }
 
 #[cfg(test)]
@@ -549,12 +724,12 @@ mod tests {
         assert_eq!(map.sessions["s1"].state, SessionState::Busy);
         assert_eq!(map.sessions["s1"].project_id.as_deref(), Some("ide"));
         map.apply(rows("idle"), &ws);
-        assert_eq!(map.sessions["s1"].state, SessionState::Idle);
+        assert_eq!(map.sessions["s1"].state, SessionState::Finished, "busy → idle is a finished turn (Story 3.3)");
 
         // Failures keep the map; nothing turns exited.
         for _ in 0..2 {
             map.apply(Err("claude agents: exit code 1".into()), &ws);
-            assert_eq!(map.sessions["s1"].state, SessionState::Idle);
+            assert_eq!(map.sessions["s1"].state, SessionState::Finished);
             assert_eq!(map.banner, None, "fewer than three");
         }
         map.apply(Err("claude agents: timed out after 5s".into()), &ws);
@@ -700,11 +875,11 @@ mod tests {
         assert!(rx.try_recv().is_err());
         assert!(ws_rx.try_recv().is_err());
 
-        // Busy → idle: a live event, no workspace revision.
+        // Busy → idle (finished): a live event, no workspace revision.
         set_output(&out, &[row("s1", ide_path(), "idle")]);
         let snap = tauri::async_runtime::block_on(refresh(app.handle()));
-        assert_eq!(rx.try_recv().expect("state flip").sessions["s1"].state, SessionState::Idle);
-        assert_eq!(snap.sessions["s1"].state, SessionState::Idle);
+        assert_eq!(rx.try_recv().expect("state flip").sessions["s1"].state, SessionState::Finished);
+        assert_eq!(snap.sessions["s1"].state, SessionState::Finished);
         assert!(ws_rx.try_recv().is_err(), "no workspace event for a state flip");
         assert_eq!(revision(), 1);
 
@@ -714,7 +889,7 @@ mod tests {
         tauri::async_runtime::block_on(refresh(app.handle()));
         assert!(rx.try_recv().is_err(), "two failures: nothing visible changed");
         let snap = tauri::async_runtime::block_on(refresh(app.handle()));
-        assert_eq!(snap.sessions["s1"].state, SessionState::Idle);
+        assert_eq!(snap.sessions["s1"].state, SessionState::Finished);
         assert!(snap.banner.as_deref().unwrap().starts_with("live session status unavailable: unparsable output"));
         assert_eq!(rx.try_recv().expect("the banner").banner, snap.banner);
 
@@ -758,6 +933,185 @@ mod tests {
             SessionState::from_status(rows[0].status.as_deref()),
             SessionState::Other { raw: "unknown".into() }
         );
+    }
+
+    fn one(status: &str) -> Result<Vec<LiveRow>, String> {
+        parse_rows(&Value::Array(vec![row("s1", ide_path(), status)]).to_string())
+    }
+
+    fn ids(transitions: &[Transition]) -> Vec<&str> {
+        transitions.iter().map(|t| t.session_id.as_str()).collect()
+    }
+
+    #[test]
+    fn busy_then_idle_is_finished_and_stays_so_while_idle() {
+        let ws = workspace_with_ide();
+        let mut map = LiveMap::default();
+        assert!(map.apply_at(one("busy"), &ws, 10).is_empty());
+        let entered = map.apply_at(one("idle"), &ws, 20);
+        assert_eq!(ids(&entered), ["s1"], "turn ends");
+        assert_eq!(entered[0].state, SessionState::Finished);
+        assert_eq!(entered[0].project_id.as_deref(), Some("ide"));
+        assert_eq!(map.sessions["s1"].state, SessionState::Finished);
+        assert_eq!(map.sessions["s1"].attention_since, Some(20));
+        assert_eq!(map.sessions["s1"].source, StateSource::Poll);
+        // Still idle: still finished, no new transition, the time kept.
+        assert!(map.apply_at(one("idle"), &ws, 30).is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Finished);
+        assert_eq!(map.sessions["s1"].attention_since, Some(20));
+        // A failed poll keeps it.
+        assert!(map.apply_at(Err("boom".into()), &ws, 35).is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Finished);
+        // Busy again.
+        assert!(map.apply_at(one("busy"), &ws, 40).is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Busy);
+        assert_eq!(map.sessions["s1"].attention_since, None);
+        assert_eq!(ids(&map.apply_at(one("idle"), &ws, 50)), ["s1"], "a new turn ends: a new transition");
+        assert_eq!(map.sessions["s1"].attention_since, Some(50));
+        let wire = serde_json::to_value(map.snapshot()).unwrap();
+        assert_eq!(wire["sessions"]["s1"]["state"], serde_json::json!({ "kind": "finished" }));
+        assert_eq!(wire["sessions"]["s1"]["attention_since"], 50);
+    }
+
+    #[test]
+    fn a_session_first_seen_idle_is_idle_and_other_statuses_never_finish() {
+        let ws = workspace_with_ide();
+        let mut map = LiveMap::default();
+        assert!(map.apply_at(one("idle"), &ws, 1).is_empty(), "already idle");
+        assert_eq!(map.sessions["s1"].state, SessionState::Idle);
+        assert!(map.apply_at(one("idle"), &ws, 2).is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Idle);
+
+        assert!(map.apply_at(one("compacting"), &ws, 3).is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Other { raw: "compacting".into() });
+        assert!(map.apply_at(one("idle"), &ws, 4).is_empty(), "idle → other → idle is not a finished turn");
+        assert_eq!(map.sessions["s1"].state, SessionState::Idle);
+
+        // Exited, then back idle: not finished either.
+        map.apply_at(one("busy"), &ws, 5);
+        map.apply_at(Ok(vec![]), &ws, 6);
+        assert!(map.apply_at(one("idle"), &ws, 7).is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Idle);
+    }
+
+    #[test]
+    fn busy_then_an_other_status_then_idle_is_finished() {
+        let ws = workspace_with_ide();
+        let mut map = LiveMap::default();
+        map.apply_at(one("busy"), &ws, 1);
+        assert!(map.apply_at(one("compacting"), &ws, 2).is_empty());
+        assert!(map.apply_at(one("compacting"), &ws, 3).is_empty());
+        let entered = map.apply_at(one("idle"), &ws, 4);
+        assert_eq!(ids(&entered), ["s1"]);
+        assert_eq!(map.sessions["s1"].state, SessionState::Finished);
+        assert_eq!(map.sessions["s1"].attention_since, Some(4));
+        // Idle cleared the mark: idle → other → idle again is not a second turn.
+        map.apply_at(one("busy"), &ws, 5);
+        map.apply_at(Ok(vec![]), &ws, 6);
+        assert!(map.apply_at(one("idle"), &ws, 7).is_empty(), "exited in between: starts afresh");
+    }
+
+    #[test]
+    fn an_other_status_keeps_an_unacknowledged_finished_session() {
+        let ws = workspace_with_ide();
+        let mut map = LiveMap::default();
+        map.apply_at(one("busy"), &ws, 1);
+        map.apply_at(one("idle"), &ws, 2);
+        assert!(map.apply_at(one("compacting"), &ws, 3).is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Finished);
+        assert_eq!(map.sessions["s1"].attention_since, Some(2));
+        assert!(map.apply_at(one("idle"), &ws, 4).is_empty(), "still the same turn: no second toast");
+        assert_eq!(map.sessions["s1"].attention_since, Some(2));
+    }
+
+    #[test]
+    fn a_session_listed_twice_in_one_poll_counts_once() {
+        let ws = workspace_with_ide();
+        let mut map = LiveMap::default();
+        let twice = |a: &str, b: &str| parse_rows(&Value::Array(vec![row("s1", ide_path(), a), row("s1", other_path(), b)]).to_string());
+        map.apply_at(twice("busy", "busy"), &ws, 1);
+        let entered = map.apply_at(twice("idle", "idle"), &ws, 2);
+        assert_eq!(ids(&entered), ["s1"], "one transition");
+        assert_eq!(map.sessions["s1"].project_id.as_deref(), Some("ide"), "the first row wins");
+        assert!(map.apply_at(twice("busy", "idle"), &ws, 3).is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Busy);
+    }
+
+    #[test]
+    fn a_finished_session_that_drops_out_is_exited() {
+        let ws = workspace_with_ide();
+        let mut map = LiveMap::default();
+        map.apply_at(one("busy"), &ws, 1);
+        map.apply_at(one("idle"), &ws, 2);
+        assert!(map.apply_at(Ok(vec![]), &ws, 3).is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Exited);
+        assert_eq!(map.sessions["s1"].attention_since, None);
+        assert!(!map.acknowledge("s1", None), "exited: nothing to acknowledge");
+    }
+
+    #[test]
+    fn acknowledging_a_finished_session_makes_it_idle_until_the_next_busy() {
+        let ws = workspace_with_ide();
+        let mut map = LiveMap::default();
+        map.apply_at(one("busy"), &ws, 1);
+        map.apply_at(one("idle"), &ws, 2);
+        assert!(!map.acknowledge("s1", Some(1)), "an older turn's acknowledgement is a no-op");
+        assert_eq!(map.sessions["s1"].state, SessionState::Finished);
+        assert!(map.acknowledge("s1", Some(2)));
+        let s = &map.sessions["s1"];
+        assert_eq!((s.state.clone(), s.source, s.attention_since), (SessionState::Idle, StateSource::Ack, None));
+        assert!(!map.acknowledge("s1", Some(2)), "already idle: a no-op");
+        // The poll keeps reporting idle: still the acknowledged idle, no transition.
+        assert!(map.apply_at(one("idle"), &ws, 3).is_empty());
+        assert_eq!((map.sessions["s1"].state.clone(), map.sessions["s1"].source), (SessionState::Idle, StateSource::Ack));
+        // Busy again, then idle: finished again.
+        map.apply_at(one("busy"), &ws, 4);
+        assert_eq!(map.sessions["s1"].source, StateSource::Poll);
+        assert_eq!(ids(&map.apply_at(one("idle"), &ws, 5)), ["s1"]);
+        assert_eq!(serde_json::to_value(StateSource::Ack).unwrap(), serde_json::json!("ack"));
+    }
+
+    #[test]
+    fn acknowledging_a_session_not_in_attention_is_a_no_op() {
+        let ws = workspace_with_ide();
+        let mut map = LiveMap::default();
+        map.apply_at(one("busy"), &ws, 1);
+        let before = map.clone();
+        assert!(!map.acknowledge("s1", None), "busy");
+        assert!(!map.acknowledge("nope", None), "unknown");
+        assert_eq!(map, before);
+    }
+
+    #[test]
+    fn waiting_is_left_alone_by_an_idle_poll_and_can_be_acknowledged() {
+        let ws = workspace_with_ide();
+        let mut map = LiveMap::default();
+        map.apply_at(one("idle"), &ws, 1);
+        // Only hooks set `waiting` (Story 4.3); planted here.
+        let s = map.sessions.get_mut("s1").unwrap();
+        s.state = SessionState::Waiting;
+        s.attention_since = Some(1);
+        assert!(map.apply_at(one("idle"), &ws, 2).is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Waiting);
+        assert_eq!(map.sessions["s1"].attention_since, Some(1));
+        assert!(map.apply_at(one("compacting"), &ws, 3).is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Waiting, "an other status leaves it too");
+        assert!(map.acknowledge("s1", Some(1)));
+        assert_eq!(map.sessions["s1"].state, SessionState::Idle);
+    }
+
+    #[test]
+    fn an_elsewhere_session_finishing_is_a_transition_without_a_project() {
+        let ws = workspace_with_ide();
+        let mut map = LiveMap::default();
+        let other = |status: &str| parse_rows(&Value::Array(vec![row("e1", other_path(), status)]).to_string());
+        map.apply_at(other("busy"), &ws, 1);
+        let entered = map.apply_at(other("idle"), &ws, 2);
+        assert_eq!(ids(&entered), ["e1"]);
+        assert_eq!(entered[0].project_id, None);
+        assert_eq!(entered[0].cwd, other_path());
+        assert_eq!(entered[0].name.as_deref(), Some("name-e1"));
+        assert_eq!(map.snapshot().elsewhere[0].state, SessionState::Finished);
     }
 
     #[test]

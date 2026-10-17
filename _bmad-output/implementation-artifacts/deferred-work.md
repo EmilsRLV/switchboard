@@ -19,3 +19,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-1-historic-sessions-from-transcripts.md`
   summary: `.session-aliases` in Claude project dirs is not read; the epic context calls it a list of linked dirs (unverified medium).
   evidence: On this machine each such file holds one short id-like line; settle its meaning (linked dirs, or a session alias) before feeding it into the dir → cwd match.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-3-status-glow-and-notifications.md`
+  summary: The "no toast while focused" check is not exercised end to end, because Tauri's mock runtime always reports an unfocused window.
+  evidence: `MockRuntime::is_focused` returns `Ok(false)`; making the focus query injectable (like the notifier) would let a wiring test assert that a focused window suppresses the toast.
