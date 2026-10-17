@@ -2,7 +2,7 @@
 title: 'Story 2.2: Add a project node'
 type: 'feature'
 created: '2026-10-17'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'd670827d2ddd29833358742e267aa37b741f44bb'
@@ -81,6 +81,7 @@ context:
 
 - Orchestrator GUI run (2026-10-17, foreground-guarded): planted three projects → cards rendered `ide / B:\projects\ide / master · 42 changed [branches]`, `projects / not a git repo` (no affordance), `definitely-missing / folder missing`; palette → "Import from Claude" listed the existing Claude projects with session counts, `ide` ticked+disabled "on canvas"; `ctrl+o` opened the native "Add project folder" dialog, Esc cancelled with no change; a probe file in the repo moved the count to 43 within one 5 s poll and back to 42 after deletion; `ctrl+q` quit. Note: `C:\Users\emils` is itself a git repo, so `Documents` reports as a repo — the probe used `B:\projects` instead. Folder drop from Explorer is left to Emils by hand.
 - Orchestrator (2026-10-17, after patches): verification — vitest 15 files / 184 passed, `cargo test` 178 passed, `clippy -D warnings` clean, `tsc` clean, debug build; GUI re-check identical to pass 1 plus `↑1 ↓0` shown once the repo was a commit ahead and the Import pane's "on canvas" now coming from Rust (`on_canvas`). Committed `f2af407`, pushed.
+- Orchestrator (2026-10-17, close): Linux CI failed on one test — `folder_label(r"B:\projects\guild-auth")` asserted on every platform, but a backslash is not a separator on Linux. Gated to Windows in `8b9c9fe` (an earlier attempt, `59f9271`, was mis-committed: the scripted edit never landed and only a notes change went in — recorded here as a process slip). Re-run green on both runners. Nothing deferred.
 
 ## Spec Change Log
 
