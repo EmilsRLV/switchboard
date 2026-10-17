@@ -80,6 +80,7 @@ context:
 ## Implementation Notes
 
 - Orchestrator GUI run (2026-10-17, foreground-guarded): planted three projects → cards rendered `ide / B:\projects\ide / master · 42 changed [branches]`, `projects / not a git repo` (no affordance), `definitely-missing / folder missing`; palette → "Import from Claude" listed the existing Claude projects with session counts, `ide` ticked+disabled "on canvas"; `ctrl+o` opened the native "Add project folder" dialog, Esc cancelled with no change; a probe file in the repo moved the count to 43 within one 5 s poll and back to 42 after deletion; `ctrl+q` quit. Note: `C:\Users\emils` is itself a git repo, so `Documents` reports as a repo — the probe used `B:\projects` instead. Folder drop from Explorer is left to Emils by hand.
+- Orchestrator (2026-10-17, after patches): verification — vitest 15 files / 184 passed, `cargo test` 178 passed, `clippy -D warnings` clean, `tsc` clean, debug build; GUI re-check identical to pass 1 plus `↑1 ↓0` shown once the repo was a commit ahead and the Import pane's "on canvas" now coming from Rust (`on_canvas`). Committed `f2af407`, pushed.
 
 ## Spec Change Log
 
