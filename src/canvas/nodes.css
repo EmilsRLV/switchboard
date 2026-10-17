@@ -1,0 +1,100 @@
+/* Project node cards. Tokens only; no accent (nothing here is an attention state yet). The
+   duplicate-add flash is an outline, as a selected node will be in 2.4. */
+
+.project-node {
+  width: 240px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.5rem 0.65rem 0.45rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+  cursor: default;
+  user-select: none;
+}
+
+.project-node.is-flash {
+  outline: 1px solid var(--fg);
+  outline-offset: 2px;
+  animation: node-flash 1.5s ease-out forwards;
+}
+
+@keyframes node-flash {
+  from {
+    outline-color: var(--fg);
+  }
+  to {
+    outline-color: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .project-node.is-flash {
+    animation: none;
+  }
+}
+
+.project-node-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.project-node-label {
+  font-size: 0.9rem;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-node-live {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 0.3rem;
+}
+
+.project-node-path {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-node-status {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.project-node-muted {
+  color: var(--fg-muted);
+}
+
+.project-node-ab {
+  color: var(--fg-muted);
+}
+
+.project-node-branches {
+  margin-left: auto;
+  font: inherit;
+  font-size: 0.7rem;
+  color: var(--fg-muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 0.35rem;
+  cursor: default;
+}

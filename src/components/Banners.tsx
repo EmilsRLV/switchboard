@@ -1,16 +1,19 @@
 import { selectBanners, useSettingsStore } from "../state/settings";
+import { selectStatusBanners, useStatusStore } from "../state/status";
 import { mergeBanners, selectWorkspaceBanners, useWorkspaceStore } from "../state/workspace";
 
 /**
  * The ambient attention strip across the top. Banners come straight from the settings and
- * workspace snapshots (settings first) and vanish when their cause does (file fixed, binary
- * found, viewport written); nothing to dismiss. Ids are prefixed per module (`settings.*`,
- * `workspace.*`, `<binary>.*`), so the merged list has no key clashes.
+ * workspace snapshots (settings first, then workspace, then the git-status mirror) and
+ * vanish when their cause does (file fixed, binary found, viewport written); nothing to
+ * dismiss. Ids are prefixed per module (`settings.*`, `workspace.*`, `status.*`,
+ * `<binary>.*`), so the merged list has no key clashes.
  */
 export function Banners() {
   const settingsBanners = useSettingsStore(selectBanners);
   const workspaceBanners = useWorkspaceStore(selectWorkspaceBanners);
-  const banners = mergeBanners(settingsBanners, workspaceBanners);
+  const statusBanners = useStatusStore(selectStatusBanners);
+  const banners = mergeBanners(mergeBanners(settingsBanners, workspaceBanners), statusBanners);
   if (banners.length === 0) return null;
   return (
     <div className="banners" role="status" aria-live="polite">

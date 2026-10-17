@@ -1,10 +1,14 @@
 //! Tauri IPC commands. Each command is thin: validate, then delegate.
 
+use std::collections::HashMap;
+
 use serde::Serialize;
-use tauri::{AppHandle, Runtime, State};
+use tauri::{AppHandle, Manager, Runtime, State};
 use tauri_plugin_opener::OpenerExt;
 
-use crate::graph::{self, Viewport, WorkspaceSnapshot};
+use crate::claude::{self, ClaudeProject};
+use crate::git::{self, ProjectStatus};
+use crate::graph::{self, AddProjectsResult, Position, Viewport, WorkspaceSnapshot};
 use crate::settings::{self, AppState, Snapshot};
 
 /// Identity of the running app, as the Cargo package declares it.
@@ -68,6 +72,90 @@ pub fn workspace_get(state: State<'_, AppState>) -> WorkspaceSnapshot {
 #[tauri::command]
 pub async fn workspace_set_viewport<R: Runtime>(app: AppHandle<R>, viewport: Viewport) -> WorkspaceSnapshot {
     graph::set_viewport(&app, viewport)
+}
+
+/// Open the native folder picker (the `project.add` command, `ctrl+o`) and reply with the
+/// chosen folder, or `None` when the operator cancelled. The dialog blocks its own thread
+/// only: it runs inside `spawn_blocking` on the async runtime, never on the main thread.
+/// Under `cfg(test)` (no dialog plugin on the mock app) it replies `None` at once.
+#[tauri::command]
+pub async fn project_pick_folder<R: Runtime>(app: AppHandle<R>) -> Result<Option<String>, String> {
+    if cfg!(test) {
+        return Ok(None);
+    }
+    use tauri_plugin_dialog::DialogExt;
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        let mut dialog = app.dialog().file().set_title("Add project folder");
+        // Parented to the main window: modal to it, centred on it, never behind it.
+        if let Some(window) = app.get_webview_window("main") {
+            dialog = dialog.set_parent(&window);
+        }
+        dialog.blocking_pick_folder()
+    })
+    .await
+    .map_err(|err| err.to_string())?;
+    match picked {
+        None => Ok(None),
+        Some(file) => file
+            .into_path()
+            .map(|path| Some(path.display().to_string()))
+            .map_err(|err| err.to_string()),
+    }
+}
+
+/// Add folders as project nodes at `position` (fanned out when several). Delegates to
+/// `graph::add_projects` on a blocking thread (it canonicalises paths and writes the file);
+/// when something was added, a git status pass over just those ids is kicked off so the new
+/// cards fill in without waiting for the poll or re-polling the rest.
+#[tauri::command]
+pub async fn workspace_add_projects<R: Runtime>(
+    app: AppHandle<R>,
+    paths: Vec<String>,
+    position: Position,
+) -> Result<AddProjectsResult, String> {
+    let handle = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || graph::add_projects(&handle, &paths, position))
+        .await
+        .map_err(|err| err.to_string())??;
+    if !result.added.is_empty() {
+        let ids = result.added.clone();
+        tauri::async_runtime::spawn(async move {
+            git::poll::refresh_ids(&app, &ids).await;
+        });
+    }
+    Ok(result)
+}
+
+/// List Claude Code's known projects (`~/.claude/projects`, read-only) for "Import from
+/// Claude". Existing folders come back canonicalised and with `on_canvas` decided here, by
+/// the same path comparison `add_projects` uses. Nothing to read (no home, as in tests) is
+/// an empty list.
+#[tauri::command]
+pub async fn claude_projects_list<R: Runtime>(app: AppHandle<R>) -> Result<Vec<ClaudeProject>, String> {
+    let state = app.state::<AppState>();
+    let Some(home) = state.claude_home.get().cloned() else {
+        return Ok(Vec::new());
+    };
+    let on_canvas: Vec<String> = state.read_workspace().workspace.projects.iter().map(|p| p.path.clone()).collect();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut projects = claude::list_projects(&home);
+        for project in projects.iter_mut().filter(|p| p.exists) {
+            if let Ok(canonical) = dunce::canonicalize(&project.cwd) {
+                project.cwd = canonical.display().to_string();
+            }
+            project.on_canvas = on_canvas.iter().any(|path| graph::same_path(path, &project.cwd));
+        }
+        projects
+    })
+    .await
+    .map_err(|err| err.to_string())
+}
+
+/// The last git status the poller stored for each project id (`projects://status` carries
+/// the same map on every change).
+#[tauri::command]
+pub fn projects_status_get(state: State<'_, AppState>) -> HashMap<String, ProjectStatus> {
+    state.read_live().statuses.clone()
 }
 
 /// Exit the app with status 0 (the `app.quit` command, `ctrl+q`). Under `cfg(test)` it only

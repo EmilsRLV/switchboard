@@ -1,13 +1,16 @@
-// The first commands. Everything the shell can do is here; `App` registers them once at
+// The built-in commands. Everything the shell can do is here; `App` registers them once at
 // startup. Escape is shared by two commands whose `when`s are mutually exclusive, which is
-// what gives Esc its precedence: palette first, then the pane. Key-only carriers (the two
-// Escape commands, the `ctrl+,` toggle) are `hidden`: the dispatcher sees them, the palette
-// does not.
+// what gives Esc its precedence: palette first, then whichever pane is open (`pane.close`,
+// which both panes' Close buttons run too). Key-only carriers (the two Escape commands, the
+// `ctrl+,` toggle) are `hidden`: the dispatcher sees them, the palette does not.
 
 import { appQuit } from "../ipc";
 import { isCanvasReady, useCanvasStore } from "../state/canvas";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
+import { isPaneOpen } from "../state/ui";
+import { closeOpenPane, openPane, togglePane } from "./panes";
+import { addProjectFromPicker, isPickerIdle } from "./projects";
 import { registerCommands, type Command } from "./registry";
 import { hasSettingsPath, redetectBinaries, revealSettingsFile } from "./settings";
 
@@ -30,22 +33,22 @@ export function builtinCommands(): Command[] {
     {
       id: "settings.open",
       title: "Open settings",
-      run: () => useSettingsStore.getState().openPane(),
+      run: () => openPane("settings"),
     },
     {
       id: "settings.toggle",
       title: "Toggle settings",
       keybinding: "ctrl+,",
       hidden: true,
-      run: () => useSettingsStore.getState().togglePane(),
+      run: () => togglePane("settings"),
     },
     {
-      id: "settings.closePane",
-      title: "Close settings",
+      id: "pane.close",
+      title: "Close pane",
       keybinding: "escape",
       hidden: true,
-      when: () => useSettingsStore.getState().paneOpen && !usePaletteStore.getState().isOpen,
-      run: () => useSettingsStore.getState().closePane(),
+      when: () => isPaneOpen() && !usePaletteStore.getState().isOpen,
+      run: closeOpenPane,
     },
     {
       id: "settings.reveal",
@@ -67,6 +70,19 @@ export function builtinCommands(): Command[] {
       run: async () => {
         await useCanvasStore.getState().fitView();
       },
+    },
+    {
+      id: "project.add",
+      title: "Add project folder…",
+      keybinding: "ctrl+o",
+      when: () => isCanvasReady() && isPickerIdle(),
+      run: addProjectFromPicker,
+    },
+    {
+      id: "project.import",
+      title: "Import from Claude…",
+      when: isCanvasReady,
+      run: () => openPane("import"),
     },
     {
       id: "app.quit",

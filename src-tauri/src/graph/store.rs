@@ -44,6 +44,23 @@ pub fn validate(workspace: &mut Workspace) -> Vec<Banner> {
             "workspace.json had an unusable viewport; reset to the home view",
         ));
     }
+    // Node ids must be unique and non-empty (xyflow keys on them); a hand-edited file that
+    // breaks this loses the offending projects, first of a duplicate kept.
+    let before = workspace.projects.len();
+    let mut seen = std::collections::HashSet::new();
+    workspace
+        .projects
+        .retain(|project| !project.id.is_empty() && seen.insert(project.id.clone()));
+    let dropped = before - workspace.projects.len();
+    if dropped > 0 {
+        banners.push(Banner::new(
+            "workspace.projects",
+            format!(
+                "workspace.json had {dropped} project{} with an empty or duplicate id; dropped",
+                if dropped == 1 { "" } else { "s" }
+            ),
+        ));
+    }
     banners
 }
 
@@ -166,6 +183,36 @@ mod tests {
             assert!(validate(&mut ws).is_empty(), "{text}");
             assert_eq!(ws.viewport, before, "{text}");
         }
+    }
+
+    #[test]
+    fn validate_drops_projects_with_empty_or_duplicate_ids_keeping_the_first() {
+        let mut ws = parse(
+            r#"{ "projects": [
+                { "id": "a", "label": "first a" },
+                { "id": "", "label": "no id" },
+                { "id": "b" },
+                { "id": "a", "label": "second a" }
+            ] }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            validate(&mut ws),
+            [Banner::new(
+                "workspace.projects",
+                "workspace.json had 2 projects with an empty or duplicate id; dropped"
+            )]
+        );
+        let kept: Vec<(&str, &str)> = ws.projects.iter().map(|p| (p.id.as_str(), p.label.as_str())).collect();
+        assert_eq!(kept, [("a", "first a"), ("b", "")]);
+
+        let mut one = parse(r#"{ "projects": [{ "id": "" }] }"#).unwrap();
+        assert_eq!(validate(&mut one)[0].text, "workspace.json had 1 project with an empty or duplicate id; dropped");
+        assert!(one.projects.is_empty());
+
+        let mut fine = parse(r#"{ "projects": [{ "id": "a" }, { "id": "b" }] }"#).unwrap();
+        assert!(validate(&mut fine).is_empty());
+        assert_eq!(fine.projects.len(), 2);
     }
 
     #[test]

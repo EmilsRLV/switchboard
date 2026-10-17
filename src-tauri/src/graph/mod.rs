@@ -4,7 +4,7 @@
 //! [`WorkspaceSnapshot`] via `workspace_get` and the `workspace://changed` event.
 //!
 //! The complete v1 envelope (architecture §5.1) is defined now so later epics add no
-//! migration; this story reads and writes only `viewport`.
+//! migration; Stories 2.1 and 2.2 read and write `viewport` and `projects`.
 
 pub mod store;
 
@@ -30,6 +30,10 @@ pub const MAX_ZOOM: f64 = 4.0;
 
 /// Appended to the banner that explains why the file is left alone.
 const NOT_SAVED: &str = "; changes are kept in memory and not saved";
+
+/// Several projects added at once (a multi-folder drop, an import) are placed this many
+/// canvas pixels apart on both axes, so none hides another.
+pub const FAN_OUT_STEP: f64 = 24.0;
 
 // ---------------------------------------------------------------------------------------
 // Schema (architecture §5.1); keys are camelCase on disk, as the TS types there spell them
@@ -207,6 +211,22 @@ pub struct WorkspaceSnapshot {
     pub path: Option<String>,
     pub workspace: Workspace,
     pub banners: Vec<Banner>,
+    /// Bumped on every mutation this session, so the UI can drop a reply that arrives after a
+    /// newer snapshot (two adds in flight). Not persisted; starts at 0 on load.
+    pub revision: u64,
+}
+
+/// Reply of [`add_projects`]: the snapshot after the call plus which ids it concerns.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AddProjectsResult {
+    pub snapshot: WorkspaceSnapshot,
+    /// Ids of the projects created by this call, in input order.
+    pub added: Vec<String>,
+    /// Ids of projects that were already on the canvas for a given path (the UI highlights
+    /// them instead of adding a second node).
+    pub existing: Vec<String>,
+    /// Input paths that are not directories (a file dropped along with folders), ignored.
+    pub skipped: Vec<String>,
 }
 
 /// Long-lived workspace state. `workspace` is always usable: a broken file on disk leaves
@@ -224,6 +244,8 @@ pub struct WorkspaceState {
     /// Changes still apply in memory. The reason is for logs; the banner explains it to the
     /// operator.
     pub read_only: Option<&'static str>,
+    /// Mutation counter for this session (see [`WorkspaceSnapshot::revision`]).
+    pub revision: u64,
 }
 
 impl WorkspaceState {
@@ -237,6 +259,7 @@ impl WorkspaceState {
                 .chain(self.validation_banners.iter())
                 .cloned()
                 .collect(),
+            revision: self.revision,
         }
     }
 
@@ -323,9 +346,145 @@ pub fn set_viewport<R: Runtime>(app: &AppHandle<R>, viewport: Viewport) -> Works
     let (target, workspace) = {
         let mut st = state.write_workspace();
         st.workspace.viewport = viewport;
+        st.revision += 1;
         (st.write_target(), st.workspace.clone())
     };
-    let outcome = target.map(|path| store::write(&path, &workspace));
+    persist_and_emit(app, target, &workspace)
+}
+
+/// Add folders to the canvas as project nodes. Each path is canonicalised (`dunce`, so no
+/// `\\?\` prefix on Windows); a path already on the canvas (same canonical path,
+/// case-insensitive on Windows) is reported in `existing` rather than added again; a path
+/// that is not a directory is reported in `skipped` (a lone dropped file is thus an `Ok`
+/// that adds nothing). New nodes get a UUID v4, the given folder's own name as label (a
+/// symlink keeps its name, its target becomes `path`) and `position` fanned out by
+/// [`FAN_OUT_STEP`] per node, then nudged by the same step while an existing node sits
+/// within one step of it on both axes. When something was added the file is written
+/// (outside the lock) and `workspace://changed` emitted; otherwise the snapshot comes back
+/// unchanged with nothing written or emitted. Only a non-finite position is an `Err`.
+pub fn add_projects<R: Runtime>(
+    app: &AppHandle<R>,
+    paths: &[String],
+    position: Position,
+) -> Result<AddProjectsResult, String> {
+    if !(position.x.is_finite() && position.y.is_finite()) {
+        return Err("position is not finite".to_string());
+    }
+    let mut resolved: Vec<(String, String)> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for raw in paths {
+        match canonical_dir(raw) {
+            Some(path) => resolved.push((folder_label(raw.trim()), path)),
+            None => skipped.push(raw.clone()),
+        }
+    }
+
+    let state = app.state::<AppState>();
+    let (target, workspace, added, existing) = {
+        let mut st = state.write_workspace();
+        let mut added: Vec<String> = Vec::new();
+        let mut existing: Vec<String> = Vec::new();
+        for (label, path) in resolved {
+            if let Some(present) = st.workspace.projects.iter().find(|p| same_path(&p.path, &path)) {
+                if !added.contains(&present.id) && !existing.contains(&present.id) {
+                    existing.push(present.id.clone());
+                }
+                continue;
+            }
+            let index = added.len() as f64;
+            let wanted = Position {
+                x: position.x + index * FAN_OUT_STEP,
+                y: position.y + index * FAN_OUT_STEP,
+            };
+            let project = Project {
+                id: uuid::Uuid::new_v4().to_string(),
+                label,
+                path,
+                position: free_position(wanted, &st.workspace.projects),
+                expanded: false,
+                color: None,
+                launch_defaults: None,
+            };
+            added.push(project.id.clone());
+            st.workspace.projects.push(project);
+        }
+        if !added.is_empty() {
+            st.revision += 1;
+        }
+        if added.is_empty() {
+            return Ok(AddProjectsResult {
+                snapshot: st.snapshot(),
+                added,
+                existing,
+                skipped,
+            });
+        }
+        (st.write_target(), st.workspace.clone(), added, existing)
+    };
+    let snapshot = persist_and_emit(app, target, &workspace);
+    Ok(AddProjectsResult {
+        snapshot,
+        added,
+        existing,
+        skipped,
+    })
+}
+
+/// The canonical form of `raw` when it is an existing directory, as stored in `Project.path`.
+fn canonical_dir(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = dunce::canonicalize(trimmed).ok()?;
+    path.is_dir().then(|| path.display().to_string())
+}
+
+/// Two stored paths name the same folder: byte-equal, or equal ignoring ASCII case on
+/// Windows (whose file systems are case-insensitive).
+pub(crate) fn same_path(a: &str, b: &str) -> bool {
+    if cfg!(windows) {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
+}
+
+/// The node label: the folder's own name; for a root (`C:\`, `/`) the whole path.
+fn folder_label(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| path.to_string())
+}
+
+/// At most this many [`FAN_OUT_STEP`] nudges away from the wanted position.
+const MAX_NUDGES: u32 = 50;
+
+/// `wanted`, moved by [`FAN_OUT_STEP`] on both axes while an existing project lies within one
+/// step of it on both axes (so a second `ctrl+o` does not land exactly on the first card),
+/// giving up after [`MAX_NUDGES`].
+fn free_position(wanted: Position, projects: &[Project]) -> Position {
+    let mut position = wanted;
+    for _ in 0..MAX_NUDGES {
+        let crowded = projects
+            .iter()
+            .any(|p| (p.position.x - position.x).abs() < FAN_OUT_STEP && (p.position.y - position.y).abs() < FAN_OUT_STEP);
+        if !crowded {
+            break;
+        }
+        position.x += FAN_OUT_STEP;
+        position.y += FAN_OUT_STEP;
+    }
+    position
+}
+
+/// The second half of every mutation: write `workspace` to `target` (if any) with the lock
+/// released, record the outcome as the file banner, emit and return the snapshot.
+fn persist_and_emit<R: Runtime>(app: &AppHandle<R>, target: Option<PathBuf>, workspace: &Workspace) -> WorkspaceSnapshot {
+    let state = app.state::<AppState>();
+    let outcome = target.map(|path| store::write(&path, workspace));
     let snapshot = {
         let mut st = state.write_workspace();
         match outcome {
@@ -437,11 +596,13 @@ mod tests {
             file_banner: Some(Banner::new("workspace.parse", "workspace.json:3:15 expected value")),
             validation_banners: vec![Banner::new("workspace.version", "newer")],
             read_only: None,
+            revision: 3,
         };
         assert_eq!(
             serde_json::to_value(st.snapshot()).unwrap(),
             serde_json::json!({
                 "path": "C:/cfg/switchboard/workspace.json",
+                "revision": 3,
                 "workspace": {
                     "version": 1,
                     "viewport": { "x": -120.0, "y": 40.0, "zoom": 1.5 },
@@ -906,5 +1067,316 @@ mod tests {
         let snapshot = set_viewport(app.handle(), moved());
         assert_eq!(snapshot.workspace.viewport, moved());
         assert_eq!(snapshot.banners[0].id, "workspace.write");
+    }
+
+    // -- add_projects -----------------------------------------------------------------
+
+    fn is_uuid_v4(id: &str) -> bool {
+        let parts: Vec<&str> = id.split('-').collect();
+        parts.len() == 5
+            && parts.iter().map(|p| p.len()).collect::<Vec<_>>() == [8, 4, 4, 4, 12]
+            && id.chars().all(|c| c == '-' || c.is_ascii_hexdigit())
+            && parts[2].starts_with('4')
+    }
+
+    fn display(path: &Path) -> String {
+        path.display().to_string()
+    }
+
+    fn canonical(path: &Path) -> String {
+        dunce::canonicalize(path).unwrap().display().to_string()
+    }
+
+    #[test]
+    fn add_projects_creates_labelled_fanned_out_nodes_persists_and_emits_once() {
+        let app = mock_app();
+        let cfg = tempfile::tempdir().unwrap();
+        let file = cfg.path().join("workspace.json");
+        initialise_at(app.handle(), Some(file.clone()));
+        let a = tempfile::tempdir().unwrap();
+        let b = a.path().join("guild-auth");
+        std::fs::create_dir(&b).unwrap();
+        let rx = listen(&app);
+
+        let result = add_projects(
+            app.handle(),
+            &[display(a.path()), display(&b)],
+            Position { x: 100.0, y: 50.0 },
+        )
+        .unwrap();
+
+        assert_eq!(result.added.len(), 2);
+        assert!(result.existing.is_empty());
+        assert!(result.skipped.is_empty());
+        assert_eq!(result.snapshot.revision, 1, "one mutation since load");
+        let projects = &result.snapshot.workspace.projects;
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), result.added);
+        assert!(projects.iter().all(|p| is_uuid_v4(&p.id)), "{projects:?}");
+        assert_ne!(projects[0].id, projects[1].id);
+        assert_eq!(projects[0].path, canonical(a.path()));
+        assert_eq!(projects[1].path, canonical(&b));
+        assert_eq!(projects[1].label, "guild-auth");
+        assert_eq!(projects[0].label, a.path().file_name().unwrap().to_string_lossy());
+        assert_eq!(projects[0].position, Position { x: 100.0, y: 50.0 });
+        assert_eq!(projects[1].position, Position { x: 124.0, y: 74.0 });
+        assert!(!projects[0].expanded);
+        assert_eq!(projects[0].color, None);
+        assert_eq!(projects[0].launch_defaults, None);
+        #[cfg(windows)]
+        assert!(!projects[0].path.starts_with(r"\\?\"), "no UNC prefix: {}", projects[0].path);
+
+        let on_disk = store::parse(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(on_disk.projects, *projects);
+        assert_eq!(rx.try_recv().expect("one event"), result.snapshot);
+        assert!(rx.try_recv().is_err(), "exactly one");
+        assert_eq!(app.state::<AppState>().read_workspace().snapshot(), result.snapshot);
+    }
+
+    #[test]
+    fn add_projects_reports_a_duplicate_as_existing_without_writing_or_emitting() {
+        let app = mock_app();
+        let cfg = tempfile::tempdir().unwrap();
+        let file = cfg.path().join("workspace.json");
+        initialise_at(app.handle(), Some(file.clone()));
+        let a = tempfile::tempdir().unwrap();
+        let first = add_projects(app.handle(), &[display(a.path())], Position::default()).unwrap();
+        let id = first.added[0].clone();
+        let on_disk_before = std::fs::read_to_string(&file).unwrap();
+        let rx = listen(&app);
+
+        // The same folder spelled differently: trailing separator, and (Windows) other case.
+        let mut spellings = vec![format!("{}{}", display(a.path()), std::path::MAIN_SEPARATOR)];
+        if cfg!(windows) {
+            spellings.push(display(a.path()).to_ascii_uppercase());
+        }
+        for raw in spellings {
+            let again = add_projects(app.handle(), std::slice::from_ref(&raw), Position { x: 9.0, y: 9.0 }).unwrap();
+            assert!(again.added.is_empty(), "{raw}");
+            assert_eq!(again.existing, std::slice::from_ref(&id), "{raw}");
+            assert_eq!(again.snapshot, first.snapshot, "{raw}");
+        }
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), on_disk_before, "no write");
+        assert!(rx.try_recv().is_err(), "no event");
+
+        // Within one batch the same folder twice is one node.
+        let other = tempfile::tempdir().unwrap();
+        let batch = add_projects(
+            app.handle(),
+            &[display(other.path()), display(other.path()), display(a.path())],
+            Position::default(),
+        )
+        .unwrap();
+        assert_eq!(batch.added.len(), 1);
+        assert_eq!(batch.existing, [id]);
+        assert_eq!(batch.snapshot.workspace.projects.len(), 2);
+    }
+
+    #[test]
+    fn add_projects_skips_non_directories_adding_nothing_for_them() {
+        let app = mock_app();
+        let cfg = tempfile::tempdir().unwrap();
+        let ws_file = cfg.path().join("workspace.json");
+        initialise_at(app.handle(), Some(ws_file.clone()));
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("notes.txt");
+        std::fs::write(&file, "x").unwrap();
+        let on_disk_before = std::fs::read_to_string(&ws_file).unwrap();
+        let rx = listen(&app);
+
+        // A lone file, a missing path, a blank: Ok, nothing added, the input reported as skipped.
+        for raw in [display(&file), display(&dir.path().join("missing")), "   ".to_string()] {
+            let result = add_projects(app.handle(), std::slice::from_ref(&raw), Position::default()).unwrap();
+            assert!(result.added.is_empty(), "{raw}");
+            assert!(result.existing.is_empty(), "{raw}");
+            assert_eq!(result.skipped, std::slice::from_ref(&raw));
+            assert_eq!(result.snapshot.revision, 0, "{raw}: no mutation");
+        }
+        assert!(rx.try_recv().is_err(), "no event");
+        assert_eq!(std::fs::read_to_string(&ws_file).unwrap(), on_disk_before, "no write");
+        assert!(app.state::<AppState>().read_workspace().workspace.projects.is_empty());
+
+        // An empty list is a no-op, not an error.
+        let none = add_projects(app.handle(), &[], Position::default()).unwrap();
+        assert!(none.added.is_empty() && none.existing.is_empty() && none.skipped.is_empty());
+
+        // A file dropped together with a folder: the folder is added, the file skipped.
+        let mixed = add_projects(app.handle(), &[display(&file), display(dir.path())], Position::default()).unwrap();
+        assert_eq!(mixed.added.len(), 1);
+        assert_eq!(mixed.skipped, [display(&file)]);
+        assert_eq!(mixed.snapshot.workspace.projects[0].path, canonical(dir.path()));
+    }
+
+    #[test]
+    fn add_projects_rejects_a_non_finite_position() {
+        let app = mock_app();
+        let dir = tempfile::tempdir().unwrap();
+        for bad in [
+            Position { x: f64::NAN, y: 0.0 },
+            Position { x: 0.0, y: f64::INFINITY },
+        ] {
+            assert_eq!(
+                add_projects(app.handle(), &[display(dir.path())], bad),
+                Err("position is not finite".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn add_projects_on_a_read_only_file_changes_memory_only() {
+        let app = mock_app();
+        let cfg = tempfile::tempdir().unwrap();
+        let file = cfg.path().join("workspace.json");
+        let original = r#"{ "version": 2, "future": { "kept": true } }"#;
+        std::fs::write(&file, original).unwrap();
+        initialise_at(app.handle(), Some(file.clone()));
+        let dir = tempfile::tempdir().unwrap();
+        let rx = listen(&app);
+
+        let result = add_projects(app.handle(), &[display(dir.path())], Position::default()).unwrap();
+
+        assert_eq!(result.added.len(), 1);
+        assert_eq!(result.snapshot.workspace.projects.len(), 1);
+        let ids: Vec<&str> = result.snapshot.banners.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, ["workspace.version"]);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), original, "file untouched");
+        assert_eq!(rx.try_recv().expect("the in-memory change is announced"), result.snapshot);
+    }
+
+    #[test]
+    fn add_projects_without_a_config_dir_keeps_the_node_in_memory_with_the_write_banner() {
+        let app = mock_app();
+        initialise_at(app.handle(), None);
+        let dir = tempfile::tempdir().unwrap();
+        let result = add_projects(app.handle(), &[display(dir.path())], Position::default()).unwrap();
+        assert_eq!(result.snapshot.workspace.projects.len(), 1);
+        assert_eq!(result.snapshot.banners[0].id, "workspace.write");
+    }
+
+    #[test]
+    fn folder_label_is_the_last_component_or_the_whole_root() {
+        assert_eq!(folder_label(r"B:\projects\guild-auth"), "guild-auth");
+        assert_eq!(folder_label("/home/emils/src"), "src");
+        if cfg!(windows) {
+            assert_eq!(folder_label(r"C:\"), r"C:\");
+        } else {
+            assert_eq!(folder_label("/"), "/");
+        }
+    }
+
+    #[test]
+    fn add_projects_nudges_a_new_node_off_an_existing_one() {
+        let app = mock_app();
+        let cfg = tempfile::tempdir().unwrap();
+        initialise_at(app.handle(), Some(cfg.path().join("workspace.json")));
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let c = tempfile::tempdir().unwrap();
+        let centre = Position { x: 100.0, y: 50.0 };
+
+        let first = add_projects(app.handle(), &[display(a.path())], centre).unwrap();
+        assert_eq!(first.snapshot.workspace.projects[0].position, centre);
+        // Second `ctrl+o` with the view unmoved: one step away, not on top of the first.
+        let second = add_projects(app.handle(), &[display(b.path())], centre).unwrap();
+        assert_eq!(second.snapshot.workspace.projects[1].position, Position { x: 124.0, y: 74.0 });
+        // Almost on top of the second (within a step on both axes): nudged past it too.
+        let third = add_projects(app.handle(), &[display(c.path())], Position { x: 110.0, y: 60.0 }).unwrap();
+        assert_eq!(third.snapshot.workspace.projects[2].position, Position { x: 158.0, y: 108.0 });
+        assert_eq!(third.snapshot.revision, 3);
+
+        // Far enough on one axis is not a collision.
+        let empty: Vec<Project> = vec![];
+        assert_eq!(free_position(centre, &empty), centre);
+        let placed = vec![Project {
+            position: centre,
+            ..Project::default()
+        }];
+        assert_eq!(free_position(Position { x: 124.0, y: 50.0 }, &placed), Position { x: 124.0, y: 50.0 });
+        assert_eq!(free_position(Position { x: 123.0, y: 73.0 }, &placed), Position { x: 147.0, y: 97.0 });
+    }
+
+    #[test]
+    fn free_position_gives_up_after_fifty_nudges() {
+        let crowd: Vec<Project> = (0..=MAX_NUDGES)
+            .map(|i| Project {
+                position: Position {
+                    x: i as f64 * FAN_OUT_STEP,
+                    y: i as f64 * FAN_OUT_STEP,
+                },
+                ..Project::default()
+            })
+            .collect();
+        let step = MAX_NUDGES as f64 * FAN_OUT_STEP;
+        assert_eq!(free_position(Position::default(), &crowd), Position { x: step, y: step });
+    }
+
+    #[test]
+    fn add_projects_labels_a_symlink_by_its_own_name_and_stores_its_target() {
+        let app = mock_app();
+        let cfg = tempfile::tempdir().unwrap();
+        initialise_at(app.handle(), Some(cfg.path().join("workspace.json")));
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real-target");
+        std::fs::create_dir(&target).unwrap();
+        let link = dir.path().join("my-link");
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&target, &link);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(&target, &link);
+        if made.is_err() {
+            eprintln!("cannot create a directory symlink here (privilege); skipping");
+            return;
+        }
+
+        let result = add_projects(app.handle(), &[display(&link)], Position::default()).unwrap();
+        let project = &result.snapshot.workspace.projects[0];
+        assert_eq!(project.label, "my-link");
+        assert_eq!(project.path, canonical(&target));
+        // The target itself is then a duplicate of the link's node.
+        let again = add_projects(app.handle(), &[display(&target)], Position::default()).unwrap();
+        assert_eq!(again.existing, std::slice::from_ref(&project.id));
+    }
+
+    #[test]
+    fn revision_increments_on_every_mutation_and_not_otherwise() {
+        let app = mock_app();
+        let cfg = tempfile::tempdir().unwrap();
+        initialise_at(app.handle(), Some(cfg.path().join("workspace.json")));
+        assert_eq!(app.state::<AppState>().read_workspace().snapshot().revision, 0);
+        assert_eq!(set_viewport(app.handle(), moved()).revision, 1);
+        assert_eq!(set_viewport(app.handle(), with_zoom(f64::NAN)).revision, 1, "ignored viewport: no mutation");
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(add_projects(app.handle(), &[display(dir.path())], Position::default()).unwrap().snapshot.revision, 2);
+        assert_eq!(
+            add_projects(app.handle(), &[display(dir.path())], Position::default()).unwrap().snapshot.revision,
+            2,
+            "duplicate: no mutation"
+        );
+        assert_eq!(set_viewport(app.handle(), Viewport::default()).revision, 3);
+        // A reload starts over.
+        initialise_at(app.handle(), Some(cfg.path().join("workspace.json")));
+        assert_eq!(app.state::<AppState>().read_workspace().revision, 0);
+    }
+
+    #[test]
+    fn same_path_is_case_insensitive_only_on_windows() {
+        assert!(same_path("/a/b", "/a/b"));
+        assert!(!same_path("/a/b", "/a/c"));
+        assert_eq!(same_path(r"C:\Repo", r"c:\repo"), cfg!(windows));
+    }
+
+    #[test]
+    fn add_projects_result_serialises_with_the_keys_the_ui_reads() {
+        let result = AddProjectsResult {
+            snapshot: WorkspaceState::default().snapshot(),
+            added: vec!["a".into()],
+            existing: vec![],
+            skipped: vec!["x.txt".into()],
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        let keys: Vec<&String> = json.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["added", "existing", "skipped", "snapshot"]);
+        assert_eq!(json["added"], serde_json::json!(["a"]));
+        assert_eq!(json["skipped"], serde_json::json!(["x.txt"]));
     }
 }

@@ -22,6 +22,7 @@ const snapshot: WorkspaceSnapshot = {
     defaults: { model: null, effort: null, permissionMode: null },
   },
   banners: [{ id: "workspace.version", text: "workspace.json is version 2; this build understands 1" }],
+  revision: 5,
 };
 
 describe("workspace store", () => {
@@ -47,6 +48,24 @@ describe("workspace store", () => {
     expect(useWorkspaceStore.getState().snapshot?.banners).toEqual([]);
     useWorkspaceStore.getState().applySnapshot(null);
     expect(useWorkspaceStore.getState().snapshot).toBeNull();
+  });
+
+  it("applySnapshot ignores a snapshot older than the stored one, applies equal or newer, null clears", () => {
+    useWorkspaceStore.getState().applySnapshot(snapshot);
+    const older: WorkspaceSnapshot = { ...snapshot, revision: 4, banners: [] };
+    useWorkspaceStore.getState().applySnapshot(older);
+    expect(useWorkspaceStore.getState().snapshot).toBe(snapshot);
+    const equal: WorkspaceSnapshot = { ...snapshot, revision: 5, banners: [] };
+    useWorkspaceStore.getState().applySnapshot(equal);
+    expect(useWorkspaceStore.getState().snapshot).toBe(equal);
+    const newer: WorkspaceSnapshot = { ...snapshot, revision: 6 };
+    useWorkspaceStore.getState().applySnapshot(newer);
+    expect(useWorkspaceStore.getState().snapshot).toBe(newer);
+    useWorkspaceStore.getState().applySnapshot(null);
+    expect(useWorkspaceStore.getState().snapshot).toBeNull();
+    useWorkspaceStore.getState().applySnapshot(older);
+    // After a clear anything applies.
+    expect(useWorkspaceStore.getState().snapshot).toBe(older);
   });
 
   it("setLoadError records why loading failed without touching the snapshot", () => {

@@ -35,7 +35,7 @@ export function SettingsPane() {
           ref={closeRef}
           type="button"
           className="btn"
-          onClick={() => runCommand("settings.closePane")}
+          onClick={() => runCommand("pane.close")}
           title="Close (Esc)"
         >
           Close

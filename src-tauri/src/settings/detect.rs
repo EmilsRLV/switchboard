@@ -4,10 +4,11 @@
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 use super::{Banner, Binary, BinaryStatus};
+pub use crate::process::RunError;
 
 /// How long `<bin> --version` may take before it is killed.
 pub const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -165,18 +166,6 @@ pub(crate) fn expand_home(value: &str) -> String {
 // Running `--version`
 // ---------------------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum RunError {
-    #[error("could not start it: {0}")]
-    Spawn(String),
-    #[error("could not wait for it: {0}")]
-    Wait(String),
-    #[error("timed out after {0:?}")]
-    Timeout(Duration),
-    #[error("exit code {}{}", code.map(|c| c.to_string()).unwrap_or_else(|| "?".into()), if stderr.is_empty() { String::new() } else { format!(": {stderr}") })]
-    Failed { code: Option<i32>, stderr: String },
-}
-
 /// Runs `<bin> --version` and returns its stdout. Fakeable.
 pub trait Runner: Send + Sync {
     fn version_output(&self, bin: &Path) -> Result<String, RunError>;
@@ -199,59 +188,11 @@ impl Default for ProcessRunner {
 impl Runner for ProcessRunner {
     fn version_output(&self, bin: &Path) -> Result<String, RunError> {
         let mut cmd = Command::new(bin);
-        cmd.arg("--version")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-        let mut child = cmd.spawn().map_err(|e| RunError::Spawn(e.to_string()))?;
-
-        // Drain both pipes on their own threads so a chatty child can never block on a
-        // full pipe while we wait for it.
-        let stdout = child.stdout.take().map(read_to_end_lossy);
-        let stderr = child.stderr.take().map(read_to_end_lossy);
-
-        let deadline = Instant::now() + self.timeout;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) if Instant::now() >= deadline => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(RunError::Timeout(self.timeout));
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                Err(e) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(RunError::Wait(e.to_string()));
-                }
-            }
-        };
-        let out = stdout.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
-        let err = stderr.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
-        if status.success() {
-            Ok(out)
-        } else {
-            Err(RunError::Failed {
-                code: status.code(),
-                stderr: err.lines().next().unwrap_or("").trim().to_string(),
-            })
-        }
+        cmd.arg("--version");
+        crate::process::run(cmd, self.timeout)?
+            .success()
+            .map(|done| done.stdout)
     }
-}
-
-fn read_to_end_lossy<R: std::io::Read + Send + 'static>(mut reader: R) -> std::thread::JoinHandle<String> {
-    std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = reader.read_to_end(&mut buf);
-        String::from_utf8_lossy(&buf).into_owned()
-    })
 }
 
 // ---------------------------------------------------------------------------------------
@@ -423,20 +364,12 @@ pub(crate) mod fixtures {
         path
     }
 
-    /// Write `content` and make it runnable.
-    pub(crate) fn write_executable(path: &Path, content: &[u8]) {
-        std::fs::write(path, content).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-    }
+    pub(crate) use crate::process::fixtures::{script, write_executable};
 }
 
 #[cfg(test)]
 mod tests {
-    use super::fixtures::{fake_binary, write_executable};
+    use super::fixtures::{fake_binary, script};
     use super::*;
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -754,18 +687,6 @@ mod tests {
 
     // -- the real runner --------------------------------------------------------------
 
-    /// A script fixture runnable through `Command::new` on this platform.
-    fn script(dir: &Path, name: &str, windows_body: &str, unix_body: &str) -> PathBuf {
-        let (file, body) = if cfg!(windows) {
-            (format!("{name}.cmd"), windows_body.replace('\n', "\r\n"))
-        } else {
-            (name.to_string(), format!("#!/bin/sh\n{unix_body}"))
-        };
-        let path = dir.join(file);
-        write_executable(&path, body.as_bytes());
-        path
-    }
-
     #[test]
     fn process_runner_reads_git_version_from_the_real_binary() {
         let Some(git) = Search::from_env(vec![]).locate("git") else {
@@ -787,17 +708,6 @@ mod tests {
     }
 
     #[test]
-    fn process_runner_kills_a_hanging_binary_after_the_timeout() {
-        let dir = tempfile::tempdir().unwrap();
-        let hang = script(dir.path(), "hang", "@ping -n 60 127.0.0.1 >nul\n", "exec sleep 60\n");
-        let timeout = Duration::from_millis(200);
-        let started = Instant::now();
-        let err = ProcessRunner { timeout }.version_output(&hang).unwrap_err();
-        assert_eq!(err, RunError::Timeout(timeout));
-        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
-    }
-
-    #[test]
     fn process_runner_reports_a_non_zero_exit_with_the_first_stderr_line() {
         let dir = tempfile::tempdir().unwrap();
         let fail = script(
@@ -813,28 +723,6 @@ mod tests {
                 code: Some(3),
                 stderr: "boom".into()
             }
-        );
-    }
-
-    #[test]
-    fn run_error_messages_read_well_in_a_banner() {
-        assert_eq!(RunError::Timeout(Duration::from_secs(5)).to_string(), "timed out after 5s");
-        assert_eq!(RunError::Wait("gone".into()).to_string(), "could not wait for it: gone");
-        assert_eq!(
-            RunError::Failed {
-                code: Some(2),
-                stderr: "bad".into()
-            }
-            .to_string(),
-            "exit code 2: bad"
-        );
-        assert_eq!(
-            RunError::Failed {
-                code: None,
-                stderr: String::new()
-            }
-            .to_string(),
-            "exit code ?"
         );
     }
 }

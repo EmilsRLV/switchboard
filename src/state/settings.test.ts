@@ -30,14 +30,15 @@ const snapshot: SettingsSnapshot = {
 
 describe("settings store", () => {
   beforeEach(() => {
-    useSettingsStore.setState({ snapshot: null, loadError: null, paneOpen: false });
+    useSettingsStore.setState({ snapshot: null, loadError: null, actionBusy: false, actionError: null });
   });
 
-  it("starts with no snapshot, no load error and the pane closed", () => {
+  it("starts with no snapshot, no load error and no action state", () => {
     const s = useSettingsStore.getState();
     expect(s.snapshot).toBeNull();
     expect(s.loadError).toBeNull();
-    expect(s.paneOpen).toBe(false);
+    expect(s.actionBusy).toBe(false);
+    expect(s.actionError).toBeNull();
   });
 
   it("setLoadError records why loading failed and can clear it", () => {
@@ -77,41 +78,22 @@ describe("settings store", () => {
     expect(useSettingsStore.getState().snapshot).toBeNull();
   });
 
-  it("togglePane flips the pane, open/close set it", () => {
-    const s = useSettingsStore.getState();
-    s.togglePane();
-    expect(useSettingsStore.getState().paneOpen).toBe(true);
-    s.togglePane();
-    expect(useSettingsStore.getState().paneOpen).toBe(false);
-    s.openPane();
-    s.openPane();
-    expect(useSettingsStore.getState().paneOpen).toBe(true);
-    s.closePane();
-    s.closePane();
-    expect(useSettingsStore.getState().paneOpen).toBe(false);
-  });
-
-  it("closePane clears a stale action error; openPane and toggle leave it alone", () => {
-    useSettingsStore.getState().openPane();
+  it("action busy and error are independent of the snapshot", () => {
+    useSettingsStore.getState().setActionBusy(true);
     useSettingsStore.getState().setActionError("reveal failed");
-    useSettingsStore.getState().togglePane();
-    useSettingsStore.getState().togglePane();
-    expect(useSettingsStore.getState().actionError).toBe("reveal failed");
-    useSettingsStore.getState().closePane();
-    expect(useSettingsStore.getState().actionError).toBeNull();
-    expect(useSettingsStore.getState().paneOpen).toBe(false);
-  });
-
-  it("pane state survives a new snapshot", () => {
-    useSettingsStore.getState().openPane();
     useSettingsStore.getState().applySnapshot(snapshot);
-    expect(useSettingsStore.getState().paneOpen).toBe(true);
+    expect(useSettingsStore.getState().actionBusy).toBe(true);
+    expect(useSettingsStore.getState().actionError).toBe("reveal failed");
+    useSettingsStore.getState().setActionBusy(false);
+    useSettingsStore.getState().setActionError(null);
+    expect(useSettingsStore.getState().actionBusy).toBe(false);
+    expect(useSettingsStore.getState().actionError).toBeNull();
   });
 });
 
 describe("selectBanners", () => {
   beforeEach(() => {
-    useSettingsStore.setState({ snapshot: null, loadError: null, paneOpen: false });
+    useSettingsStore.setState({ snapshot: null, loadError: null });
   });
 
   it("is an empty, reference-stable list before any snapshot", () => {

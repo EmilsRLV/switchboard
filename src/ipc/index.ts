@@ -3,6 +3,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 /** Mirrors `ipc::AppInfo` in `src-tauri/src/ipc/mod.rs`. */
 export type AppInfo = {
@@ -133,10 +134,68 @@ export type WorkspaceSnapshot = {
   path: string | null;
   workspace: Workspace;
   banners: Banner[];
+  /** Mutation counter for this session; a reply older than the stored snapshot is dropped. */
+  revision: number;
 };
 
 /** Event name Rust emits with a fresh `WorkspaceSnapshot` on every change. */
 export const WORKSPACE_CHANGED_EVENT = "workspace://changed";
+
+/** Mirrors `graph::AddProjectsResult`: what `workspace_add_projects` replies. */
+export type AddProjectsResult = {
+  snapshot: WorkspaceSnapshot;
+  /** Ids of the projects this call created, in input order. */
+  added: string[];
+  /** Ids already on the canvas for a given path (highlighted instead of re-added). */
+  existing: string[];
+  /** Input paths that were not directories, ignored. */
+  skipped: string[];
+};
+
+// --- git status (`src-tauri/src/git/`) -----------------------------------------------------
+
+/** Mirrors `git::RepoStatus`: the facts a project card shows about a repository. */
+export type RepoStatus = {
+  /** Branch name, or the short commit when `detached`. */
+  branch: string;
+  detached: boolean;
+  /** Changed entries: staged, unstaged, unmerged and untracked. */
+  dirty: number;
+  ahead: number;
+  behind: number;
+};
+
+/** Mirrors `git::ProjectStatus` (internally tagged on `kind`). */
+export type ProjectStatus =
+  | ({ kind: "repo" } & RepoStatus)
+  | { kind: "not_repo" }
+  | { kind: "missing" }
+  /** `git` could not be started. */
+  | { kind: "git_unavailable" }
+  /** `git` ran but failed; `message` is its first stderr line. */
+  | { kind: "git_error"; message: string };
+
+/** Project id → status, as `projects_status_get` returns and `projects://status` carries. */
+export type ProjectStatusMap = Record<string, ProjectStatus>;
+
+/** Event name Rust emits with the whole status map whenever any project's status changes. */
+export const PROJECTS_STATUS_EVENT = "projects://status";
+
+// --- Claude project discovery (`src-tauri/src/claude/discover.rs`) --------------------------
+
+/** Mirrors `claude::ClaudeProject`: one directory under `~/.claude/projects`. */
+export type ClaudeProject = {
+  /** The directory name (`B--projects-ide`). */
+  dir: string;
+  /** The working directory it stands for (canonical when it exists). */
+  cwd: string;
+  /** Whether `cwd` is a directory on this machine right now. */
+  exists: boolean;
+  /** Number of transcripts in the directory. */
+  sessions: number;
+  /** Already a project node on the canvas (decided by Rust with its own path comparison). */
+  on_canvas: boolean;
+};
 
 /** Return type of every command, keyed by command name. */
 type Commands = {
@@ -146,6 +205,10 @@ type Commands = {
   binaries_redetect: SettingsSnapshot;
   workspace_get: WorkspaceSnapshot;
   workspace_set_viewport: WorkspaceSnapshot;
+  project_pick_folder: string | null;
+  workspace_add_projects: AddProjectsResult;
+  claude_projects_list: ClaudeProject[];
+  projects_status_get: ProjectStatusMap;
   app_quit: void;
 };
 
@@ -212,6 +275,33 @@ export function workspaceSetViewport(viewport: Viewport): Promise<WorkspaceSnaps
   return call("workspace_set_viewport", { viewport });
 }
 
+/**
+ * `ipc::project_pick_folder` -- open the native folder picker. Resolves with the chosen
+ * folder, or `null` when the picker was cancelled.
+ */
+export function projectPickFolder(): Promise<string | null> {
+  return call("project_pick_folder");
+}
+
+/**
+ * `ipc::workspace_add_projects` -- add folders as project nodes at `position` (fanned out
+ * when several). Rejects with `"not a directory"` when nothing given is a folder. Rust writes
+ * `workspace.json`, emits `workspace://changed` and refreshes git status for the new nodes.
+ */
+export function workspaceAddProjects(paths: string[], position: Position): Promise<AddProjectsResult> {
+  return call("workspace_add_projects", { paths, position });
+}
+
+/** `ipc::claude_projects_list` -- Claude Code's known projects (read-only), newest first. */
+export function claudeProjectsList(): Promise<ClaudeProject[]> {
+  return call("claude_projects_list");
+}
+
+/** `ipc::projects_status_get` -- the poller's last git status per project id. */
+export function projectsStatusGet(): Promise<ProjectStatusMap> {
+  return call("projects_status_get");
+}
+
 /** `ipc::app_quit` -- exit the app with status 0. Resolves only if the exit did not happen. */
 export function appQuit(): Promise<void> {
   return call("app_quit");
@@ -238,4 +328,38 @@ export async function onWorkspaceChanged(
     return () => {};
   }
   return listen<WorkspaceSnapshot>(WORKSPACE_CHANGED_EVENT, (event) => callback(event.payload));
+}
+
+/** Subscribe to `projects://status`; same contract as {@link onSettingsChanged}. */
+export async function onProjectsStatus(callback: (statuses: ProjectStatusMap) => void): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return listen<ProjectStatusMap>(PROJECTS_STATUS_EVENT, (event) => callback(event.payload));
+}
+
+/**
+ * Something the OS dropped on the webview: the paths and where, in physical pixels relative
+ * to the webview's top-left corner (divide by `devicePixelRatio` for CSS pixels).
+ */
+export type FileDrop = {
+  paths: string[];
+  position: { x: number; y: number };
+};
+
+/**
+ * Subscribe to Tauri's native drag-and-drop and get the `drop` events only (enter/over/leave
+ * are not needed: nothing is drawn while dragging). Same contract as {@link onSettingsChanged}.
+ * Tauri's native drop replaces HTML5 drag-and-drop in the webview (and disables it on Windows).
+ */
+export async function onFileDrop(callback: (drop: FileDrop) => void): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return getCurrentWebview().onDragDropEvent((event) => {
+    if (event.payload.type === "drop") {
+      const { paths, position } = event.payload;
+      callback({ paths, position: { x: position.x, y: position.y } });
+    }
+  });
 }

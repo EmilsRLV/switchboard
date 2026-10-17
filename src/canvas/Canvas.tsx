@@ -1,21 +1,29 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   Background,
   BackgroundVariant,
   ReactFlow,
   ReactFlowProvider,
+  type NodeTypes,
   type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
-import { hasTauriRuntime, workspaceSetViewport, type Viewport } from "../ipc";
-import { HOME_VIEWPORT, useCanvasStore } from "../state/canvas";
+import { dropProjects } from "../commands/projects";
+import { hasTauriRuntime, onFileDrop, workspaceSetViewport, type Position, type Project, type Viewport } from "../ipc";
+import { HOME_VIEWPORT, clientToFlow, useCanvasStore, type CanvasElement } from "../state/canvas";
+import { useStatusStore } from "../state/status";
+import { useUiStore } from "../state/ui";
 import { persistViewport, useWorkspaceStore } from "../state/workspace";
 import { MAX_ZOOM, MIN_ZOOM } from "./limits";
+import { physicalToClient, toFlowNodes, type ProjectFlowNode } from "./nodes";
+import { ProjectNode } from "./ProjectNode";
 import "./canvas.css";
+import "./nodes.css";
 
-// Stable empty collections: a fresh `[]` per render would make xyflow diff nodes every time.
-const NO_NODES: never[] = [];
+// Stable collections: a fresh `[]` / `{}` per render would make xyflow diff every time.
+const NO_PROJECTS: readonly Project[] = [];
 const NO_EDGES: never[] = [];
+const NODE_TYPES: NodeTypes = { project: ProjectNode };
 
 /** Pan with the middle (1) or right (2) button; the left button pans only while Space is held. */
 const PAN_BUTTONS = [1, 2];
@@ -23,10 +31,11 @@ const DOT_GAP = 24;
 const DOT_SIZE = 1;
 
 /**
- * The home surface: an infinite canvas with a dot grid. Pan with middle/right drag or
- * Space + left drag, zoom with the wheel, `ctrl+0` fits the view. The viewport is restored
- * from the workspace snapshot and written back at the end of every gesture that moved it.
- * Nodes arrive in Stories 2.2–2.4; until then an empty-state hint sits in the middle.
+ * The home surface: an infinite canvas with a dot grid holding one card per project. Pan
+ * with middle/right drag or Space + left drag, zoom with the wheel, `ctrl+0` fits the view.
+ * The viewport is restored from the workspace snapshot and written back at the end of every
+ * gesture that moved it. Projects come from Rust's snapshot (`ctrl+o`, a folder dropped from
+ * the OS, or Import from Claude); their git lines from the status store.
  */
 export function Canvas() {
   const snapshot = useWorkspaceStore((s) => s.snapshot);
@@ -42,20 +51,46 @@ export function Canvas() {
   const empty = (workspace?.projects.length ?? 0) === 0;
 
   return (
-    <div className="canvas">
+    // A stable callback ref: the store always holds the element that is actually mounted,
+    // and React does not re-register it on every render.
+    <div className="canvas" ref={setCanvasElement}>
       <ReactFlowProvider>
         <Flow initialViewport={workspace?.viewport ?? HOME_VIEWPORT} />
       </ReactFlowProvider>
       {empty && (
         <p className="canvas-hint">
-          Add a project — <kbd>ctrl+k</kbd>
+          Add a project — <kbd>ctrl+o</kbd>, drop a folder, or <kbd>ctrl+k</kbd>
         </p>
       )}
     </div>
   );
 }
 
+function setCanvasElement(element: HTMLDivElement | null): void {
+  useCanvasStore.getState().setElement(element);
+}
+
+/**
+ * Whether a drop at client `(x, y)` landed on the canvas itself: not on a pane over it (the
+ * settings or import pane has class `pane`), and inside the canvas element. Tauri reports
+ * drops anywhere on the webview.
+ */
+function dropHitsCanvas(client: Position, canvas: CanvasElement | null): boolean {
+  const target = document.elementFromPoint(client.x, client.y);
+  if (target === null || target.closest(".pane") !== null) return false;
+  if (canvas === null) return true;
+  const rect = canvas.getBoundingClientRect();
+  return (
+    client.x >= rect.left && client.x <= rect.left + rect.width && client.y >= rect.top && client.y <= rect.top + rect.height
+  );
+}
+
 function Flow({ initialViewport }: { initialViewport: Viewport }) {
+  const projects = useWorkspaceStore((s) => s.snapshot?.workspace.projects ?? NO_PROJECTS);
+  const statuses = useStatusStore((s) => s.statuses);
+  const flashed = useUiStore((s) => s.flashed);
+  const nodes = useMemo(() => toFlowNodes(projects, statuses, flashed), [projects, statuses, flashed]);
+
   // The viewport most recently sent to Rust, acknowledged or not: a gesture that ends where
   // an in-flight write is going is skipped; one that comes back to the stored viewport goes.
   const lastSentRef = useRef<Viewport | null>(null);
@@ -80,17 +115,40 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
     });
   }, []);
 
-  const onInit = useCallback((instance: ReactFlowInstance) => {
+  const onInit = useCallback((instance: ReactFlowInstance<ProjectFlowNode>) => {
     useCanvasStore.getState().setInstance(instance);
   }, []);
 
   // The instance dies with the flow; commands check `isCanvasReady` before using it.
   useEffect(() => () => useCanvasStore.getState().setInstance(null), []);
 
+  // Folders dropped from the OS (Tauri's native drag-drop; HTML5 DnD is off in the webview):
+  // the drop point comes in physical pixels, goes to CSS pixels, then to canvas coordinates.
+  useEffect(() => {
+    let cancelled = false;
+    let stop: (() => void) | null = null;
+    onFileDrop((drop) => {
+      const client = physicalToClient(drop.position, window.devicePixelRatio);
+      if (!dropHitsCanvas(client, useCanvasStore.getState().element)) return;
+      const position = clientToFlow(client);
+      if (position !== null) void dropProjects(drop.paths, position);
+    })
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else stop = unlisten;
+      })
+      .catch((err: unknown) => console.error("drag-drop listener failed:", err));
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, []);
+
   return (
     <ReactFlow
-      nodes={NO_NODES}
+      nodes={nodes}
       edges={NO_EDGES}
+      nodeTypes={NODE_TYPES}
       defaultViewport={initialViewport}
       minZoom={MIN_ZOOM}
       maxZoom={MAX_ZOOM}
@@ -103,6 +161,7 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
       deleteKeyCode={null}
       nodesDraggable={false}
       nodesConnectable={false}
+      nodesFocusable={false}
       elementsSelectable={false}
       onInit={onInit}
       onMoveEnd={onMoveEnd}

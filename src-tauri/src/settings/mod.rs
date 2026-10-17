@@ -7,14 +7,16 @@ pub mod paths;
 pub mod store;
 pub mod watch;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
+use crate::git::ProjectStatus;
 use crate::graph::WorkspaceState;
 use detect::{ProcessRunner, Runner, Search};
 
@@ -287,16 +289,32 @@ impl SettingsState {
     }
 }
 
-/// Tauri-managed application state: settings and the workspace (`crate::graph`). The watcher
-/// lives here only to stay alive for the app's lifetime; dropping it stops the fs watch.
+/// Live, never persisted state about the projects on the canvas: what the git poller found.
+/// Cached in memory, refreshed on a timer and after every add (`crate::git::poll`).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LiveState {
+    /// Git status per project id; a project is absent until the first poll reaches it.
+    pub statuses: HashMap<String, ProjectStatus>,
+}
+
+/// Tauri-managed application state: settings, the workspace (`crate::graph`) and the live
+/// state. The watcher lives here only to stay alive for the app's lifetime; dropping it stops
+/// the fs watch.
 #[derive(Default)]
 pub struct AppState {
     pub settings: RwLock<SettingsState>,
     pub workspace: RwLock<WorkspaceState>,
+    pub live: RwLock<LiveState>,
     pub watcher: Mutex<Option<notify::RecommendedWatcher>>,
     /// Bumped per detection run; a run stores its result only if it is still the latest,
     /// so overlapping runs (startup, reload, Re-detect) cannot finish out of order.
     pub detect_generation: AtomicU64,
+    /// Serialises git status refreshes (the timer's and the one after an add), so an older,
+    /// slower pass can never overwrite a newer result.
+    pub refresh_lock: tauri::async_runtime::Mutex<()>,
+    /// Claude Code's home (`~/.claude`), set once in `setup`. Unset (as in tests) means
+    /// discovery has nothing to read and lists nothing.
+    pub claude_home: OnceLock<PathBuf>,
 }
 
 impl AppState {
@@ -316,6 +334,15 @@ impl AppState {
 
     pub fn write_workspace(&self) -> RwLockWriteGuard<'_, WorkspaceState> {
         self.workspace.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Read the live state; a poisoned lock is recovered rather than propagated.
+    pub fn read_live(&self) -> RwLockReadGuard<'_, LiveState> {
+        self.live.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn write_live(&self) -> RwLockWriteGuard<'_, LiveState> {
+        self.live.write().unwrap_or_else(|e| e.into_inner())
     }
 }
 

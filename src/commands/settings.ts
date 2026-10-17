@@ -6,6 +6,7 @@
 
 import { binariesRedetect, settingsReveal } from "../ipc";
 import { useSettingsStore } from "../state/settings";
+import { openPane } from "./panes";
 
 /** True when the snapshot has a settings path: the `when` of `settings.reveal`. */
 export function hasSettingsPath(): boolean {
@@ -37,7 +38,7 @@ async function runAction(action: () => Promise<void>): Promise<void> {
     await action();
   } catch (err) {
     useSettingsStore.getState().setActionError(describe(err));
-    useSettingsStore.getState().openPane();
+    openPane("settings"); // through the pane lifecycle: an open import pane is left properly
   } finally {
     useSettingsStore.getState().setActionBusy(false);
   }

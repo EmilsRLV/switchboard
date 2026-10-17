@@ -117,7 +117,7 @@ export function formatKeybinding(binding: Keybinding): string {
  * The dispatcher: resolve the event to the first enabled command whose binding matches, run it
  * and swallow the event. Auto-repeat is ignored (a held `ctrl+k` toggles once). Returns true
  * when a command ran. Commands whose `when` is false are skipped, which is how `escape` is
- * shared: `palette.close` only when the palette is open, `settings.closePane` only otherwise.
+ * shared: `palette.close` only when the palette is open, `pane.close` only otherwise.
  */
 export function handleKeydown(event: KeyEventLike): boolean {
   if (event.repeat) return false;

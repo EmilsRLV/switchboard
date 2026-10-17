@@ -8,7 +8,8 @@ text editor.
 
 Status: **Epic 2 in progress**. The Tauri 2 shell (Rust core, React 19 + TypeScript + Vite UI) builds
 and tests on Windows and Linux (CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). The home
-surface is an empty infinite canvas whose viewport persists; project nodes come next.
+surface is an infinite canvas whose viewport persists, holding one card per project folder with its git
+state; expand/collapse, dragging, keyboard navigation and project actions come next.
 
 ## Plans
 
@@ -63,15 +64,17 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | Key | Command |
 |---|---|
 | `ctrl+k` | Toggle the command palette: type to filter (case-insensitive, over title and id), `↑`/`↓` to move, Enter to run, Esc to close. |
+| `ctrl+o` | Add project folder: the native folder picker; the chosen folder becomes a node at the centre of the view. |
 | `ctrl+,` | Open (toggle) the settings pane. |
 | `ctrl+0` | Fit view: fit every node into the canvas; with no nodes, back to the home viewport (`x 0, y 0, zoom 1`). |
 | `ctrl+q` | Quit. |
-| Esc | Closes the palette if it is open, else the settings pane. With both open, the first Esc closes the palette, the second the pane. |
+| Esc | Closes the palette if it is open, else the open pane (settings or import). With both open, the first Esc closes the palette, the second the pane. |
 
-The palette lists six commands: Toggle command palette, Open settings, Reveal settings file (only when the
-file's location is known), Re-detect binaries (not while one runs), Fit view (once the canvas has mounted)
-and Quit; the key-only carriers (the `ctrl+,` toggle and the two Esc commands) are registered but hidden
-from the list. Keybindings are not editable yet (Epic 9).
+The palette lists eight commands: Toggle command palette, Add project folder…, Import from Claude…, Open
+settings, Reveal settings file (only when the file's location is known), Re-detect binaries (not while one
+runs), Fit view (once the canvas has mounted; the two project commands need it too) and Quit; the key-only
+carriers (the `ctrl+,` toggle and the two Esc commands) are registered but hidden from the list; both panes'
+Close buttons run the Esc command (`pane.close`). Keybindings are not editable yet (Epic 9).
 
 The app is **single-instance** (`tauri-plugin-single-instance`): launching it again focuses and
 un-minimises the running window and the second process exits. Its arguments are ignored (printed to stderr
@@ -91,10 +94,56 @@ and only the size is restored. Delete the file to reset to the defaults in `taur
 ## Workspace
 
 The window is an infinite canvas (`@xyflow/react`, unstyled `base.css`, colours from the theme tokens) with
-a dot grid and, while it has no nodes, a quiet "Add a project — ctrl+k" hint. Pan with the **middle** or
-**right** mouse button, or hold **Space** and drag with the left; zoom with the **wheel** (0.1× to 4×;
-double-click does not zoom); `ctrl+0` / palette "Fit view" fits the nodes, or with none returns to
-`x 0, y 0, zoom 1`. Nothing can be added to it yet (Story 2.2).
+a dot grid and, while it has no nodes, a quiet "Add a project — ctrl+o, drop a folder, or ctrl+k" hint. Pan with the **middle** or **right**
+mouse button, or hold **Space** and drag with the left; zoom with the **wheel** (0.1× to 4×; double-click
+does not zoom); `ctrl+0` / palette "Fit view" fits the nodes, or with none returns to `x 0, y 0, zoom 1`.
+
+### Adding projects
+
+A project is a folder. Three ways to put one on the canvas, all ending in the same Rust command
+(`workspace_add_projects`), which canonicalises the path, refuses duplicates and writes the file:
+
+| Way | How | Where the node goes |
+|---|---|---|
+| Picker | `ctrl+o` or palette "Add project folder…" | centre of the current view |
+| Drop | drag a folder from Explorer / the file manager onto the canvas | where it was dropped; several folders fan out 24 px apart |
+| Import from Claude | palette "Import from Claude…" | centre of the view, fanned out |
+
+The import pane lists every directory under `~/.claude/projects` whose working directory still exists on
+this machine (the `cwd` is read from the newest transcript's first `user` record, falling back to decoding
+the directory name), newest first, with its session (transcript) count. Folders already on the canvas are
+ticked and disabled ("on canvas"). Tab moves between rows, Space ticks, Enter or "Add selected" adds the
+ticked folders and closes the pane; Esc closes it. The app only ever **reads** `~/.claude`.
+
+Adding a folder that is already on the canvas adds nothing: the existing node is outlined for 1.5 s.
+Dropping a file (not a folder) does nothing. A folder is identified by its canonical path (case-insensitive
+on Windows), so `B:\projects\ide\` and `b:\PROJECTS\ide` are the same project. Nodes cannot be moved, removed
+or renamed yet (Stories 2.3/2.4).
+
+### The project card
+
+Each node is a compact card: the folder name, the shortened path (full path on hover), and a git line read
+with one `git status --porcelain=v2 --branch` per project:
+
+| Line | Meaning |
+|---|---|
+| `master · 3 changed` | Current branch and the number of changed entries (staged, unstaged, unmerged, untracked). A detached HEAD shows the short commit and `detached`. |
+| `↑2 ↓1` | Commits ahead of / behind the upstream, shown only when either is non-zero. |
+| `not a git repo` | An ordinary folder; no error, no "branches" affordance. |
+| `folder missing` | The folder has gone (deleted, drive unplugged); the node stays until removed. |
+| `git unavailable` | `git` could not be started (not installed, wrong path); the settings banner explains the usual cause. |
+| `git error` | `git` ran but failed (for example a `safe.directory` refusal); hover for its message. A `git status` that times out keeps the card's previous line. |
+| `…` | Not polled yet. |
+
+Git repos also show an inert "branches" affordance (Epic 5) and the card reserves a live-session badge,
+hidden while the count is 0 (Epic 3). Git status is **live state**: it is never written to disk. A poller
+on Tauri's async runtime refreshes every project every `poll.git_ms` (default 5 s, re-read from settings
+each tick, floor 250 ms) and right after an add, running `git` off the UI thread with a 5 s timeout and
+`GIT_OPTIONAL_LOCKS=0` so it never blocks a `git` you are running yourself. The binary is the one detection
+found (or `git.path` from settings), else `git` on PATH. Only the changes are pushed to the UI
+(`projects://status`).
+
+### The file
 
 What the canvas shows is persisted in one app-written JSON file beside `settings.json`:
 
@@ -103,13 +152,15 @@ What the canvas shows is persisted in one app-written JSON file beside `settings
 | Windows | `%APPDATA%\switchboard\workspace.json` |
 | Linux | `$XDG_CONFIG_HOME/switchboard/workspace.json` (default `~/.config/switchboard/workspace.json`) |
 
-The file is written at exactly two moments: on first launch, when it does not exist (`version: 1`, the home
-viewport, empty `projects`, `branches`, `sessions`, `edges` and null launch `defaults`), and atomically
-(temp file + rename) at the end of every pan or zoom that moved the viewport by more than 0.5 px or 0.001
-zoom, so a relaunch opens exactly where you left off. Loading an existing file never rewrites it. Only the
-viewport is used so far; the other collections are reserved for the nodes and edges of later stories. Rust
-owns the file: the UI never writes it, it mirrors Rust's snapshot (`workspace_get`, then every
-`workspace://changed` event) just as it does for settings. A stored zoom is clamped to the canvas limits.
+The file is written on first launch, when it does not exist (`version: 1`, the home viewport, empty
+`projects`, `branches`, `sessions`, `edges` and null launch `defaults`), when a project is added, and
+atomically (temp file + rename) at the end of every pan or zoom that moved the viewport by more than 0.5 px
+or 0.001 zoom, so a relaunch opens exactly where you left off with the same nodes at the same positions.
+Loading an existing file never rewrites it. Each project is `{ id (UUID v4), path (canonical), label,
+position, expanded, color, launchDefaults }`; `branches`, `sessions` and `edges` are reserved for later
+stories. Rust owns the file: the UI never writes it, it mirrors Rust's snapshot (`workspace_get`, then every
+`workspace://changed` event) just as it does for settings, and every snapshot carries a revision so a reply that
+arrives after a newer one is dropped. A stored zoom is clamped to the canvas limits.
 
 The file is not meant for hand editing and is not watched, but it is read tolerantly: missing keys take
 their defaults, unknown keys are ignored, a UTF-8 BOM is fine, an older `version` is upgraded silently, a
@@ -118,10 +169,12 @@ banners, never a crash:
 
 | Banner | Cause | What happens |
 |---|---|---|
-| `workspace.json:line:col …` | Broken JSON | Defaults in memory; the file is left alone until the next viewport write replaces it. |
+| `workspace.json:line:col …` | Broken JSON | Defaults in memory; the file is left alone until the next write replaces it. |
 | cannot read workspace: … | The file exists but cannot be read | Defaults in memory; changes are kept in memory and **not saved** this session (the file may well be valid). |
 | workspace.json is version N … | A `version` newer than this build | Loaded as-is; changes are kept in memory and **not saved**, so a v1 write cannot drop the newer fields. |
-| cannot write workspace: … | The write failed (no config dir, permissions) | The viewport lives in memory; the next write is tried again. |
+| workspace.json had N projects with an empty or duplicate id | Hand-edited `projects` | Those entries are dropped (the first of a duplicate is kept); the rest load. |
+| cannot write workspace: … | The write failed (no config dir, permissions) | The change lives in memory; the next write is tried again. |
+| project add failed: … | Adding a folder failed (picker, IPC) | Nothing added; the banner clears on the next successful add. |
 
 ## Settings
 
@@ -169,8 +222,10 @@ Layout follows [`architecture.md` §8](_bmad-output/planning-artifacts/architect
 app (`ipc/` is the only place Rust is called, `commands/` the command registry, dispatcher and built-in
 commands, `state/` holds Zustand stores, `canvas/` the xyflow canvas, `theme/` the CSS variables),
 `src-tauri/` the Rust core (`src/ipc/` holds the thin Tauri commands, `src/settings/` the settings file and
-binary detection, `src/graph/` the workspace model and `workspace.json`, `src/persist.rs` the shared atomic
-JSON read/write; other modules arrive with their stories).
+binary detection, `src/graph/` the workspace model and `workspace.json`, `src/git/` the status parser and
+poller (the only module that runs `git`), `src/claude/` read-only discovery of Claude Code's project
+directories, `src/process.rs` running a child with a timeout, `src/persist.rs` the shared atomic JSON
+read/write; other modules arrive with their stories).
 
 Stories are specced one at a time into `_bmad-output/implementation-artifacts/spec-<epic>-<story>-*.md`
 in the same shape as `map-maker`'s specs (Intent / Boundaries / I-O matrix / Code Map / Tasks).

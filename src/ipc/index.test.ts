@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   appInfo,
+  claudeProjectsList,
   hasTauriRuntime,
   NoTauriRuntimeError,
+  projectPickFolder,
+  projectsStatusGet,
+  workspaceAddProjects,
   workspaceGet,
   workspaceSetViewport,
   type WorkspaceSnapshot,
@@ -53,6 +57,7 @@ describe("workspace command wrappers", () => {
       defaults: { model: null, effort: null, permissionMode: null },
     },
     banners: [],
+    revision: 0,
   };
 
   it("workspaceSetViewport invokes workspace_set_viewport with a { viewport } argument", async () => {
@@ -70,5 +75,28 @@ describe("workspace command wrappers", () => {
     await expect(workspaceGet()).resolves.toBe(snapshot);
     // The api fills in `{}` for a missing args object before forwarding.
     expect(invoke).toHaveBeenCalledWith("workspace_get", {}, undefined);
+  });
+
+  it("workspaceAddProjects invokes workspace_add_projects with { paths, position }", async () => {
+    const result = { snapshot, added: ["p1"], existing: [], skipped: [] };
+    const invoke = vi.fn().mockResolvedValue(result);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    const paths = ["B:\\projects\\ide"];
+    const position = { x: 10, y: 20 };
+    await expect(workspaceAddProjects(paths, position)).resolves.toBe(result);
+    expect(invoke).toHaveBeenCalledWith("workspace_add_projects", { paths, position }, undefined);
+  });
+
+  it("the argument-less wrappers invoke their wire names with no arguments of their own", async () => {
+    const invoke = vi.fn().mockResolvedValue(null);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await expect(projectPickFolder()).resolves.toBeNull();
+    expect(invoke).toHaveBeenCalledWith("project_pick_folder", {}, undefined);
+    invoke.mockResolvedValue([]);
+    await expect(claudeProjectsList()).resolves.toEqual([]);
+    expect(invoke).toHaveBeenCalledWith("claude_projects_list", {}, undefined);
+    invoke.mockResolvedValue({});
+    await expect(projectsStatusGet()).resolves.toEqual({});
+    expect(invoke).toHaveBeenCalledWith("projects_status_get", {}, undefined);
   });
 });

@@ -20,7 +20,10 @@ export type WorkspaceState = {
 export const useWorkspaceStore = create<WorkspaceState>()((set) => ({
   snapshot: null,
   loadError: null,
-  applySnapshot: (snapshot) => set({ snapshot }),
+  // Two writes in flight can resolve out of order; Rust numbers every mutation, so a reply
+  // older than what is already shown is dropped. `null` always clears.
+  applySnapshot: (snapshot) =>
+    set((s) => (snapshot !== null && s.snapshot !== null && snapshot.revision < s.snapshot.revision ? {} : { snapshot })),
   setLoadError: (loadError) => set({ loadError }),
 }));
 

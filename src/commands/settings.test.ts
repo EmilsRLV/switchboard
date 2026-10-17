@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SettingsSnapshot } from "../ipc";
+import { useImportStore } from "../state/import";
 import { useSettingsStore } from "../state/settings";
+import { useUiStore } from "../state/ui";
 import { hasSettingsPath, redetectBinaries, revealSettingsFile } from "./settings";
 
 vi.mock("../ipc", () => ({
@@ -35,7 +37,9 @@ const snapshot: SettingsSnapshot = {
 describe("settings actions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useSettingsStore.setState({ snapshot: null, loadError: null, paneOpen: false, actionBusy: false, actionError: null });
+    useSettingsStore.setState({ snapshot: null, loadError: null, actionBusy: false, actionError: null });
+    useUiStore.setState({ pane: null, flashed: [] });
+    useImportStore.getState().reset();
   });
 
   it("hasSettingsPath follows the snapshot", () => {
@@ -84,7 +88,18 @@ describe("settings actions", () => {
     settingsReveal.mockRejectedValueOnce(new Error("explorer refused"));
     await revealSettingsFile();
     expect(useSettingsStore.getState().actionError).toBe("explorer refused");
-    expect(useSettingsStore.getState().paneOpen).toBe(true);
+    expect(useUiStore.getState().pane).toBe("settings");
+  });
+
+  it("a failure with the import pane open switches to settings and resets the import store", async () => {
+    useUiStore.getState().openPane("import");
+    useImportStore.getState().setItems([{ dir: "X--one", cwd: "/x/one", exists: true, sessions: 1, on_canvas: false }]);
+    useImportStore.getState().toggle("/x/one");
+    settingsReveal.mockRejectedValueOnce(new Error("explorer refused"));
+    await revealSettingsFile();
+    expect(useUiStore.getState().pane).toBe("settings");
+    expect(useImportStore.getState().items).toBeNull();
+    expect(useImportStore.getState().selected).toEqual([]);
     expect(useSettingsStore.getState().actionBusy).toBe(false);
   });
 });

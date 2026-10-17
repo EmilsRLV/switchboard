@@ -1,22 +1,20 @@
 import { create } from "zustand";
 import type { Banner, SettingsSnapshot } from "../ipc";
 
+// Whether the settings pane is showing lives in `state/ui.ts` (`pane === "settings"`), with
+// the other panes; this store holds only what the settings snapshot and its actions produce.
+
 export type SettingsState = {
   /** Last snapshot from Rust (`settings_get` or `settings://changed`); `null` until the first. */
   snapshot: SettingsSnapshot | null;
   /** Why no snapshot could be loaded (rejected `settings_get` / listener), if that happened. */
   loadError: string | null;
-  /** Whether the read-only settings pane is showing. */
-  paneOpen: boolean;
   /** True while `binaries.redetect` is running (the pane disables its button). */
   actionBusy: boolean;
   /** Why the last `settings.reveal` / `binaries.redetect` failed; cleared when one starts. */
   actionError: string | null;
   applySnapshot: (snapshot: SettingsSnapshot | null) => void;
   setLoadError: (error: string | null) => void;
-  togglePane: () => void;
-  openPane: () => void;
-  closePane: () => void;
   setActionBusy: (busy: boolean) => void;
   setActionError: (error: string | null) => void;
 };
@@ -24,15 +22,10 @@ export type SettingsState = {
 export const useSettingsStore = create<SettingsState>()((set) => ({
   snapshot: null,
   loadError: null,
-  paneOpen: false,
   actionBusy: false,
   actionError: null,
   applySnapshot: (snapshot) => set({ snapshot }),
   setLoadError: (loadError) => set({ loadError }),
-  togglePane: () => set((s) => ({ paneOpen: !s.paneOpen })),
-  openPane: () => set({ paneOpen: true }),
-  // Closing the pane also drops a stale action error; it would otherwise reappear on reopen.
-  closePane: () => set({ paneOpen: false, actionError: null }),
   setActionBusy: (actionBusy) => set({ actionBusy }),
   setActionError: (actionError) => set({ actionError }),
 }));

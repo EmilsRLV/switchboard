@@ -1,9 +1,12 @@
 //! Switchboard core. Rust is the source of truth; the webview talks to it only
 //! through the thin commands in [`ipc`].
 
+pub mod claude;
+pub mod git;
 pub mod graph;
 pub mod ipc;
 pub mod persist;
+pub mod process;
 pub mod settings;
 
 use settings::AppState;
@@ -21,6 +24,10 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::binaries_redetect,
             ipc::workspace_get,
             ipc::workspace_set_viewport,
+            ipc::project_pick_folder,
+            ipc::workspace_add_projects,
+            ipc::claude_projects_list,
+            ipc::projects_status_get,
             ipc::app_quit,
         ])
 }
@@ -38,11 +45,17 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             focus_main_window(app);
         }))
         .plugin(tauri_plugin_window_state::Builder::new().build())
-        .plugin(tauri_plugin_opener::init());
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init());
     with_commands(builder)
         .setup(|app| {
+            use tauri::Manager;
             settings::initialise(app.handle());
             graph::initialise(app.handle());
+            if let Some(home) = claude::claude_home() {
+                let _ = app.state::<AppState>().claude_home.set(home);
+            }
+            git::poll::start(app.handle().clone());
             Ok(())
         })
 }
@@ -221,6 +234,145 @@ mod tests {
         // A missing or malformed argument is rejected before the handler runs.
         invoke_with(&webview, "workspace_set_viewport", InvokeBody::Json(serde_json::json!({})))
             .expect_err("viewport is required");
+    }
+
+    #[test]
+    fn project_pick_folder_is_registered_and_replies_none_under_test() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+
+        let body = invoke(&webview, "project_pick_folder").expect("project_pick_folder should be registered");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value, serde_json::Value::Null, "cfg(test): no dialog, no folder");
+    }
+
+    #[test]
+    fn workspace_add_projects_is_registered_takes_paths_and_position_and_replies_with_the_result() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("workspace.json");
+        super::graph::initialise_at(app.handle(), Some(path.clone()));
+        // A git that does not exist: the post-add status pass then lands deterministically.
+        app.state::<super::AppState>().write().binaries.git.path = Some(dir.path().join("no-git.exe").display().to_string());
+        let folder = tempfile::tempdir().unwrap();
+
+        let args = serde_json::json!({ "paths": [folder.path().display().to_string()], "position": { "x": 10, "y": 20 } });
+        let body = invoke_with(&webview, "workspace_add_projects", InvokeBody::Json(args))
+            .expect("workspace_add_projects should be registered and succeed");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value["added"].as_array().unwrap().len(), 1);
+        assert_eq!(value["existing"], serde_json::json!([]));
+        assert_eq!(value["skipped"], serde_json::json!([]));
+        assert_eq!(value["snapshot"]["revision"], 1);
+        let project = &value["snapshot"]["workspace"]["projects"][0];
+        assert_eq!(project["position"], serde_json::json!({ "x": 10.0, "y": 20.0 }));
+        assert_eq!(project["label"], folder.path().file_name().unwrap().to_str().unwrap());
+        let on_disk: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(on_disk["projects"].as_array().unwrap().len(), 1);
+
+        // The add kicked off a status pass for the new id; wait (bounded) for it to land.
+        let id = value["added"][0].as_str().unwrap().to_string();
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = app.state::<super::AppState>().read_live().statuses.get(&id).cloned() {
+                break status;
+            }
+            assert!(started.elapsed() < std::time::Duration::from_secs(2), "no status for the added project within 2 s");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert_eq!(status, super::git::ProjectStatus::GitUnavailable);
+
+        // A lone non-directory adds nothing and is reported as skipped (no error).
+        let file = folder.path().join("f.txt");
+        std::fs::write(&file, "x").unwrap();
+        let args = serde_json::json!({ "paths": [file.display().to_string()], "position": { "x": 0, "y": 0 } });
+        let body = invoke_with(&webview, "workspace_add_projects", InvokeBody::Json(args)).expect("a file is skipped, not an error");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value["added"], serde_json::json!([]));
+        assert_eq!(value["skipped"], serde_json::json!([file.display().to_string()]));
+        assert_eq!(value["snapshot"]["revision"], 1, "no mutation");
+
+        // Missing arguments are rejected before the handler runs.
+        invoke_with(&webview, "workspace_add_projects", InvokeBody::Json(serde_json::json!({ "paths": [] })))
+            .expect_err("position is required");
+    }
+
+    #[test]
+    fn claude_projects_list_is_registered_and_lists_nothing_without_a_claude_home() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+
+        // The mock app never had `claude_home` set, so the real `~/.claude` is not read.
+        let body = invoke(&webview, "claude_projects_list").expect("claude_projects_list should be registered");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value, serde_json::json!([]));
+    }
+
+    #[test]
+    fn claude_projects_list_reads_the_injected_home() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let home = tempfile::tempdir().unwrap();
+        let real = tempfile::tempdir().unwrap();
+        let placed = tempfile::tempdir().unwrap();
+        for (name, cwd) in [("X--one", real.path()), ("X--two", placed.path())] {
+            let dir = home.path().join("projects").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("s.jsonl"),
+                format!("{{\"type\":\"user\",\"cwd\":{}}}\n", serde_json::to_string(&cwd.display().to_string()).unwrap()),
+            )
+            .unwrap();
+        }
+        app.state::<super::AppState>().claude_home.set(home.path().to_path_buf()).unwrap();
+        // `placed` is already on the canvas (spelled with a trailing separator, to prove the
+        // comparison is on canonical paths).
+        let cfg = tempfile::tempdir().unwrap();
+        super::graph::initialise_at(app.handle(), Some(cfg.path().join("workspace.json")));
+        let spelled = format!("{}{}", placed.path().display(), std::path::MAIN_SEPARATOR);
+        super::graph::add_projects(app.handle(), &[spelled], super::graph::Position::default()).unwrap();
+
+        let body = invoke(&webview, "claude_projects_list").unwrap();
+        let value: serde_json::Value = body.deserialize().unwrap();
+        let mut rows: Vec<&serde_json::Value> = value.as_array().unwrap().iter().collect();
+        rows.sort_by_key(|row| row["dir"].as_str().unwrap().to_string());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["dir"], "X--one");
+        assert_eq!(rows[0]["exists"], true);
+        assert_eq!(rows[0]["sessions"], 1);
+        assert_eq!(rows[0]["cwd"], dunce::canonicalize(real.path()).unwrap().display().to_string());
+        assert_eq!(rows[0]["on_canvas"], false);
+        assert_eq!(rows[1]["dir"], "X--two");
+        assert_eq!(rows[1]["on_canvas"], true);
+    }
+
+    #[test]
+    fn projects_status_get_is_registered_and_reads_the_live_state() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+
+        let body = invoke(&webview, "projects_status_get").expect("projects_status_get should be registered");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value, serde_json::json!({}));
+
+        app.state::<super::AppState>()
+            .write_live()
+            .statuses
+            .insert("p1".into(), super::git::ProjectStatus::NotRepo);
+        let body = invoke(&webview, "projects_status_get").unwrap();
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value, serde_json::json!({ "p1": { "kind": "not_repo" } }));
     }
 
     #[test]
