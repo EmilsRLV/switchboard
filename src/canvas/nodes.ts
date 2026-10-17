@@ -1,9 +1,10 @@
 // Pure helpers behind the canvas nodes: deriving xyflow nodes from the workspace snapshot
-// (projects and their children) plus the live status map, selection and drag overrides, and
-// the card's text. No React, no DOM, so all of it is unit-tested in vitest's node environment.
+// (projects and their children) plus the live status map, selection and drag overrides, the
+// card's text, and the geometry the arrow keys search (`nodeRects`, `nearestInDirection`,
+// `panToReveal`). No React, no DOM, so all of it is unit-tested in vitest's node environment.
 
 import type { Node } from "@xyflow/react";
-import type { ChildNode, NodeTarget, Position, Project, ProjectStatus, ProjectStatusMap } from "../ipc";
+import type { ChildNode, NodeTarget, Position, Project, ProjectStatus, ProjectStatusMap, Viewport } from "../ipc";
 import type { DragOverrides } from "../state/canvas";
 
 /** What a `ProjectNode` renders from. */
@@ -310,6 +311,153 @@ export function aheadBehind(status: ProjectStatus | null): string | null {
   if (status === null || status.kind !== "repo") return null;
   if (status.ahead === 0 && status.behind === 0) return null;
   return `↑${status.ahead} ↓${status.behind}`;
+}
+
+// --- keyboard navigation geometry -----------------------------------------------------------
+
+/** A rendered node's rectangle in canvas coordinates, as the canvas draws it. */
+export type NodeRect = { target: NodeTarget; x: number; y: number; width: number; height: number };
+
+export type Direction = "left" | "right" | "up" | "down";
+
+/** A revealed node keeps at least this many screen pixels from the canvas edge. */
+export const REVEAL_MARGIN = 16;
+
+/** How long the pan that reveals an off-screen node takes. */
+export const REVEAL_PAN_MS = 150;
+
+/** Perpendicular distance counts this many times the primary-axis distance in an arrow search. */
+const PERPENDICULAR_WEIGHT = 2;
+
+/**
+ * The rectangles the arrow keys search: every project card (`CARD_WIDTH × CARD_HEIGHT` at its
+ * position) followed, for an expanded project only, by its children (`CHILD_WIDTH ×
+ * CHILD_HEIGHT` at the parent's position plus the child's relative position, slot or stored).
+ * Collapsed children are not drawn, so they are not candidates. The list order (projects in
+ * workspace order, each with its children) is the tie-breaker of the searches.
+ */
+export function nodeRects(projects: readonly Project[], children: readonly ChildNode[]): NodeRect[] {
+  const out: NodeRect[] = [];
+  for (const project of projects) {
+    out.push({
+      target: { kind: "project", id: project.id },
+      x: project.position.x,
+      y: project.position.y,
+      width: CARD_WIDTH,
+      height: CARD_HEIGHT,
+    });
+    if (!project.expanded) continue;
+    const kids = children.filter((child) => child.projectId === project.id);
+    const slots = layoutChildren(kids);
+    kids.forEach((child, index) => {
+      const slot = slots[index] ?? columnSlot(index);
+      out.push({
+        target: { kind: child.kind, id: child.id },
+        x: project.position.x + slot.x,
+        y: project.position.y + slot.y,
+        width: CHILD_WIDTH,
+        height: CHILD_HEIGHT,
+      });
+    });
+  }
+  return out;
+}
+
+function centreOf(rect: NodeRect): Position {
+  return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+}
+
+function sameNodeTarget(a: NodeTarget, b: NodeTarget): boolean {
+  return a.kind === b.kind && a.id === b.id;
+}
+
+/**
+ * The rect the selection moves to on an arrow from `from`: among the rects (other than
+ * `from`) whose centre lies strictly in the direction's half-plane from `from`'s centre, the
+ * one with the smallest `|primary delta| + 2 × |perpendicular delta|`; equal scores go to the
+ * earlier one in the list. `null` when nothing lies that way (the selection stays).
+ */
+export function nearestInDirection(from: NodeRect, rects: readonly NodeRect[], direction: Direction): NodeRect | null {
+  const origin = centreOf(from);
+  let best: NodeRect | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const rect of rects) {
+    if (sameNodeTarget(rect.target, from.target)) continue;
+    const centre = centreOf(rect);
+    const dx = centre.x - origin.x;
+    const dy = centre.y - origin.y;
+    let primary: number;
+    let perpendicular: number;
+    switch (direction) {
+      case "right":
+        if (!(dx > 0)) continue;
+        [primary, perpendicular] = [dx, dy];
+        break;
+      case "left":
+        if (!(dx < 0)) continue;
+        [primary, perpendicular] = [-dx, dy];
+        break;
+      case "down":
+        if (!(dy > 0)) continue;
+        [primary, perpendicular] = [dy, dx];
+        break;
+      case "up":
+        if (!(dy < 0)) continue;
+        [primary, perpendicular] = [-dy, dx];
+        break;
+    }
+    const score = primary + PERPENDICULAR_WEIGHT * Math.abs(perpendicular);
+    if (score < bestScore) {
+      best = rect;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+/**
+ * The rect whose centre is nearest `point` (the viewport centre when an arrow is pressed with
+ * nothing selected); ties go to the earlier one in the list. `null` for no rects.
+ */
+export function nearestToPoint(rects: readonly NodeRect[], point: Position): NodeRect | null {
+  let best: NodeRect | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const rect of rects) {
+    const centre = centreOf(rect);
+    const distance = Math.hypot(centre.x - point.x, centre.y - point.y);
+    if (distance < bestDistance) {
+      best = rect;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+/**
+ * The viewport that shows `rect` with `margin` screen pixels to spare on every side, moved
+ * the least from `viewport` (zoom unchanged); `null` when the rect is already fully inside
+ * `[margin, size − margin]` on both axes. Screen space is `s = canvas · zoom + pan`. A rect
+ * larger than the available area is aligned on its left/top edge.
+ */
+export function panToReveal(
+  rect: NodeRect,
+  viewport: Viewport,
+  size: { width: number; height: number },
+  margin = REVEAL_MARGIN,
+): Viewport | null {
+  const shift = (start: number, length: number, pan: number, extent: number): number => {
+    const screenStart = start * viewport.zoom + pan;
+    const screenEnd = screenStart + length * viewport.zoom;
+    // Too large to fit: always the leading edge at the margin (stable on repeated reveals).
+    if (length * viewport.zoom > extent - 2 * margin) return margin - screenStart;
+    if (screenStart < margin) return margin - screenStart;
+    if (screenEnd > extent - margin) return extent - margin - screenEnd;
+    return 0;
+  };
+  const dx = shift(rect.x, rect.width, viewport.x, size.width);
+  const dy = shift(rect.y, rect.height, viewport.y, size.height);
+  if (dx === 0 && dy === 0) return null;
+  return { x: viewport.x + dx, y: viewport.y + dy, zoom: viewport.zoom };
 }
 
 /** Tauri's drop position (physical pixels) → client (CSS) pixels for `screenToFlowPosition`. */

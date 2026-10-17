@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { WorkspaceSnapshot } from "../ipc";
 import {
   FLASH_MS,
+  NOTICE_MS,
   clampToArea,
   hasSelection,
   isContextMenuOpen,
@@ -14,15 +15,16 @@ import { useWorkspaceStore } from "./workspace";
 
 describe("ui store", () => {
   beforeEach(() => {
-    useUiStore.setState({ pane: null, flashed: [], selection: null, contextMenu: null });
+    useUiStore.setState({ pane: null, flashed: [], selection: null, contextMenu: null, notice: null });
     useWorkspaceStore.setState({ snapshot: null, loadError: null });
   });
 
-  it("starts with no pane, nothing flashed, no selection and no menu", () => {
+  it("starts with no pane, nothing flashed, no selection, no menu and no notice", () => {
     expect(useUiStore.getState().pane).toBeNull();
     expect(useUiStore.getState().flashed).toEqual([]);
     expect(useUiStore.getState().selection).toBeNull();
     expect(useUiStore.getState().contextMenu).toBeNull();
+    expect(useUiStore.getState().notice).toBeNull();
     expect(isPaneOpen()).toBe(false);
     expect(hasSelection()).toBe(false);
     expect(isContextMenuOpen()).toBe(false);
@@ -122,6 +124,22 @@ describe("ui store", () => {
     s.closeContextMenu();
     expect(useUiStore.getState().contextMenu).toBeNull();
     expect(isContextMenuOpen()).toBe(false);
+  });
+
+  it("showNotice holds one notice, the newest wins, clearNotice clears and is a no-op when clear", () => {
+    const s = useUiStore.getState();
+    s.showNotice("New session arrives in Epic 4");
+    expect(useUiStore.getState().notice).toEqual({ text: "New session arrives in Epic 4" });
+    s.showNotice("Plain terminal arrives in Epic 4");
+    expect(useUiStore.getState().notice).toEqual({ text: "Plain terminal arrives in Epic 4" });
+    s.clearNotice();
+    expect(useUiStore.getState().notice).toBeNull();
+    s.clearNotice();
+    expect(useUiStore.getState().notice).toBeNull();
+  });
+
+  it("a notice lasts 3 s", () => {
+    expect(NOTICE_MS).toBe(3000);
   });
 
   it("selectedProject is the selected project from the snapshot, or null for nothing, a child or a gone project", () => {

@@ -31,6 +31,10 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::workspace_relayout_children,
             ipc::claude_projects_list,
             ipc::projects_status_get,
+            ipc::workspace_remove_project,
+            ipc::project_open_editor,
+            ipc::project_open_folder,
+            ipc::project_reveal_claude_dir,
             ipc::app_quit,
         ])
 }
@@ -429,6 +433,146 @@ mod tests {
 
         let err = invoke_with(&webview, "workspace_relayout_children", InvokeBody::Json(serde_json::json!({ "projectId": "nope" })))
             .expect_err("unknown id");
+        assert_eq!(err, serde_json::json!("unknown project"));
+    }
+
+    #[test]
+    fn workspace_remove_project_is_registered_drops_the_project_and_its_live_status() {
+        let (app, webview, dir) = app_with_ide();
+        {
+            let state = app.state::<super::AppState>();
+            state.write_workspace().workspace.projects[0].expanded = true;
+            let mut live = state.write_live();
+            live.statuses.insert("ide".into(), super::git::ProjectStatus::NotRepo);
+            live.statuses.insert("other".into(), super::git::ProjectStatus::Missing);
+        }
+        let target = super::graph::NodeTarget {
+            kind: super::graph::NodeKind::Session,
+            id: "stub-2-ide".into(),
+        };
+        super::graph::move_node(app.handle(), &target, super::graph::Position { x: 260.0, y: 40.0 }).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            use tauri::Listener;
+            app.listen_any(super::git::poll::STATUS_EVENT, move |event| {
+                let _ = tx.send(event.payload().to_string());
+            });
+        }
+
+        let body = invoke_with(&webview, "workspace_remove_project", InvokeBody::Json(serde_json::json!({ "projectId": "ide" })))
+            .expect("workspace_remove_project should be registered and succeed");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value["workspace"]["projects"], serde_json::json!([]));
+        assert_eq!(value["workspace"]["sessions"], serde_json::json!([]));
+        assert_eq!(value["children"], serde_json::json!([]));
+        assert_eq!(value["revision"], 2);
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("workspace.json")).unwrap()).unwrap();
+        assert_eq!(on_disk["projects"], serde_json::json!([]));
+        assert_eq!(on_disk["sessions"], serde_json::json!([]));
+
+        let live = app.state::<super::AppState>().read_live().statuses.clone();
+        assert_eq!(live.keys().collect::<Vec<_>>(), ["other"], "its status is forgotten, the other's kept");
+        let emitted: serde_json::Value = serde_json::from_str(&rx.try_recv().expect("projects://status emitted")).unwrap();
+        assert_eq!(emitted, serde_json::json!({ "other": { "kind": "missing" } }));
+
+        let err = invoke_with(&webview, "workspace_remove_project", InvokeBody::Json(serde_json::json!({ "projectId": "ide" })))
+            .expect_err("already gone");
+        assert_eq!(err, serde_json::json!("unknown project"));
+        invoke_with(&webview, "workspace_remove_project", InvokeBody::Json(serde_json::json!({})))
+            .expect_err("projectId is required");
+    }
+
+    #[test]
+    fn project_open_editor_is_registered_and_launches_the_templates_program_with_the_folder() {
+        let (app, webview, dir) = app_with_ide();
+        let folder = tempfile::tempdir().unwrap();
+        let folder_path = folder.path().display().to_string();
+        app.state::<super::AppState>().write_workspace().workspace.projects[0].path = folder_path.clone();
+
+        // Unset editor: the notice text, exactly.
+        let err = invoke_with(&webview, "project_open_editor", InvokeBody::Json(serde_json::json!({ "projectId": "ide" })))
+            .expect_err("no editor configured");
+        assert_eq!(err, serde_json::json!(super::ipc::NO_EDITOR));
+        app.state::<super::AppState>().write().settings.external_editor = Some("   ".into());
+        let err = invoke_with(&webview, "project_open_editor", InvokeBody::Json(serde_json::json!({ "projectId": "ide" })))
+            .expect_err("a blank template is unset");
+        assert_eq!(err, serde_json::json!(super::ipc::NO_EDITOR));
+
+        // A script fixture in place of the editor: the template's first token names it, the
+        // rest (`-g {file}:{line}`) is ignored; the folder arrives as its one argument.
+        let out = dir.path().join("argv.txt");
+        let recorder = super::process::fixtures::argv_recorder(dir.path(), "editor", &out);
+        app.state::<super::AppState>().write().settings.external_editor = Some(format!("{} -g {{file}}:{{line}}", recorder.display()));
+        let body = invoke_with(&webview, "project_open_editor", InvokeBody::Json(serde_json::json!({ "projectId": "ide" })))
+            .expect("project_open_editor should be registered and succeed");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value, serde_json::Value::Null);
+        assert_eq!(
+            super::process::fixtures::wait_for_file(&out, std::time::Duration::from_secs(5)),
+            folder_path,
+            "the folder is the only argument"
+        );
+
+        // A program that does not exist, and an unknown project, are notices too.
+        let gone = dir.path().join("no-editor.exe");
+        app.state::<super::AppState>().write().settings.external_editor = Some(gone.display().to_string());
+        let err = invoke_with(&webview, "project_open_editor", InvokeBody::Json(serde_json::json!({ "projectId": "ide" })))
+            .expect_err("missing program");
+        assert_eq!(err, serde_json::json!(format!("external editor {} does not exist", gone.display())));
+        let err = invoke_with(&webview, "project_open_editor", InvokeBody::Json(serde_json::json!({ "projectId": "nope" })))
+            .expect_err("unknown project");
+        assert_eq!(err, serde_json::json!("unknown project"));
+    }
+
+    #[test]
+    fn project_open_folder_is_registered_and_fails_cleanly_without_the_opener_or_the_project() {
+        let (_app, webview, _dir) = app_with_ide();
+        // The mock app has no opener plugin, so a known project gets as far as the opener and
+        // stops there (no file manager ever opens under test); an unknown id stops earlier.
+        let err = invoke_with(&webview, "project_open_folder", InvokeBody::Json(serde_json::json!({ "projectId": "ide" })))
+            .expect_err("no opener under test");
+        assert_eq!(err, serde_json::json!("could not open folder: opener plugin not registered"));
+        let err = invoke_with(&webview, "project_open_folder", InvokeBody::Json(serde_json::json!({ "projectId": "nope" })))
+            .expect_err("unknown project");
+        assert_eq!(err, serde_json::json!("unknown project"));
+    }
+
+    #[test]
+    fn project_reveal_claude_dir_is_registered_and_finds_the_dir_for_the_folder() {
+        let (app, webview, _dir) = app_with_ide();
+        // No Claude home (the mock app never set one): the notice text.
+        let err = invoke_with(&webview, "project_reveal_claude_dir", InvokeBody::Json(serde_json::json!({ "projectId": "ide" })))
+            .expect_err("no claude home");
+        assert_eq!(err, serde_json::json!(super::ipc::NO_CLAUDE_DIR));
+
+        let home = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let project_dir = home.path().join("projects").join("X--ide");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(
+            project_dir.join("s.jsonl"),
+            format!("{{\"type\":\"user\",\"cwd\":{}}}\n", serde_json::to_string(&folder.path().display().to_string()).unwrap()),
+        )
+        .unwrap();
+        app.state::<super::AppState>().claude_home.set(home.path().to_path_buf()).unwrap();
+
+        // The project's folder is not one Claude knows: the notice.
+        let err = invoke_with(&webview, "project_reveal_claude_dir", InvokeBody::Json(serde_json::json!({ "projectId": "ide" })))
+            .expect_err("folder unknown to Claude");
+        assert_eq!(err, serde_json::json!(super::ipc::NO_CLAUDE_DIR));
+
+        // Point the project at that folder: the dir is found and handed to the opener, which
+        // the mock app does not have (so no file manager opens under test).
+        app.state::<super::AppState>().write_workspace().workspace.projects[0].path =
+            dunce::canonicalize(folder.path()).unwrap().display().to_string();
+        let err = invoke_with(&webview, "project_reveal_claude_dir", InvokeBody::Json(serde_json::json!({ "projectId": "ide" })))
+            .expect_err("no opener under test");
+        assert_eq!(err, serde_json::json!("could not open Claude project directory: opener plugin not registered"));
+        assert!(!home.path().join("projects").join("X--ide").join("written").exists(), "nothing written under the home");
+
+        let err = invoke_with(&webview, "project_reveal_claude_dir", InvokeBody::Json(serde_json::json!({ "projectId": "nope" })))
+            .expect_err("unknown project");
         assert_eq!(err, serde_json::json!("unknown project"));
     }
 

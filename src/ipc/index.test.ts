@@ -4,12 +4,16 @@ import {
   claudeProjectsList,
   hasTauriRuntime,
   NoTauriRuntimeError,
+  projectOpenEditor,
+  projectOpenFolder,
   projectPickFolder,
+  projectRevealClaudeDir,
   projectsStatusGet,
   workspaceAddProjects,
   workspaceGet,
   workspaceMoveNode,
   workspaceRelayoutChildren,
+  workspaceRemoveProject,
   workspaceSetExpanded,
   workspaceSetViewport,
   type WorkspaceSnapshot,
@@ -75,6 +79,23 @@ describe("workspace command wrappers", () => {
     expect(invoke).toHaveBeenCalledWith("workspace_move_node", { target, position }, undefined);
     await expect(workspaceRelayoutChildren("p1")).resolves.toBe(snapshot);
     expect(invoke).toHaveBeenCalledWith("workspace_relayout_children", { projectId: "p1" }, undefined);
+  });
+
+  it("the 2.4 wrappers invoke their wire names with { projectId }", async () => {
+    const invoke = vi.fn().mockResolvedValue(snapshot);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await expect(workspaceRemoveProject("p1")).resolves.toBe(snapshot);
+    expect(invoke).toHaveBeenCalledWith("workspace_remove_project", { projectId: "p1" }, undefined);
+    invoke.mockResolvedValue(undefined);
+    await expect(projectOpenEditor("p1")).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenCalledWith("project_open_editor", { projectId: "p1" }, undefined);
+    await expect(projectOpenFolder("p1")).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenCalledWith("project_open_folder", { projectId: "p1" }, undefined);
+    await expect(projectRevealClaudeDir("p1")).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenCalledWith("project_reveal_claude_dir", { projectId: "p1" }, undefined);
+    // Rust's `Err(String)` arrives as the rejection value: the notice text.
+    invoke.mockRejectedValueOnce("No external editor configured — set external_editor in settings");
+    await expect(projectOpenEditor("p1")).rejects.toBe("No external editor configured — set external_editor in settings");
   });
 
   it("workspaceSetViewport invokes workspace_set_viewport with a { viewport } argument", async () => {

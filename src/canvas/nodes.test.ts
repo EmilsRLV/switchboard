@@ -10,6 +10,8 @@ import {
   COLUMN_TOP,
   DRAG_THRESHOLD,
   LIVE_SESSIONS,
+  REVEAL_MARGIN,
+  REVEAL_PAN_MS,
   aheadBehind,
   cardTopLeft,
   chevronCommandId,
@@ -18,6 +20,10 @@ import {
   dropTarget,
   flowIdOf,
   layoutChildren,
+  nearestInDirection,
+  nearestToPoint,
+  nodeRects,
+  panToReveal,
   parseFlowId,
   physicalToClient,
   rightClickTarget,
@@ -25,6 +31,7 @@ import {
   statusLine,
   toFlowNodes,
   type FlowInputs,
+  type NodeRect,
   type ProjectFlowNode,
 } from "./nodes";
 
@@ -372,5 +379,131 @@ describe("physicalToClient", () => {
     expect(physicalToClient({ x: 300, y: 150 }, 1)).toEqual({ x: 300, y: 150 });
     expect(physicalToClient({ x: 300, y: 150 }, 0)).toEqual({ x: 300, y: 150 });
     expect(physicalToClient({ x: 300, y: 150 }, Number.NaN)).toEqual({ x: 300, y: 150 });
+  });
+});
+
+// --- keyboard navigation geometry (the spec's matrix: `ide` at (80,80), `projects` at (480,80)) --
+
+const ideAt = (expanded: boolean) => project("ide", "/p/ide", 80, 80, expanded);
+const projectsAt = project("projects", "/p/projects", 480, 80);
+/** Two stubs in their slots under `ide`. */
+const matrixChildren = [stub(1, "ide"), stub(2, "ide")];
+/** The same, with `session 2` dragged to the right of the card, between the two projects. */
+const draggedChildren = [stub(1, "ide"), stub(2, "ide", { x: 300, y: -20 })];
+
+function rectOf(rects: readonly NodeRect[], kind: NodeRect["target"]["kind"], id: string): NodeRect {
+  const rect = rects.find((r) => r.target.kind === kind && r.target.id === id);
+  if (rect === undefined) throw new Error(`no rect for ${kind}:${id}`);
+  return rect;
+}
+
+describe("nodeRects", () => {
+  it("is every project card at its position, followed by an expanded project's children at parent + slot or stored position", () => {
+    const rects = nodeRects([ideAt(true), projectsAt], draggedChildren);
+    expect(rects).toEqual([
+      { target: { kind: "project", id: "ide" }, x: 80, y: 80, width: CARD_WIDTH, height: CARD_HEIGHT },
+      { target: { kind: "session", id: "stub-1-ide" }, x: 80 + COLUMN_INDENT, y: 80 + COLUMN_TOP, width: CHILD_WIDTH, height: CHILD_HEIGHT },
+      { target: { kind: "session", id: "stub-2-ide" }, x: 80 + 300, y: 80 - 20, width: CHILD_WIDTH, height: CHILD_HEIGHT },
+      { target: { kind: "project", id: "projects" }, x: 480, y: 80, width: CARD_WIDTH, height: CARD_HEIGHT },
+    ]);
+  });
+
+  it("leaves out the children of a collapsed project, and a branch child keeps its kind", () => {
+    const branch: ChildNode = { id: "br", projectId: "projects", kind: "branch", label: "main", detail: null, position: null };
+    const rects = nodeRects([ideAt(false), { ...projectsAt, expanded: true }], [...matrixChildren, branch]);
+    expect(rects.map((r) => r.target)).toEqual([
+      { kind: "project", id: "ide" },
+      { kind: "project", id: "projects" },
+      { kind: "branch", id: "br" },
+    ]);
+    expect(nodeRects([], matrixChildren)).toEqual([]);
+  });
+});
+
+describe("nearestInDirection", () => {
+  const rects = nodeRects([ideAt(true), projectsAt], matrixChildren);
+  const ide = rectOf(rects, "project", "ide");
+  const projects = rectOf(rects, "project", "projects");
+
+  it("→ from ide reaches projects, ← comes back, ↓ with ide expanded reaches session 1", () => {
+    expect(nearestInDirection(ide, rects, "right")?.target).toEqual({ kind: "project", id: "projects" });
+    expect(nearestInDirection(projects, rects, "left")?.target).toEqual({ kind: "project", id: "ide" });
+    expect(nearestInDirection(ide, rects, "down")?.target).toEqual({ kind: "session", id: "stub-1-ide" });
+  });
+
+  it("is null with no candidate in that half-plane, so the selection stays", () => {
+    expect(nearestInDirection(ide, rects, "left")).toBeNull();
+    expect(nearestInDirection(projects, rects, "right")).toBeNull();
+    expect(nearestInDirection(ide, rects, "up")).toBeNull();
+    const collapsed = nodeRects([ideAt(false), projectsAt], matrixChildren);
+    expect(nearestInDirection(rectOf(collapsed, "project", "ide"), collapsed, "down")).toBeNull();
+    expect(nearestInDirection(ide, [ide], "right")).toBeNull();
+  });
+
+  it("uses the half-plane strictly and ranks by primary distance plus twice the perpendicular one", () => {
+    // With `session 2` dragged to (380,60) 208×40 (centre 484,80), from `projects` (centre
+    // 600,120): dx −116, dy −40 → score 196; `ide` (centre 200,120): dx −400 → 400. Left picks the stub.
+    const dragged = nodeRects([ideAt(true), projectsAt], draggedChildren);
+    const fromProjects = rectOf(dragged, "project", "projects");
+    expect(nearestInDirection(fromProjects, dragged, "left")?.target).toEqual({ kind: "session", id: "stub-2-ide" });
+    // Up from `projects`: the stub's centre is 40 above and 116 to the side (40 + 232 = 272),
+    // the only candidate above. Right from `ide` (centre 200,120): the stub (284 + 80 = 364)
+    // beats `projects` (400), so a dragged child can intercept a move between cards.
+    expect(nearestInDirection(fromProjects, dragged, "up")?.target).toEqual({ kind: "session", id: "stub-2-ide" });
+    expect(nearestInDirection(rectOf(dragged, "project", "ide"), dragged, "right")?.target).toEqual({ kind: "session", id: "stub-2-ide" });
+    // A node exactly level is not "above" or "below": strict half-plane.
+    const level = nodeRects([project("a", "/a", 0, 0), project("b", "/b", 1000, 0)], []);
+    expect(nearestInDirection(rectOf(level, "project", "a"), level, "down")).toBeNull();
+    expect(nearestInDirection(rectOf(level, "project", "a"), level, "right")?.target.id).toBe("b");
+    // Weighting: a node 100 right and 60 off axis (score 220) loses to one 200 right on axis (200).
+    const weighted = nodeRects([project("o", "/o", 0, 0), project("near-off", "/n", 100, 60), project("far-on", "/f", 200, 0)], []);
+    expect(nearestInDirection(rectOf(weighted, "project", "o"), weighted, "right")?.target.id).toBe("far-on");
+  });
+
+  it("breaks an equal score by list order", () => {
+    const tied = nodeRects([project("o", "/o", 0, 0), project("second", "/s", 300, 100), project("first", "/f", 300, -100)], []);
+    expect(nearestInDirection(rectOf(tied, "project", "o"), tied, "right")?.target.id).toBe("second");
+  });
+});
+
+describe("nearestToPoint", () => {
+  it("is the rect whose centre is nearest the point, ties to the earlier one, null for none", () => {
+    const rects = nodeRects([ideAt(false), projectsAt], []);
+    expect(nearestToPoint(rects, { x: 150, y: 150 })?.target.id).toBe("ide");
+    expect(nearestToPoint(rects, { x: 700, y: 0 })?.target.id).toBe("projects");
+    // Exactly between the two centres (200,120) and (600,120): the first in the list.
+    expect(nearestToPoint(rects, { x: 400, y: 120 })?.target.id).toBe("ide");
+    expect(nearestToPoint([], { x: 0, y: 0 })).toBeNull();
+  });
+});
+
+describe("panToReveal", () => {
+  const size = { width: 800, height: 600 };
+  const rect: NodeRect = { target: { kind: "project", id: "p" }, x: 1000, y: 100, width: CARD_WIDTH, height: CARD_HEIGHT };
+
+  it("is null when the rect is already inside the margin on both axes", () => {
+    expect(panToReveal(rect, { x: -700, y: 0, zoom: 1 }, size)).toBeNull();
+    expect(panToReveal(rect, { x: -1000 + REVEAL_MARGIN, y: -100 + REVEAL_MARGIN, zoom: 1 }, size)).toBeNull();
+    expect(REVEAL_MARGIN).toBe(16);
+    expect(REVEAL_PAN_MS).toBe(150);
+  });
+
+  it("pans by the smallest delta that brings an off-screen rect inside the margin, zoom unchanged", () => {
+    // Right edge at screen 1240 with the view 800 wide: shift left by 1240 − (800 − 16) = 456.
+    expect(panToReveal(rect, { x: 0, y: 0, zoom: 1 }, size)).toEqual({ x: -456, y: 0, zoom: 1 });
+    // Left of the view: screen x −200 → shift right by 216 (to the 16 px margin).
+    expect(panToReveal(rect, { x: -1200, y: 0, zoom: 1 }, size)).toEqual({ x: -984, y: 0, zoom: 1 });
+    // Above (screen y −100 → shift down by 116) and to the right at once: both axes move.
+    expect(panToReveal(rect, { x: 0, y: -200, zoom: 1 }, size)).toEqual({ x: -456, y: -84, zoom: 1 });
+    // Below: bottom edge at 180·2 + 500 = 860 at zoom 2 → shift up by 860 − 584 = 276; zoom kept.
+    expect(panToReveal(rect, { x: -1700, y: 500, zoom: 2 }, size)).toEqual({ x: -1700, y: 224, zoom: 2 });
+  });
+
+  it("aligns a rect wider than the view on its leading edge", () => {
+    const wide: NodeRect = { ...rect, x: 0, width: 2000 };
+    expect(panToReveal(wide, { x: 100, y: 0, zoom: 1 }, size)).toEqual({ x: 16, y: 0, zoom: 1 });
+    expect(panToReveal(wide, { x: -100, y: 0, zoom: 1 }, size)).toEqual({ x: 16, y: 0, zoom: 1 });
+    // Once there, a repeated reveal is a no-op (no alternating).
+    expect(panToReveal(wide, { x: 16, y: 0, zoom: 1 }, size)).toBeNull();
   });
 });

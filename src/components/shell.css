@@ -59,6 +59,16 @@
   overflow-wrap: anywhere;
 }
 
+/* The transient notice: information, not attention, so muted and without the accent. */
+.banner.is-notice {
+  border-left-color: var(--fg-muted);
+  color: var(--fg-muted);
+}
+
+.banner.is-notice .banner-mark {
+  background: var(--fg-muted);
+}
+
 /* --- pane ---------------------------------------------------------------------------- */
 
 .pane {
@@ -425,4 +435,11 @@
 .context-menu-item.is-selected {
   background: var(--bg);
   box-shadow: inset 2px 0 0 var(--fg-muted);
+}
+
+/* Between menu groups (the tens of `menuOrder`). */
+.context-menu-separator {
+  height: 1px;
+  margin: 0.25rem 0;
+  background: var(--border);
 }

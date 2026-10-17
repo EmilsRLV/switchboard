@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { nodeMenuCommands } from "../commands/nodes";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { menuGroup, nodeMenuCommands } from "../commands/nodes";
 import { runCommand } from "../commands/registry";
 import type { Position } from "../ipc";
 import { clampSelection, paletteKeyAction } from "../state/palette";
@@ -7,11 +7,12 @@ import { clampToArea, useUiStore, type MenuPoint } from "../state/ui";
 
 /**
  * The node context menu (right-click on a project card): the enabled commands tagged
- * `menu: "node"`, at the pointer and kept inside the window. ↑/↓ move, Enter (or a click)
- * runs the item and closes, Esc closes through the `contextMenu.close` command (so the
- * dispatcher owns that key and its precedence), as does a press outside or the app losing
- * focus. The selection it acts on was made when the menu opened; should it stop having any
- * rows (the project left the snapshot), the menu closes itself. Tokens only; no accent.
+ * `menu: "node"` in their fixed `menuOrder`, a 1-px separator between groups, at the pointer
+ * and kept inside the window. ↑/↓ move, Enter (or a click) runs the item and closes, Esc
+ * closes through the `contextMenu.close` command (so the dispatcher owns that key and its
+ * precedence), as does a press outside or the app losing focus. The selection it acts on was
+ * made when the menu opened; should it stop having any rows (the project left the snapshot,
+ * or was removed from it), the menu closes itself. Tokens only; no accent.
  */
 export function ContextMenu() {
   const at = useUiStore((s) => s.contextMenu);
@@ -104,19 +105,26 @@ function ContextMenuPopup({ at }: { at: MenuPoint }) {
       onKeyDown={onKeyDown}
       onContextMenu={(event) => event.preventDefault()}
     >
-      {items.map((item, index) => (
-        <button
-          key={item.id}
-          type="button"
-          className={"context-menu-item" + (index === selected ? " is-selected" : "")}
-          role="menuitem"
-          tabIndex={index === selected ? 0 : -1}
-          onPointerEnter={() => setActive(index)}
-          onClick={() => run(index)}
-        >
-          {item.title}
-        </button>
-      ))}
+      {items.map((item, index) => {
+        const previous = items[index - 1];
+        return (
+          <Fragment key={item.id}>
+            {previous !== undefined && menuGroup(previous) !== menuGroup(item) && (
+              <div className="context-menu-separator" role="separator" />
+            )}
+            <button
+              type="button"
+              className={"context-menu-item" + (index === selected ? " is-selected" : "")}
+              role="menuitem"
+              tabIndex={index === selected ? 0 : -1}
+              onPointerEnter={() => setActive(index)}
+              onClick={() => run(index)}
+            >
+              {item.title}
+            </button>
+          </Fragment>
+        );
+      })}
     </div>
   );
 }

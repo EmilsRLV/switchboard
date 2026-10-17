@@ -9,8 +9,10 @@ text editor.
 Status: **Epic 2 in progress**. The Tauri 2 shell (Rust core, React 19 + TypeScript + Vite UI) builds
 and tests on Windows and Linux (CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). The home
 surface is an infinite canvas whose viewport persists, holding one card per project folder with its git
-state; cards expand into a column of children, every node drags and remembers where it was put, and a
-right-click menu holds the first project actions; keyboard navigation and the rest of the actions come next.
+state; cards expand into a column of children, every node drags and remembers where it was put, the arrow
+keys walk the selection from card to card, and a right-click menu (or the palette) holds the project actions:
+open the folder in the editor or file manager, reveal its Claude project directory, remove it from the canvas,
+with New session and Plain terminal as stubs until Epic 4.
 
 ## Plans
 
@@ -69,16 +71,22 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | `ctrl+,` | Open (toggle) the settings pane. |
 | `ctrl+0` | Fit view: fit every node into the canvas; with no nodes, back to the home viewport (`x 0, y 0, zoom 1`). |
 | `ctrl+q` | Quit. |
+| `←` `→` `↑` `↓` | Move the selection to the nearest node in that direction (see [Keyboard navigation](#keyboard-navigation)); with nothing selected, select the node nearest the middle of the view. Only while no palette, pane or menu is open: those keep their own arrow handling. |
+| Enter | The selected node's default action: a project with children expands or collapses (persisted); a childless project or a child card does nothing yet (sessions attach in Epic 3). Same condition as the arrows. |
 | Esc | One step back, in this order: closes the node context menu, else the palette, else the open pane (settings or import), else clears the selected node. With all of them open, four presses. |
 
-The palette lists eleven commands: Toggle command palette, Add project folder…, Import from Claude…, Open
+`n`, `e` and `/` are reserved for later epics and deliberately unbound; so is Delete (removal is a menu action).
+
+The palette lists seventeen commands: Toggle command palette, Add project folder…, Import from Claude…, Open
 settings, Reveal settings file (only when the file's location is known), Re-detect binaries (not while one
 runs), Fit view (once the canvas has mounted; the two project commands need it too), Quit, and, while a
-project card is selected, Re-layout children plus exactly one of Expand project / Collapse project (neither
-for a project without children). The key-only carriers (the `ctrl+,` toggle and the four Esc commands) are
-registered but hidden from the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron
-on a card runs Expand/Collapse, and the context menu lists the commands tagged for it. Keybindings are not
-editable yet (Epic 9).
+project card is selected, the project actions: New session…, Plain terminal…, Open in external editor, Open
+in file manager, Reveal Claude project dir, Re-layout children, Remove from canvas, plus exactly one of Expand
+project / Collapse project (neither for a project without children). The palette sorts by title. The key-only
+carriers (the `ctrl+,` toggle, the four Esc commands, the four arrows and Enter) are registered but hidden from
+the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron on a card runs
+Expand/Collapse, and the context menu lists the commands tagged for it in its own fixed order. Keybindings are
+not editable yet (Epic 9).
 
 The app is **single-instance** (`tauri-plugin-single-instance`): launching it again focuses and
 un-minimises the running window and the second process exits. Its arguments are ignored (printed to stderr
@@ -121,8 +129,8 @@ ticked folders and closes the pane; Esc closes it. The app only ever **reads** `
 
 Adding a folder that is already on the canvas adds nothing: the existing node is outlined for 1.5 s.
 Dropping a file (not a folder) does nothing. A folder is identified by its canonical path (case-insensitive
-on Windows), so `B:\projects\ide\` and `b:\PROJECTS\ide` are the same project. Nodes cannot be removed or
-renamed yet (Story 2.4).
+on Windows), so `B:\projects\ide\` and `b:\PROJECTS\ide` are the same project. **Remove from canvas** (menu or
+palette) takes a node off again; nodes cannot be renamed yet.
 
 ### Selecting, dragging, expanding
 
@@ -132,9 +140,39 @@ canvas or Esc clears it. **Drag** any node with the left button to move it; a pr
 drag still pans from empty canvas, but not when it starts on a card (xyflow reserves presses on draggable
 nodes); the middle button and Space+drag pan from anywhere, cards included. A right-button
 press-and-release on a project card (again within 4 px) opens its **context menu** at the pointer, kept
-inside the window: Expand project or Collapse project (whichever
-applies, only when the project has children) and Re-layout children. `↑`/`↓` move, Enter or a click runs,
-Esc, a click elsewhere or losing focus closes. Child cards have no menu yet.
+inside the window, in a fixed order with a 1-px rule between the groups:
+
+| Group | Entries | What they do |
+|---|---|---|
+| Sessions | New session…, Plain terminal… | Stubs until Epic 4: each shows the 3 s notice "New session arrives in Epic 4" / "Plain terminal arrives in Epic 4" and nothing else. |
+| Open | Open in external editor, Open in file manager, Reveal Claude project dir | Rust performs each (the webview never spawns a process or touches the file system). The editor is the program named by the first token of `external_editor` in settings, launched detached with the project folder as its only argument (see [Settings](#settings)); the file manager opens the folder itself; the reveal opens `~/.claude/projects/<dir>` for the Claude project whose working directory is this folder (the import pane's comparison), and only if that directory already exists. The editor action is meant for GUI editors: a terminal editor such as vim starts with no window and nothing is seen. |
+| Layout | Expand project or Collapse project (whichever applies, only when the project has children), Re-layout children | As before. |
+| Remove | Remove from canvas | Immediate: no confirmation, no undo. The card, its children, its `sessions[]` refs and `branches`, every edge touching any of them and its live git status go; the selection is cleared if it pointed at the project or one of its children; a relaunch does not bring it back. On a read-only or newer-version `workspace.json` the removal applies in memory only, and the project comes back on relaunch. |
+
+`↑`/`↓` move, Enter or a click runs, Esc, a click elsewhere or losing focus closes. Child cards have no menu
+yet. The same commands are in the palette (by title) while a project card is selected.
+
+An action that cannot run is a **notice**: a muted line in the banner strip, without the accent (it is
+information, not attention), gone after 3 s, one at a time with the newest winning. "No external editor
+configured — set external_editor in settings", "external editor code not found on PATH", "external editor
+C:\Tools\code.exe does not exist", "could not start
+external editor: …", "could not open folder: …", "No Claude project directory for this folder". Only a failed
+removal is a banner (`remove failed: …`, like the other mutations), since the workspace itself did not change.
+
+### Keyboard navigation
+
+The arrow keys move the selection over the nodes as drawn: every project card (240 × 80 at its position) and,
+for an expanded project, its children (208 × 40 at their slot or dragged position); a collapsed project's
+children are not candidates. From the selected node's centre, the candidates are the nodes whose centre lies
+strictly in the arrow's half-plane (for `→`, further right); each is scored by its distance along the arrow's
+axis plus **twice** its distance across it, and the smallest wins (an exact tie goes to the earlier node:
+projects in workspace order, each followed by its children). Nothing that way leaves the selection where it
+is. With nothing selected (or a selected node that is not drawn), any arrow selects the node nearest the
+middle of the view. When the new node is not fully inside the canvas with a 16 px margin, the view pans by the
+smallest distance that shows it, over 150 ms, without changing the zoom, and that pan is persisted like any
+other. The keys are commands like everything else (`selection.move.*`, `selection.activate`), enabled only while
+no palette, pane or context menu is open; xyflow's own keyboard handling is switched off (`disableKeyboardA11y`,
+`nodesFocusable={false}`).
 
 A project with children shows a **chevron** on its card: `▸ 3` while collapsed (the count is the badge),
 `▾` while expanded. Clicking it, or running Expand/Collapse from the menu or palette, toggles the project
@@ -189,7 +227,7 @@ What the canvas shows is persisted in one app-written JSON file beside `settings
 
 The file is written on first launch, when it does not exist (`version: 1`, the home viewport, empty
 `projects`, `branches`, `sessions`, `edges` and null launch `defaults`), when a project is added, expanded,
-collapsed or re-laid-out, at the end of every node drag, and atomically (temp file + rename) at the end of
+collapsed, re-laid-out or removed, at the end of every node drag, and atomically (temp file + rename) at the end of
 every pan or zoom that moved the viewport by more than 0.5 px or 0.001 zoom, so a relaunch opens exactly
 where you left off with the same nodes at the same positions. Loading an existing file never rewrites it.
 Each project is `{ id (UUID v4), path (canonical), label, position, expanded, color, launchDefaults }`;
@@ -214,7 +252,7 @@ banners, never a crash:
 | workspace.json had N projects with an empty or duplicate id | Hand-edited `projects` | Those entries are dropped (the first of a duplicate is kept); the rest load. |
 | cannot write workspace: … | The write failed (no config dir, permissions) | The change lives in memory; the next write is tried again. |
 | project add failed: … | Adding a folder failed (picker, IPC) | Nothing added; the banner clears on the next successful add. |
-| node move failed / expand failed / collapse failed / re-layout failed: … | Rust rejected the change (an id it does not know, no runtime) | Nothing changes; a dropped node goes back to its stored position; the banner clears on the next successful change. |
+| node move failed / expand failed / collapse failed / re-layout failed / remove failed: … | Rust rejected the change (an id it does not know, no runtime) | Nothing changes; a dropped node goes back to its stored position; the banner clears on the next successful change. |
 
 ## Settings
 
@@ -240,7 +278,7 @@ The location is `dirs::config_dir()/switchboard`, so it also resolves on macOS
 | `defaults.effort` | `null` | Launch-sheet default effort. |
 | `defaults.permission_mode` | `"default"` | Launch-sheet default permission mode. |
 | `worktrees_root` | `null` | Root for app-managed worktrees; `null` means `<repo>/.worktrees/`. |
-| `external_editor` | `"code -g {file}:{line}"` when `code` is on PATH, else `null` | Command template for "open in editor". |
+| `external_editor` | `"code -g {file}:{line}"` when `code` is on PATH, else `null` | Command template for "open in editor". The `{file}`/`{line}` form is for Epic 7's file opens; "Open in external editor" on a project card runs only the **first token** with the project folder as its single argument. A path with spaces must be quoted (`"C:\Program Files\…\code.cmd" -g {file}:{line}`). A bare name is resolved like binary detection (PATH, with `PATHEXT` on Windows, so `code` finds `code.cmd`); a path (or `~/…`) is used as given. A `.cmd`/`.bat` runs through `cmd.exe` without a console window; the child is detached, never waited on. `null` makes the action a notice. |
 | `shell` | Windows: `"pwsh"` if present, else `"powershell"`; Linux: `$SHELL` (`null` when unset) | Shell for plain terminals. |
 | `theme` | `"dark"` | UI theme. Reserved; not applied yet (the UI is dark-only). |
 | `poll.agents_ms` | `2000` | `claude agents --json` poll interval. |

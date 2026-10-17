@@ -1,10 +1,29 @@
 //! Running a child process to completion with a timeout and no console window. Shared by
 //! binary detection (`<bin> --version`) and `git/` (`git status`): spawn with piped stdio,
-//! drain both pipes on their own threads, poll for exit and kill at the deadline.
+//! drain both pipes on their own threads, poll for exit and kill at the deadline. Also the
+//! one *detached* spawn ([`spawn_detached`]) behind "Open in external editor", which starts
+//! a program and does not wait for it.
 
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+/// Windows: start the child without a console window of its own.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Apply the no-console flag on Windows; a no-op elsewhere.
+fn no_window(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
 
 /// Why a child process produced no usable output.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -58,12 +77,7 @@ pub fn run(mut cmd: Command, timeout: Duration) -> Result<Completed, RunError> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    no_window(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| RunError::Spawn(e.to_string()))?;
 
     // Drain both pipes on their own threads so a chatty child can never block on a full pipe
@@ -102,6 +116,25 @@ pub fn run(mut cmd: Command, timeout: Duration) -> Result<Completed, RunError> {
         stderr.push_str(PIPES_HELD_NOTE);
     }
     Ok(Completed { status, stdout, stderr })
+}
+
+/// Start `cmd` and return at once, never waiting for it: stdin, stdout and stderr are closed
+/// (`Stdio::null()`), no console window is opened on Windows, and the child is reaped on a
+/// thread of its own when it eventually exits (so it never lingers as a zombie on Unix). On
+/// Unix it gets its own process group, so a Ctrl+C or group kill aimed at the app spares it.
+/// Only a failure to start is an error; what the program does afterwards is its own business.
+pub fn spawn_detached(mut cmd: Command) -> Result<(), RunError> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    no_window(&mut cmd);
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let mut child = cmd.spawn().map_err(|e| RunError::Spawn(e.to_string()))?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// How long after the timeout the pipe readers may still deliver before we stop waiting.
@@ -146,6 +179,29 @@ pub(crate) mod fixtures {
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    /// A script fixture that writes its first argument (unquoted) to `out` and exits; what
+    /// a test points "Open in external editor" at instead of a real editor.
+    pub(crate) fn argv_recorder(dir: &Path, name: &str, out: &Path) -> PathBuf {
+        // The redirect comes first so a path ending in a digit cannot read as `1>`.
+        let windows = format!("@>\"{}\" echo %~1\n", out.display());
+        let unix = format!("printf '%s\\n' \"$1\" > '{}'\n", out.display());
+        script(dir, name, &windows, &unix)
+    }
+
+    /// Wait (bounded) for a fixture's output file to appear, then read it trimmed.
+    pub(crate) fn wait_for_file(path: &Path, timeout: std::time::Duration) -> String {
+        let started = std::time::Instant::now();
+        loop {
+            if let Ok(text) = std::fs::read_to_string(path)
+                && !text.trim().is_empty()
+            {
+                return text.trim().to_string();
+            }
+            assert!(started.elapsed() < timeout, "{} not written within {timeout:?}", path.display());
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
     }
 
@@ -213,6 +269,25 @@ mod tests {
     fn run_reports_a_spawn_failure_for_a_missing_file() {
         let dir = tempfile::tempdir().unwrap();
         let err = run(Command::new(dir.path().join("nope.exe")), Duration::from_secs(5)).unwrap_err();
+        assert!(matches!(err, RunError::Spawn(_)), "{err:?}");
+    }
+
+    #[test]
+    fn spawn_detached_starts_the_program_and_returns_before_it_finishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("argv.txt");
+        let recorder = super::fixtures::argv_recorder(dir.path(), "editor", &out);
+        // On Windows the recorder is a `.cmd`, which std runs through cmd.exe, as the editor launch does.
+        let mut cmd = Command::new(&recorder);
+        cmd.arg("B:/projects/ide");
+        spawn_detached(cmd).unwrap();
+        assert_eq!(super::fixtures::wait_for_file(&out, Duration::from_secs(5)), "B:/projects/ide");
+    }
+
+    #[test]
+    fn spawn_detached_reports_a_spawn_failure_for_a_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = spawn_detached(Command::new(dir.path().join("nope.exe"))).unwrap_err();
         assert!(matches!(err, RunError::Spawn(_)), "{err:?}");
     }
 

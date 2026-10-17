@@ -1,25 +1,39 @@
-// The actions behind dragging, expanding, collapsing and re-laying-out nodes. Rust owns the
-// model: each one ends in a workspace command whose snapshot is applied to the workspace
-// store. Nothing rejects: `runCommand` has no error UI, so a failure lands in the workspace
-// load-error banner.
+// The actions behind dragging, expanding, collapsing, re-laying-out and removing nodes. Rust
+// owns the model: each one ends in a workspace command whose snapshot is applied to the
+// workspace store. Nothing rejects: `runCommand` has no error UI, so a failure lands in the
+// workspace load-error banner.
 
 import { flowIdOf } from "../canvas/nodes";
 import {
   workspaceMoveNode,
   workspaceRelayoutChildren,
+  workspaceRemoveProject,
   workspaceSetExpanded,
   type NodeTarget,
   type Position,
   type WorkspaceSnapshot,
 } from "../ipc";
 import { useCanvasStore } from "../state/canvas";
-import { useUiStore, type MenuPoint } from "../state/ui";
+import { sameTarget, useUiStore, type MenuPoint } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
-import { listCommands, type RegisteredCommand } from "./registry";
+import { listCommands, type Command, type RegisteredCommand } from "./registry";
 
-/** The node context menu's rows: the enabled commands tagged `menu: "node"`, by title. */
+/** Commands without a `menuOrder` sort after every command with one. */
+const UNORDERED = Number.MAX_SAFE_INTEGER;
+
+/**
+ * The node context menu's rows: the enabled commands tagged `menu: "node"`, in `menuOrder`
+ * (then title, which `listCommands` already provides and the stable sort keeps).
+ */
 export function nodeMenuCommands(): RegisteredCommand[] {
-  return listCommands({ enabledOnly: true }).filter((command) => command.menu === "node");
+  return listCommands({ enabledOnly: true })
+    .filter((command) => command.menu === "node")
+    .sort((a, b) => (a.menuOrder ?? UNORDERED) - (b.menuOrder ?? UNORDERED));
+}
+
+/** The menu group of a command (its `menuOrder`'s tens); a separator goes between groups. */
+export function menuGroup(command: Pick<Command, "menuOrder">): number {
+  return Math.floor((command.menuOrder ?? UNORDERED) / 10);
 }
 
 function describe(err: unknown): string {
@@ -30,7 +44,7 @@ function describe(err: unknown): string {
  * Run one mutation and apply what comes back. Resolves true when Rust accepted it; a
  * rejection (unknown id, no runtime) becomes the `workspace.load` banner and resolves false.
  */
-async function mutate(what: string, send: () => Promise<WorkspaceSnapshot>): Promise<boolean> {
+export async function mutate(what: string, send: () => Promise<WorkspaceSnapshot>): Promise<boolean> {
   let snapshot: WorkspaceSnapshot;
   try {
     snapshot = await send();
@@ -71,6 +85,28 @@ export function setExpanded(projectId: string, expanded: boolean): Promise<boole
 /** `project.relayout`: put the project's children back into their column. */
 export function relayoutChildren(projectId: string): Promise<boolean> {
   return mutate("re-layout", () => workspaceRelayoutChildren(projectId));
+}
+
+/**
+ * `project.remove`: take the project off the canvas, immediately (no confirmation, no undo).
+ * Rust drops it with its children's refs, branches, edges and live status and emits both
+ * snapshots; here the selection is cleared when it pointed at the removed project or one of
+ * its children -- and still does once the reply is in (a node selected meanwhile stays).
+ */
+export async function removeProject(projectId: string): Promise<boolean> {
+  const selection = useUiStore.getState().selection;
+  const children = useWorkspaceStore.getState().snapshot?.children ?? [];
+  const pointedAtIt =
+    selection !== null &&
+    (selection.kind === "project"
+      ? selection.id === projectId
+      : children.some((child) => child.projectId === projectId && child.kind === selection.kind && child.id === selection.id));
+  const removed = await mutate("remove", () => workspaceRemoveProject(projectId));
+  if (removed && pointedAtIt) {
+    const ui = useUiStore.getState();
+    if (sameTarget(ui.selection, selection)) ui.clearSelection();
+  }
+  return removed;
 }
 
 /** A right-click on a node: select it, then open the menu at the pointer. */

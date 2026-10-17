@@ -237,6 +237,10 @@ type Commands = {
   workspace_relayout_children: WorkspaceSnapshot;
   claude_projects_list: ClaudeProject[];
   projects_status_get: ProjectStatusMap;
+  workspace_remove_project: WorkspaceSnapshot;
+  project_open_editor: void;
+  project_open_folder: void;
+  project_reveal_claude_dir: void;
   app_quit: void;
 };
 
@@ -342,6 +346,37 @@ export function workspaceMoveNode(target: NodeTarget, position: Position): Promi
  */
 export function workspaceRelayoutChildren(projectId: string): Promise<WorkspaceSnapshot> {
   return call("workspace_relayout_children", { projectId });
+}
+
+/**
+ * `ipc::workspace_remove_project` -- take a project off the canvas with its session refs,
+ * branches, edges and live status. Rust writes `workspace.json`, emits `workspace://changed`
+ * and `projects://status`; rejects with `"unknown project"`.
+ */
+export function workspaceRemoveProject(projectId: string): Promise<WorkspaceSnapshot> {
+  return call("workspace_remove_project", { projectId });
+}
+
+/**
+ * `ipc::project_open_editor` -- launch the program named by the first token of
+ * `settings.external_editor` with the project folder as its only argument, detached.
+ * Rejects with the notice to show: no editor configured, program not found, spawn failure.
+ */
+export function projectOpenEditor(projectId: string): Promise<void> {
+  return call("project_open_editor", { projectId });
+}
+
+/** `ipc::project_open_folder` -- open the project folder in the OS file manager. Rejects with the cause. */
+export function projectOpenFolder(projectId: string): Promise<void> {
+  return call("project_open_folder", { projectId });
+}
+
+/**
+ * `ipc::project_reveal_claude_dir` -- open the `~/.claude/projects/<dir>` directory whose cwd
+ * is the project folder. Rejects with the notice to show when there is none.
+ */
+export function projectRevealClaudeDir(projectId: string): Promise<void> {
+  return call("project_reveal_claude_dir", { projectId });
 }
 
 /** `ipc::claude_projects_list` -- Claude Code's known projects (read-only), newest first. */

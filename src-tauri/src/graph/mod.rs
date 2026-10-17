@@ -8,6 +8,7 @@
 
 pub mod store;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -633,6 +634,54 @@ pub fn relayout_children<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Re
         for branch in st.workspace.branches.iter_mut().filter(|b| b.project_id == project_id) {
             branch.position = None;
         }
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    Ok(persist_and_emit(app, target, &workspace))
+}
+
+/// Take a project off the canvas (`project.remove`): drop the project, every [`SessionRef`]
+/// and [`BranchNode`] of it, and every edge touching any of them (the project itself, any of
+/// its session children -- refs and stubs alike -- or its branches); other projects' refs
+/// and edges are untouched. Immediate and final: no confirmation, no undo. The file is
+/// written (outside the lock) and `workspace://changed` emitted. An unknown id is an `Err`
+/// and nothing changes. The live git status is pruned by the caller (`git::poll::forget`).
+pub fn remove_project<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Result<WorkspaceSnapshot, String> {
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        if !st.workspace.projects.iter().any(|p| p.id == project_id) {
+            return Err("unknown project".to_string());
+        }
+        let session_ids: HashSet<String> = children(&st.workspace, st.stub_children)
+            .into_iter()
+            .filter(|c| c.project_id == project_id && c.kind == ChildKind::Session)
+            .map(|c| c.id)
+            .chain(
+                st.workspace
+                    .sessions
+                    .iter()
+                    .filter(|s| s.project_id == project_id)
+                    .map(|s| s.session_id.clone()),
+            )
+            .collect();
+        let branch_ids: HashSet<String> = st
+            .workspace
+            .branches
+            .iter()
+            .filter(|b| b.project_id == project_id)
+            .map(|b| b.id.clone())
+            .collect();
+        let touches = |node: &NodeRef| match node.kind {
+            NodeType::Project => node.id == project_id,
+            NodeType::Session => session_ids.contains(&node.id),
+            NodeType::Branch => branch_ids.contains(&node.id),
+            NodeType::Folder => false,
+        };
+        st.workspace.edges.retain(|e| !touches(&e.from) && !touches(&e.to));
+        st.workspace.projects.retain(|p| p.id != project_id);
+        st.workspace.sessions.retain(|s| s.project_id != project_id);
+        st.workspace.branches.retain(|b| b.project_id != project_id);
         st.revision += 1;
         (st.write_target(), st.workspace.clone())
     };
@@ -1957,6 +2006,137 @@ mod tests {
 
         assert_eq!(relayout_children(app.handle(), "nope"), Err("unknown project".to_string()));
         assert!(rx.try_recv().is_err());
+    }
+
+    // -- remove_project ---------------------------------------------------------------
+
+    fn edge(id: &str, from: (NodeType, &str), to: (NodeType, &str)) -> Edge {
+        Edge {
+            id: id.into(),
+            from: NodeRef {
+                kind: from.0,
+                id: from.1.into(),
+            },
+            to: NodeRef {
+                kind: to.0,
+                id: to.1.into(),
+            },
+            ..Edge::default()
+        }
+    }
+
+    /// `ide` (expanded, a dragged stub, a branch) and `other` with refs and edges of its own,
+    /// plus edges between the two and one from `ide` to a folder.
+    fn app_with_ide_and_other() -> (tauri::App<MockRuntime>, PathBuf, tempfile::TempDir) {
+        let (app, cfg, path) = app_with_ide(2);
+        {
+            let state = app.state::<AppState>();
+            let mut st = state.write_workspace();
+            st.workspace.projects[0].expanded = true;
+            st.workspace.projects.push(project_with("other"));
+            st.workspace.branches.push(BranchNode {
+                id: "br-ide".into(),
+                project_id: "ide".into(),
+                name: "main".into(),
+                ..BranchNode::default()
+            });
+            st.workspace.branches.push(BranchNode {
+                id: "br-other".into(),
+                project_id: "other".into(),
+                name: "main".into(),
+                ..BranchNode::default()
+            });
+            st.workspace.sessions.push(SessionRef {
+                session_id: "pinned-ide".into(),
+                project_id: "ide".into(),
+                pinned: true,
+                ..SessionRef::default()
+            });
+            st.workspace.edges = vec![
+                edge("e-ide-other", (NodeType::Project, "ide"), (NodeType::Project, "other")),
+                edge("e-stub", (NodeType::Session, "stub-1-ide"), (NodeType::Project, "other")),
+                edge("e-pinned", (NodeType::Project, "other"), (NodeType::Session, "pinned-ide")),
+                edge("e-branch", (NodeType::Branch, "br-ide"), (NodeType::Branch, "br-other")),
+                edge("e-folder", (NodeType::Project, "ide"), (NodeType::Folder, "/elsewhere")),
+                edge("e-other", (NodeType::Project, "other"), (NodeType::Session, "stub-1-other")),
+                edge("e-other-br", (NodeType::Branch, "br-other"), (NodeType::Folder, "/p/ide")),
+            ];
+        }
+        let dragged = |id: &str| NodeTarget {
+            kind: NodeKind::Session,
+            id: id.into(),
+        };
+        move_node(app.handle(), &dragged("stub-2-ide"), Position { x: 260.0, y: 40.0 }).unwrap();
+        move_node(app.handle(), &dragged("stub-1-other"), Position { x: -5.0, y: -5.0 }).unwrap();
+        (app, path, cfg)
+    }
+
+    #[test]
+    fn remove_project_drops_the_project_its_refs_branches_and_edges_writes_and_emits() {
+        let (app, path, _cfg) = app_with_ide_and_other();
+        let rx = listen(&app);
+
+        let snapshot = remove_project(app.handle(), "ide").unwrap();
+
+        assert_eq!(snapshot.revision, 3);
+        assert_eq!(snapshot.workspace.projects.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["other"]);
+        assert_eq!(
+            snapshot.workspace.sessions.iter().map(|s| s.session_id.as_str()).collect::<Vec<_>>(),
+            ["stub-1-other"],
+            "the dragged stub's ref and the pinned ref are gone; the other project's survives"
+        );
+        assert_eq!(snapshot.workspace.branches.iter().map(|b| b.id.as_str()).collect::<Vec<_>>(), ["br-other"]);
+        assert_eq!(
+            snapshot.workspace.edges.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["e-other", "e-other-br"],
+            "every edge touching the project, its sessions or its branches is gone; a folder edge naming its path is not a node edge"
+        );
+        assert!(snapshot.children.iter().all(|c| c.project_id == "other"), "{:?}", snapshot.children);
+        assert_eq!(snapshot.children[0].position, Some(Position { x: -5.0, y: -5.0 }), "the other project's drag survives");
+
+        let disk = on_disk(&path);
+        assert_eq!(disk.projects, snapshot.workspace.projects);
+        assert_eq!(disk.sessions, snapshot.workspace.sessions);
+        assert_eq!(disk.branches, snapshot.workspace.branches);
+        assert_eq!(disk.edges, snapshot.workspace.edges);
+        assert_eq!(rx.try_recv().expect("one event"), snapshot);
+        assert!(rx.try_recv().is_err(), "exactly one");
+        assert_eq!(app.state::<AppState>().read_workspace().snapshot(), snapshot);
+
+        // Gone means gone: a second removal is the unknown-project error.
+        assert_eq!(remove_project(app.handle(), "ide"), Err("unknown project".to_string()));
+    }
+
+    #[test]
+    fn remove_project_rejects_an_unknown_id_without_writing_or_emitting() {
+        let (app, path, _cfg) = app_with_ide_and_other();
+        let before = std::fs::read_to_string(&path).unwrap();
+        let rx = listen(&app);
+        assert_eq!(remove_project(app.handle(), "nope"), Err("unknown project".to_string()));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(app.state::<AppState>().read_workspace().revision, 2);
+        assert_eq!(app.state::<AppState>().read_workspace().workspace.projects.len(), 2);
+    }
+
+    #[test]
+    fn remove_project_on_a_read_only_file_changes_memory_only() {
+        let app = mock_app();
+        let cfg = tempfile::tempdir().unwrap();
+        let path = cfg.path().join("workspace.json");
+        let original = r#"{ "version": 2, "projects": [{ "id": "ide", "path": "/p/ide", "label": "ide" }, { "id": "other", "path": "/p/other", "label": "other" }] }"#;
+        std::fs::write(&path, original).unwrap();
+        initialise_at(app.handle(), Some(path.clone()));
+        let rx = listen(&app);
+
+        let snapshot = remove_project(app.handle(), "ide").unwrap();
+
+        assert_eq!(snapshot.workspace.projects.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["other"]);
+        assert_eq!(snapshot.revision, 1);
+        let ids: Vec<&str> = snapshot.banners.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, ["workspace.version"]);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "file untouched");
+        assert_eq!(rx.try_recv().expect("the in-memory change is announced"), snapshot);
     }
 
     #[test]

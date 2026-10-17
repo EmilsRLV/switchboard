@@ -2,17 +2,29 @@
 // startup. Escape is shared by four commands whose `when`s are mutually exclusive, which is
 // what gives Esc its precedence: the context menu first, then the palette, then whichever
 // pane is open (`pane.close`, which both panes' Close buttons run too), then the selection.
-// Key-only carriers (the Escape commands, the `ctrl+,` toggle) are `hidden`: the dispatcher
-// sees them, the palette does not. The project commands act on the selected project and are
-// tagged `menu: "node"`, which is what the right-click menu lists.
+// The arrows and Enter are the selection's: enabled only while no palette, pane or menu is
+// open, so an open surface keeps its own handling of them. Key-only carriers (the Escape
+// commands, the `ctrl+,` toggle, the arrows, Enter) are `hidden`: the dispatcher sees them,
+// the palette does not. The project commands act on the selected project and are tagged
+// `menu: "node"` with a `menuOrder`, which is what the right-click menu lists, in that order.
 
+import type { Direction } from "../canvas/nodes";
 import { appQuit } from "../ipc";
 import { isCanvasReady, useCanvasStore } from "../state/canvas";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
 import { hasSelection, isContextMenuOpen, isPaneOpen, selectedProject, useUiStore } from "../state/ui";
 import { projectHasChildren } from "../state/workspace";
-import { relayoutChildren, setExpanded } from "./nodes";
+import {
+  activateSelection,
+  moveSelection,
+  newSessionStub,
+  openProjectFolder,
+  openProjectInEditor,
+  plainTerminalStub,
+  revealClaudeProjectDir,
+} from "./navigation";
+import { relayoutChildren, removeProject, setExpanded } from "./nodes";
 import { closeOpenPane, openPane, togglePane } from "./panes";
 import { addProjectFromPicker, isPickerIdle } from "./projects";
 import { registerCommands, type Command } from "./registry";
@@ -20,6 +32,38 @@ import { hasSettingsPath, redetectBinaries, revealSettingsFile } from "./setting
 
 function isPaletteOpen(): boolean {
   return usePaletteStore.getState().isOpen;
+}
+
+/** True while the canvas has the keyboard: no palette, pane or context menu is open. */
+function noSurfaceOpen(): boolean {
+  return !isPaletteOpen() && !isPaneOpen() && !isContextMenuOpen();
+}
+
+/** The `when` of the project actions: a project card is selected. */
+function hasSelectedProject(): boolean {
+  return selectedProject() !== null;
+}
+
+/** A `run` that hands the selected project's id to `action` (nothing when none is selected). */
+function withSelectedProject(action: (projectId: string) => Promise<unknown>): () => Promise<void> {
+  return async () => {
+    const project = selectedProject();
+    if (project !== null) await action(project.id);
+  };
+}
+
+/** One of the four arrow commands: a hidden key-only carrier over `moveSelection`. */
+function arrowCommand(direction: Direction, title: string): Command {
+  return {
+    id: `selection.move.${direction}`,
+    title,
+    keybinding: `arrow${direction}`,
+    hidden: true,
+    when: noSurfaceOpen,
+    run: () => {
+      moveSelection(direction);
+    },
+  };
 }
 
 export function builtinCommands(): Command[] {
@@ -108,10 +152,65 @@ export function builtinCommands(): Command[] {
       when: isCanvasReady,
       run: () => openPane("import"),
     },
+    arrowCommand("left", "Move selection left"),
+    arrowCommand("right", "Move selection right"),
+    arrowCommand("up", "Move selection up"),
+    arrowCommand("down", "Move selection down"),
+    {
+      id: "selection.activate",
+      title: "Activate selection",
+      keybinding: "enter",
+      hidden: true,
+      when: () => hasSelection() && noSurfaceOpen(),
+      run: async () => {
+        await activateSelection();
+      },
+    },
+    {
+      id: "project.newSession",
+      title: "New session…",
+      menu: "node",
+      menuOrder: 10,
+      when: hasSelectedProject,
+      run: newSessionStub,
+    },
+    {
+      id: "project.terminal",
+      title: "Plain terminal…",
+      menu: "node",
+      menuOrder: 11,
+      when: hasSelectedProject,
+      run: plainTerminalStub,
+    },
+    {
+      id: "project.openEditor",
+      title: "Open in external editor",
+      menu: "node",
+      menuOrder: 20,
+      when: hasSelectedProject,
+      run: withSelectedProject(openProjectInEditor),
+    },
+    {
+      id: "project.openFolder",
+      title: "Open in file manager",
+      menu: "node",
+      menuOrder: 21,
+      when: hasSelectedProject,
+      run: withSelectedProject(openProjectFolder),
+    },
+    {
+      id: "project.revealClaudeDir",
+      title: "Reveal Claude project dir",
+      menu: "node",
+      menuOrder: 22,
+      when: hasSelectedProject,
+      run: withSelectedProject(revealClaudeProjectDir),
+    },
     {
       id: "project.expand",
       title: "Expand project",
       menu: "node",
+      menuOrder: 30,
       when: () => {
         const project = selectedProject();
         return project !== null && !project.expanded && projectHasChildren(project.id);
@@ -125,6 +224,7 @@ export function builtinCommands(): Command[] {
       id: "project.collapse",
       title: "Collapse project",
       menu: "node",
+      menuOrder: 30,
       when: () => {
         const project = selectedProject();
         return project !== null && project.expanded && projectHasChildren(project.id);
@@ -138,11 +238,17 @@ export function builtinCommands(): Command[] {
       id: "project.relayout",
       title: "Re-layout children",
       menu: "node",
-      when: () => selectedProject() !== null,
-      run: async () => {
-        const project = selectedProject();
-        if (project !== null) await relayoutChildren(project.id);
-      },
+      menuOrder: 31,
+      when: hasSelectedProject,
+      run: withSelectedProject(relayoutChildren),
+    },
+    {
+      id: "project.remove",
+      title: "Remove from canvas",
+      menu: "node",
+      menuOrder: 40,
+      when: hasSelectedProject,
+      run: withSelectedProject(removeProject),
     },
     {
       id: "app.quit",

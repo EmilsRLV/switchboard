@@ -3,18 +3,20 @@ import type { ChildNode, Project, WorkspaceSnapshot } from "../ipc";
 import { useCanvasStore } from "../state/canvas";
 import { useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
-import { moveNode, openContextMenuFor, relayoutChildren, setExpanded } from "./nodes";
+import { menuGroup, moveNode, openContextMenuFor, relayoutChildren, removeProject, setExpanded } from "./nodes";
 
 vi.mock("../ipc", () => ({
   workspaceSetExpanded: vi.fn(),
   workspaceMoveNode: vi.fn(),
   workspaceRelayoutChildren: vi.fn(),
+  workspaceRemoveProject: vi.fn(),
 }));
 
 const ipc = await import("../ipc");
 const workspaceSetExpanded = vi.mocked(ipc.workspaceSetExpanded);
 const workspaceMoveNode = vi.mocked(ipc.workspaceMoveNode);
 const workspaceRelayoutChildren = vi.mocked(ipc.workspaceRelayoutChildren);
+const workspaceRemoveProject = vi.mocked(ipc.workspaceRemoveProject);
 
 const ide: Project = { id: "ide", path: "/p/ide", label: "ide", position: { x: 0, y: 0 }, expanded: false, color: null, launchDefaults: null };
 
@@ -45,8 +47,55 @@ describe("node actions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useWorkspaceStore.setState({ snapshot: snapshot(1), loadError: "stale" });
-    useUiStore.setState({ pane: null, flashed: [], selection: null, contextMenu: null });
+    useUiStore.setState({ pane: null, flashed: [], selection: null, contextMenu: null, notice: null });
     useCanvasStore.setState({ instance: null, element: null, dragging: {} });
+  });
+
+  it("removeProject applies the snapshot and clears a selection that pointed at the project", async () => {
+    const gone = snapshot(2, { workspace: { ...snapshot(2).workspace, projects: [] }, children: [] });
+    workspaceRemoveProject.mockResolvedValue(gone);
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    await expect(removeProject("ide")).resolves.toBe(true);
+    expect(workspaceRemoveProject).toHaveBeenCalledWith("ide");
+    expect(useWorkspaceStore.getState().snapshot).toBe(gone);
+    expect(useWorkspaceStore.getState().loadError).toBeNull();
+    expect(useUiStore.getState().selection).toBeNull();
+  });
+
+  it("removeProject clears a selected child of the project too, but not another node", async () => {
+    workspaceRemoveProject.mockResolvedValue(snapshot(2));
+    useUiStore.getState().select({ kind: "session", id: "stub-2-ide" });
+    await removeProject("ide");
+    expect(useUiStore.getState().selection).toBeNull();
+
+    useUiStore.getState().select({ kind: "project", id: "other" });
+    await removeProject("ide");
+    expect(useUiStore.getState().selection).toEqual({ kind: "project", id: "other" });
+  });
+
+  it("removeProject leaves a node selected meanwhile alone, and a failure keeps the selection with the banner", async () => {
+    let resolve: (s: WorkspaceSnapshot) => void = () => {};
+    workspaceRemoveProject.mockReturnValueOnce(new Promise<WorkspaceSnapshot>((r) => (resolve = r)));
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    const pending = removeProject("ide");
+    useUiStore.getState().select({ kind: "project", id: "other" });
+    resolve(snapshot(2));
+    await expect(pending).resolves.toBe(true);
+    expect(useUiStore.getState().selection).toEqual({ kind: "project", id: "other" });
+
+    workspaceRemoveProject.mockRejectedValueOnce(new Error("unknown project"));
+    useUiStore.getState().select({ kind: "project", id: "nope" });
+    await expect(removeProject("nope")).resolves.toBe(false);
+    expect(useWorkspaceStore.getState().loadError).toBe("remove failed: unknown project");
+    expect(useUiStore.getState().selection).toEqual({ kind: "project", id: "nope" });
+  });
+
+  it("menuGroup is the tens of menuOrder; a command without one is in the last group", () => {
+    expect(menuGroup({ menuOrder: 10 })).toBe(1);
+    expect(menuGroup({ menuOrder: 11 })).toBe(1);
+    expect(menuGroup({ menuOrder: 22 })).toBe(2);
+    expect(menuGroup({ menuOrder: 40 })).toBe(4);
+    expect(menuGroup({})).toBeGreaterThan(menuGroup({ menuOrder: 99 }));
   });
 
   it("moveNode sends the target and position, applies the snapshot, then clears the drag override", async () => {

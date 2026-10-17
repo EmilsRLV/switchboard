@@ -28,6 +28,8 @@ export type KeyEventLike = {
   preventDefault: () => void;
   /** `KeyboardEvent.target`; read only to tell whether focus is in an editable element. */
   target?: unknown;
+  /** True when a surface (palette, menu) already handled the key; the dispatcher then stays out. */
+  defaultPrevented?: boolean;
 };
 
 /** Keys a bare binding may still claim while focus is in an editable element. */
@@ -120,7 +122,7 @@ export function formatKeybinding(binding: Keybinding): string {
  * shared: `palette.close` only when the palette is open, `pane.close` only otherwise.
  */
 export function handleKeydown(event: KeyEventLike): boolean {
-  if (event.repeat) return false;
+  if (event.repeat || event.defaultPrevented === true) return false;
   const editable = isEditableTarget(event.target);
   for (const command of listCommands({ enabledOnly: true })) {
     const binding = command.binding;

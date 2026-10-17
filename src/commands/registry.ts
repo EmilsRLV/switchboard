@@ -24,6 +24,12 @@ export type Command = {
   hidden?: boolean;
   /** Also listed in a context menu: `"node"` is the menu of a right-clicked node. */
   menu?: "node";
+  /**
+   * Where the command sits in its context menu: ascending, with a separator wherever the
+   * tens digit changes (`10, 11 ┃ 20, 21, 22 ┃ 30, 31 ┃ 40`). The palette ignores it (title
+   * order); commands without one come after those with one.
+   */
+  menuOrder?: number;
   /** The action. A returned promise is awaited only to log a rejection. */
   run: () => void | Promise<void>;
 };

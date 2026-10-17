@@ -77,6 +77,18 @@ pub async fn refresh_ids<R: Runtime>(app: &AppHandle<R>, ids: &[String]) -> Hash
     store_and_emit(app, &state, next)
 }
 
+/// A project has left the canvas: drop its entry from the live map and emit the map when
+/// that changed anything (an id never polled changes nothing). Takes the refresh lock, so a
+/// pass that started before the removal cannot put the entry back afterwards. Returns the
+/// resulting map.
+pub async fn forget<R: Runtime>(app: &AppHandle<R>, id: &str) -> HashMap<String, ProjectStatus> {
+    let state = app.state::<AppState>();
+    let _pass = state.refresh_lock.lock().await;
+    let mut next = state.read_live().statuses.clone();
+    next.remove(id);
+    store_and_emit(app, &state, next)
+}
+
 /// `(id, path, previous status)` of every project on the canvas, or of those in `only`.
 fn projects_of(state: &AppState, only: Option<&[String]>) -> Vec<(String, PathBuf, Option<ProjectStatus>)> {
     let live = state.read_live();
@@ -372,6 +384,28 @@ mod tests {
 
         let none = tauri::async_runtime::block_on(refresh_ids(app.handle(), &[]));
         assert_eq!(none, map);
+    }
+
+    #[test]
+    fn forget_drops_the_id_from_the_live_map_and_emits_only_when_it_was_there() {
+        let app = mock_app();
+        {
+            let state = app.state::<AppState>();
+            let mut live = state.write_live();
+            live.statuses.insert("ide".into(), ProjectStatus::NotRepo);
+            live.statuses.insert("other".into(), ProjectStatus::Missing);
+        }
+        let rx = listen(&app);
+
+        let map = tauri::async_runtime::block_on(forget(app.handle(), "ide"));
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["other"], ProjectStatus::Missing);
+        assert_eq!(app.state::<AppState>().read_live().statuses, map);
+        assert_eq!(rx.try_recv().expect("the removal is announced"), map);
+
+        let same = tauri::async_runtime::block_on(forget(app.handle(), "never-polled"));
+        assert_eq!(same, map);
+        assert!(rx.try_recv().is_err(), "nothing changed, no event");
     }
 
     #[test]

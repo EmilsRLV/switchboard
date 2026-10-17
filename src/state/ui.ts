@@ -1,8 +1,9 @@
 // UI-only state that no snapshot from Rust carries: which pane (if any) slides in from the
 // right, which project nodes are being flashed (a duplicate add highlights the node that is
-// already there), which node is selected and where the context menu is open. Panes are
-// mutually exclusive: opening one closes the other. Selection is one node or none; xyflow
-// never owns it (`elementsSelectable` is off), the canvas writes it here on click and drag.
+// already there), which node is selected, where the context menu is open and the transient
+// notice in the banner strip. Panes are mutually exclusive: opening one closes the other.
+// Selection is one node or none; xyflow never owns it (`elementsSelectable` is off), the
+// canvas writes it here on click and drag, the arrow commands on a key.
 
 import { create } from "zustand";
 import type { NodeTarget, Position, Project } from "../ipc";
@@ -13,8 +14,18 @@ export type Pane = "settings" | "import";
 /** How long a duplicate-add highlight stays on the existing node. */
 export const FLASH_MS = 1500;
 
+/** How long a notice stays in the banner strip. */
+export const NOTICE_MS = 3000;
+
 /** Where the context menu is open: a client (CSS pixel) point, usually the pointer. */
 export type MenuPoint = { x: number; y: number };
+
+/**
+ * A transient line in the banner strip: what a stub will do later, or why an action could
+ * not run. Information, not attention: it renders without the accent. One at a time, the
+ * newest wins; `commands/navigation`'s `notify` clears it after `NOTICE_MS`.
+ */
+export type Notice = { text: string };
 
 export type UiState = {
   /** The open pane, or `null`. */
@@ -25,6 +36,8 @@ export type UiState = {
   selection: NodeTarget | null;
   /** The open context menu's anchor, or `null` while closed. */
   contextMenu: MenuPoint | null;
+  /** The notice showing, or `null`. */
+  notice: Notice | null;
   openPane: (pane: Pane) => void;
   /** Close whichever pane is open (no-op when none is). */
   closePane: () => void;
@@ -39,6 +52,9 @@ export type UiState = {
   clearSelection: () => void;
   openContextMenu: (at: MenuPoint) => void;
   closeContextMenu: () => void;
+  /** Show `text` as the notice, replacing any showing. */
+  showNotice: (text: string) => void;
+  clearNotice: () => void;
 };
 
 const NO_IDS: readonly string[] = Object.freeze([]);
@@ -48,6 +64,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   flashed: NO_IDS,
   selection: null,
   contextMenu: null,
+  notice: null,
   openPane: (pane) => set({ pane }),
   closePane: () => set({ pane: null }),
   togglePane: (pane) => set({ pane: get().pane === pane ? null : pane }),
@@ -72,6 +89,8 @@ export const useUiStore = create<UiState>()((set, get) => ({
   clearSelection: () => set((s) => (s.selection === null ? {} : { selection: null })),
   openContextMenu: (at) => set({ contextMenu: { x: at.x, y: at.y } }),
   closeContextMenu: () => set((s) => (s.contextMenu === null ? {} : { contextMenu: null })),
+  showNotice: (text) => set({ notice: { text } }),
+  clearNotice: () => set((s) => (s.notice === null ? {} : { notice: null })),
 }));
 
 /** True when both name the same node (or both are `null`). */

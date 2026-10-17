@@ -279,6 +279,7 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
       selectNodesOnDrag={false}
       nodesConnectable={false}
       nodesFocusable={false}
+      disableKeyboardA11y
       elementsSelectable={false}
       onInit={onInit}
       onMoveEnd={onMoveEnd}
