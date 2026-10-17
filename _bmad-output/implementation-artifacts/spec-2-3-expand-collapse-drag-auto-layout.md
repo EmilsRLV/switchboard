@@ -2,7 +2,7 @@
 title: 'Story 2.3: Expand, collapse, drag, auto-layout'
 type: 'feature'
 created: '2026-10-17'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '5e10f4026658b9c9ac5ccf8e0f3787165637dbed'
@@ -93,6 +93,7 @@ context:
 - Verification run (2026-10-17, Windows): `cargo test` 192 passed; `cargo clippy --all-targets -- -D warnings` clean; `npm test` 215 passed (16 files); `npx tsc --noEmit` clean; `npx vite build` bundles. The desktop app was not launched (session constraint), so the manual checks (expand/drag/relaunch, 55-node pan) remain to be done.
 
 - Orchestrator (2026-10-17, review + GUI): all three review layers triaged above; 11 patch groups applied by the implementer and re-verified (`cargo test` 193, vitest 223, clippy and `tsc` clean, debug build). GUI pass (foreground-guarded, `SWITCHBOARD_STUB_CHILDREN=3`, two planted projects): a click on the path row selects without writing; palette "Expand project" shows the three-child column and persists `expanded: true`; dragging `session 2` persisted a `sessions[]` ref at (160, 197) relative and dragging the parent persisted x 195; both survived a relaunch; the right-click menu listed Collapse project / Re-layout children, Re-layout pruned the ref; Esc closed the menu first, then cleared the selection; 55 nodes (5 projects × 10 stubs) panned by middle-drag at about 1% of one core with 31 MB RSS. A first run's "failures" were script coordinates (a click on the chevron, the palette left open, a right-click just off the card) and are not findings. One real finding, GUI1, is in the triage log and was settled by amending the matrix row. The 2.2-era README sentence "a right-button drag pans, as before" was corrected accordingly.
+- Orchestrator (2026-10-17, close): committed `cc6f4b0`, pushed; CI run 39038541128 green on ubuntu-24.04 and windows-latest at the first attempt. Nothing deferred beyond the one `deferred-work.md` entry (automated check of the stub env var's startup ordering).
 
 ## Spec Change Log
 
