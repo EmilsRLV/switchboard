@@ -70,6 +70,23 @@ impl Completed {
     }
 }
 
+/// `cmd.spawn()`, retried a few times on Linux's `ETXTBSY` ("Text file busy"): a program that
+/// was just written can briefly still be open for writing in a child another thread forked
+/// meanwhile (the fd is closed only at that child's `exec`), which makes this `exec` fail.
+fn spawn_retrying(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+    const ETXTBSY: i32 = 26;
+    let mut attempts = 0;
+    loop {
+        match cmd.spawn() {
+            Err(err) if cfg!(unix) && err.raw_os_error() == Some(ETXTBSY) && attempts < 10 => {
+                attempts += 1;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            other => return other,
+        }
+    }
+}
+
 /// Run `cmd` to completion. Stdin is closed, stdout/stderr are captured, no console window is
 /// opened on Windows, and a child still running at `timeout` is killed. A non-zero exit is
 /// *not* an error here: the caller reads `status` (git uses exit codes to mean things).
@@ -78,7 +95,7 @@ pub fn run(mut cmd: Command, timeout: Duration) -> Result<Completed, RunError> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     no_window(&mut cmd);
-    let mut child = cmd.spawn().map_err(|e| RunError::Spawn(e.to_string()))?;
+    let mut child = spawn_retrying(&mut cmd).map_err(|e| RunError::Spawn(e.to_string()))?;
 
     // Drain both pipes on their own threads so a chatty child can never block on a full pipe
     // while we wait for it.
@@ -130,7 +147,7 @@ pub fn spawn_detached(mut cmd: Command) -> Result<(), RunError> {
     no_window(&mut cmd);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-    let mut child = cmd.spawn().map_err(|e| RunError::Spawn(e.to_string()))?;
+    let mut child = spawn_retrying(&mut cmd).map_err(|e| RunError::Spawn(e.to_string()))?;
     std::thread::spawn(move || {
         let _ = child.wait();
     });
