@@ -3,14 +3,16 @@
 // A binding is `ctrl+`/`shift+`/`alt+` prefixes plus one key (`"ctrl+shift+k"`, `"escape"`),
 // parsed once when the command is registered and matched against `keydown` events here.
 // Nothing outside this module installs a keydown listener: every shortcut is a command.
-// While focus is in an editable element, bare-key bindings (no modifier) other than
-// escape/enter/arrows are left to the element, so typing never triggers a command. While focus
+// While focus is in an editable element (a select included) or the context menu is open,
+// bare-key bindings (no modifier) other than escape/enter/arrows are left to the element, so
+// typing never triggers a command. While focus
 // is inside a terminal (`[data-terminal]`, xterm's helper textarea included) every key is the
 // terminal's except the two pass-through bindings (`terminal/keys`), so Esc, ctrl+c, ctrl+o and
 // ctrl+k reach the program running there.
 
 import { useEffect } from "react";
 import { isInsideTerminal, layoutKey, terminalKeyAllowed } from "../terminal/keys";
+import { isContextMenuOpen } from "../state/ui";
 import { listCommands, runCommand } from "./registry";
 
 export type Keybinding = {
@@ -41,12 +43,15 @@ export type KeyEventLike = {
 /** Keys a bare binding may still claim while focus is in an editable element. */
 const EDITABLE_PASS_KEYS = new Set(["escape", "enter", "arrowup", "arrowdown", "arrowleft", "arrowright"]);
 
-/** True when the event target is an `<input>`, `<textarea>` or contenteditable element. */
+/**
+ * True when the event target takes typed keys itself: an `<input>`, `<textarea>`, `<select>`
+ * (typing a letter picks an option) or contenteditable element.
+ */
 export function isEditableTarget(target: unknown): boolean {
   if (typeof target !== "object" || target === null) return false;
   const el = target as { tagName?: unknown; isContentEditable?: unknown };
   return (
-    el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable === true
+    el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable === true
   );
 }
 
@@ -131,7 +136,8 @@ export function formatKeybinding(binding: Keybinding): string {
 export function handleKeydown(event: KeyEventLike): boolean {
   if (event.repeat || event.defaultPrevented === true) return false;
   if (isInsideTerminal(event.target) && !terminalKeyAllowed(event)) return false;
-  const editable = isEditableTarget(event.target);
+  // Bare keys are the element's in an editable target, and the menu's while the context menu is open.
+  const editable = isEditableTarget(event.target) || isContextMenuOpen();
   // ctrl+Backquote / ctrl+shift+KeyK match their bindings on any keyboard layout.
   const probe: KeyEventLike = { ...pick(event), key: layoutKey(event) };
   for (const command of listCommands({ enabledOnly: true })) {

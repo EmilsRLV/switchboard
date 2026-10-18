@@ -28,3 +28,8 @@
 - Watermark flow control: pause the PTY reader when xterm's write callbacks fall behind (high/low watermarks); 4.1 only caps the payload per event.
 - A coalescing test that observes event spacing; needs the emitter loop separated from the PTY to be non-flaky.
 - Keyboard-operable terminal pane resize handle (tabIndex, aria-valuenow/min/max, arrow keys).
+
+## From Story 4.2 (launch sheet) review
+
+- A `launch_session` test asserting the system prompt's branch line (present for an attached branch, absent when detached).
+- A test of the app `setup` wiring: the session dir is set and the startup sweep runs.

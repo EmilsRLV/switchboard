@@ -360,6 +360,9 @@ pub struct AppState {
     /// Every terminal's PTY and child (`crate::pty`, Story 4.1). Each terminal has its own
     /// locks; none is held across PTY I/O.
     pub terms: crate::pty::TermManager,
+    /// The session launcher (`crate::claude::launch`, Story 4.2): the temp folder for
+    /// per-session settings files, the files it wrote, the ids proposed to open sheets.
+    pub launcher: crate::claude::launch::Launcher,
 }
 
 impl AppState {

@@ -22,11 +22,9 @@ const projectOpenFolder = vi.mocked(ipc.projectOpenFolder);
 const projectRevealClaudeDir = vi.mocked(ipc.projectRevealClaudeDir);
 
 const {
-  NEW_SESSION_NOTICE,
   activateSelection,
   clickNode,
   moveSelection,
-  newSessionStub,
   notify,
   openProjectFolder,
   openProjectInEditor,
@@ -275,16 +273,6 @@ describe("notices", () => {
     vi.advanceTimersByTime(2999);
     expect(useUiStore.getState().notice).toEqual({ text: "hello" });
     vi.advanceTimersByTime(1);
-    expect(useUiStore.getState().notice).toBeNull();
-  });
-
-  it("the New session stub only says what arrives in Epic 4", () => {
-    vi.useFakeTimers();
-    newSessionStub();
-    expect(useUiStore.getState().notice).toEqual({ text: "New session arrives in Epic 4" });
-    expect(NEW_SESSION_NOTICE).toBe("New session arrives in Epic 4");
-    expect(useWorkspaceStore.getState().loadError).toBeNull();
-    vi.advanceTimersByTime(3000);
     expect(useUiStore.getState().notice).toBeNull();
   });
 

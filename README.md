@@ -12,7 +12,8 @@ surface is an infinite canvas whose viewport persists, holding one card per proj
 state; cards expand into a column of children, every node drags and remembers where it was put, the arrow
 keys walk the selection from card to card, and a right-click menu (or the palette) holds the project actions:
 open the folder in the editor or file manager, reveal its Claude project directory, remove it from the canvas,
-open a plain terminal in it (see [Terminal](#terminal)), with New session as a stub until Epic 4. Expanded, a project lists its Claude Code
+open a plain terminal in it (see [Terminal](#terminal)), or start a Claude session in it (see
+[Starting sessions](#starting-sessions)). Expanded, a project lists its Claude Code
 sessions, past and running: a running session shows `busy` or `idle` and the card counts it in its `N live`
 badge; sessions running in folders not on the canvas wait in the Elsewhere tray. A session that just finished
 its turn turns the accent and makes its project glow until it is selected, with an optional OS toast while the
@@ -86,23 +87,25 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | `ctrl+,` | Open (toggle) the settings pane. |
 | `ctrl+0` | Fit view: fit every node into the canvas; with no nodes, back to the home viewport (`x 0, y 0, zoom 1`). |
 | `ctrl+q` | Quit. |
+| `n` | New session…: with a project selected, open the launch sheet (see [Starting sessions](#starting-sessions)); on a session or branch it does nothing. Not while focus is in a text field or a select, nor while the context menu is open. |
 | ``ctrl+` `` | Toggle terminal: hide the terminal pane, or show it again with the last terminal focused. Works with focus in the terminal too. |
 | `ctrl+shift+k` | The palette's second binding: the same toggle as `ctrl+k`, and the one that still works with focus in a terminal (where `ctrl+k` is the shell's). |
 | `ctrl+j` | Go to session that needs you: the session that has been `finished` (or `waiting`) longest is revealed and selected, its project expanded first when collapsed (see [Needs you](#needs-you)). Enabled only while a session on a canvas project needs you; press again for the next one. |
 | `←` `→` `↑` `↓` | Move the selection to the nearest node in that direction (see [Keyboard navigation](#keyboard-navigation)); with nothing selected, select the node nearest the middle of the view. Only while no palette, pane, menu or Elsewhere list is open: those keep their own arrow handling. |
 | Enter | The selected node's default action: a project with children expands or collapses (persisted); a `show all (N)` / `show fewer` row toggles the column (see [Sessions](#sessions)); a childless project or a child card does nothing yet (resume and fork arrive in Epic 4). Same condition as the arrows. |
-| Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings, import or terminal), else clears the selected node. With all of them open, five presses. With focus in a terminal Esc is the terminal's (see [Terminal](#terminal)). |
+| Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings, import, terminal or the launch sheet), else clears the selected node. With all of them open, five presses. With focus in a terminal Esc is the terminal's (see [Terminal](#terminal)). |
 
-`n`, `e` and `/` are reserved for later epics and deliberately unbound; so is Delete (removal is a menu action).
+`e` and `/` are reserved for later epics and deliberately unbound; so is Delete (removal is a menu action).
 
-The palette lists twenty-four commands: Toggle command palette, Add project folder…, Import from Claude…, Open
+The palette lists twenty-six commands: Toggle command palette, Add project folder…, Import from Claude…, Open
 settings, Reveal settings file (only when the file's location is known), Re-detect binaries (not while one
 runs), Fit view (once the canvas has mounted; the two project commands need it too), Quit, Toggle Elsewhere
 sessions (only while the Elsewhere tray has rows), Go to session that needs you (only while one does),
-Attach in terminal (only while a live session card is
-selected; see [Live sessions](#live-sessions)), Toggle terminal (only while there is a terminal; see
-[Terminal](#terminal)), Kill terminal (only while the pane's terminal runs), Restart terminal (only once it has
-exited), and, while a
+Show terminal (only while a session Switchboard started is selected; see
+[Starting sessions](#starting-sessions)), Attach in terminal (only while a live session card started elsewhere
+is selected; see [Live sessions](#live-sessions)), Toggle terminal (only while there is a terminal; see
+[Terminal](#terminal)), Kill terminal (only while the pane's terminal runs), Restart terminal (only once a plain terminal has
+exited), Close terminal (only once a session terminal has exited), and, while a
 project card is selected, the project actions: New session…, Plain terminal…, Open in external editor, Open
 in file manager, Reveal Claude project dir, Re-layout children, Remove from canvas, plus exactly one of Expand
 project / Collapse project (neither for a project without children) and Show all sessions (only for an
@@ -169,7 +172,7 @@ inside the window, in a fixed order with a 1-px rule between the groups:
 
 | Group | Entries | What they do |
 |---|---|---|
-| Sessions | New session…, Plain terminal… | New session… is a stub until Epic 4: it shows the 3 s notice "New session arrives in Epic 4" and nothing else. Plain terminal… opens the project's terminal (see [Terminal](#terminal)). |
+| Sessions | New session…, Plain terminal… | New session… opens the launch sheet (see [Starting sessions](#starting-sessions)). Plain terminal… opens the project's terminal (see [Terminal](#terminal)). |
 | Open | Open in external editor, Open in file manager, Reveal Claude project dir | Rust performs each (the webview never spawns a process or touches the file system). The editor is the program named by the first token of `external_editor` in settings, launched detached with the project folder as its only argument (see [Settings](#settings)); the file manager opens the folder itself; the reveal opens `~/.claude/projects/<dir>` for the Claude project whose working directory is this folder (the import pane's comparison), and only if that directory already exists. The editor action is meant for GUI editors: a terminal editor such as vim starts with no window and nothing is seen. |
 | Layout | Expand project or Collapse project (whichever applies, only when the project has children), Re-layout children | As before. |
 | Remove | Remove from canvas | Immediate: no confirmation, no undo. The card, its children, its `sessions[]` refs and `branches`, every edge touching any of them and its live git status go; the selection is cleared if it pointed at the project or one of its children; a relaunch does not bring it back. On a read-only or newer-version `workspace.json` the removal applies in memory only, and the project comes back on relaunch. |
@@ -282,9 +285,10 @@ Add folder there adds the subfolder as a project of its own.
 If `claude` stops being found (settings changed, binary removed), the live state is cleared: no states,
 badges, tray or banner until it is found again.
 
-The app started none of these sessions, so all are read-only. **Attach in terminal** (palette, or the session
-card's right-click menu, for a live session only) is a stub until the terminal pane of Epic 4: it shows the
-notice "Attach arrives in Epic 4 (claude attach <id>)".
+A session started elsewhere is read-only. **Attach in terminal** (palette, or the session card's right-click
+menu, for a live session started elsewhere only) is still a stub: it shows the notice "Attach arrives in Epic 4
+(claude attach <id>)". A session Switchboard started has **Show terminal** instead (see
+[Starting sessions](#starting-sessions)).
 
 One failed poll (the CLI cannot start, exits non-zero, times out or prints something that is not a JSON array)
 keeps the last state, so nothing turns exited on a hiccup. After three failures in a row a banner reads
@@ -430,6 +434,71 @@ webview reload gets every terminal back with its recent output.
 GPU reset), it switches to its DOM renderer for the rest of its life: the same output, drawn more slowly. Links
 are underlined on hover but do not open a browser. Its colours come from the design tokens, the 16 ANSI colours
 included (see [Design](#design)).
+
+## Starting sessions
+
+`n` on a selected project (or **New session…** in its menu or the palette) opens the **launch sheet**, a pane on
+the right like settings and import:
+
+| Field | What it is |
+|---|---|
+| Name | The session's name (`--name`). Defaults to `<project label>-<first 4 hex of the session id>`; editable, not blank. |
+| Model | `default`, `fable`, `opus`, `sonnet`, `haiku`, or `custom` with free text (`--model`). |
+| Effort | `default`, `low`, `medium`, `high`, `xhigh`, `max` (`--effort`). |
+| Permission mode | `default`, `manual`, `acceptEdits`, `plan`, `auto`, `dontAsk` (`--permission-mode`). `bypassPermissions` is not offered, and Switchboard never passes `--dangerously-skip-permissions`. |
+| Add-dirs | Extra folders the session may use (`--add-dir` each): **Add folder…** opens the folder dialog ("Add folder for this session"), **Remove** drops a row. Duplicates and the project's own folder are left out; every folder that no longer exists is marked on its row and blocks Start until removed. |
+| First prompt | Optional; sent as the session's first message. |
+| Start in background | Start without opening the terminal. |
+
+Model, effort and permission mode come from the project's last choices, then `defaults` in
+[Settings](#settings), then `default`; each start remembers the three for the project (in `workspace.json`).
+Add-dirs, the prompt, the name and the background toggle are never remembered. A choice left at `default`
+passes no flag, so `claude`'s own default applies.
+
+**Keys.** Enter in a one-line text field or a select starts; Enter in the prompt adds a newline (and on the
+background checkbox or a button does what it does there); `ctrl+Enter` starts from anywhere in the sheet; Esc
+closes it. While Start is disabled the reason shows beside it. If the start is refused (no `claude` found, a
+folder gone, a sheet that is out of date, a `claude.path` that is a `.cmd` / `.bat` on Windows), the sheet stays
+with the reason under Start and nothing is started. Each sheet carries the session id its default name was
+made from; Start uses that id once, so a double Start or a stale sheet is refused rather than starting twice.
+
+**Windows: use the native `claude.exe`.** The npm package installs `claude` as a `claude.cmd` shim, and running
+a batch file would let `cmd.exe` re-parse the prompt, so a `claude.path` that is (or resolves through
+`PATHEXT` to) a `.cmd` / `.bat` is refused. Install Claude Code with the native installer and point
+`claude.path` at its `claude.exe` (or leave it unset if the native one comes first on PATH); to switch from
+npm, uninstall the global npm package after installing the native one.
+
+**What runs.** Rust assigns a fresh session id and runs, as separate arguments (never a shell string):
+
+```
+<claude> --session-id <uuid> --name <name> [--model <m>] [--effort <e>] [--permission-mode <p>] [--add-dir <d>]…
+         --settings <session dir>/<uuid>.settings.json --append-system-prompt <context> [<prompt>]
+```
+
+in the project folder, in a terminal (`TERM=xterm-256color`, `COLORTERM=truecolor`, `SWITCHBOARD_NODE=<uuid>`).
+`<context>` is a few lines saying the session runs inside Switchboard, with the project's label, folder and
+branch (when known) and the session's name and node id; no instructions. The settings file holds `{}` for now
+(hooks arrive in Story 4.3); your own Claude settings are untouched and nothing is written under `~/.claude`.
+The session dir is per user: `%TEMP%\switchboard\sessions` on Windows, `$XDG_RUNTIME_DIR/switchboard/sessions`
+on Linux (else `~/.cache/switchboard/sessions`). On Linux the folder is created 0700 and refused if another
+user owns it or it is a symlink, and each file is created new (0600), never overwritten. The file is deleted
+when the session's process exits and when the app quits; files a crash left behind are swept at the next start
+once they are a day old. A prompt that starts with `-` is passed after `--`, so it is
+never read as a flag. `--mcp-config` is left out until the MCP server ships.
+
+**On the canvas.** The session appears at once under its project as a child in the muted `starting` state, and
+turns `idle` on its first printable output (or its first poll row); the terminal's own start-up escape
+sequences do not count. In the foreground the terminal pane opens on it,
+focused, and the child is selected (its project expanded); in the background only the child appears. While its
+process runs, the live poll not listing it yet never marks it `exited`; when the process ends it turns `exited`
+at once and stays as a historic child. When its transcript appears, it is the same child (matched by session
+id), now with the transcript's title and facts.
+
+**The terminal.** The session's terminal is titled with the session's name and runs in the project folder. It
+has **Kill** but no **Restart**: an exited session is not restarted (resume arrives in Story 4.4). Once it has
+exited, **Close** (`terminal.close`) forgets the terminal and its output. **Show
+terminal** (the session card's menu, or the palette, with the session selected) opens the pane on it again.
+Quitting the app kills the session like any terminal.
 
 ## Settings
 

@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChildNode, LiveSession, LiveSnapshot, Position, Project, SessionState, SettingsSnapshot, Viewport, WorkspaceSnapshot } from "../ipc";
 import { useCanvasStore, type CanvasInstance } from "../state/canvas";
 import { useImportStore } from "../state/import";
+import { useLaunchStore } from "../state/launch";
+import { useTerminalStore } from "../state/terminals";
 import { EMPTY_LIVE, unmarkAcknowledging, useLiveStore } from "../state/live";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
@@ -48,7 +50,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the thirty-six commands with the spec's keybindings", () => {
+  it("register the thirty-eight commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
@@ -80,9 +82,11 @@ describe("built-in commands", () => {
       "selection.move.right",
       "selection.move.up",
       "session.attach",
+      "session.showTerminal",
       "settings.open",
       "settings.reveal",
       "settings.toggle",
+      "terminal.close",
       "terminal.kill",
       "terminal.restart",
       "terminal.toggle",
@@ -95,11 +99,11 @@ describe("built-in commands", () => {
     expect(getCommand("selection.move.up")?.keybinding).toBe("arrowup");
     expect(getCommand("selection.move.down")?.keybinding).toBe("arrowdown");
     expect(getCommand("selection.activate")?.keybinding).toBe("enter");
-    for (const id of ["project.newSession", "project.terminal", "project.openEditor", "project.openFolder", "project.revealClaudeDir", "project.remove"]) {
+    for (const id of ["project.terminal", "project.openEditor", "project.openFolder", "project.revealClaudeDir", "project.remove", "session.showTerminal"]) {
       expect(getCommand(id)?.keybinding, id).toBeUndefined();
     }
-    // `n`, `e`, `/` and Delete stay unbound.
-    expect(listCommands().map((c) => c.keybinding)).not.toContain("n");
+    // `n` opens the launch sheet (Story 4.2); `e`, `/` and Delete stay unbound.
+    expect(getCommand("project.newSession")?.keybinding).toBe("n");
     expect(listCommands().map((c) => c.keybinding)).not.toContain("e");
     expect(listCommands().map((c) => c.keybinding)).not.toContain("/");
     expect(listCommands().map((c) => c.keybinding)).not.toContain("delete");
@@ -126,7 +130,7 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the twenty-four actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the twenty-six actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
@@ -147,15 +151,17 @@ describe("built-in commands", () => {
       "project.terminal",
       "project.toggleShowAll",
       "session.attach",
+      "session.showTerminal",
       "settings.open",
       "settings.reveal",
+      "terminal.close",
       "terminal.kill",
       "terminal.restart",
       "terminal.toggle",
     ]);
   });
 
-  it("exactly the ten project commands and Attach are tagged for the node menu, and the menu lists none without a selection", () => {
+  it("exactly the ten project commands, Show terminal and Attach are tagged for the node menu, and the menu lists none without a selection", () => {
     expect(
       listCommands()
         .filter((c) => c.menu === "node")
@@ -173,13 +179,14 @@ describe("built-in commands", () => {
       "project.terminal",
       "project.toggleShowAll",
       "session.attach",
+      "session.showTerminal",
     ]);
     expect(nodeMenuCommands()).toEqual([]);
   });
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(36);
+    expect(listCommands()).toHaveLength(38);
   });
 
   const PROJECT_ACTIONS = [
@@ -292,16 +299,78 @@ describe("built-in commands", () => {
     expect(titles).toEqual([...titles].sort((a, b) => a.localeCompare(b)));
   });
 
-  it("the New session stub shows its 3 s notice and nothing else", () => {
+  it("n on a project opens the launch sheet with Rust's prefill; on a session or branch it does nothing", async () => {
+    const prefill = { name: "ide-3f2a", model: "opus", effort: "high", permissionMode: "plan" };
+    const invoke = vi.fn().mockResolvedValue(prefill);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(true)], stubs(3)) });
+
+    useUiStore.getState().select({ kind: "session", id: "stub-1-ide" });
+    expect(handleKeydown(key("n"))).toBe(false);
+    expect(invoke).not.toHaveBeenCalled();
+
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    // A bare key typed on a select is the select's; with the context menu open it is the menu's.
+    expect(handleKeydown(key("n", { target: { tagName: "SELECT" } }))).toBe(false);
+    useUiStore.getState().openContextMenu({ x: 1, y: 1 });
+    expect(handleKeydown(key("n"))).toBe(false);
+    useUiStore.getState().closeContextMenu();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(handleKeydown(key("n"))).toBe(true);
+    await flush();
+    expect(invoke).toHaveBeenCalledWith("launch_defaults", { projectId: "ide" }, undefined);
+    expect(useUiStore.getState().pane).toBe("launch");
+    const sheet = useLaunchStore.getState();
+    expect(sheet.projectId).toBe("ide");
+    expect(sheet.form).toMatchObject({ name: "ide-3f2a", model: "opus", effort: "high", permissionMode: "plan", addDirs: [], prompt: "", background: false });
+    // Open: `n` (typed on one of the sheet's selects) does not reset it.
+    expect(listCommands({ enabledOnly: true }).map((c) => c.id)).not.toContain("project.newSession");
+    // Esc closes it and the form goes.
+    expect(handleKeydown(key("Escape"))).toBe(true);
+    expect(useUiStore.getState().pane).toBeNull();
+    expect(useLaunchStore.getState().form).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it("New session… without a runtime is a notice and no sheet", async () => {
     vi.useFakeTimers();
     useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(false)], stubs(3)) });
     useUiStore.getState().select({ kind: "project", id: "ide" });
     expect(runCommand("project.newSession")).toBe(true);
-    expect(useUiStore.getState().notice).toEqual({ text: "New session arrives in Epic 4" });
-    expect(useWorkspaceStore.getState().loadError).toBeNull();
-    expect(useUiStore.getState().selection).toEqual({ kind: "project", id: "ide" });
-    vi.advanceTimersByTime(3000);
-    expect(useUiStore.getState().notice).toBeNull();
+    await flush();
+    expect(useUiStore.getState().notice?.text).toMatch(/cannot invoke "launch_defaults"/);
+    expect(useUiStore.getState().pane).toBeNull();
+  });
+
+  it("Show terminal is offered for a session Switchboard runs, and Attach then is not", async () => {
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(true)], stubs(3)) });
+    useLiveStore.getState().applySnapshot(liveSnapshot({ "stub-1-ide": { kind: "starting" }, "stub-2-ide": { kind: "busy" } }));
+    const enabled = () => listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.id);
+    useTerminalStore.getState().upsert({
+      id: "session:stub-1-ide",
+      kind: "session",
+      project_id: "ide",
+      title: "ide-stub",
+      cwd: "/p/ide",
+      exited: null,
+      error: null,
+      cols: 80,
+      rows: 24,
+    });
+    useUiStore.getState().select({ kind: "session", id: "stub-1-ide" });
+    expect(enabled()).toContain("session.showTerminal");
+    expect(enabled()).not.toContain("session.attach");
+    expect(nodeMenuCommands().map((c) => [c.title, c.menuOrder])).toEqual([["Show terminal", 9]]);
+    expect(runCommand("session.showTerminal")).toBe(true);
+    await flush();
+    expect(useUiStore.getState().pane).toBe("terminal");
+    expect(useUiStore.getState().activeTerminal).toBe("session:stub-1-ide");
+
+    useUiStore.getState().select({ kind: "session", id: "stub-2-ide" });
+    expect(enabled()).not.toContain("session.showTerminal");
+    expect(enabled()).toContain("session.attach");
+    useTerminalStore.getState().remove(["session:stub-1-ide"]);
+    useUiStore.setState({ pane: null, activeTerminal: null });
   });
 
   it("the three open actions reach their wire names and a failure is a notice, not a banner", async () => {

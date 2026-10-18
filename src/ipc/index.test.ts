@@ -3,6 +3,7 @@ import {
   appInfo,
   claudeProjectsList,
   hasTauriRuntime,
+  launchDefaults,
   liveSessionsGet,
   NoTauriRuntimeError,
   onNotifyReveal,
@@ -16,6 +17,8 @@ import {
   termRestart,
   termWrite,
   sessionAcknowledge,
+  sessionLaunch,
+  termClose,
   projectOpenEditor,
   projectOpenFolder,
   projectPickFolder,
@@ -29,6 +32,8 @@ import {
   workspaceSetExpanded,
   workspaceSetViewport,
   type ChildNode,
+  type LaunchRequest,
+  type SessionState,
   type WorkspaceSnapshot,
 } from "./index";
 
@@ -193,7 +198,7 @@ describe("terminal command wrappers", () => {
     vi.unstubAllGlobals();
   });
 
-  const info = { id: "plain-p1", project_id: "p1", title: "ide", cwd: "/p/ide", exited: null, error: null, cols: 80, rows: 24 };
+  const info = { id: "plain-p1", kind: "plain" as const, project_id: "p1", title: "ide", cwd: "/p/ide", exited: null, error: null, cols: 80, rows: 24 };
 
   it("invoke their wire names with camelCase arguments", async () => {
     const invoke = vi.fn().mockResolvedValue(info);
@@ -231,5 +236,55 @@ describe("terminal command wrappers", () => {
       data();
       exit();
     }).not.toThrow();
+  });
+});
+
+describe("session launch wrappers", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("launchDefaults invokes launch_defaults with { projectId }", async () => {
+    const prefill = { name: "ide-3f2a", model: "default", effort: "default", permissionMode: "default" };
+    const invoke = vi.fn().mockResolvedValue(prefill);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await expect(launchDefaults("p1")).resolves.toBe(prefill);
+    expect(invoke).toHaveBeenCalledWith("launch_defaults", { projectId: "p1" }, undefined);
+  });
+
+  it("sessionLaunch invokes session_launch with { request, cols, rows }", async () => {
+    const request: LaunchRequest = {
+      projectId: "p1",
+      sessionId: "3f2a-id",
+      name: "ide-3f2a",
+      model: "opus",
+      effort: "high",
+      permissionMode: "plan",
+      addDirs: ["/work/a"],
+      prompt: "hi",
+      background: false,
+    };
+    const term = { id: "session:s1", kind: "session" as const, project_id: "p1", title: "ide-3f2a", cwd: "/p/ide", exited: null, error: null, cols: 120, rows: 30 };
+    const invoke = vi.fn().mockResolvedValue({ session_id: "s1", term });
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await expect(sessionLaunch(request, null, null)).resolves.toEqual({ session_id: "s1", term });
+    expect(invoke).toHaveBeenCalledWith("session_launch", { request, cols: null, rows: null }, undefined);
+    invoke.mockRejectedValueOnce("claude not found; set claude.path in settings");
+    await expect(sessionLaunch(request, 80, 24)).rejects.toBe("claude not found; set claude.path in settings");
+  });
+
+  it("termClose and the titled folder picker invoke their wire names", async () => {
+    const invoke = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await termClose("session:s1");
+    expect(invoke).toHaveBeenCalledWith("term_close", { id: "session:s1" }, undefined);
+    invoke.mockResolvedValue(null);
+    await projectPickFolder("Add folder for this session");
+    expect(invoke).toHaveBeenCalledWith("project_pick_folder", { title: "Add folder for this session" }, undefined);
+  });
+
+  it("the starting state is a session state", () => {
+    const starting: SessionState = { kind: "starting" };
+    expect(starting.kind).toBe("starting");
   });
 });

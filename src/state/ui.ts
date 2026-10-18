@@ -23,7 +23,8 @@ import {
 } from "./live";
 import { useWorkspaceStore } from "./workspace";
 
-export type Pane = "settings" | "import" | "terminal";
+/** The right-hand panes; `launch` is the new-session sheet (Story 4.2). */
+export type Pane = "settings" | "import" | "terminal" | "launch";
 
 /** The terminal pane's narrowest width, in CSS pixels. */
 export const TERMINAL_MIN_WIDTH = 360;

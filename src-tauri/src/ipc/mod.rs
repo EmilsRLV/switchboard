@@ -4,21 +4,26 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime, State};
 use tauri_plugin_opener::OpenerExt;
 
-use crate::claude::live::LiveSnapshot;
+use crate::claude::launch::{self, LaunchPrefill, LaunchRequest};
+use crate::claude::live::{self, LiveSnapshot};
 use crate::claude::{self, ClaudeProject};
 use crate::git::{self, ProjectStatus};
 use crate::graph::{self, AddProjectsResult, NodeTarget, Position, Viewport, WorkspaceSnapshot};
 use crate::process;
-use crate::pty::{self, EventSink, SpawnSpec, TermBuffer, TermInfo};
+use crate::pty::{self, EventSink, SessionHooks, SpawnSpec, TermBuffer, TermInfo, TermKind};
 use crate::settings::detect::Search;
 use crate::settings::{self, AppState, Snapshot};
 
 /// The notice behind "Open in external editor" when `settings.external_editor` is unset.
 pub const NO_EDITOR: &str = "No external editor configured — set external_editor in settings";
+
+/// The folder picker's title unless the caller names one (the launch sheet's add-dir picker
+/// says "Add folder for this session").
+pub const PICK_FOLDER_TITLE: &str = "Add project folder";
 
 /// The notice behind "Reveal Claude project dir" when discovery knows no dir for the folder.
 pub const NO_CLAUDE_DIR: &str = "No Claude project directory for this folder";
@@ -91,13 +96,14 @@ pub async fn workspace_set_viewport<R: Runtime>(app: AppHandle<R>, viewport: Vie
 /// only: it runs inside `spawn_blocking` on the async runtime, never on the main thread.
 /// Under `cfg(test)` (no dialog plugin on the mock app) it replies `None` at once.
 #[tauri::command]
-pub async fn project_pick_folder<R: Runtime>(app: AppHandle<R>) -> Result<Option<String>, String> {
+pub async fn project_pick_folder<R: Runtime>(app: AppHandle<R>, title: Option<String>) -> Result<Option<String>, String> {
     if cfg!(test) {
         return Ok(None);
     }
     use tauri_plugin_dialog::DialogExt;
+    let title = title.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| PICK_FOLDER_TITLE.to_string());
     let picked = tauri::async_runtime::spawn_blocking(move || {
-        let mut dialog = app.dialog().file().set_title("Add project folder");
+        let mut dialog = app.dialog().file().set_title(title);
         // Parented to the main window: modal to it, centred on it, never behind it.
         if let Some(window) = app.get_webview_window("main") {
             dialog = dialog.set_parent(&window);
@@ -400,13 +406,6 @@ pub fn app_quit<R: Runtime>(app: AppHandle<R>) {
 // Terminals (Story 4.1)
 // ---------------------------------------------------------------------------------------
 
-/// What a terminal runs. Only plain shells in this story; Claude sessions arrive in 4.2.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TermKind {
-    Plain,
-}
-
 /// The shell `settings.shell` names (`None` or blank: the platform default), split into the
 /// program and its arguments by [`split_command_line`]. An empty program (`""`) is the
 /// default shell, with no arguments.
@@ -497,7 +496,9 @@ pub async fn term_open<R: Runtime>(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<TermInfo, String> {
-    let TermKind::Plain = kind;
+    if kind != TermKind::Plain {
+        return Err("a session terminal is opened by session_launch".to_string());
+    }
     let state = app.state::<AppState>();
     let cwd = project_path(&state, &project_id)?;
     let title = state
@@ -559,10 +560,173 @@ pub async fn term_kill<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), 
     blocking(move || app.state::<AppState>().terms.kill(&id)).await?
 }
 
+/// Close an exited session terminal: it leaves the list and its output goes (the pane's
+/// "Close", `terminal.close`). A running or plain terminal is an `Err`.
+#[tauri::command]
+pub async fn term_close<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
+    blocking(move || app.state::<AppState>().terms.close(&id)).await?
+}
+
 /// Every terminal, in the order they were opened.
 #[tauri::command]
 pub async fn term_list<R: Runtime>(app: AppHandle<R>) -> Result<Vec<TermInfo>, String> {
     blocking(move || app.state::<AppState>().terms.list()).await
+}
+
+// ---------------------------------------------------------------------------------------
+// Sessions (Story 4.2)
+// ---------------------------------------------------------------------------------------
+
+/// What `session_launch` replies: the new session's id and its terminal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LaunchResult {
+    pub session_id: String,
+    pub term: TermInfo,
+}
+
+/// The launch sheet's prefill for a project: its last choices, else `settings.defaults`, else
+/// `default`, and the default name `<label>-<4 hex>` of the fresh session id the next launch
+/// from this project will use.
+#[tauri::command]
+pub fn launch_defaults(state: State<'_, AppState>, project_id: String) -> Result<LaunchPrefill, String> {
+    let (label, project_defaults) = {
+        let ws = state.read_workspace();
+        let project = ws
+            .workspace
+            .projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| "unknown project".to_string())?;
+        (project.label.clone(), project.launch_defaults.clone())
+    };
+    let settings = state.read().settings.defaults.clone();
+    let session_id = state.launcher.propose(&project_id);
+    let name = launch::default_name(&label, &session_id);
+    Ok(launch::prefill(project_defaults.as_ref(), &settings, session_id, name))
+}
+
+/// Start a Claude session from the launch sheet: Rust assigns the id, writes the settings
+/// file, builds the argv and runs `claude` in a session terminal (`session:<id>`, titled with
+/// the name, in the project folder) at `cols` × `rows` (else 120 × 30). The session is a
+/// `starting` live child at once and turns `idle` on its first output; its exit turns it
+/// `exited` and deletes the settings file. The project remembers the choices. Every refusal is
+/// an `Err` the sheet shows, with nothing started.
+#[tauri::command]
+pub async fn session_launch<R: Runtime>(
+    app: AppHandle<R>,
+    request: LaunchRequest,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<LaunchResult, String> {
+    let size = (cols.unwrap_or(pty::DEFAULT_COLS), rows.unwrap_or(pty::DEFAULT_ROWS));
+    blocking(move || launch_session(&app, request, size)).await?
+}
+
+/// The program a launch runs and its leading arguments: `claude` as detection found it (only
+/// while `found`); tests may put a fixture in its place.
+fn launch_program(state: &AppState) -> Result<(PathBuf, Vec<String>), String> {
+    #[cfg(test)]
+    if let Some(program) = state.launcher.program.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        return Ok(program);
+    }
+    live::claude_binary(&state.read())
+        .map(|path| (path, Vec::new()))
+        .ok_or_else(|| launch::NO_CLAUDE.to_string())
+}
+
+/// The work of [`session_launch`], on a blocking thread. Everything that can be checked
+/// without side effects is checked first; then the sheet's session id is claimed (atomically,
+/// once), and a failure after that undoes only what this call created and gives the id back.
+pub fn launch_session<R: Runtime>(app: &AppHandle<R>, request: LaunchRequest, size: (u16, u16)) -> Result<LaunchResult, String> {
+    let state = app.state::<AppState>();
+    let (path, label) = {
+        let ws = state.read_workspace();
+        let project = ws
+            .workspace
+            .projects
+            .iter()
+            .find(|p| p.id == request.project_id)
+            .ok_or_else(|| "unknown project".to_string())?;
+        (project.path.clone(), project.label.clone())
+    };
+    let (program, leading) = launch_program(&state)?;
+    let extensions = if cfg!(windows) { settings::detect::platform_extensions() } else { Vec::new() };
+    launch::refuse_batch(&launch::pathext_target(&program, &extensions), cfg!(windows))?;
+    let name = launch::validate_name(&request.name)?;
+    let request = LaunchRequest {
+        add_dirs: launch::normalise_add_dirs(&request.add_dirs, &path)?,
+        ..request
+    };
+    let dir = state.launcher.dir().ok_or_else(|| "no folder for session settings files".to_string())?;
+    let session_id = request.session_id.clone();
+    let branch = match state.read_live().statuses.get(&request.project_id) {
+        Some(git::ProjectStatus::Repo(repo)) if !repo.detached => Some(repo.branch.clone()),
+        _ => None,
+    };
+    let context = launch::system_prompt(&label, &path, branch.as_deref(), &name, &session_id);
+    let mut args = leading;
+    args.extend(launch::build_args(&request, &session_id, &launch::settings_path(&dir, &session_id), &context)?);
+
+    // The id the sheet showed, once: a stale sheet or a second start is refused here.
+    state.launcher.claim(&request.project_id, &session_id)?;
+    let give_back = || state.launcher.unclaim(&request.project_id, &session_id);
+    let term_id = pty::session_id(&session_id);
+    if state.terms.get(&term_id).is_some() {
+        give_back();
+        return Err(launch::ID_IN_USE.to_string());
+    }
+    // In the live map before the spawn, so the first output always finds it; an id the map
+    // already knows is refused (it is someone else's).
+    {
+        let mut map = state.write_sessions_live();
+        if map.sessions.contains_key(&session_id) {
+            drop(map);
+            give_back();
+            return Err(launch::ID_IN_USE.to_string());
+        }
+        map.launched(&session_id, Some(request.project_id.clone()), &path, &name, live::now_ms());
+    }
+    let forget = || {
+        live::update_and_emit(app, |map| {
+            map.forget(&session_id);
+            true
+        });
+    };
+    if let Err(message) = state.launcher.write_settings(&session_id) {
+        forget();
+        give_back();
+        return Err(message);
+    }
+    let mut spec = SpawnSpec::new(program, args, &path);
+    spec.env.push((launch::NODE_ENV.to_string(), session_id.clone()));
+    let hooks = {
+        let (output_app, exit_app) = (app.clone(), app.clone());
+        let (output_id, exit_id) = (session_id.clone(), session_id.clone());
+        SessionHooks {
+            first_output: Box::new(move || {
+                live::update_and_emit(&output_app, |map| map.first_output(&output_id));
+            }),
+            exit: Box::new(move |_code| {
+                live::update_and_emit(&exit_app, |map| map.process_exited(&exit_id));
+                exit_app.state::<AppState>().launcher.remove_settings(&exit_id);
+            }),
+        }
+    };
+    let term = match state.terms.open_session(&term_id, &request.project_id, &name, &path, size, spec, sink(app), hooks) {
+        Ok(term) => term,
+        Err(message) => {
+            forget();
+            state.launcher.remove_settings(&session_id);
+            give_back();
+            return Err(message);
+        }
+    };
+    // A `starting` live-only child on the canvas now, before any poll.
+    live::update_and_emit(app, |_| true);
+    if let Err(err) = graph::set_launch_defaults(app, &request.project_id, launch::remembered(&request)) {
+        eprintln!("launch: could not remember the choices: {err}");
+    }
+    Ok(LaunchResult { session_id, term })
 }
 
 #[cfg(test)]

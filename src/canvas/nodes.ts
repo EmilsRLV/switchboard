@@ -490,8 +490,8 @@ export type SessionStateTone = "busy" | "attention" | "muted";
 
 /**
  * How a session's state word is drawn: `busy` in `--fg` with the pulsing dot, `finished` and
- * `waiting` in the accent with the pulsing dot (attention), every other state (idle, exited,
- * unrecognised) muted. `null` for a historic session (no word).
+ * `waiting` in the accent with the pulsing dot (attention), every other state (starting, idle,
+ * exited, unrecognised) muted. `null` for a historic session (no word).
  */
 export function sessionStateTone(state: SessionState | null): SessionStateTone | null {
   if (state === null) return null;

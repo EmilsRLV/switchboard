@@ -4,8 +4,8 @@
 // node is off screen; Enter runs the selected node's default action. The external actions
 // (editor, file manager, Claude project dir) are thin calls into Rust, which performs them;
 // what cannot run is a transient notice over the canvas top, never a banner and never a throw
-// (`runCommand` has no error UI). The remaining Epic 4 stubs (new session, attach) only show
-// what they will do.
+// (`runCommand` has no error UI). The remaining Epic 4 stub (attach, for a session started
+// elsewhere) only shows what it will do.
 
 import {
   nearestInDirection,
@@ -27,9 +27,6 @@ import { acknowledgeIfNeeded, NOTICE_MS, sameTarget, selectedProject, useUiStore
 import { projectHasChildren, useWorkspaceStore } from "../state/workspace";
 import { setExpanded } from "./nodes";
 import type { Timers } from "./projects";
-
-/** The notice of the `project.newSession` stub. */
-export const NEW_SESSION_NOTICE = "New session arrives in Epic 4";
 
 /** The notice of the `session.attach` stub for session `id`. */
 export function attachNotice(id: string): string {
@@ -185,11 +182,6 @@ export function toggleShowAllOfSelected(): boolean {
   return true;
 }
 
-/** `project.newSession`: a stub until Epic 4; says so. */
-export function newSessionStub(): void {
-  notify(NEW_SESSION_NOTICE);
-}
-
 /**
  * The id of the selected session when the live poll has it in a live state (busy, idle or
  * unrecognised); `null` for anything else, an exited or historic session included. The
@@ -202,9 +194,9 @@ export function selectedLiveSessionId(): string | null {
 }
 
 /**
- * `session.attach` ("Attach in terminal"): a stub until the terminal pane of Epic 4; says
- * which `claude attach` it will run. Every live session is read-only here: the app started
- * none of them.
+ * `session.attach` ("Attach in terminal"): a stub for a live session started elsewhere; says
+ * which `claude attach` it will run. A session Switchboard launched has `session.showTerminal`
+ * instead.
  */
 export function attachStub(): void {
   const id = selectedLiveSessionId();

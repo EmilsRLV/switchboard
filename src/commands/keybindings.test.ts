@@ -101,6 +101,7 @@ describe("isEditableTarget", () => {
   it("recognises inputs, textareas and contenteditable elements", () => {
     expect(isEditableTarget({ tagName: "INPUT" })).toBe(true);
     expect(isEditableTarget({ tagName: "TEXTAREA" })).toBe(true);
+    expect(isEditableTarget({ tagName: "SELECT" })).toBe(true);
     expect(isEditableTarget({ tagName: "DIV", isContentEditable: true })).toBe(true);
   });
 

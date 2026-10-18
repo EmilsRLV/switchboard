@@ -23,7 +23,6 @@ import {
   attachStub,
   canToggleShowAll,
   moveSelection,
-  newSessionStub,
   openProjectFolder,
   openProjectInEditor,
   revealClaudeProjectDir,
@@ -32,13 +31,16 @@ import {
 } from "./navigation";
 import { canGoToAttention, goToNextAttention } from "./attention";
 import { relayoutChildren, removeProject, setExpanded } from "./nodes";
+import { canShowSessionTerminal, openLaunchSheet, showSelectedSessionTerminal } from "./sessions";
 import { closeOpenPane, openPane, togglePane } from "./panes";
 import { addProjectFromPicker, isPickerIdle } from "./projects";
 import { registerCommands, type Command } from "./registry";
 import { hasSettingsPath, redetectBinaries, revealSettingsFile } from "./settings";
 import {
   canKillTerminal,
+  canCloseTerminal,
   canRestartTerminal,
+  closeTerminal,
   canToggleTerminal,
   killTerminal,
   openProjectTerminal,
@@ -215,20 +217,34 @@ export function builtinCommands(): Command[] {
       },
     },
     {
+      id: "session.showTerminal",
+      title: "Show terminal",
+      menu: "node",
+      menuOrder: 9,
+      when: canShowSessionTerminal,
+      run: async () => {
+        await showSelectedSessionTerminal();
+      },
+    },
+    {
+      // A live session started elsewhere; one Switchboard launched has "Show terminal".
       id: "session.attach",
       title: "Attach in terminal",
       menu: "node",
       menuOrder: 10,
-      when: () => selectedLiveSessionId() !== null,
+      when: () => selectedLiveSessionId() !== null && !canShowSessionTerminal(),
       run: attachStub,
     },
     {
+      // `n` on a project; on a session or branch it does nothing. Not while the sheet is open,
+      // so `n` typed on one of its selects never resets the form.
       id: "project.newSession",
       title: "New session…",
+      keybinding: "n",
       menu: "node",
       menuOrder: 10,
-      when: hasSelectedProject,
-      run: newSessionStub,
+      when: () => hasSelectedProject() && useUiStore.getState().pane !== "launch",
+      run: withSelectedProject(openLaunchSheet),
     },
     {
       id: "project.terminal",
@@ -259,6 +275,15 @@ export function builtinCommands(): Command[] {
       when: canRestartTerminal,
       run: async () => {
         await restartTerminal();
+      },
+    },
+    {
+      // An exited session terminal is not restarted (resume arrives in Story 4.4): it is closed.
+      id: "terminal.close",
+      title: "Close terminal",
+      when: canCloseTerminal,
+      run: async () => {
+        await closeTerminal();
       },
     },
     {

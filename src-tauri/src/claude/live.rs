@@ -109,10 +109,12 @@ pub fn parse_rows(text: &str) -> Result<Vec<LiveRow>, String> {
 /// a session drops out, and [`SessionState::Finished`] when a session the previous poll saw
 /// `busy` is now `idle` (Story 3.3; see [`LiveMap::apply_at`]). `Waiting` exists for the hooks
 /// of Story 4.3 and is never produced by the poll. On the wire: `{ "kind": "busy" }`,
-/// `{ "kind": "other", "raw": "compacting" }`.
+/// `{ "kind": "other", "raw": "compacting" }`. `Starting` (Story 4.2) is a session the app has
+/// just launched, before its first output or poll row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionState {
+    Starting,
     Busy,
     Idle,
     Waiting,
@@ -145,13 +147,15 @@ impl SessionState {
     }
 }
 
-/// Where a state came from: the poll, or the operator's acknowledgement (selecting a session
-/// that needed attention turns it `Idle` with source `Ack`). Story 4.3 adds hooks.
+/// Where a state came from: the poll, the operator's acknowledgement (selecting a session
+/// that needed attention turns it `Idle` with source `Ack`), or the app itself (`App`, Story
+/// 4.2: a launch, its first PTY output, its PTY exit). Story 4.3 adds hooks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StateSource {
     Poll,
     Ack,
+    App,
 }
 
 /// One session as the live map holds it (and `sessions://live` carries it).
@@ -227,7 +231,18 @@ pub struct LiveMap {
     /// Ids of the sessions polled `busy` since they were last polled `idle` (an `Other` status
     /// in between keeps the mark), so the next `idle` is a finished turn. Memory only.
     pub busy_seen: HashSet<String>,
+    /// Ids of the sessions the app launched whose PTY child still runs (Story 4.2): missing
+    /// from a poll, such a session is carried over unchanged instead of turning exited.
+    pub app_running: HashSet<String>,
+    /// App-launched sessions whose PTY child has exited, with when (ms since the epoch): a
+    /// poll row for one (the CLI lags a moment behind the exit) does not bring it back. An entry
+    /// expires after [`APP_EXITED_TTL_MS`] (or with the session's eviction); a new launch of
+    /// the id clears it.
+    pub app_exited: HashMap<String, i64>,
 }
+
+/// How long a poll row for an app-launched session whose process exited is ignored.
+pub const APP_EXITED_TTL_MS: i64 = 10_000;
 
 impl LiveMap {
     /// [`LiveMap::apply_at`] at the current time.
@@ -265,10 +280,11 @@ impl LiveMap {
                 return Vec::new();
             }
         };
+        self.app_exited.retain(|_, at| now.saturating_sub(*at) <= APP_EXITED_TTL_MS);
         let mut transitions = Vec::new();
         let mut next: BTreeMap<String, LiveSession> = BTreeMap::new();
         for row in rows {
-            if next.contains_key(&row.session_id) {
+            if next.contains_key(&row.session_id) || self.app_exited.contains_key(&row.session_id) {
                 continue;
             }
             let project_id = graph::project_for_cwd(workspace, &row.cwd);
@@ -320,6 +336,12 @@ impl LiveMap {
             if next.contains_key(id) {
                 continue;
             }
+            // The app's own child still runs (or has exited, and said so): the poll gap is not
+            // an exit.
+            if self.app_running.contains(id) || self.app_exited.contains_key(id) {
+                next.insert(id.clone(), previous.clone());
+                continue;
+            }
             let mut gone = previous.clone();
             if gone.state.is_live() {
                 self.exited_order.push_back(id.clone());
@@ -333,6 +355,7 @@ impl LiveMap {
         while self.exited_order.len() > MAX_EXITED {
             if let Some(oldest) = self.exited_order.pop_front() {
                 next.remove(&oldest);
+                self.app_exited.remove(&oldest);
             }
         }
         self.exited = self.exited_order.iter().cloned().collect();
@@ -340,6 +363,105 @@ impl LiveMap {
         self.failures = 0;
         self.banner = None;
         transitions
+    }
+
+    /// The app launched session `id` in `cwd` (the project's folder) under `project_id`, named
+    /// `name`, at `started_at` (ms since the epoch): it is `Starting` (source `App`) at once,
+    /// and app-running until [`LiveMap::process_exited`]. Any earlier record of the id is
+    /// replaced.
+    pub fn launched(&mut self, id: &str, project_id: Option<String>, cwd: &str, name: &str, started_at: i64) {
+        self.sessions.insert(
+            id.to_string(),
+            LiveSession {
+                state: SessionState::Starting,
+                source: StateSource::App,
+                pid: None,
+                kind: Some("interactive".to_string()),
+                name: Some(name.to_string()),
+                project_id,
+                cwd: cwd.to_string(),
+                started_at: Some(started_at),
+                attention_since: None,
+            },
+        );
+        self.exited_order.retain(|known| known != id);
+        self.exited.remove(id);
+        self.busy_seen.remove(id);
+        self.app_exited.remove(id);
+        self.app_running.insert(id.to_string());
+    }
+
+    /// Session `id`'s PTY printed its first output: `Starting` turns `Idle` (source `App`).
+    /// Returns whether anything changed (a poll row may have got there first).
+    pub fn first_output(&mut self, id: &str) -> bool {
+        match self.sessions.get_mut(id) {
+            Some(session) if session.state == SessionState::Starting => {
+                session.state = SessionState::Idle;
+                session.source = StateSource::App;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// [`LiveMap::process_exited_at`] at the current time.
+    pub fn process_exited(&mut self, id: &str) -> bool {
+        self.process_exited_at(id, now_ms())
+    }
+
+    /// Session `id`'s PTY child exited at `now`: it is no longer app-running and turns `Exited`
+    /// (source `App`) at once, without waiting for the poll. Returns whether anything changed.
+    pub fn process_exited_at(&mut self, id: &str, now: i64) -> bool {
+        let was_running = self.app_running.remove(id);
+        if was_running {
+            self.app_exited.insert(id.to_string(), now);
+        }
+        let Some(session) = self.sessions.get_mut(id) else {
+            return false;
+        };
+        if !session.state.is_live() {
+            return false;
+        }
+        session.state = SessionState::Exited;
+        session.source = StateSource::App;
+        session.attention_since = None;
+        self.busy_seen.remove(id);
+        self.exited_order.push_back(id.to_string());
+        while self.exited_order.len() > MAX_EXITED {
+            if let Some(oldest) = self.exited_order.pop_front() {
+                self.sessions.remove(&oldest);
+                self.app_exited.remove(&oldest);
+            }
+        }
+        self.exited = self.exited_order.iter().cloned().collect();
+        true
+    }
+
+    /// The map after `claude` stopped being found: everything the poll put there goes, but the
+    /// sessions the app launched (running, or exited moments ago) stay, with both app sets.
+    pub fn cleared_keeping_app(&self) -> LiveMap {
+        let ours = |id: &String| self.app_running.contains(id) || self.app_exited.contains_key(id);
+        let sessions: BTreeMap<String, LiveSession> =
+            self.sessions.iter().filter(|(id, _)| ours(id)).map(|(id, s)| (id.clone(), s.clone())).collect();
+        let exited_order: VecDeque<String> = self.exited_order.iter().filter(|id| sessions.contains_key(*id)).cloned().collect();
+        LiveMap {
+            exited: exited_order.iter().cloned().collect(),
+            exited_order,
+            sessions,
+            app_running: self.app_running.clone(),
+            app_exited: self.app_exited.clone(),
+            ..LiveMap::default()
+        }
+    }
+
+    /// Forget session `id` entirely (a launch whose process never started).
+    pub fn forget(&mut self, id: &str) {
+        self.sessions.remove(id);
+        self.app_running.remove(id);
+        self.app_exited.remove(id);
+        self.busy_seen.remove(id);
+        self.exited.remove(id);
+        self.exited_order.retain(|known| known != id);
     }
 
     /// The operator selected `id`, which they saw needing attention since `seen_since`: a
@@ -487,25 +609,15 @@ pub async fn refresh<R: Runtime>(app: &AppHandle<R>) -> LiveSnapshot {
     let state = app.state::<AppState>();
     let _pass = state.live_lock.lock().await;
     let Some(claude) = claude_binary(&state.read()) else {
-        let cleared = {
-            let mut map = state.write_sessions_live();
-            if *map == LiveMap::default() {
-                None
-            } else {
-                *map = LiveMap::default();
-                Some(map.snapshot())
-            }
-        };
-        return match cleared {
-            Some(snapshot) => {
-                if let Err(err) = app.emit(LIVE_EVENT, &snapshot) {
-                    eprintln!("live sessions: emit failed: {err}");
-                }
-                graph::set_live_children(app, HashMap::new());
-                snapshot
-            }
-            None => state.read_sessions_live().snapshot(),
-        };
+        let mut map = state.write_sessions_live();
+        let kept = map.cleared_keeping_app();
+        if *map != kept {
+            *map = kept;
+            // Announced under the map lock, so snapshots go out in the order they were made.
+            emit_live(app, &map.snapshot());
+            graph::set_live_children(app, map.live_children());
+        }
+        return map.snapshot();
     };
     let polled = tauri::async_runtime::spawn_blocking(move || poll_once(&claude, RUN_TIMEOUT))
         .await
@@ -519,18 +631,19 @@ pub async fn refresh<R: Runtime>(app: &AppHandle<R>) -> LiveSnapshot {
 pub fn apply_and_emit<R: Runtime>(app: &AppHandle<R>, polled: Result<Vec<LiveRow>, String>) -> LiveSnapshot {
     let state = app.state::<AppState>();
     let workspace = state.read_workspace().workspace.clone();
-    let (before, after, children, mut transitions) = {
+    let (after, mut transitions) = {
         let mut map = state.write_sessions_live();
         let before = map.snapshot();
         let transitions = map.apply(polled, &workspace);
-        (before, map.snapshot(), map.live_children(), transitions)
+        let after = map.snapshot();
+        // Announced under the map lock: a launched session's first-output or exit change made
+        // on a PTY thread can never be overtaken by an older snapshot.
+        if after != before {
+            emit_live(app, &after);
+        }
+        graph::set_live_children(app, map.live_children());
+        (after, transitions)
     };
-    if after != before
-        && let Err(err) = app.emit(LIVE_EVENT, &after)
-    {
-        eprintln!("live sessions: emit failed: {err}");
-    }
-    graph::set_live_children(app, children);
     if !transitions.is_empty() {
         {
             let ws = state.read_workspace();
@@ -554,22 +667,41 @@ pub fn apply_and_emit<R: Runtime>(app: &AppHandle<R>, polled: Result<Vec<LiveRow
     after
 }
 
+/// Change the stored map with `change` (which says whether it changed anything) and, when it
+/// did, emit `sessions://live` and hand the per-project children to `graph::set_live_children`
+/// (Story 4.2's launch, first output and exit). Returns the snapshot after.
+pub fn update_and_emit<R: Runtime>(app: &AppHandle<R>, change: impl FnOnce(&mut LiveMap) -> bool) -> LiveSnapshot {
+    let state = app.state::<AppState>();
+    let mut map = state.write_sessions_live();
+    let changed = change(&mut map);
+    let snapshot = map.snapshot();
+    if changed {
+        // Under the map lock, so two threads' changes go out in the order they were made.
+        emit_live(app, &snapshot);
+        graph::set_live_children(app, map.live_children());
+    }
+    snapshot
+}
+
+/// Emit `sessions://live` (callers hold the map's write lock, which orders the events).
+fn emit_live<R: Runtime>(app: &AppHandle<R>, snapshot: &LiveSnapshot) {
+    if let Err(err) = app.emit(LIVE_EVENT, snapshot) {
+        eprintln!("live sessions: emit failed: {err}");
+    }
+}
+
 /// Acknowledge `id`, seen needing attention since `seen_since` (the operator selected it; see
 /// [`LiveMap::acknowledge`]). When that changed anything, emits `sessions://live` and returns
 /// the new snapshot (the caller applies it too, so a lost event cannot leave the accent on);
 /// else `None`.
 pub fn acknowledge<R: Runtime>(app: &AppHandle<R>, id: &str, seen_since: Option<i64>) -> Option<LiveSnapshot> {
     let state = app.state::<AppState>();
-    let snapshot = {
-        let mut map = state.write_sessions_live();
-        if !map.acknowledge(id, seen_since) {
-            return None;
-        }
-        map.snapshot()
-    };
-    if let Err(err) = app.emit(LIVE_EVENT, &snapshot) {
-        eprintln!("live sessions: emit failed: {err}");
+    let mut map = state.write_sessions_live();
+    if !map.acknowledge(id, seen_since) {
+        return None;
     }
+    let snapshot = map.snapshot();
+    emit_live(app, &snapshot);
     Some(snapshot)
 }
 
@@ -1150,6 +1282,111 @@ mod tests {
         assert!(app.state::<AppState>().read_workspace().live_children.is_empty());
         tauri::async_runtime::block_on(refresh(app.handle()));
         assert!(rx.try_recv().is_err(), "already empty: quiet");
+    }
+
+    #[test]
+    fn a_launched_session_starts_turns_idle_on_first_output_and_exits_with_its_process() {
+        let ws = workspace_with_ide();
+        let mut map = LiveMap::default();
+        map.launched("s1", Some("ide".into()), ide_path(), "ide-ab12", 100);
+        let s = &map.sessions["s1"];
+        assert_eq!((s.state.clone(), s.source), (SessionState::Starting, StateSource::App));
+        assert_eq!((s.name.as_deref(), s.project_id.as_deref(), s.started_at), (Some("ide-ab12"), Some("ide"), Some(100)));
+        assert!(s.state.is_live() && !s.state.needs_attention());
+        assert_eq!(map.live_children()["ide"][0].id, "s1", "a live-only child before the first poll");
+        assert_eq!(serde_json::to_value(&s.state).unwrap(), serde_json::json!({ "kind": "starting" }));
+        assert_eq!(serde_json::to_value(StateSource::App).unwrap(), serde_json::json!("app"));
+
+        // The poll gap: not in `agents --json` yet, so carried over, not exited.
+        assert!(map.apply_at(Ok(vec![]), &ws, 1).is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Starting);
+        assert!(map.exited.is_empty());
+
+        assert!(map.first_output("s1"));
+        assert_eq!((map.sessions["s1"].state.clone(), map.sessions["s1"].source), (SessionState::Idle, StateSource::App));
+        assert!(!map.first_output("s1"), "once");
+        assert!(!map.first_output("nope"));
+        map.apply_at(Ok(vec![]), &ws, 2);
+        assert_eq!(map.sessions["s1"].state, SessionState::Idle, "still no row: still idle");
+
+        // Poll rows update it as for any session.
+        map.apply_at(one("busy"), &ws, 3);
+        assert_eq!(map.sessions["s1"].state, SessionState::Busy);
+        map.apply_at(Ok(vec![]), &ws, 4);
+        assert_eq!(map.sessions["s1"].state, SessionState::Busy, "a gap while its child runs");
+
+        // The PTY exit: exited at once; a late row does not bring it back.
+        assert!(map.process_exited("s1"));
+        assert_eq!((map.sessions["s1"].state.clone(), map.sessions["s1"].source), (SessionState::Exited, StateSource::App));
+        assert!(map.exited.contains("s1"));
+        assert!(!map.process_exited("s1"), "once");
+        map.apply_at(one("idle"), &ws, 5);
+        assert_eq!(map.sessions["s1"].state, SessionState::Exited);
+        map.apply_at(Ok(vec![]), &ws, 6);
+        assert_eq!(map.sessions["s1"].state, SessionState::Exited);
+        assert!(!map.live_children()["ide"][0].live);
+    }
+
+    #[test]
+    fn a_first_poll_row_turns_a_starting_session_idle_and_forget_drops_it() {
+        let ws = workspace_with_ide();
+        let mut map = LiveMap::default();
+        map.launched("s1", Some("ide".into()), ide_path(), "n", 1);
+        assert!(map.apply_at(one("idle"), &ws, 2).is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Idle);
+        assert_eq!(map.sessions["s1"].source, StateSource::Poll);
+        assert!(!map.first_output("s1"), "already idle");
+
+        map.launched("s2", Some("ide".into()), ide_path(), "n", 1);
+        map.forget("s2");
+        assert!(!map.sessions.contains_key("s2"));
+        assert!(!map.app_running.contains("s2"));
+        // A poll without s1 carries it over: it is app-running.
+        map.apply_at(Ok(vec![]), &ws, 3);
+        assert_eq!(map.sessions["s1"].state, SessionState::Idle, "carried: s1 is app-running");
+    }
+
+    #[test]
+    fn app_exited_entries_expire_are_cleared_by_a_new_launch_and_survive_a_lost_claude() {
+        let ws = workspace_with_ide();
+        let mut map = LiveMap::default();
+        map.launched("s1", Some("ide".into()), ide_path(), "n", 1);
+        assert!(map.process_exited_at("s1", 1_000));
+        assert_eq!(map.app_exited.get("s1"), Some(&1_000));
+        // Within the TTL a lagging row is ignored.
+        map.apply_at(one("idle"), &ws, 1_000 + APP_EXITED_TTL_MS);
+        assert_eq!(map.sessions["s1"].state, SessionState::Exited);
+        // After it, the entry is gone and a row is an ordinary row again.
+        map.apply_at(one("idle"), &ws, 1_001 + APP_EXITED_TTL_MS);
+        assert!(map.app_exited.is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Idle);
+
+        // A new launch of the id clears its entry.
+        map.launched("s2", Some("ide".into()), ide_path(), "n", 1);
+        map.process_exited_at("s2", 5);
+        assert!(map.app_exited.contains_key("s2"));
+        map.launched("s2", Some("ide".into()), ide_path(), "n", 6);
+        assert!(!map.app_exited.contains_key("s2"), "launched clears app_exited");
+        assert!(map.app_running.contains("s2"));
+
+        // claude lost: the poll's sessions go, the app's stay.
+        let kept = map.cleared_keeping_app();
+        assert_eq!(kept.sessions.keys().collect::<Vec<_>>(), ["s2"]);
+        assert!(kept.app_running.contains("s2"));
+        assert_eq!(LiveMap::default().cleared_keeping_app(), LiveMap::default());
+    }
+
+    #[test]
+    fn app_exited_entries_go_with_their_evicted_session() {
+        let mut map = LiveMap::default();
+        for i in 0..=MAX_EXITED {
+            let id = format!("s{i:04}");
+            map.launched(&id, None, "/x", "n", 1);
+            map.process_exited_at(&id, 1);
+        }
+        assert_eq!(map.sessions.len(), MAX_EXITED);
+        assert!(!map.app_exited.contains_key("s0000"), "evicted with its session");
+        assert_eq!(map.app_exited.len(), MAX_EXITED);
     }
 
     #[test]

@@ -316,6 +316,106 @@
   white-space: nowrap;
 }
 
+/* --- launch sheet (Story 4.2) ---------------------------------------------------------- */
+
+.launch-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.launch-label {
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+}
+
+.launch-input {
+  font: inherit;
+  font-size: var(--text-md);
+  color: var(--fg);
+  background: var(--bg);
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.25rem 0.4rem;
+}
+
+.launch-input:hover {
+  border-color: var(--fg-muted);
+}
+
+.launch-input:focus-visible {
+  outline: var(--line) solid var(--focus);
+  outline-offset: 1px;
+}
+
+.launch-prompt {
+  font-family: var(--font-mono);
+  resize: vertical;
+  min-height: 4.5rem;
+}
+
+.launch-hint {
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+
+.launch-dirs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.launch-dir {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  padding: 0.3rem 0.5rem;
+}
+
+.launch-dir + .launch-dir {
+  border-top: var(--line) solid var(--border);
+}
+
+.launch-dir-path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.launch-dir-error {
+  flex-basis: 100%;
+  font-size: var(--text-xs);
+}
+
+.launch-start {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.launch-error {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.launch-check {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: var(--text-md);
+}
+
+.launch-check input:focus-visible {
+  outline: var(--line) solid var(--focus);
+  outline-offset: 1px;
+}
+
 /* --- palette ------------------------------------------------------------------------- */
 
 .palette-backdrop {

@@ -47,15 +47,21 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::term_restart,
             ipc::term_kill,
             ipc::term_list,
+            ipc::term_close,
+            ipc::launch_defaults,
+            ipc::session_launch,
         ])
 }
 
 /// What the app does on its way out: every terminal's child is killed and its PTY closed, so
-/// no shell outlives Switchboard. Idempotent (both `ExitRequested` and `Exit` call it).
+/// no shell or session outlives Switchboard, and every per-session settings file is deleted.
+/// Idempotent (both `ExitRequested` and `Exit` call it).
 pub(crate) fn on_run_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: &tauri::RunEvent) {
     use tauri::Manager;
     if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
-        app.state::<AppState>().terms.kill_all();
+        let state = app.state::<AppState>();
+        state.terms.kill_all();
+        state.launcher.remove_all();
     }
 }
 
@@ -99,6 +105,13 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             if let Some(home) = claude::claude_home() {
                 let _ = app.state::<AppState>().claude_home.set(home);
             }
+            // Per-session settings files go to the OS temp dir; leftovers older than a day
+            // (a crash) are swept off the startup path.
+            let dir = claude::launch::default_dir();
+            app.state::<AppState>().launcher.set_dir(dir.clone());
+            std::thread::spawn(move || {
+                claude::launch::sweep(&dir, &Default::default(), claude::launch::SWEEP_AGE, std::time::SystemTime::now());
+            });
             git::poll::start(app.handle().clone());
             claude::sessions::start(app.handle().clone());
             claude::live::start(app.handle().clone());
@@ -969,6 +982,371 @@ mod tests {
         assert!(term.pid().is_none(), "the PTY is closed on exit");
         super::pty::tests::wait_dead(restarted_pid);
         super::pty::tests::wait_dead(pid);
+    }
+
+    /// An `ide` project in a real folder, a session folder in a temp dir, and the launcher's
+    /// program replaced by a fixture: `sh` / `cmd` that waits for one line of input, then prints
+    /// `node=<SWITCHBOARD_NODE>` and the argv it received (never the real `claude`).
+    fn launch_fixture() -> (
+        tauri::App<tauri::test::MockRuntime>,
+        tauri::WebviewWindow<tauri::test::MockRuntime>,
+        tempfile::TempDir,
+        tempfile::TempDir,
+        std::path::PathBuf,
+    ) {
+        let (app, webview, dir) = app_with_ide();
+        app.state::<super::AppState>().write_workspace().stub_children = 0;
+        let folder = tempfile::tempdir().unwrap();
+        let canonical = dunce::canonicalize(folder.path()).unwrap().display().to_string();
+        app.state::<super::AppState>().write_workspace().workspace.projects[0].path = canonical;
+        let sessions = dir.path().join("switchboard").join("sessions");
+        let state = app.state::<super::AppState>();
+        state.launcher.set_dir(sessions.clone());
+        #[cfg(windows)]
+        let program = (
+            std::path::PathBuf::from("cmd.exe"),
+            ["/d", "/c", "set", "/p", "x=", "&", "echo", "node=%SWITCHBOARD_NODE%", "&", "echo"]
+                .map(String::from)
+                .to_vec(),
+        );
+        #[cfg(not(windows))]
+        let program = (
+            std::path::PathBuf::from("/bin/sh"),
+            ["-c", "read x; printf 'node=%s\\n' \"$SWITCHBOARD_NODE\"; printf '[%s]\\n' \"$@\"", "sh"]
+                .map(String::from)
+                .to_vec(),
+        );
+        *state.launcher.program.lock().unwrap() = Some(program);
+        (app, webview, dir, folder, sessions)
+    }
+
+    /// Wait (bounded) for `pred`, answering ConPTY's cursor query (`ESC[6n`) the way a view does.
+    fn wait_until(app: &tauri::App<tauri::test::MockRuntime>, term: &str, what: &str, pred: impl Fn() -> bool) {
+        let state = app.state::<super::AppState>();
+        let started = std::time::Instant::now();
+        let mut answered = 0;
+        loop {
+            if pred() {
+                return;
+            }
+            if let Ok(buffer) = state.terms.buffer(term) {
+                while answered < buffer.data.matches("\u{1b}[6n").count() {
+                    let _ = state.terms.write(term, b"\x1b[1;1R");
+                    answered += 1;
+                }
+            }
+            assert!(started.elapsed() < std::time::Duration::from_secs(20), "timed out waiting for {what}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn session_launch_runs_the_recipe_in_a_session_terminal_and_follows_starting_idle_exited() {
+        use serde_json::json;
+        use super::claude::live::SessionState;
+        let (app, webview, _dir, folder, sessions) = launch_fixture();
+        let state = app.state::<super::AppState>();
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            use tauri::Listener;
+            app.listen_any(super::claude::live::LIVE_EVENT, move |event| {
+                let _ = tx.send(serde_json::from_str::<serde_json::Value>(event.payload()).unwrap());
+            });
+        }
+
+        let prefill = call("launch_defaults", json!({ "projectId": "ide" })).expect("launch_defaults");
+        assert_eq!(prefill["model"], "default");
+        assert_eq!(prefill["permissionMode"], "default");
+        let name = prefill["name"].as_str().unwrap().to_string();
+        assert!(name.starts_with("ide-") && name.len() == 8, "{name}");
+
+        let proposed = prefill["sessionId"].as_str().unwrap().to_string();
+        let extra = tempfile::tempdir().unwrap();
+        let request = json!({
+            "projectId": "ide", "sessionId": proposed, "name": name, "model": "opus", "effort": "high", "permissionMode": "plan",
+            "addDirs": [extra.path().display().to_string()], "prompt": "hi", "background": false
+        });
+        let reply = call("session_launch", json!({ "request": request, "cols": 1000, "rows": 40 })).expect("session_launch");
+        let id = reply["session_id"].as_str().unwrap().to_string();
+        assert_eq!(id, proposed, "the id the sheet showed");
+        assert_eq!(uuid::Uuid::parse_str(&id).unwrap().get_version_num(), 4);
+        // The same sheet again (a double Start): the id is claimed once.
+        assert_eq!(
+            call("session_launch", json!({ "request": request })),
+            Err(json!(super::claude::launch::STALE_SHEET))
+        );
+        assert_eq!(super::claude::launch::default_name("ide", &id), name, "the proposed id is the one used");
+        let term_id = format!("session:{id}");
+        assert_eq!(reply["term"]["id"], term_id.as_str());
+        assert_eq!(reply["term"]["kind"], "session");
+        assert_eq!(reply["term"]["title"], name.as_str());
+        assert_eq!(reply["term"]["cwd"], dunce::canonicalize(folder.path()).unwrap().display().to_string());
+        let settings_file = sessions.join(format!("{id}.settings.json"));
+        assert_eq!(std::fs::read_to_string(&settings_file).unwrap(), "{}");
+
+        // A live-only child at once, `starting` until the first printable output: the fixture
+        // waits for a line, and ConPTY's start-up cursor query and screen setup do not count.
+        let started = std::time::Instant::now();
+        wait_until(&app, &term_id, "half a second of start-up", || started.elapsed() > std::time::Duration::from_millis(500));
+        {
+            let map = state.read_sessions_live();
+            let session = &map.sessions[&id];
+            assert_eq!(session.project_id.as_deref(), Some("ide"));
+            assert_eq!(session.name.as_deref(), Some(name.as_str()));
+            assert_eq!(session.state, SessionState::Starting);
+        }
+        let children = state.read_workspace().snapshot().children;
+        assert_eq!(children.iter().filter(|c| c.id == id).count(), 1, "one node for the session");
+        assert_eq!(children.iter().find(|c| c.id == id).unwrap().label, name);
+        let remembered = state.read_workspace().workspace.projects[0].launch_defaults.clone().unwrap();
+        assert_eq!(
+            (remembered.model.as_deref(), remembered.effort.as_deref(), remembered.permission_mode.as_deref()),
+            (Some("opus"), Some("high"), Some("plan"))
+        );
+        let again = call("launch_defaults", json!({ "projectId": "ide" })).unwrap();
+        assert_eq!((again["model"].clone(), again["effort"].clone(), again["permissionMode"].clone()), (json!("opus"), json!("high"), json!("plan")));
+        assert_eq!(call("term_restart", json!({ "id": term_id })), Err(json!("a session terminal cannot be restarted")));
+        let pid = state.terms.get(&term_id).unwrap().pid().expect("the fixture runs");
+
+        // Let it print: idle on the first output, then the argv, then the exit.
+        state.terms.write(&term_id, b"go\r").unwrap();
+        let output = || super::pty::tests::strip_escapes(&state.terms.buffer(&term_id).unwrap().data);
+        wait_until(&app, &term_id, "the fixture's output", || output().contains(&format!("node={id}")));
+        wait_until(&app, &term_id, "the exit", || {
+            state.read_sessions_live().sessions[&id].state == SessionState::Exited
+        });
+        wait_until(&app, &term_id, "the settings file to go", || !settings_file.exists());
+        super::pty::tests::wait_dead(pid);
+        let text = output();
+        let extra_dir = dunce::canonicalize(extra.path()).unwrap().display().to_string();
+        let settings_arg = settings_file.display().to_string();
+        if cfg!(windows) {
+            let flat = text.replace(['\r', '\n'], "");
+            for part in [
+                format!("--session-id {id} --name {name} --model opus --effort high --permission-mode plan --add-dir"),
+                extra_dir,
+                format!("--settings {settings_arg} --append-system-prompt"),
+            ] {
+                assert!(flat.contains(&part), "{part:?} missing from {flat:?}");
+            }
+        } else {
+            let expected: Vec<String> = [
+                "--session-id",
+                &id,
+                "--name",
+                &name,
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "plan",
+                "--add-dir",
+                &extra_dir,
+                "--settings",
+                &settings_arg,
+                "--append-system-prompt",
+            ]
+            .iter()
+            .map(|a| format!("[{a}]"))
+            .collect();
+            assert!(text.contains(&expected.join("\r\n")), "argv not as built:\n{text}");
+            assert!(text.contains(&format!("Switchboard node id: {id}]")), "{text}");
+            assert!(text.contains("[hi]"), "the prompt is the last argument: {text}");
+        }
+        assert!(!text.contains("--mcp-config") && !text.contains("dangerously"));
+        let events: Vec<serde_json::Value> = rx.try_iter().collect();
+        let kinds: Vec<&str> = events.iter().filter_map(|e| e["sessions"][&id]["state"]["kind"].as_str()).collect();
+        // Every step went out. (Tauri hands an event that arrives while another thread is
+        // dispatching to its pending queue, so Rust-side listeners may see them reordered; the
+        // map itself was checked above.)
+        for kind in ["starting", "idle", "exited"] {
+            assert!(kinds.contains(&kind), "{kind} not emitted: {kinds:?}");
+        }
+        assert!(state.read_workspace().snapshot().children.iter().any(|c| c.id == id), "stays as a historic node");
+
+        // App exit deletes every settings file still kept (a session still running then).
+        let leftover = state.launcher.write_settings("leftover").unwrap();
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
+        assert!(!leftover.exists(), "app exit deletes the settings files");
+    }
+
+    #[test]
+    fn session_launch_refusals_start_nothing() {
+        use serde_json::json;
+        let (app, webview, dir, _folder, sessions) = launch_fixture();
+        let state = app.state::<super::AppState>();
+        let call = |request: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, "session_launch", InvokeBody::Json(json!({ "request": request }))).map(|body| body.deserialize().unwrap())
+        };
+        let base = || json!({ "projectId": "ide", "sessionId": "not-proposed", "name": "ide-0000" });
+        let nothing_started = || {
+            assert!(state.terms.list().is_empty(), "no terminal");
+            assert!(state.read_sessions_live().sessions.is_empty(), "no child");
+            assert!(std::fs::read_dir(&sessions).map(|d| d.count()).unwrap_or(0) == 0, "no settings file");
+        };
+
+        let mut bypass = base();
+        bypass["permissionMode"] = json!("bypassPermissions");
+        assert_eq!(call(bypass), Err(json!(super::claude::launch::BYPASS_REFUSED)));
+        let mut blank = base();
+        blank["name"] = json!("   ");
+        assert_eq!(call(blank), Err(json!("name must not be blank")));
+        let gone = dir.path().join("gone").display().to_string();
+        let mut missing_dir = base();
+        missing_dir["addDirs"] = json!([gone.clone()]);
+        assert_eq!(call(missing_dir), Err(json!(format!("{}{gone}", super::claude::launch::ADD_DIR_MISSING))));
+        let mut unknown = base();
+        unknown["projectId"] = json!("nope");
+        assert_eq!(call(unknown), Err(json!("unknown project")));
+        nothing_started();
+
+        // An id the sheet was not given: refused before anything is touched.
+        assert_eq!(call(base()), Err(json!(super::claude::launch::STALE_SHEET)));
+        nothing_started();
+
+        // With no project choices, the prefill falls back to settings.defaults.
+        state.write().settings.defaults = super::settings::LaunchDefaults {
+            model: Some("sonnet".into()),
+            effort: Some("low".into()),
+            permission_mode: Some("acceptEdits".into()),
+        };
+        let prefill: serde_json::Value = invoke_with(&webview, "launch_defaults", InvokeBody::Json(json!({ "projectId": "ide" })))
+            .unwrap()
+            .deserialize()
+            .unwrap();
+        assert_eq!((prefill["model"].clone(), prefill["effort"].clone(), prefill["permissionMode"].clone()), (json!("sonnet"), json!("low"), json!("acceptEdits")));
+        let proposed = prefill["sessionId"].as_str().unwrap().to_string();
+        let mut good = base();
+        good["sessionId"] = json!(proposed);
+
+        // A program that cannot start: the error, nothing left behind, and the id given back so
+        // the same sheet can retry.
+        let absent = dir.path().join("no-claude.exe");
+        *state.launcher.program.lock().unwrap() = Some((absent.clone(), Vec::new()));
+        for _ in 0..2 {
+            let err = call(good.clone()).expect_err("spawn fails");
+            assert!(err.as_str().unwrap().starts_with(&format!("could not start {}", absent.display())), "{err}");
+            nothing_started();
+        }
+
+        // An id something else already uses (a session the poll saw): refused, and the other
+        // session is left alone.
+        state.write_sessions_live().launched(&proposed, None, "/elsewhere", "theirs", 1);
+        assert_eq!(call(good.clone()), Err(json!(super::claude::launch::ID_IN_USE)));
+        assert_eq!(state.read_sessions_live().sessions[&proposed].name.as_deref(), Some("theirs"));
+        assert!(state.terms.list().is_empty());
+        state.write_sessions_live().forget(&proposed);
+
+        // A settings file already there (planted): refused, and not deleted.
+        std::fs::create_dir_all(&sessions).unwrap();
+        let planted = sessions.join(format!("{proposed}.settings.json"));
+        std::fs::write(&planted, "planted").unwrap();
+        *state.launcher.program.lock().unwrap() = None;
+        state.write().binaries.claude = super::settings::Binary {
+            name: "claude".into(),
+            path: Some(dir.path().join("no-claude.exe").display().to_string()),
+            version: Some("2.1.302".into()),
+            status: super::settings::BinaryStatus::Found,
+            configured: true,
+        };
+        let err = call(good.clone()).expect_err("the file exists");
+        assert!(err.as_str().unwrap().starts_with("could not write session settings"), "{err}");
+        assert_eq!(std::fs::read_to_string(&planted).unwrap(), "planted");
+        assert!(state.terms.list().is_empty() && state.read_sessions_live().sessions.is_empty());
+        std::fs::remove_file(&planted).unwrap();
+        state.write().binaries.claude = super::settings::Binary::pending("claude");
+
+        // `term_open` cannot open a session terminal.
+        let err = invoke_with(&webview, "term_open", InvokeBody::Json(json!({ "kind": "session", "projectId": "ide" }))).expect_err("refused");
+        assert_eq!(err, json!("a session terminal is opened by session_launch"));
+        nothing_started();
+
+        // No fixture and no claude found: the sheet's message.
+        *state.launcher.program.lock().unwrap() = None;
+        assert_eq!(call(base()), Err(json!(super::claude::launch::NO_CLAUDE)));
+        // A batch-file claude (Windows only refuses it), spelled out or reached through PATHEXT.
+        std::fs::write(dir.path().join("claude.cmd"), "@echo off").unwrap();
+        for spelled in [dir.path().join("claude.cmd"), dir.path().join("claude")] {
+            state.write().binaries.claude = super::settings::Binary {
+                name: "claude".into(),
+                path: Some(spelled.display().to_string()),
+                version: Some("2.1.302".into()),
+                status: super::settings::BinaryStatus::Found,
+                configured: true,
+            };
+            if cfg!(windows) {
+                assert_eq!(call(good.clone()), Err(json!(super::claude::launch::BATCH_FILE)), "{}", spelled.display());
+            }
+        }
+        nothing_started();
+    }
+
+    /// Windows: the command line ConPTY gets is split back into exactly the argv Rust built, a
+    /// multi-line system prompt and a prompt with quotes and spaces included. The fixture is
+    /// PowerShell printing `[Environment]::GetCommandLineArgs()` one per line (newlines shown
+    /// as `\n`), never `claude`.
+    #[cfg(windows)]
+    #[test]
+    fn session_launch_argv_round_trips_through_the_windows_command_line() {
+        use serde_json::json;
+        let (app, webview, dir, _folder, sessions) = launch_fixture();
+        let state = app.state::<super::AppState>();
+        let script = dir.path().join("argv.ps1");
+        std::fs::write(
+            &script,
+            "[Environment]::GetCommandLineArgs() | Select-Object -Skip 7 | ForEach-Object { '[' + ($_ -replace \"`r\", '\\r' -replace \"`n\", '\\n') + ']' }\r\n",
+        )
+        .unwrap();
+        *state.launcher.program.lock().unwrap() = Some((
+            std::path::PathBuf::from("powershell.exe"),
+            ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]
+                .map(String::from)
+                .into_iter()
+                .chain([script.display().to_string()])
+                .collect(),
+        ));
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        let prefill = call("launch_defaults", json!({ "projectId": "ide" })).unwrap();
+        let prompt = "say \"hi there\" to C:\\dir with space\\ now";
+        let request = json!({
+            "projectId": "ide", "sessionId": prefill["sessionId"], "name": prefill["name"], "prompt": prompt
+        });
+        let reply = call("session_launch", json!({ "request": request, "cols": 2000, "rows": 50 })).expect("session_launch");
+        let id = reply["session_id"].as_str().unwrap().to_string();
+        let term_id = format!("session:{id}");
+        let settings_file = sessions.join(format!("{id}.settings.json"));
+        wait_until(&app, &term_id, "the fixture to exit", || !state.terms.get(&term_id).unwrap().is_running());
+        let text = super::pty::tests::strip_escapes(&state.terms.buffer(&term_id).unwrap().data);
+        let printed: Vec<String> = text
+            .lines()
+            .map(str::trim_end)
+            .filter(|l| l.starts_with('[') && l.ends_with(']'))
+            .map(|l| l[1..l.len() - 1].to_string())
+            .collect();
+        let path = state.read_workspace().workspace.projects[0].path.clone();
+        let name = prefill["name"].as_str().unwrap();
+        let context = super::claude::launch::system_prompt("ide", &path, None, name, &id).replace('\n', "\\n");
+        let expected: Vec<String> = [
+            "--session-id",
+            &id,
+            "--name",
+            name,
+            "--settings",
+            &settings_file.display().to_string(),
+            "--append-system-prompt",
+            &context,
+            prompt,
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(printed, expected, "output:\n{text}");
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
     }
 
     #[test]

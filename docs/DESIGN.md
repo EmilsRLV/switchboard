@@ -152,6 +152,13 @@ drag handle) follows every rule here.
   `--fg-muted`, ellipsis), the state (mono `--text-xs` `--fg-muted`: `running`, `exited N`; `could not start
   …` is `.pane-error`) and the buttons. Below it the terminal fills the rest on `--bg-raised` with no chrome
   inside it. It appears without animation, like every pane.
+- **The launch sheet** (`n` on a project, Story 4.2) is a pane like settings and import, at their width: the
+  title `New session`, then labelled fields stacked in a column (label in `--text-sm` `--fg-muted`; inputs,
+  selects and the prompt textarea on `--bg` with a 1-px `--border`, `--radius-sm`, `--text-md`, a `--fg-muted`
+  border on hover and the 1-px `--focus` outline on keyboard focus; the prompt in `--font-mono`). The add-dirs
+  are a bordered list, one row per folder (mono `--text-xs` path with ellipsis and a Remove button), split by
+  1-px `--border` lines; a missing folder's row adds `.pane-error` text. A field hint (blank name) is
+  `--text-xs` `--fg-muted`, as is the reason beside a disabled Start; a refused start is `.pane-error` text under Start (`role="alert"`, like a row's error). No new motion.
 - **The palette** is centred near the top over a dimmed page (`--bg` at 55%): `--bg-raised`, 1-px border,
   `--radius-md`; rows in `--text-base`, key hints in `--text-sm` `--fg-muted`.
 - **The context menu** is the palette's row look at the pointer: `--bg-raised`, 1-px border,
@@ -241,7 +248,7 @@ Monochrome steps; the accent only for attention.
 | State | Colour |
 |---|---|
 | busy | `--fg`, after a small `currentColor` dot (4 px, round) that pulses: opacity 1 → 0.35, 1.2 s, ease-in-out, alternating; static under reduced motion |
-| idle, exited | `--fg-muted` |
+| starting, idle, exited | `--fg-muted`, no dot. `starting` is a session the app just launched, before its first output or poll row (Story 4.2): muted exactly like `idle`, with no glow and no toast. |
 | any other status the poll reports (`compacting`), kept verbatim | `--fg-muted` |
 | waiting, finished | `--accent` (attention), after the 4-px dot pulsing like `busy`'s; the card's border in `--accent` too. `finished` is a busy → idle turn seen by the poll (Story 3.3); `waiting` comes from hooks (Story 4.3). |
 
@@ -260,7 +267,7 @@ Only six motions exist; every one is instant (or static) under `prefers-reduced-
 | Attention pulse (the accent dot before `finished` / `waiting`: the busy pulse) | 1.2 s |
 | Project glow (the accent outline around a project needing you: opacity 1 → 0.4, ease-in-out, alternating, looping; opacity only) | 1.2 s |
 
-Panes (the terminal pane too), banners, the notice, the menu and the Elsewhere tray appear without animation.
+Panes (the terminal pane and the launch sheet too), banners, the notice, the menu and the Elsewhere tray appear without animation.
 
 ## Icons
 

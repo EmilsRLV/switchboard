@@ -81,6 +81,15 @@ export function isTerminalExited(id: string | null): boolean {
 }
 
 /**
+ * True when terminal `id` has exited and can be restarted: a plain terminal. A session
+ * terminal is never restarted (resume arrives in Story 4.4).
+ */
+export function isTerminalRestartable(id: string | null): boolean {
+  const info = terminalInfo(id);
+  return info !== null && info.exited !== null && info.kind !== "session";
+}
+
+/**
  * The header's state word: `running`, `exited N`, or the reason the shell could not start.
  */
 export function terminalStateText(info: TermInfo): string {
@@ -91,4 +100,14 @@ export function terminalStateText(info: TermInfo): string {
 /** Mirrors `pty::plain_id`: the id of a project's plain terminal (one per project). */
 export function plainTerminalId(projectId: string): string {
   return `plain-${projectId}`;
+}
+
+/** Mirrors `pty::session_id`: the id of the terminal a launched session runs in (Story 4.2). */
+export function sessionTerminalId(sessionId: string): string {
+  return `session:${sessionId}`;
+}
+
+/** The terminal Switchboard runs session `sessionId` in, when it launched it; else `null`. */
+export function sessionTerminal(sessionId: string): TermInfo | null {
+  return terminalInfo(sessionTerminalId(sessionId));
 }

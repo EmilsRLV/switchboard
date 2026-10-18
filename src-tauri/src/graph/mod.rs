@@ -816,6 +816,30 @@ pub fn move_node<R: Runtime>(app: &AppHandle<R>, target: &NodeTarget, position: 
     Ok(persist_and_emit(app, write_target, &workspace))
 }
 
+/// Remember the launch sheet's last choices for a project (`Project.launchDefaults`, Story
+/// 4.2): stored, the file written and `workspace://changed` emitted, through the same path as
+/// every mutation. The same choices again change nothing (no revision, write or emit). An
+/// unknown id is an `Err` and nothing changes.
+pub fn set_launch_defaults<R: Runtime>(app: &AppHandle<R>, project_id: &str, defaults: LaunchDefaults) -> Result<WorkspaceSnapshot, String> {
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        let project = st
+            .workspace
+            .projects
+            .iter_mut()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| "unknown project".to_string())?;
+        if project.launch_defaults.as_ref() == Some(&defaults) {
+            return Ok(st.snapshot());
+        }
+        project.launch_defaults = Some(defaults);
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    Ok(persist_and_emit(app, target, &workspace))
+}
+
 /// Put every child of a project back into its column slot: clear the stored positions of
 /// its sessions and branches and drop the session refs left with nothing in them. An
 /// unknown id is an `Err` and nothing changes.
@@ -2269,6 +2293,55 @@ mod tests {
 
         assert_eq!(relayout_children(app.handle(), "nope"), Err("unknown project".to_string()));
         assert!(rx.try_recv().is_err());
+    }
+
+    // -- launch defaults (Story 4.2) ---------------------------------------------------
+
+    #[test]
+    fn set_launch_defaults_stores_writes_and_emits_once_per_change() {
+        let (app, _cfg, path) = app_with_ide(0);
+        let rx = listen(&app);
+        let chosen = LaunchDefaults {
+            model: Some("opus".into()),
+            effort: Some("high".into()),
+            permission_mode: Some("plan".into()),
+        };
+        let snapshot = set_launch_defaults(app.handle(), "ide", chosen.clone()).unwrap();
+        assert_eq!(snapshot.workspace.projects[0].launch_defaults, Some(chosen.clone()));
+        assert_eq!(snapshot.revision, 1);
+        assert_eq!(on_disk(&path).projects[0].launch_defaults, Some(chosen.clone()));
+        assert_eq!(rx.try_recv().expect("workspace://changed"), snapshot);
+        let on_file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            on_file["projects"][0]["launchDefaults"],
+            serde_json::json!({ "model": "opus", "effort": "high", "permissionMode": "plan" })
+        );
+
+        // The same choices again: nothing.
+        assert_eq!(set_launch_defaults(app.handle(), "ide", chosen.clone()).unwrap().revision, 1);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(set_launch_defaults(app.handle(), "nope", chosen), Err("unknown project".to_string()));
+    }
+
+    #[test]
+    fn an_app_launched_session_is_one_node_before_and_after_its_transcript_appears() {
+        let ws = Workspace {
+            projects: vec![project_with("a")],
+            ..Workspace::default()
+        };
+        let id = "3f2a9c1e-0000-4000-8000-000000000001";
+        let launched = HashMap::from([("a".to_string(), vec![live(id, Some("a-3f2a"), Some(1_792_160_868_400), true)])]);
+        let before = children(&ws, &HashMap::new(), &launched, 0);
+        assert_eq!(before.len(), 1);
+        assert_eq!((before[0].id.as_str(), before[0].label.as_str()), (id, "a-3f2a"));
+        assert_eq!(before[0].session.as_ref().unwrap().messages, 0);
+
+        let found = discovered_of("a", vec![summary(id, "2026-10-18T10:00:00.000Z")]);
+        let after = children(&ws, &found, &launched, 0);
+        assert_eq!(after.len(), 1, "the transcript is matched by session id: no duplicate");
+        assert_eq!(after[0].id, id);
+        assert_eq!(after[0].label, format!("title {id}"), "now with the transcript's facts");
+        assert_eq!(after[0].session.as_ref().unwrap().messages, 2);
     }
 
     // -- remove_project ---------------------------------------------------------------

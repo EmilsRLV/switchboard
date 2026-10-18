@@ -137,7 +137,7 @@ function element(): FakeElement {
 }
 
 function info(overrides: Partial<TermInfo> = {}): TermInfo {
-  return { id: "t", project_id: "p", title: "p", cwd: "/p", exited: null, error: null, cols: 100, rows: 30, ...overrides };
+  return { id: "t", kind: "plain", project_id: "p", title: "p", cwd: "/p", exited: null, error: null, cols: 100, rows: 30, ...overrides };
 }
 
 async function flush(): Promise<void> {

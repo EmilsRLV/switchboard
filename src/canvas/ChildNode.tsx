@@ -16,8 +16,8 @@ import {
  * and a muted mono meta line `branch · N msgs · age` (the age recomputed each minute), led by
  * the state word while the poll has seen the session this run: `busy` in `--fg` after a
  * pulsing dot, `finished` / `waiting` in the accent after a pulsing accent dot (and the card's
- * border in the accent: `session-attention`, Story 3.3), `idle`, `exited` and unrecognised
- * states muted, historic sessions none. The
+ * border in the accent: `session-attention`, Story 3.3), `starting` (a session the app just
+ * launched, Story 4.2), `idle`, `exited` and unrecognised states muted, historic sessions none. The
  * full title and exact times are on hover. Stubs and branches show the label and a muted
  * detail on one row. `SessionNode` and `BranchNode` are thin wrappers so xyflow has a type per
  * child kind. A right-click opens the node menu (only its enabled entries: Attach for a live

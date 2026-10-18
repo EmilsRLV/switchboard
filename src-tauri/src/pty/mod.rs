@@ -30,7 +30,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Event carrying [`DataPayload`]: coalesced output of one terminal.
 pub const DATA_EVENT: &str = "term://data";
@@ -66,12 +66,22 @@ const RESET: &str = "\x1bc";
 // Wire types
 // ---------------------------------------------------------------------------------------
 
+/// What a terminal runs: a plain shell (Story 4.1) or a Claude session the app launched
+/// (Story 4.2). A session terminal is never restarted (resume arrives in Story 4.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TermKind {
+    Plain,
+    Session,
+}
+
 /// What the webview knows about a terminal (`term_open`, `term_list`, `term_restart`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TermInfo {
     pub id: String,
+    pub kind: TermKind,
     pub project_id: String,
-    /// The project's label.
+    /// The project's label (plain), or the session's name (session).
     pub title: String,
     pub cwd: String,
     /// `None` while the child runs; its exit code after (`-1` when it never started).
@@ -136,6 +146,8 @@ pub struct SpawnSpec {
     pub cwd: PathBuf,
     /// Variables removed from the inherited environment (tests drop `ENV` so `sh` reads no profile).
     pub env_remove: Vec<String>,
+    /// Variables added to the inherited environment (after `TERM` / `COLORTERM`).
+    pub env: Vec<(String, String)>,
 }
 
 impl SpawnSpec {
@@ -145,21 +157,74 @@ impl SpawnSpec {
             args,
             cwd: cwd.into(),
             env_remove: Vec::new(),
+            env: Vec::new(),
         }
     }
 
     /// The command as `portable-pty` spawns it: the inherited environment plus
-    /// `TERM=xterm-256color` and `COLORTERM=truecolor`, in `cwd`.
-    fn command(&self) -> CommandBuilder {
+    /// `TERM=xterm-256color`, `COLORTERM=truecolor` and `env`, in `cwd`. Every argument is its
+    /// own argv entry; no shell string is ever built.
+    pub(crate) fn command(&self) -> CommandBuilder {
         let mut cmd = CommandBuilder::new(&self.program);
         cmd.args(&self.args);
         cmd.cwd(&self.cwd);
+        strip_parent_session(&mut cmd);
         for name in &self.env_remove {
             cmd.env_remove(name);
         }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        for (name, value) in &self.env {
+            cmd.env(name, value);
+        }
         cmd
+    }
+}
+
+/// Variables Claude Code sets for its own child processes. When Switchboard itself was
+/// started from inside a Claude session they are inherited, and a `claude` run in one of
+/// Switchboard's terminals would then think it is a child session (it turns transcript saving
+/// off, so discovery would never find it). Every terminal is a top-level one, so they are
+/// removed. User configuration (`ANTHROPIC_*`, `CLAUDE_CONFIG_DIR`, other `CLAUDE_CODE_*`
+/// settings) is kept.
+pub const PARENT_SESSION_VARS: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_SSE_PORT",
+    "CLAUDE_EFFORT",
+    "CLAUDE_PID",
+];
+
+fn strip_parent_session(cmd: &mut CommandBuilder) {
+    for name in PARENT_SESSION_VARS {
+        cmd.env_remove(name);
+    }
+}
+
+#[cfg(test)]
+mod parent_session_tests {
+    use super::*;
+
+    #[test]
+    fn parent_session_markers_are_removed_and_user_config_kept() {
+        let mut cmd = CommandBuilder::new("x");
+        cmd.env("CLAUDE_CODE_CHILD_SESSION", "1");
+        cmd.env("CLAUDECODE", "1");
+        cmd.env("CLAUDE_CODE_SESSION_ID", "abc");
+        cmd.env("CLAUDE_CONFIG_DIR", "/cfg");
+        cmd.env("ANTHROPIC_MODEL", "opus");
+        strip_parent_session(&mut cmd);
+        for name in PARENT_SESSION_VARS {
+            assert!(cmd.get_env(name).is_none(), "{name} is removed");
+        }
+        assert!(cmd.get_env("CLAUDE_CONFIG_DIR").is_some());
+        assert!(cmd.get_env("ANTHROPIC_MODEL").is_some());
     }
 }
 
@@ -302,6 +367,47 @@ pub fn decode_utf8(carry: &mut Vec<u8>, bytes: &[u8]) -> String {
     out
 }
 
+/// Whether `bytes` show anything: at least one character that is not inside an escape
+/// sequence (CSI, OSC / DCS / APC / PM strings, two- and three-byte escapes), not a control
+/// character and not whitespace. A sequence split across chunks may be misread; the cost is a
+/// session turning `idle` one chunk early or late.
+pub fn has_printable(bytes: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(bytes);
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => match chars.next() {
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                Some(']' | 'P' | '_' | '^' | 'X') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\u{7}' {
+                            break;
+                        }
+                        if c == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                Some('(' | ')' | '*' | '+' | '-' | '.' | '/' | '#' | '%' | ' ') => {
+                    chars.next();
+                }
+                _ => {}
+            },
+            '\u{FFFD}' => {}
+            c if c.is_control() || c.is_whitespace() => {}
+            _ => return true,
+        }
+    }
+    false
+}
+
 // ---------------------------------------------------------------------------------------
 // Windows Job Object
 // ---------------------------------------------------------------------------------------
@@ -406,8 +512,21 @@ struct Channel {
     ready: Condvar,
 }
 
+/// Called once, on a session terminal's first output.
+pub type OutputHook = Box<dyn FnOnce() + Send>;
+/// Called once, with the exit code, when a session terminal's child has exited (after
+/// `term://exit` went out).
+pub type ExitHook = Box<dyn FnOnce(i32) + Send>;
+
+/// What a session terminal tells its launcher (Story 4.2).
+pub struct SessionHooks {
+    pub first_output: OutputHook,
+    pub exit: ExitHook,
+}
+
 pub struct Term {
     pub id: String,
+    pub kind: TermKind,
     pub project_id: String,
     pub title: String,
     pub cwd: String,
@@ -422,12 +541,15 @@ pub struct Term {
     /// Held while a spawn starts, and by whatever must not interleave with one (open of an
     /// existing terminal, restart, kill), so none of them sees a half-started terminal.
     starting: Mutex<()>,
+    first_output: Mutex<Option<OutputHook>>,
+    on_exit: Mutex<Option<ExitHook>>,
 }
 
 impl Term {
-    fn new(id: String, project_id: String, title: String, cwd: String, cols: u16, rows: u16) -> Self {
+    fn new(id: String, kind: TermKind, project_id: String, title: String, cwd: String, cols: u16, rows: u16) -> Self {
         Self {
             id,
+            kind,
             project_id,
             title,
             cwd,
@@ -438,6 +560,8 @@ impl Term {
             size: Mutex::new(clamp_size(cols, rows)),
             generation: AtomicU64::new(0),
             starting: Mutex::new(()),
+            first_output: Mutex::new(None),
+            on_exit: Mutex::new(None),
         }
     }
 
@@ -445,6 +569,7 @@ impl Term {
         let (cols, rows) = self.size();
         TermInfo {
             id: self.id.clone(),
+            kind: self.kind,
             project_id: self.project_id.clone(),
             title: self.title.clone(),
             cwd: self.cwd.clone(),
@@ -464,13 +589,16 @@ impl Term {
         lock(&self.live).as_ref().and_then(|live| live.pid)
     }
 
-    /// Record an exit and report it, unless a newer spawn has started since.
-    fn finish(&self, generation: u64, code: i32, sink: &dyn Sink) {
+    /// Record an exit and report it, unless a newer spawn has started since. Returns the exit
+    /// hook (a session terminal's) with the code, for the caller to run once it holds no lock.
+    #[must_use]
+    fn finish(&self, generation: u64, code: i32, sink: &dyn Sink) -> Option<(ExitHook, i32)> {
         if self.generation.load(Ordering::SeqCst) != generation {
-            return;
+            return None;
         }
         *lock(&self.exited) = Some(code);
         sink.exit(&self.id, Some(code));
+        lock(&self.on_exit).take().map(|hook| (hook, code))
     }
 
     /// Exited without a child: the reason goes to the buffer, the view and `error`.
@@ -490,24 +618,34 @@ impl Term {
     /// Spawn `spec` in a fresh PTY (the caller holds `starting`). A failure is not an `Err`:
     /// the terminal is then exited with [`SPAWN_FAILED`] (see [`Term::fail`]).
     fn start(self: &Arc<Self>, spec: Result<SpawnSpec, String>, sink: Arc<dyn Sink>) {
-        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let spec = match spec {
             Ok(spec) => spec,
-            Err(message) => return self.fail(message, sink.as_ref()),
-        };
-        match self.spawn(&spec) {
-            Ok((live, reader, child)) => {
-                let reaped = live.reaped.clone();
-                *lock(&self.error) = None;
-                *lock(&self.exited) = None;
-                *lock(&self.live) = Some(live);
-                let channel = Arc::new(Channel::default());
-                self.spawn_reader(generation, reader, channel.clone());
-                self.spawn_emitter(generation, channel.clone(), sink.clone());
-                self.spawn_waiter(generation, child, reaped, channel, sink);
+            Err(message) => {
+                self.generation.fetch_add(1, Ordering::SeqCst);
+                return self.fail(message, sink.as_ref());
             }
-            Err(cause) => self.fail(format!("could not start {}: {cause}", spec.program.display()), sink.as_ref()),
+        };
+        if let Err(message) = self.try_start(&spec, sink.clone()) {
+            self.fail(message, sink.as_ref());
         }
+    }
+
+    /// Spawn `spec` in a fresh PTY (the caller holds `starting`). `Err` is the line
+    /// `could not start <program>: <cause>`; nothing is recorded or reported then.
+    fn try_start(self: &Arc<Self>, spec: &SpawnSpec, sink: Arc<dyn Sink>) -> Result<(), String> {
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let (live, reader, child) = self
+            .spawn(spec)
+            .map_err(|cause| format!("could not start {}: {cause}", spec.program.display()))?;
+        let reaped = live.reaped.clone();
+        *lock(&self.error) = None;
+        *lock(&self.exited) = None;
+        *lock(&self.live) = Some(live);
+        let channel = Arc::new(Channel::default());
+        self.spawn_reader(generation, reader, channel.clone());
+        self.spawn_emitter(generation, channel.clone(), sink.clone());
+        self.spawn_waiter(generation, child, reaped, channel, sink);
+        Ok(())
     }
 
     #[allow(clippy::type_complexity)]
@@ -519,7 +657,22 @@ impl Term {
         let pair = native_pty_system()
             .openpty(pty_size(cols, rows))
             .map_err(|err| err.to_string())?;
-        let child = pair.slave.spawn_command(spec.command()).map_err(|err| err.to_string())?;
+        let child = match pair.slave.spawn_command(spec.command()) {
+            Ok(child) => child,
+            Err(err) => {
+                // The pseudoconsole host is already up and waiting for its cursor reply: answer
+                // it now, then close the PTY off this thread, or the headless conhost lingers
+                // for minutes (see `close_detached`).
+                if cfg!(windows)
+                    && let Ok(mut writer) = pair.master.take_writer()
+                {
+                    let _ = writer.write_all(b"\x1b[1;1R");
+                    let _ = writer.flush();
+                }
+                std::thread::spawn(move || drop(pair));
+                return Err(err.to_string());
+            }
+        };
         // Into the job before it can start anything of its own (well, almost: right after).
         #[cfg(windows)]
         let job = child.as_raw_handle().and_then(Job::for_process);
@@ -570,6 +723,15 @@ impl Term {
                 pending.end = end;
                 drop(pending);
                 channel.ready.notify_all();
+                // A session terminal's first printable output (no lock held while it runs):
+                // ConPTY's start-up cursor query and screen setup do not count.
+                let waiting = lock(&term.first_output).is_some();
+                if waiting && has_printable(&chunk[..n]) {
+                    let first = lock(&term.first_output).take();
+                    if let Some(hook) = first {
+                        hook();
+                    }
+                }
             }
             lock(&channel.pending).eof = true;
             channel.ready.notify_all();
@@ -621,12 +783,16 @@ impl Term {
                 while pending.exit.is_none() && !pending.done {
                     pending = wait(pending);
                 }
+                let mut hook = None;
                 if let (Some(code), false) = (pending.exit, pending.done) {
                     pending.done = true;
-                    term.finish(generation, code, sink.as_ref());
+                    hook = term.finish(generation, code, sink.as_ref());
                 }
                 drop(pending);
                 channel.ready.notify_all();
+                if let Some((hook, code)) = hook {
+                    hook(code);
+                }
                 return;
             }
         });
@@ -671,12 +837,16 @@ impl Term {
             }
             // The output never ended (something still holds the PTY): report the exit anyway;
             // the emitter sends nothing more for this spawn.
+            let mut hook = None;
             if !pending.done {
                 pending.done = true;
-                term.finish(generation, code, sink.as_ref());
+                hook = term.finish(generation, code, sink.as_ref());
             }
             drop(pending);
             channel.ready.notify_all();
+            if let Some((hook, code)) = hook {
+                hook(code);
+            }
         });
     }
 
@@ -823,6 +993,11 @@ pub fn plain_id(project_id: &str) -> String {
     format!("plain-{project_id}")
 }
 
+/// The id of the terminal a launched session runs in (Story 4.2).
+pub fn session_id(session_id: &str) -> String {
+    format!("session:{session_id}")
+}
+
 impl TermManager {
     pub fn get(&self, id: &str) -> Option<Arc<Term>> {
         lock(&self.terms).get(id).cloned()
@@ -855,6 +1030,7 @@ impl TermManager {
         }
         let term = Arc::new(Term::new(
             id.to_string(),
+            TermKind::Plain,
             project_id.to_string(),
             title.to_string(),
             cwd.to_string(),
@@ -883,9 +1059,57 @@ impl TermManager {
         Ok(self.require(id)?.buffer())
     }
 
-    /// Respawn an exited terminal under the same id; its buffer is kept.
+    /// Open a session terminal (Story 4.2): `spec` runs under the new id `id`, titled with the
+    /// session's name. Unlike [`TermManager::open`] a spawn failure is an `Err` (the line
+    /// `could not start <program>: <cause>`) and leaves no terminal behind. `hooks` run once
+    /// each: on the first output, and with the exit code after `term://exit`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_session(
+        &self,
+        id: &str,
+        project_id: &str,
+        title: &str,
+        cwd: &str,
+        size: (u16, u16),
+        spec: SpawnSpec,
+        sink: Arc<dyn Sink>,
+        hooks: SessionHooks,
+    ) -> Result<TermInfo, String> {
+        let mut terms = lock(&self.terms);
+        if terms.contains_key(id) {
+            return Err("terminal already exists".to_string());
+        }
+        let term = Arc::new(Term::new(
+            id.to_string(),
+            TermKind::Session,
+            project_id.to_string(),
+            title.to_string(),
+            cwd.to_string(),
+            size.0,
+            size.1,
+        ));
+        *lock(&term.first_output) = Some(hooks.first_output);
+        *lock(&term.on_exit) = Some(hooks.exit);
+        let starting = term.clone();
+        let _starting = lock(&starting.starting);
+        terms.insert(id.to_string(), term.clone());
+        lock(&self.order).push(id.to_string());
+        drop(terms);
+        if let Err(message) = term.try_start(&spec, sink) {
+            lock(&self.terms).remove(id);
+            lock(&self.order).retain(|known| known != id);
+            return Err(message);
+        }
+        Ok(term.info())
+    }
+
+    /// Respawn an exited terminal under the same id; its buffer is kept. A session terminal is
+    /// never restarted.
     pub fn restart(&self, id: &str, spec: impl FnOnce() -> Result<SpawnSpec, String>, sink: Arc<dyn Sink>) -> Result<TermInfo, String> {
         let term = self.require(id)?;
+        if term.kind == TermKind::Session {
+            return Err("a session terminal cannot be restarted".to_string());
+        }
         let _starting = lock(&term.starting);
         if term.is_running() {
             return Err("terminal is still running".to_string());
@@ -896,6 +1120,22 @@ impl TermManager {
 
     pub fn kill(&self, id: &str) -> Result<(), String> {
         self.require(id)?.kill();
+        Ok(())
+    }
+
+    /// Forget an exited session terminal (its "Close"): it leaves the list and its buffer goes.
+    /// A running terminal, or a plain one, is not closed.
+    pub fn close(&self, id: &str) -> Result<(), String> {
+        let term = self.require(id)?;
+        let _starting = lock(&term.starting);
+        if term.kind != TermKind::Session {
+            return Err("only a session terminal is closed".to_string());
+        }
+        if term.is_running() {
+            return Err("terminal is still running".to_string());
+        }
+        lock(&self.terms).remove(id);
+        lock(&self.order).retain(|known| known != id);
         Ok(())
     }
 

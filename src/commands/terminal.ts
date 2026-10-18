@@ -4,8 +4,8 @@
 // processes; these only call it and keep the store and the pane in step. A failure is the
 // notice, never a throw.
 
-import { termKill, termOpen, termRestart } from "../ipc";
-import { isTerminalExited, isTerminalRunning, plainTerminalId, terminalInfo, useTerminalStore } from "../state/terminals";
+import { termClose, termKill, termOpen, termRestart } from "../ipc";
+import { isTerminalRestartable, isTerminalRunning, plainTerminalId, terminalInfo, useTerminalStore } from "../state/terminals";
 import { useUiStore } from "../state/ui";
 import { disposeView, fitView, focusView, markSent, resetView } from "../terminal/registry";
 import { notify } from "./navigation";
@@ -101,15 +101,15 @@ export async function killTerminal(): Promise<boolean> {
   }
 }
 
-/** The `when` of `terminal.restart`: the pane's terminal has exited. */
+/** The `when` of `terminal.restart`: the pane's terminal is a plain one that has exited. */
 export function canRestartTerminal(): boolean {
-  return isTerminalExited(currentTerminal());
+  return isTerminalRestartable(currentTerminal());
 }
 
-/** `terminal.restart`: respawn the pane's exited terminal in place, keeping its output. */
+/** `terminal.restart`: respawn the pane's exited plain terminal in place, keeping its output. */
 export async function restartTerminal(): Promise<boolean> {
   const id = currentTerminal();
-  if (id === null || !isTerminalExited(id)) return false;
+  if (id === null || !isTerminalRestartable(id)) return false;
   try {
     // The old shell may have left the screen in another mode (alternate screen, mouse
     // reporting, colours): the new one starts on a clean view.
@@ -122,6 +122,48 @@ export async function restartTerminal(): Promise<boolean> {
     notify(describe(err));
     return false;
   }
+}
+
+/**
+ * Show terminal `id` in the pane, focused once the pane has laid out (`session.showTerminal`,
+ * and a session launched in the foreground). Resolves whether it is showing.
+ */
+export async function showTerminal(id: string): Promise<boolean> {
+  if (terminalInfo(id) === null) return false;
+  useUiStore.getState().setActiveTerminal(id);
+  openPane("terminal");
+  await afterLayout();
+  focusView(id);
+  return true;
+}
+
+/** The `when` of `terminal.close`: the pane's terminal is a session terminal that has exited. */
+export function canCloseTerminal(): boolean {
+  const info = terminalInfo(currentTerminal());
+  return info !== null && info.kind === "session" && info.exited !== null;
+}
+
+/**
+ * `terminal.close` (the pane's "Close" on an exited session terminal): Rust forgets it, its
+ * view and info go, and the pane is put away. Resolves whether it closed; a failure is the notice.
+ */
+export async function closeTerminal(): Promise<boolean> {
+  const id = currentTerminal();
+  if (id === null || !canCloseTerminal()) return false;
+  try {
+    await termClose(id);
+  } catch (err) {
+    notify(describe(err));
+    return false;
+  }
+  useTerminalStore.getState().remove([id]);
+  disposeView(id);
+  const ui = useUiStore.getState();
+  if (ui.activeTerminal === id) {
+    if (ui.pane === "terminal") closeOpenPane();
+    ui.setActiveTerminal(null);
+  }
+  return true;
 }
 
 /**

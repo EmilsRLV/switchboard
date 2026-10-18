@@ -4,6 +4,7 @@
 //! `claude agents --json --all` (`live`, Story 3.2).
 
 pub mod discover;
+pub mod launch;
 pub mod live;
 pub mod sessions;
 pub mod transcript;

@@ -60,7 +60,7 @@ fn sum_line(a: u32, b: u32) -> String {
 }
 
 /// Strip CSI / OSC escape sequences (ConPTY interleaves cursor moves with text).
-fn strip_escapes(text: &str) -> String {
+pub(crate) fn strip_escapes(text: &str) -> String {
     let mut out = String::new();
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -642,4 +642,100 @@ fn a_flood_of_output_goes_out_in_events_of_at_most_256_kib() {
     let pid = f.manager.get("big").unwrap().pid().unwrap();
     f.manager.kill_all();
     wait_dead(pid);
+}
+
+// --- session terminals (Story 4.2) ----------------------------------------------------
+
+#[test]
+fn printable_output_is_text_outside_escapes_controls_and_whitespace() {
+    // ConPTY's start-up: the cursor query, mode switches, a title, a clear and a home.
+    assert!(!has_printable(b"\x1b[6n"));
+    assert!(!has_printable(b"\x1b[?9001h\x1b[?1004h\x1b]0;C:\\WINDOWS\\system32\\cmd.exe\x07\x1b[2J\x1b[H\x1b[?25h"));
+    assert!(!has_printable(b"\x1b]0;title\x1b\\\r\n \t"));
+    assert!(!has_printable(b"\x1b(B\x1b=\x1b>"));
+    assert!(!has_printable(b""));
+    assert!(has_printable(b"\x1b[6nx"));
+    assert!(has_printable("\x1b[1m\u{2500}".as_bytes()));
+    assert!(has_printable(b"\r\nC:\\>"));
+}
+
+/// A program that waits for one line, then prints, then exits.
+fn waiting_fixture(cwd: &std::path::Path) -> SpawnSpec {
+    #[cfg(windows)]
+    let mut spec = SpawnSpec::new("cmd.exe", ["/d", "/c", "set", "/p", "x=", "&", "echo", "hello"].map(String::from).to_vec(), cwd);
+    #[cfg(not(windows))]
+    let mut spec = SpawnSpec::new("/bin/sh", ["-c", "read x; echo hello"].map(String::from).to_vec(), cwd);
+    spec.env_remove = vec!["ENV".into(), "BASH_ENV".into()];
+    spec
+}
+
+#[test]
+fn a_session_terminal_reports_its_first_printable_output_and_its_exit_once() {
+    let f = Fixture::new();
+    let outputs = Arc::new(AtomicU64::new(0));
+    let exits = Arc::new(Mutex::new(Vec::new()));
+    let hooks = {
+        let (outputs, exits) = (outputs.clone(), exits.clone());
+        SessionHooks {
+            first_output: Box::new(move || {
+                outputs.fetch_add(1, Ordering::SeqCst);
+            }),
+            exit: Box::new(move |code| lock(&exits).push(code)),
+        }
+    };
+    let cwd = f.dir.path().display().to_string();
+    let info = f
+        .manager
+        .open_session("session:s", "p", "p-1234", &cwd, (100, 30), waiting_fixture(f.dir.path()), f.sink.clone(), hooks)
+        .unwrap();
+    assert_eq!((info.kind, info.title.as_str(), info.exited), (TermKind::Session, "p-1234", None));
+    // Start-up output (on Windows the cursor query, answered) does not count.
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_millis(500) {
+        f.answer_cursor_queries();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(outputs.load(Ordering::SeqCst), 0, "no printable output yet");
+    let pid = f.manager.get("session:s").unwrap().pid().unwrap();
+    assert!(f.manager.restart("session:s", || Ok(fixture(f.dir.path())), f.sink.clone()).is_err(), "never restarted");
+    assert_eq!(f.manager.close("session:s"), Err("terminal is still running".to_string()));
+
+    f.manager.write("session:s", b"go\r").unwrap();
+    f.wait_for("session:s", "hello", |t| t.contains("hello"));
+    assert_eq!(f.wait_exit("session:s"), Some(0));
+    wait_dead(pid);
+    let started = Instant::now();
+    while lock(&exits).is_empty() {
+        assert!(started.elapsed() < TIMEOUT, "no exit hook");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(*lock(&exits), [0]);
+    assert_eq!(outputs.load(Ordering::SeqCst), 1, "once");
+
+    // Closed once exited: gone from the list. A plain terminal is never closed.
+    f.manager.close("session:s").unwrap();
+    assert!(f.manager.get("session:s").is_none());
+    assert!(f.manager.list().iter().all(|t| t.id != "session:s"));
+    assert_eq!(f.manager.close("session:s"), Err("unknown terminal".to_string()));
+    // (A plain terminal whose shell never started: no PTY to leave behind.)
+    f.manager.open("plain", "p", "p", &cwd, (80, 24), || Err("no shell".to_string()), f.sink.clone());
+    assert_eq!(f.manager.list().iter().find(|t| t.id == "plain").unwrap().exited, Some(SPAWN_FAILED));
+    assert_eq!(f.manager.close("plain"), Err("only a session terminal is closed".to_string()));
+}
+
+#[test]
+fn a_session_that_cannot_start_leaves_no_terminal() {
+    let f = Fixture::new();
+    let gone = f.dir.path().join("no-such-program.exe");
+    let hooks = SessionHooks {
+        first_output: Box::new(|| {}),
+        exit: Box::new(|_| {}),
+    };
+    let err = f
+        .manager
+        .open_session("session:x", "p", "n", "/", (80, 24), SpawnSpec::new(&gone, vec![], f.dir.path()), f.sink.clone(), hooks)
+        .unwrap_err();
+    assert!(err.starts_with(&format!("could not start {}", gone.display())), "{err}");
+    assert!(f.manager.list().is_empty());
+    assert!(lock(&f.sink.log).is_empty(), "nothing reported for a terminal that never was");
 }

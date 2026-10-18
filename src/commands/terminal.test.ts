@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Project, TermInfo, WorkspaceSnapshot } from "../ipc";
 import { usePaletteStore } from "../state/palette";
-import { plainTerminalId, terminalStateText, useTerminalStore } from "../state/terminals";
+import { isTerminalRestartable, plainTerminalId, sessionTerminalId, terminalStateText, useTerminalStore } from "../state/terminals";
 import { useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 import { registerBuiltins } from "./builtins";
@@ -10,7 +10,7 @@ import { clearCommands, listCommands, runCommand } from "./registry";
 import { forgetProjectTerminals, openProjectTerminal } from "./terminal";
 
 function info(overrides: Partial<TermInfo> = {}): TermInfo {
-  return { id: "plain-ide", project_id: "ide", title: "ide", cwd: "/p/ide", exited: null, error: null, cols: 80, rows: 24, ...overrides };
+  return { id: "plain-ide", kind: "plain", project_id: "ide", title: "ide", cwd: "/p/ide", exited: null, error: null, cols: 80, rows: 24, ...overrides };
 }
 
 function project(id: string): Project {
@@ -135,6 +135,50 @@ describe("terminal commands", () => {
     expect(invoke).toHaveBeenCalledWith("term_restart", { id: "plain-ide" }, undefined);
     expect(useTerminalStore.getState().infos["plain-ide"]?.exited).toBeNull();
   });
+
+  it("an exited session terminal offers no Restart (resume arrives in Story 4.4), but Kill while it runs", () => {
+    const session = info({ id: "session:s1", kind: "session", title: "ide-3f2a" });
+    useTerminalStore.getState().upsert(session);
+    useUiStore.getState().setActiveTerminal("session:s1");
+    expect(enabled()).toContain("terminal.kill");
+    useTerminalStore.getState().markExited("session:s1", 0);
+    expect(enabled()).not.toContain("terminal.restart");
+    expect(runCommand("terminal.restart")).toBe(false);
+    expect(isTerminalRestartable("session:s1")).toBe(false);
+    expect(terminalStateText(useTerminalStore.getState().infos["session:s1"]!)).toBe("exited 0");
+  });
+
+  it("Close is offered for an exited session terminal only, and forgets it in Rust and here", async () => {
+    const invoke = runtime({ term_close: undefined });
+    useTerminalStore.getState().upsert(info({ id: "session:s1", kind: "session", title: "ide-3f2a" }));
+    useUiStore.setState({ pane: "terminal", activeTerminal: "session:s1" });
+    expect(enabled()).not.toContain("terminal.close");
+    expect(runCommand("terminal.close")).toBe(false);
+    useTerminalStore.getState().markExited("session:s1", 0);
+    expect(enabled()).toContain("terminal.close");
+    expect(runCommand("terminal.close")).toBe(true);
+    await flush();
+    expect(invoke).toHaveBeenCalledWith("term_close", { id: "session:s1" }, undefined);
+    expect(useTerminalStore.getState().infos["session:s1"]).toBeUndefined();
+    expect(useUiStore.getState().pane).toBeNull();
+    expect(useUiStore.getState().activeTerminal).toBeNull();
+
+    // A plain terminal that exited restarts instead.
+    useTerminalStore.getState().upsert(info({ exited: 1 }));
+    useUiStore.getState().setActiveTerminal("plain-ide");
+    expect(enabled()).not.toContain("terminal.close");
+    expect(enabled()).toContain("terminal.restart");
+  });
+
+  it("a refused Close is the notice and keeps the terminal", async () => {
+    runtime({ term_close: new Error("terminal is still running") });
+    useTerminalStore.getState().upsert(info({ id: "session:s1", kind: "session", exited: 0 }));
+    useUiStore.getState().setActiveTerminal("session:s1");
+    expect(runCommand("terminal.close")).toBe(true);
+    await flush();
+    expect(useUiStore.getState().notice).toEqual({ text: "terminal is still running" });
+    expect(useTerminalStore.getState().infos["session:s1"]).toBeDefined();
+  });
 });
 
 describe("forgetProjectTerminals", () => {
@@ -195,7 +239,8 @@ describe("terminals store", () => {
     );
   });
 
-  it("mirrors Rust's plain terminal id", () => {
+  it("mirrors Rust's plain and session terminal ids", () => {
     expect(plainTerminalId("ide")).toBe("plain-ide");
+    expect(sessionTerminalId("3f2a")).toBe("session:3f2a");
   });
 });

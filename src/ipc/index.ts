@@ -247,9 +247,11 @@ export type ClaudeProject = {
  * Mirrors `live::SessionState` (internally tagged on `kind`). The poll gives `busy`, `idle`
  * and `other` (any other status, kept verbatim in `raw`); `exited` is a session that left the
  * poll this run; `finished` is a session the poll saw go busy → idle (Story 3.3). `waiting`
- * comes only from hooks (Story 4.3).
+ * comes only from hooks (Story 4.3). `starting` is a session the app just launched, before its
+ * first output or poll row (Story 4.2).
  */
 export type SessionState =
+  | { kind: "starting" }
   | { kind: "busy" }
   | { kind: "idle" }
   | { kind: "waiting" }
@@ -260,8 +262,11 @@ export type SessionState =
 /** Mirrors `live::LiveSession`: one session the poll has seen this run. */
 export type LiveSession = {
   state: SessionState;
-  /** Where the state came from: the poll, or the operator's acknowledgement (`ack`). */
-  source: "poll" | "ack";
+  /**
+   * Where the state came from: the poll, the operator's acknowledgement (`ack`), or the app
+   * itself (`app`: a launch, its first output, its exit; Story 4.2).
+   */
+  source: "poll" | "ack" | "app";
   pid: number | null;
   kind: string | null;
   name: string | null;
@@ -310,11 +315,15 @@ export const NOTIFY_REVEAL_EVENT = "notify://reveal";
 
 // --- terminals (`src-tauri/src/pty/mod.rs`, Story 4.1) --------------------------------------
 
+/** Mirrors `pty::TermKind`: a plain shell, or a Claude session the app launched (never restarted). */
+export type TermKind = "plain" | "session";
+
 /** Mirrors `pty::TermInfo`: one terminal and whether its child still runs. */
 export type TermInfo = {
   id: string;
+  kind: TermKind;
   project_id: string;
-  /** The project's label. */
+  /** The project's label (plain), or the session's name (session). */
   title: string;
   cwd: string;
   /** `null` while the child runs; its exit code after (`-1`: it never started). */
@@ -345,6 +354,41 @@ export const TERM_DATA_EVENT = "term://data";
 /** Event name Rust emits with a `TermExit` when a terminal's child exits. */
 export const TERM_EXIT_EVENT = "term://exit";
 
+// --- launching sessions (`src-tauri/src/claude/launch.rs`, Story 4.2) ------------------------
+
+/**
+ * Mirrors `launch::LaunchRequest`: what the launch sheet sends. `model`, `effort` and
+ * `permissionMode` are the sheet's choices; `default` leaves the flag out.
+ */
+export type LaunchRequest = {
+  projectId: string;
+  /** The session id `launch_defaults` gave this sheet; Rust refuses any other (a stale or doubled start). */
+  sessionId: string;
+  name: string;
+  model: string;
+  effort: string;
+  permissionMode: string;
+  addDirs: string[];
+  /** The first prompt; `null` (or blank) for none. */
+  prompt: string | null;
+  background: boolean;
+};
+
+/** Mirrors `launch::LaunchPrefill`: the sheet's prefill for a project. */
+export type LaunchPrefill = {
+  /** The fresh session id proposed for this sheet; the launch sends it back. */
+  sessionId: string;
+  /** `<project label>-<4 hex of the session id the launch will use>`. */
+  name: string;
+  /** A named model, `default`, or custom text. */
+  model: string;
+  effort: string;
+  permissionMode: string;
+};
+
+/** Mirrors `ipc::LaunchResult`: the new session and the terminal it runs in. */
+export type LaunchResult = { session_id: string; term: TermInfo };
+
 /** Return type of every command, keyed by command name. */
 type Commands = {
   app_info: AppInfo;
@@ -374,6 +418,9 @@ type Commands = {
   term_restart: TermInfo;
   term_kill: void;
   term_list: TermInfo[];
+  launch_defaults: LaunchPrefill;
+  session_launch: LaunchResult;
+  term_close: void;
 };
 
 declare global {
@@ -441,10 +488,11 @@ export function workspaceSetViewport(viewport: Viewport): Promise<WorkspaceSnaps
 
 /**
  * `ipc::project_pick_folder` -- open the native folder picker. Resolves with the chosen
- * folder, or `null` when the picker was cancelled.
+ * folder, or `null` when the picker was cancelled. `title` replaces "Add project folder"
+ * (the launch sheet's add-dir picker says "Add folder for this session").
  */
-export function projectPickFolder(): Promise<string | null> {
-  return call("project_pick_folder");
+export function projectPickFolder(title?: string): Promise<string | null> {
+  return title === undefined ? call("project_pick_folder") : call("project_pick_folder", { title });
 }
 
 /**
@@ -574,9 +622,30 @@ export function termKill(id: string): Promise<void> {
   return call("term_kill", { id });
 }
 
+/** `ipc::term_close` -- forget an exited session terminal (its output goes). */
+export function termClose(id: string): Promise<void> {
+  return call("term_close", { id });
+}
+
 /** `ipc::term_list` -- every terminal, in the order opened. */
 export function termList(): Promise<TermInfo[]> {
   return call("term_list");
+}
+
+/**
+ * `ipc::launch_defaults` -- the launch sheet's prefill for a project (its last choices, else
+ * `settings.defaults`, else `default`) and the default name of the session it would start.
+ */
+export function launchDefaults(projectId: string): Promise<LaunchPrefill> {
+  return call("launch_defaults", { projectId });
+}
+
+/**
+ * `ipc::session_launch` -- start a Claude session from the sheet in a session terminal at
+ * `cols` × `rows` (`null`: Rust's 120 × 30). Rejects with the reason nothing was started.
+ */
+export function sessionLaunch(request: LaunchRequest, cols: number | null, rows: number | null): Promise<LaunchResult> {
+  return call("session_launch", { request, cols, rows });
 }
 
 /**

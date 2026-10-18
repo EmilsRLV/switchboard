@@ -862,6 +862,10 @@ describe("formatAge / sessionMetaLine", () => {
     expect(sessionMetaLine(meta, now, null)).toBe("master · 12 msgs · now");
     expect(sessionStateTone({ kind: "busy" })).toBe("busy");
     expect(sessionStateTone({ kind: "idle" })).toBe("muted");
+    // A session the app just launched reads muted, exactly like idle: no glow, no dot.
+    expect(sessionStateTone({ kind: "starting" })).toBe("muted");
+    expect(sessionMetaLine(meta, now, { kind: "starting" })).toBe("starting · master · 12 msgs · now");
+    expect(sessionCardMeta(meta, now, { kind: "starting" }).state).toEqual({ word: "starting", tone: "muted", dot: false });
     expect(sessionStateTone({ kind: "exited" })).toBe("muted");
     expect(sessionStateTone({ kind: "other", raw: "compacting" })).toBe("muted");
     expect(sessionStateTone(null)).toBeNull();

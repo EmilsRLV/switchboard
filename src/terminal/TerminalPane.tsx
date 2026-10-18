@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import "@xterm/xterm/css/xterm.css";
 import { runCommand } from "../commands/registry";
-import { terminalStateText, useTerminalStore } from "../state/terminals";
+import { isTerminalRestartable, terminalStateText, useTerminalStore } from "../state/terminals";
 import { clampTerminalWidth, defaultTerminalWidth, saveTerminalWidth, useUiStore } from "../state/ui";
 import { TERMINAL_ATTRIBUTE } from "./keys";
 import { focusView, hideView, setHolder, showView, syncSize } from "./registry";
@@ -15,8 +15,9 @@ function viewportWidth(): number {
 
 /**
  * The terminal pane (Story 4.1): wider than the other panes and resizable by dragging its left
- * edge, it shows one terminal, the active one. The header has the project, its folder, the
- * state (`running` / `exited N`, or why the shell could not start) and Restart / Hide / Kill,
+ * edge, it shows one terminal, the active one. The header has the project (or, for a launched
+ * session, its name), its folder, the state (`running` / `exited N`, or why the shell could not
+ * start) and Restart (plain terminals only) / Close (an exited session terminal) / Hide / Kill,
  * which run the registry commands. The body is the xterm view; focus inside it belongs to the
  * terminal (`[data-terminal]`). Hiding moves the view back to the hidden holder: the process and
  * its output carry on.
@@ -89,6 +90,9 @@ export function TerminalPane() {
   };
 
   const exited = info !== undefined && info.exited !== null;
+  // A session terminal is never restarted (resume arrives in Story 4.4); once exited it closes.
+  const restartable = isTerminalRestartable(id);
+  const closable = exited && info.kind === "session";
   const terminalProps = { [TERMINAL_ATTRIBUTE]: "" };
 
   return (
@@ -111,9 +115,14 @@ export function TerminalPane() {
           </span>
         )}
         <span className="terminal-actions">
-          {exited && (
+          {restartable && (
             <button type="button" className="btn" onClick={() => runCommand("terminal.restart")}>
               Restart
+            </button>
+          )}
+          {closable && (
+            <button type="button" className="btn" onClick={() => runCommand("terminal.close")} title="Close this exited session's terminal">
+              Close
             </button>
           )}
           <button type="button" className="btn" onClick={() => runCommand("terminal.toggle")} title="Hide (ctrl+`)">
