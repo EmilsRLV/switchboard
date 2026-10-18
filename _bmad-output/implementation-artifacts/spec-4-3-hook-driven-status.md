@@ -2,7 +2,7 @@
 title: 'Story 4.3: Hook-driven status'
 type: 'feature'
 created: '2026-10-18'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'bbb4c94ef10f9515c752982ec6e16b80ff578b32'
