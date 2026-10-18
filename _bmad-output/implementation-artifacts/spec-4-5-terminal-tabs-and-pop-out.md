@@ -2,7 +2,7 @@
 title: 'Story 4.5: Terminal tabs and pop-out'
 type: 'feature'
 created: '2026-10-18'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '3473838462cd47e8271f475890c961f342c87e9d'
