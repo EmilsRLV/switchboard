@@ -224,6 +224,8 @@ context:
 
 - 2026-10-18 GUI pass (orchestrator, foreground-guarded, debug build): "Plain terminal…" from the palette opened PowerShell in `B:\projects\ide`; 256-colour orange and truecolour green rendered; the PTY reported 99x50, and 127x50 after dragging the pane edge 200 px left; 12 000 lines printed and the tail showed `line 12000` / `DONE-12000`. The pass then aborted on the foreground guard (another app took the foreground; no input sent), so hide/reopen via `` ctrl+` ``, Esc staying in the terminal and the quit orphan check were not driven in the GUI. They are covered by the registry tests and the Rust kill/kill_all/Job Object tests; left for the owner to try by hand. After the app was closed no shell or conhost from it remained.
 
+- 2026-10-18 Owner confirmed by hand: hide/reopen via ctrl+` keeps output, Esc in the terminal leaves the pane open, and quitting with a terminal open leaves no shell running.
+
 ## Spec Change Log
 
 - 2026-10-18 (checkpoint, owner away): Emils asked the orchestrator to continue with its recommended choices while away. Checkpoint 1 taken as "Keep full spec" + "Approve and continue". Recommended choices made in the frozen block for review: xterm 6 with the DOM renderer as the non-WebGL fallback (the canvas addon is abandoned and xterm-5-only); `` ctrl+` `` / `ctrl+shift+k` as the only keys reaching the dispatcher inside a terminal; one plain terminal per project until tabs (4.5); 10 000-line scrollback; 2 MiB Rust ring buffer.
