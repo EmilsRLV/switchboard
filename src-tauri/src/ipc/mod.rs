@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Runtime, State};
 use tauri_plugin_opener::OpenerExt;
 
@@ -13,6 +13,7 @@ use crate::claude::{self, ClaudeProject};
 use crate::git::{self, ProjectStatus};
 use crate::graph::{self, AddProjectsResult, NodeTarget, Position, Viewport, WorkspaceSnapshot};
 use crate::process;
+use crate::pty::{self, EventSink, SpawnSpec, TermBuffer, TermInfo};
 use crate::settings::detect::Search;
 use crate::settings::{self, AppState, Snapshot};
 
@@ -184,6 +185,10 @@ pub async fn workspace_relayout_children<R: Runtime>(app: AppHandle<R>, project_
 pub async fn workspace_remove_project<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<WorkspaceSnapshot, String> {
     let snapshot = graph::remove_project(&app, &project_id)?;
     git::poll::forget(&app, &project_id).await;
+    // Its terminals go too: their children are killed and the terminals forgotten.
+    let terms_app = app.clone();
+    let forget_id = project_id.clone();
+    blocking(move || terms_app.state::<AppState>().terms.forget_project(&forget_id)).await?;
     // Drop the removed project's discovered sessions now, not at the next tick.
     let sessions_app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -280,19 +285,29 @@ pub fn editor_program(template: Option<&str>) -> Option<String> {
 /// `PATHEXT` on Windows); anything with a directory in it (or a leading `~`) is used as given
 /// and must be a file. The errors are the notices the UI shows.
 pub fn resolve_program(program: &str, search: &Search) -> Result<PathBuf, String> {
+    locate_program(program, search).map_err(|missing| match missing {
+        Missing::File => format!("external editor {program} does not exist"),
+        Missing::OnPath => format!("external editor {program} not found on PATH"),
+    })
+}
+
+/// Why [`locate_program`] found nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Missing {
+    /// A path was given and is not a file.
+    File,
+    /// A bare name is on no searched directory.
+    OnPath,
+}
+
+/// A bare name searched like detection does; a path (or `~`) taken as given if it is a file.
+pub fn locate_program(program: &str, search: &Search) -> Result<PathBuf, Missing> {
     let expanded = settings::detect::expand_home(program);
     let path = Path::new(&expanded);
     if path.is_absolute() || path.components().count() > 1 {
-        if path.is_file() {
-            Ok(path.to_path_buf())
-        } else {
-            Err(format!("external editor {program} does not exist"))
-        }
+        if path.is_file() { Ok(path.to_path_buf()) } else { Err(Missing::File) }
     } else {
-        search
-            .locate(program)
-            .map(|located| located.path)
-            .ok_or_else(|| format!("external editor {program} not found on PATH"))
+        search.locate(program).map(|located| located.path).ok_or(Missing::OnPath)
     }
 }
 
@@ -379,6 +394,175 @@ pub fn app_quit<R: Runtime>(app: AppHandle<R>) {
     if !cfg!(test) {
         app.exit(0);
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// Terminals (Story 4.1)
+// ---------------------------------------------------------------------------------------
+
+/// What a terminal runs. Only plain shells in this story; Claude sessions arrive in 4.2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TermKind {
+    Plain,
+}
+
+/// The shell `settings.shell` names (`None` or blank: the platform default), split into the
+/// program and its arguments by [`split_command_line`]. An empty program (`""`) is the
+/// default shell, with no arguments.
+pub fn shell_command(configured: Option<&str>) -> (String, Vec<String>) {
+    let mut words = split_command_line(configured.unwrap_or("")).into_iter();
+    match words.next() {
+        Some(program) if !program.is_empty() => (program, words.collect()),
+        _ => (default_shell(), Vec::new()),
+    }
+}
+
+/// Split a command line into words at whitespace; a double-quoted part (anywhere in a word)
+/// keeps its spaces and loses its quotes, so `"C:\Program Files\x.exe" -Command "a b"` is
+/// three words. An unterminated quote runs to the end; backslashes are literal (Windows paths).
+pub fn split_command_line(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut quoted = false;
+    for c in line.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                in_word = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            c => {
+                word.push(c);
+                in_word = true;
+            }
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    words
+}
+
+/// The shell when none is configured: `pwsh` if on PATH else `powershell` (Windows), `$SHELL`
+/// else `/bin/sh` (elsewhere).
+fn default_shell() -> String {
+    if cfg!(windows) {
+        let pwsh = Search::from_env(Vec::new()).locate("pwsh").is_some();
+        if pwsh { "pwsh" } else { "powershell" }.to_string()
+    } else {
+        std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".to_string())
+    }
+}
+
+/// What a plain terminal in `cwd` spawns: the configured shell, resolved like the editor. The
+/// error is the line the pane shows: `could not start <shell>: <cause>`.
+pub fn shell_spec(configured: Option<&str>, search: &Search, cwd: &str) -> Result<SpawnSpec, String> {
+    let (program, args) = shell_command(configured);
+    let path = locate_program(&program, search).map_err(|missing| match missing {
+        Missing::File => format!("could not start {program}: it does not exist"),
+        Missing::OnPath => format!("could not start {program}: not found on PATH"),
+    })?;
+    Ok(SpawnSpec::new(path, args, cwd))
+}
+
+fn plain_spec<R: Runtime>(app: &AppHandle<R>, cwd: &str) -> Result<SpawnSpec, String> {
+    let shell = app.state::<AppState>().read().settings.shell.clone();
+    shell_spec(shell.as_deref(), &Search::from_env(Vec::new()), cwd)
+}
+
+fn sink<R: Runtime>(app: &AppHandle<R>) -> std::sync::Arc<dyn pty::Sink> {
+    std::sync::Arc::new(EventSink(app.clone()))
+}
+
+/// Run blocking PTY work off the main thread and the async workers.
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work).await.map_err(|err| err.to_string())
+}
+
+/// Open a project's plain terminal in its folder with the configured shell, at `cols` × `rows`
+/// (else 120 × 30). One per project: opening again returns the existing one, running or exited.
+/// A shell that cannot start still opens the terminal, exited, with the reason in `error`.
+#[tauri::command]
+pub async fn term_open<R: Runtime>(
+    app: AppHandle<R>,
+    kind: TermKind,
+    project_id: String,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<TermInfo, String> {
+    let TermKind::Plain = kind;
+    let state = app.state::<AppState>();
+    let cwd = project_path(&state, &project_id)?;
+    let title = state
+        .read_workspace()
+        .workspace
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .map(|p| p.label.clone())
+        .unwrap_or_default();
+    let size = (cols.unwrap_or(pty::DEFAULT_COLS), rows.unwrap_or(pty::DEFAULT_ROWS));
+    blocking(move || {
+        let id = pty::plain_id(&project_id);
+        let spec_app = app.clone();
+        let spec_cwd = cwd.clone();
+        app.state::<AppState>()
+            .terms
+            .open(&id, &project_id, &title, &cwd, size, move || plain_spec(&spec_app, &spec_cwd), sink(&app))
+    })
+    .await
+}
+
+/// Send input (typed keys, a paste) to a terminal. Synchronous on purpose: it only queues the
+/// bytes for the terminal's writer thread (never blocking on the PTY), and sync commands run
+/// in the order they were invoked, so keystrokes are never reordered.
+#[tauri::command]
+pub fn term_write(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
+    state.terms.write(&id, data.as_bytes())
+}
+
+/// Resize a terminal's PTY (clamped to at least 2 × 1).
+#[tauri::command]
+pub async fn term_resize<R: Runtime>(app: AppHandle<R>, id: String, cols: u16, rows: u16) -> Result<(), String> {
+    blocking(move || app.state::<AppState>().terms.resize(&id, cols, rows)).await?
+}
+
+/// The terminal's ring buffer (the last 2 MiB of output) and the byte offset it ends at, for a
+/// view created after output began.
+#[tauri::command]
+pub async fn term_buffer<R: Runtime>(app: AppHandle<R>, id: String) -> Result<TermBuffer, String> {
+    blocking(move || app.state::<AppState>().terms.buffer(&id)).await?
+}
+
+/// Respawn an exited terminal under the same id, in the same folder, with the shell configured now.
+#[tauri::command]
+pub async fn term_restart<R: Runtime>(app: AppHandle<R>, id: String) -> Result<TermInfo, String> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let cwd = state.terms.get(&id).map(|t| t.cwd.clone()).unwrap_or_default();
+        let spec_app = app.clone();
+        state.terms.restart(&id, move || plain_spec(&spec_app, &cwd), sink(&app))
+    })
+    .await?
+}
+
+/// Kill a terminal's child; it turns exited and keeps its buffer.
+#[tauri::command]
+pub async fn term_kill<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
+    blocking(move || app.state::<AppState>().terms.kill(&id)).await?
+}
+
+/// Every terminal, in the order they were opened.
+#[tauri::command]
+pub async fn term_list<R: Runtime>(app: AppHandle<R>) -> Result<Vec<TermInfo>, String> {
+    blocking(move || app.state::<AppState>().terms.list()).await
 }
 
 #[cfg(test)]
@@ -480,5 +664,62 @@ mod tests {
         let elsewhere = tempfile::tempdir().unwrap();
         assert_eq!(claude_project_dir(home.path(), &elsewhere.path().display().to_string()), None);
         assert_eq!(claude_project_dir(&home.path().join("no-such-home"), &canonical), None);
+    }
+
+    #[test]
+    fn shell_command_splits_the_setting_or_falls_back_to_the_platform_default() {
+        assert_eq!(shell_command(Some("pwsh -NoLogo")), ("pwsh".to_string(), vec!["-NoLogo".to_string()]));
+        assert_eq!(
+            shell_command(Some("\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoLogo -NoProfile")),
+            (
+                "C:\\Program Files\\PowerShell\\7\\pwsh.exe".to_string(),
+                vec!["-NoLogo".to_string(), "-NoProfile".to_string()]
+            )
+        );
+        assert_eq!(shell_command(Some("  /bin/bash  ")), ("/bin/bash".to_string(), vec![]));
+        // Quoted arguments keep their spaces; an empty program is the default shell.
+        assert_eq!(
+            shell_command(Some("pwsh -NoLogo -Command \"Write-Host 'a b'\" x")),
+            (
+                "pwsh".to_string(),
+                vec!["-NoLogo".to_string(), "-Command".to_string(), "Write-Host 'a b'".to_string(), "x".to_string()]
+            )
+        );
+        assert_eq!(shell_command(Some("\"\" -l")).1, Vec::<String>::new());
+        assert_eq!(shell_command(Some("\"\" -l")).0, shell_command(None).0);
+        assert_eq!(split_command_line("a\"b c\"d  \"unterminated x"), vec!["ab cd".to_string(), "unterminated x".to_string()]);
+        assert_eq!(split_command_line("   "), Vec::<String>::new());
+        let (default, args) = shell_command(Some("   "));
+        assert!(args.is_empty());
+        assert_eq!(shell_command(None).0, default);
+        if cfg!(windows) {
+            assert!(default == "pwsh" || default == "powershell", "{default}");
+        } else {
+            assert!(!default.is_empty());
+        }
+    }
+
+    #[test]
+    fn shell_spec_resolves_like_the_editor_and_names_the_shell_when_it_cannot() {
+        let dir = tempfile::tempdir().unwrap();
+        let sh = crate::settings::detect::fixtures::fake_binary(dir.path(), "fakesh");
+        let search = Search {
+            path_dirs: vec![dir.path().to_path_buf()],
+            extra_dirs: vec![],
+            extensions: crate::settings::detect::platform_extensions(),
+        };
+        let spec = shell_spec(Some("fakesh -l"), &search, "/work").unwrap();
+        assert_eq!(spec.program, sh);
+        assert_eq!(spec.args, vec!["-l".to_string()]);
+        assert_eq!(spec.cwd, PathBuf::from("/work"));
+        assert_eq!(
+            shell_spec(Some("zsh"), &search, "/work"),
+            Err("could not start zsh: not found on PATH".to_string())
+        );
+        let gone = dir.path().join("gone-sh").display().to_string();
+        assert_eq!(
+            shell_spec(Some(&gone), &search, "/work"),
+            Err(format!("could not start {gone}: it does not exist"))
+        );
     }
 }

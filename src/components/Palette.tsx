@@ -1,4 +1,7 @@
 import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useUiStore } from "../state/ui";
+import { isInsideTerminal } from "../terminal/keys";
+import { focusView } from "../terminal/registry";
 import { formatKeybinding } from "../commands/keybindings";
 import { listCommands, runCommand } from "../commands/registry";
 import { clampSelection, paletteKeyAction, usePaletteStore } from "../state/palette";
@@ -32,12 +35,15 @@ function PaletteDialog() {
   const selected = clampSelection(selectedRaw, rows.length);
   const activeId = rows[selected] === undefined ? undefined : OPTION_ID_PREFIX + rows[selected].id;
 
-  // Take focus on open; give it back when the palette goes.
+  // Take focus on open; give it back when the palette goes. Opened from a terminal, the
+  // terminal the pane shows gets it back (through xterm, so its cursor and input wake up).
   useEffect(() => {
     const previous = document.activeElement;
+    const fromTerminal = isInsideTerminal(previous) ? useUiStore.getState().activeTerminal : null;
     inputRef.current?.focus();
     return () => {
-      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+      if (fromTerminal !== null && useUiStore.getState().pane === "terminal") focusView(fromTerminal);
+      else if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
     };
   }, []);
 

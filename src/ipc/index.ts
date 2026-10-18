@@ -308,6 +308,43 @@ export type RevealRequest = {
 /** Event name Rust emits with a `RevealRequest` when a toast was clicked (the window is already focused). */
 export const NOTIFY_REVEAL_EVENT = "notify://reveal";
 
+// --- terminals (`src-tauri/src/pty/mod.rs`, Story 4.1) --------------------------------------
+
+/** Mirrors `pty::TermInfo`: one terminal and whether its child still runs. */
+export type TermInfo = {
+  id: string;
+  project_id: string;
+  /** The project's label. */
+  title: string;
+  cwd: string;
+  /** `null` while the child runs; its exit code after (`-1`: it never started). */
+  exited: number | null;
+  /** `could not start <shell>: <cause>` when the shell could not be started. */
+  error: string | null;
+  /** The PTY's size; a view made while hidden is made at it. */
+  cols: number;
+  rows: number;
+};
+
+/**
+ * Mirrors `pty::DataPayload`: coalesced output (UTF-8 text) of one terminal. `offset` (added
+ * to the spec's `{ id, data }`) is the terminal's output byte count at the end of `data`, the
+ * count `term_buffer` reports too, so a replayed view drops what it already has.
+ */
+export type TermData = { id: string; data: string; offset: number };
+
+/** Mirrors `pty::TermBuffer`: the kept output and the byte offset it ends at. */
+export type TermBuffer = { data: string; offset: number };
+
+/** Mirrors `pty::ExitPayload`: a terminal's child exited. */
+export type TermExit = { id: string; code: number | null };
+
+/** Event name Rust emits with a `TermData`, at most once per 8 ms per terminal. */
+export const TERM_DATA_EVENT = "term://data";
+
+/** Event name Rust emits with a `TermExit` when a terminal's child exits. */
+export const TERM_EXIT_EVENT = "term://exit";
+
 /** Return type of every command, keyed by command name. */
 type Commands = {
   app_info: AppInfo;
@@ -330,6 +367,13 @@ type Commands = {
   project_open_folder: void;
   project_reveal_claude_dir: void;
   app_quit: void;
+  term_open: TermInfo;
+  term_write: void;
+  term_resize: void;
+  term_buffer: TermBuffer;
+  term_restart: TermInfo;
+  term_kill: void;
+  term_list: TermInfo[];
 };
 
 declare global {
@@ -498,6 +542,44 @@ export function appQuit(): Promise<void> {
 }
 
 /**
+ * `ipc::term_open` -- open the project's plain terminal (its folder, the configured shell) at
+ * `cols` × `rows`, or get the one already open (running or exited).
+ */
+export function termOpen(projectId: string, cols: number | null, rows: number | null): Promise<TermInfo> {
+  return call("term_open", { kind: "plain", projectId, cols, rows });
+}
+
+/** `ipc::term_write` -- send input (keys, a paste) to a terminal. */
+export function termWrite(id: string, data: string): Promise<void> {
+  return call("term_write", { id, data });
+}
+
+/** `ipc::term_resize` -- resize a terminal's PTY (Rust clamps to at least 2 × 1). */
+export function termResize(id: string, cols: number, rows: number): Promise<void> {
+  return call("term_resize", { id, cols, rows });
+}
+
+/** `ipc::term_buffer` -- the last 2 MiB of a terminal's output, for a view created late. */
+export function termBuffer(id: string): Promise<TermBuffer> {
+  return call("term_buffer", { id });
+}
+
+/** `ipc::term_restart` -- respawn an exited terminal in place. */
+export function termRestart(id: string): Promise<TermInfo> {
+  return call("term_restart", { id });
+}
+
+/** `ipc::term_kill` -- kill a terminal's child; it turns exited and keeps its output. */
+export function termKill(id: string): Promise<void> {
+  return call("term_kill", { id });
+}
+
+/** `ipc::term_list` -- every terminal, in the order opened. */
+export function termList(): Promise<TermInfo[]> {
+  return call("term_list");
+}
+
+/**
  * Subscribe to `settings://changed`. Resolves with the unlisten function; without a Tauri
  * runtime it resolves with a no-op so callers need no branch.
  */
@@ -542,6 +624,22 @@ export async function onNotifyReveal(callback: (request: RevealRequest) => void)
     return () => {};
   }
   return listen<RevealRequest>(NOTIFY_REVEAL_EVENT, (event) => callback(event.payload));
+}
+
+/** Subscribe to `term://data`; same contract as {@link onSettingsChanged}. */
+export async function onTermData(callback: (data: TermData) => void): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return listen<TermData>(TERM_DATA_EVENT, (event) => callback(event.payload));
+}
+
+/** Subscribe to `term://exit`; same contract as {@link onSettingsChanged}. */
+export async function onTermExit(callback: (exit: TermExit) => void): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return listen<TermExit>(TERM_EXIT_EVENT, (event) => callback(event.payload));
 }
 
 /**

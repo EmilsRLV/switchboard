@@ -65,6 +65,27 @@ lines, banners, badges and keys. Weights are 400 and 500 only.
 A `border-radius` is one of these, `0`, or `50%` (the round banner mark). Spacing is not tokenised: it
 stays literal `rem` values.
 
+### Terminal palette
+
+The 16 ANSI colours a terminal draws with (Story 4.1), as `--ansi-0` … `--ansi-15`; xterm's theme is read
+from these and the tokens above at runtime (`src/terminal/theme.ts`). They are terminal content (see
+[The accent](#the-accent)); nothing in the chrome uses them.
+
+| Token | Value | ANSI | Token | Value | ANSI |
+|---|---|---|---|---|---|
+| `--ansi-0` | `#1d2129` | black | `--ansi-8` | `#5c6370` | bright black |
+| `--ansi-1` | `#e06c75` | red | `--ansi-9` | `#ef8189` | bright red |
+| `--ansi-2` | `#98c379` | green | `--ansi-10` | `#b5e08f` | bright green |
+| `--ansi-3` | `#e5c07b` | yellow | `--ansi-11` | `#f0d197` | bright yellow |
+| `--ansi-4` | `#61afef` | blue | `--ansi-12` | `#7cc0f5` | bright blue |
+| `--ansi-5` | `#c678dd` | magenta | `--ansi-13` | `#d79ae8` | bright magenta |
+| `--ansi-6` | `#56b6c2` | cyan | `--ansi-14` | `#79cbd5` | bright cyan |
+| `--ansi-7` | `#d7dae0` | white | `--ansi-15` | `#ffffff` | bright white |
+
+The rest of the terminal's theme is the app's: background `--bg-raised` (the pane's surface), text and
+cursor `--fg`, the text under the cursor `--bg-raised`, selection `--selection` with `--bg` text; the font is
+`--font-mono` at `--text-md`.
+
 ## Rules
 
 1. **Lines are 1 px** (`--line`) in `--border`. The only 2-px lines are the left indicators: the banner
@@ -95,6 +116,11 @@ That is: a banner's left border and mark, error text in a pane (`.pane-error`), 
 `.session-attention`, and its state word, `.session-attention-word`) and the glow of its project card
 (`.project-glow`). Inline styles never use the accent.
 
+**Terminal content is not chrome.** What a program prints in a terminal is drawn in its own colours (the
+ANSI palette below, 256-colour and truecolour escapes included), which may well be orange; the accent rule
+governs the app's chrome around it, never the terminal's content. The terminal pane's own chrome (header,
+drag handle) follows every rule here.
+
 ### States
 
 | State | Look |
@@ -120,6 +146,12 @@ That is: a banner's left border and mark, error text in a pane (`.pane-error`), 
   flow, so its arrival and its 3-s exit never move or resize the canvas. It lets clicks through and sits below panes, the palette and the menu.
 - **Panes** come in on the right over the canvas: `--bg-raised`, a 1-px left border, title in
   `--text-lg` / 500, section headings in `--text-sm` upper case `--fg-muted`.
+- **The terminal pane** is a pane, wider: `min(720px, 70vw)` by default, dragged between 360 px and 90vw by
+  its left edge (a 6-px handle over the 1-px border, `--border` while hovered, `col-resize` cursor). A header
+  row over a 1-px `--border` line holds the project label (`--text-md` / 500), its folder (mono `--text-xs`
+  `--fg-muted`, ellipsis), the state (mono `--text-xs` `--fg-muted`: `running`, `exited N`; `could not start
+  …` is `.pane-error`) and the buttons. Below it the terminal fills the rest on `--bg-raised` with no chrome
+  inside it. It appears without animation, like every pane.
 - **The palette** is centred near the top over a dimmed page (`--bg` at 55%): `--bg-raised`, 1-px border,
   `--radius-md`; rows in `--text-base`, key hints in `--text-sm` `--fg-muted`.
 - **The context menu** is the palette's row look at the pointer: `--bg-raised`, 1-px border,
@@ -228,7 +260,7 @@ Only six motions exist; every one is instant (or static) under `prefers-reduced-
 | Attention pulse (the accent dot before `finished` / `waiting`: the busy pulse) | 1.2 s |
 | Project glow (the accent outline around a project needing you: opacity 1 → 0.4, ease-in-out, alternating, looping; opacity only) | 1.2 s |
 
-Panes, banners, the notice, the menu and the Elsewhere tray appear without animation.
+Panes (the terminal pane too), banners, the notice, the menu and the Elsewhere tray appear without animation.
 
 ## Icons
 

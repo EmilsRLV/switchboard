@@ -8,6 +8,7 @@ pub mod ipc;
 pub mod notify;
 pub mod persist;
 pub mod process;
+pub mod pty;
 pub mod settings;
 
 use settings::AppState;
@@ -39,7 +40,23 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::project_open_folder,
             ipc::project_reveal_claude_dir,
             ipc::app_quit,
+            ipc::term_open,
+            ipc::term_write,
+            ipc::term_resize,
+            ipc::term_buffer,
+            ipc::term_restart,
+            ipc::term_kill,
+            ipc::term_list,
         ])
+}
+
+/// What the app does on its way out: every terminal's child is killed and its PTY closed, so
+/// no shell outlives Switchboard. Idempotent (both `ExitRequested` and `Exit` call it).
+pub(crate) fn on_run_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: &tauri::RunEvent) {
+    use tauri::Manager;
+    if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+        app.state::<AppState>().terms.kill_all();
+    }
 }
 
 /// Name of the environment variable asking for stub session children per project.
@@ -109,8 +126,9 @@ pub(crate) fn focus_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 /// Build and run the Tauri application.
 pub fn run() {
     builder()
-        .run(tauri::generate_context!())
-        .expect("error while running Switchboard");
+        .build(tauri::generate_context!())
+        .expect("error while building Switchboard")
+        .run(|app, event| on_run_event(app, &event));
 }
 
 #[cfg(test)]
@@ -885,6 +903,72 @@ mod tests {
         let app = mock_app();
         // No webview was built, so there is no "main" window to focus; this must not panic.
         super::focus_main_window(app.handle());
+    }
+
+    #[test]
+    fn the_term_commands_are_registered_and_drive_a_fixture_shell() {
+        use serde_json::json;
+        let (app, webview, _dir) = app_with_ide();
+        let folder = tempfile::tempdir().unwrap();
+        let state = app.state::<super::AppState>();
+        state.write_workspace().workspace.projects[0].path = folder.path().display().to_string();
+        // Never the user's shell: `cmd /d` (no AutoRun) or `/bin/sh`.
+        state.write().settings.shell = Some(if cfg!(windows) { "cmd.exe /d" } else { "/bin/sh" }.to_string());
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+
+        let info = call("term_open", json!({ "kind": "plain", "projectId": "ide", "cols": 90, "rows": 20 })).expect("term_open");
+        assert_eq!(info["id"], "plain-ide");
+        assert_eq!(info["project_id"], "ide");
+        assert_eq!(info["title"], "ide");
+        assert_eq!(info["cwd"], folder.path().display().to_string());
+        assert_eq!(info["exited"], serde_json::Value::Null);
+        assert_eq!(info["error"], serde_json::Value::Null);
+        let term = state.terms.get("plain-ide").unwrap();
+        assert_eq!(term.size(), (90, 20));
+        let pid = term.pid().expect("the shell runs");
+        // The same project again: the same terminal.
+        let again = call("term_open", json!({ "kind": "plain", "projectId": "ide" })).unwrap();
+        assert_eq!(again["id"], "plain-ide");
+        assert_eq!(state.terms.get("plain-ide").unwrap().pid(), Some(pid));
+        assert_eq!(call("term_list", json!({})).unwrap().as_array().unwrap().len(), 1);
+
+        call("term_resize", json!({ "id": "plain-ide", "cols": 100, "rows": 30 })).expect("term_resize");
+        assert_eq!(term.size(), (100, 30));
+        call("term_write", json!({ "id": "plain-ide", "data": "\r" })).expect("term_write");
+        let buffer = call("term_buffer", json!({ "id": "plain-ide" })).unwrap();
+        assert!(buffer["data"].is_string());
+        assert!(buffer["offset"].is_u64());
+        assert_eq!(info["cols"], 90);
+        assert_eq!(info["rows"], 20);
+
+        // Kill: exited, buffer kept; restart respawns in place.
+        call("term_kill", json!({ "id": "plain-ide" })).expect("term_kill");
+        let started = std::time::Instant::now();
+        while term.is_running() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(20), "kill did not end the shell");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(call("term_list", json!({})).unwrap()[0]["exited"].is_i64());
+        let restarted = call("term_restart", json!({ "id": "plain-ide" })).expect("term_restart");
+        assert_eq!(restarted["exited"], serde_json::Value::Null);
+        assert!(term.pid().is_some());
+
+        // Errors are strings the UI can show.
+        assert_eq!(call("term_write", json!({ "id": "nope", "data": "x" })), Err(json!("unknown terminal")));
+        assert_eq!(
+            call("term_open", json!({ "kind": "plain", "projectId": "nope" })),
+            Err(json!("unknown project"))
+        );
+        call("term_open", json!({ "kind": "claude", "projectId": "ide" })).expect_err("only plain terminals in 4.1");
+
+        // App exit kills every child: the restarted shell is gone.
+        let restarted_pid = term.pid().expect("the restarted shell runs");
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
+        assert!(term.pid().is_none(), "the PTY is closed on exit");
+        super::pty::tests::wait_dead(restarted_pid);
+        super::pty::tests::wait_dead(pid);
     }
 
     #[test]

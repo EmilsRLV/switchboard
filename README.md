@@ -12,7 +12,7 @@ surface is an infinite canvas whose viewport persists, holding one card per proj
 state; cards expand into a column of children, every node drags and remembers where it was put, the arrow
 keys walk the selection from card to card, and a right-click menu (or the palette) holds the project actions:
 open the folder in the editor or file manager, reveal its Claude project directory, remove it from the canvas,
-with New session and Plain terminal as stubs until Epic 4. Expanded, a project lists its Claude Code
+open a plain terminal in it (see [Terminal](#terminal)), with New session as a stub until Epic 4. Expanded, a project lists its Claude Code
 sessions, past and running: a running session shows `busy` or `idle` and the card counts it in its `N live`
 badge; sessions running in folders not on the canvas wait in the Elsewhere tray. A session that just finished
 its turn turns the accent and makes its project glow until it is selected, with an optional OS toast while the
@@ -86,24 +86,29 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | `ctrl+,` | Open (toggle) the settings pane. |
 | `ctrl+0` | Fit view: fit every node into the canvas; with no nodes, back to the home viewport (`x 0, y 0, zoom 1`). |
 | `ctrl+q` | Quit. |
+| ``ctrl+` `` | Toggle terminal: hide the terminal pane, or show it again with the last terminal focused. Works with focus in the terminal too. |
+| `ctrl+shift+k` | The palette's second binding: the same toggle as `ctrl+k`, and the one that still works with focus in a terminal (where `ctrl+k` is the shell's). |
 | `ctrl+j` | Go to session that needs you: the session that has been `finished` (or `waiting`) longest is revealed and selected, its project expanded first when collapsed (see [Needs you](#needs-you)). Enabled only while a session on a canvas project needs you; press again for the next one. |
 | `←` `→` `↑` `↓` | Move the selection to the nearest node in that direction (see [Keyboard navigation](#keyboard-navigation)); with nothing selected, select the node nearest the middle of the view. Only while no palette, pane, menu or Elsewhere list is open: those keep their own arrow handling. |
 | Enter | The selected node's default action: a project with children expands or collapses (persisted); a `show all (N)` / `show fewer` row toggles the column (see [Sessions](#sessions)); a childless project or a child card does nothing yet (resume and fork arrive in Epic 4). Same condition as the arrows. |
-| Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings or import), else clears the selected node. With all of them open, five presses. |
+| Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings, import or terminal), else clears the selected node. With all of them open, five presses. With focus in a terminal Esc is the terminal's (see [Terminal](#terminal)). |
 
 `n`, `e` and `/` are reserved for later epics and deliberately unbound; so is Delete (removal is a menu action).
 
-The palette lists twenty-one commands: Toggle command palette, Add project folder…, Import from Claude…, Open
+The palette lists twenty-four commands: Toggle command palette, Add project folder…, Import from Claude…, Open
 settings, Reveal settings file (only when the file's location is known), Re-detect binaries (not while one
 runs), Fit view (once the canvas has mounted; the two project commands need it too), Quit, Toggle Elsewhere
 sessions (only while the Elsewhere tray has rows), Go to session that needs you (only while one does),
 Attach in terminal (only while a live session card is
-selected; see [Live sessions](#live-sessions)), and, while a
+selected; see [Live sessions](#live-sessions)), Toggle terminal (only while there is a terminal; see
+[Terminal](#terminal)), Kill terminal (only while the pane's terminal runs), Restart terminal (only once it has
+exited), and, while a
 project card is selected, the project actions: New session…, Plain terminal…, Open in external editor, Open
 in file manager, Reveal Claude project dir, Re-layout children, Remove from canvas, plus exactly one of Expand
 project / Collapse project (neither for a project without children) and Show all sessions (only for an
 expanded project with more than ten children). The palette sorts by title. The key-only
-carriers (the `ctrl+,` toggle, the five Esc commands, the four arrows and Enter) are registered but hidden from
+carriers (the `ctrl+,` toggle, the palette's second binding `ctrl+shift+k`, the five Esc commands, the four
+arrows and Enter) are registered but hidden from
 the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron on a card runs
 Expand/Collapse, and the context menu lists the commands tagged for it in its own fixed order. Keybindings are
 not editable yet (Epic 9).
@@ -164,7 +169,7 @@ inside the window, in a fixed order with a 1-px rule between the groups:
 
 | Group | Entries | What they do |
 |---|---|---|
-| Sessions | New session…, Plain terminal… | Stubs until Epic 4: each shows the 3 s notice "New session arrives in Epic 4" / "Plain terminal arrives in Epic 4" and nothing else. |
+| Sessions | New session…, Plain terminal… | New session… is a stub until Epic 4: it shows the 3 s notice "New session arrives in Epic 4" and nothing else. Plain terminal… opens the project's terminal (see [Terminal](#terminal)). |
 | Open | Open in external editor, Open in file manager, Reveal Claude project dir | Rust performs each (the webview never spawns a process or touches the file system). The editor is the program named by the first token of `external_editor` in settings, launched detached with the project folder as its only argument (see [Settings](#settings)); the file manager opens the folder itself; the reveal opens `~/.claude/projects/<dir>` for the Claude project whose working directory is this folder (the import pane's comparison), and only if that directory already exists. The editor action is meant for GUI editors: a terminal editor such as vim starts with no window and nothing is seen. |
 | Layout | Expand project or Collapse project (whichever applies, only when the project has children), Re-layout children | As before. |
 | Remove | Remove from canvas | Immediate: no confirmation, no undo. The card, its children, its `sessions[]` refs and `branches`, every edge touching any of them and its live git status go; the selection is cleared if it pointed at the project or one of its children; a relaunch does not bring it back. On a read-only or newer-version `workspace.json` the removal applies in memory only, and the project comes back on relaunch. |
@@ -383,6 +388,48 @@ banners, never a crash:
 | cannot write workspace: … | The write failed (no config dir, permissions) | The change lives in memory; the next write is tried again. |
 | project add failed: … | Adding a folder failed (picker, IPC) | Nothing added; the banner clears on the next successful add. |
 | node move failed / expand failed / collapse failed / re-layout failed / remove failed: … | Rust rejected the change (an id it does not know, no runtime) | Nothing changes; a dropped node goes back to its stored position; the banner clears on the next successful change. |
+
+## Terminal
+
+**Plain terminal…** (a project card's menu, or the palette with a project selected) opens that project's
+terminal in the **terminal pane**: the configured shell (`shell` in [Settings](#settings); unset, `pwsh` if it
+is on PATH else `powershell` on Windows, `$SHELL` else `/bin/sh` on Linux) runs in the project folder, in a
+real PTY (ConPTY on Windows, a Unix PTY on Linux) with `TERM=xterm-256color` and `COLORTERM=truecolor`, so
+256-colour and truecolour output, the cursor and full-screen programs work. A project has one plain terminal:
+running Plain terminal… again shows the same one, running or exited, and never starts a second shell. A shell
+that cannot be started leaves the terminal exited, with `could not start <shell>: <cause>` in the header and the
+terminal, and **Restart**.
+
+The pane is wider than the others (`min(720px, 70vw)`) and its left edge drags it between 360 px and 90vw; the
+width is remembered in this browser profile (`localStorage`, best effort). Its header shows the project, its
+folder, the state (`running`, `exited N`) and **Restart** (once exited), **Hide** and **Kill**; below it the
+terminal itself, with 10 000 lines of scrollback. Resizing the pane or the window refits the terminal and resizes
+the PTY (debounced to 50 ms). The pane shows one terminal at a time: the one most recently opened or shown.
+
+**Keys.** With focus in the terminal every key is the terminal's: Esc, `ctrl+c`, `ctrl+o`, `ctrl+k`, `ctrl+r`
+and the rest reach the shell (or the program running in it), and Esc does not close the pane. Only two keys
+still reach the app: ``ctrl+` `` hides the pane (and shows it again from anywhere, refocusing the terminal), and
+`ctrl+shift+k` opens the palette. Outside the terminal (on the header's buttons, say) Esc closes the pane as
+usual.
+
+**Copy and paste.** `ctrl+shift+c` copies the selection; `ctrl+shift+v` pastes, as do `ctrl+v` and the
+webview's right-click Paste. A paste goes through the terminal's paste path, so a program that asked for
+bracketed paste gets it as one block. Selecting text never copies it by itself.
+
+**Hide, kill, restart.** Hiding the pane (Hide, ``ctrl+` ``, Esc outside the terminal) keeps the process
+running and its output arriving; reopening shows everything it printed meanwhile. **Kill** (`terminal.kill`)
+ends the process: the header reads `exited N` and the output stays. **Restart** (`terminal.restart`) starts the
+shell again in the same terminal, below the old output. Exiting the shell (`exit`) is the same as a kill: the
+header reads `exited 0`. Quitting the app kills every terminal's process; no shell outlives Switchboard
+(on Windows each shell runs in a job object, so whatever it started goes with it). **Remove from canvas**
+kills the project's terminal and forgets it.
+Terminals do not survive a restart of the app. Rust keeps the last 2 MiB of each terminal's output, so a
+webview reload gets every terminal back with its recent output.
+
+**Rendering.** The terminal draws with WebGL when it can. When WebGL is unavailable, or its context is lost (a
+GPU reset), it switches to its DOM renderer for the rest of its life: the same output, drawn more slowly. Links
+are underlined on hover but do not open a browser. Its colours come from the design tokens, the 16 ANSI colours
+included (see [Design](#design)).
 
 ## Settings
 

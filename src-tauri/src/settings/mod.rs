@@ -357,6 +357,9 @@ pub struct AppState {
     /// A toast sender that replaces the notification plugin (tests inject a recorder, so no
     /// test ever sends a real OS notification). `None` means the plugin, when registered.
     pub notifier: Mutex<Option<std::sync::Arc<dyn crate::notify::Notifier>>>,
+    /// Every terminal's PTY and child (`crate::pty`, Story 4.1). Each terminal has its own
+    /// locks; none is held across PTY I/O.
+    pub terms: crate::pty::TermManager,
 }
 
 impl AppState {

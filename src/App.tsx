@@ -28,6 +28,8 @@ import { ImportPane } from "./components/ImportPane";
 import { Notice } from "./components/Notice";
 import { Palette } from "./components/Palette";
 import { SettingsPane } from "./components/SettingsPane";
+import { connectTerminals } from "./terminal/registry";
+import { TerminalHolder, TerminalPane } from "./terminal/TerminalPane";
 import "./components/shell.css";
 
 // Commands exist for the life of the module, not of a component: registered once here.
@@ -35,7 +37,8 @@ registerBuiltins();
 
 /**
  * The shell: banner strip on top, the canvas filling the rest with the transient notice laid
- * over its top edge and the Elsewhere tray at its bottom-left, one pane (settings or import) on the right when open, the command
+ * over its top edge and the Elsewhere tray at its bottom-left, one pane (settings, import or terminal) on the right when open,
+ * the hidden holder that keeps every terminal's view alive while the terminal pane is not showing it, the command
  * palette over everything when open, the node context menu at the pointer when open. Every
  * key goes through the command registry's dispatcher (`useKeybindings`).
  */
@@ -114,6 +117,12 @@ export default function App() {
     };
   }, []);
 
+  // Terminal output and exits stream in for every terminal, shown or not (Story 4.1).
+  useEffect(() => {
+    if (!hasTauriRuntime()) return;
+    return connectTerminals();
+  }, []);
+
   useKeybindings();
 
   return (
@@ -125,6 +134,8 @@ export default function App() {
         <Notice />
         {pane === "settings" && <SettingsPane />}
         {pane === "import" && <ImportPane />}
+        {pane === "terminal" && <TerminalPane />}
+        <TerminalHolder />
         <Palette />
         <ContextMenu />
       </div>

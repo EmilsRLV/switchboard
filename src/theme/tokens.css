@@ -34,6 +34,26 @@
   --radius-md: 4px; /* cards, panes, palette, menu */
   --line: 1px;
 
+  /* The terminal's 16-colour ANSI palette (black, red, green, yellow, blue, magenta, cyan,
+     white, then the bright eight). Terminal content, not chrome: the accent rule does not
+     apply inside the terminal. Tuned to sit on --bg-raised. */
+  --ansi-0: #1d2129;
+  --ansi-1: #e06c75;
+  --ansi-2: #98c379;
+  --ansi-3: #e5c07b;
+  --ansi-4: #61afef;
+  --ansi-5: #c678dd;
+  --ansi-6: #56b6c2;
+  --ansi-7: #d7dae0;
+  --ansi-8: #5c6370;
+  --ansi-9: #ef8189;
+  --ansi-10: #b5e08f;
+  --ansi-11: #f0d197;
+  --ansi-12: #7cc0f5;
+  --ansi-13: #d79ae8;
+  --ansi-14: #79cbd5;
+  --ansi-15: #ffffff;
+
   --font-sans:
     system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;
   --font-mono:

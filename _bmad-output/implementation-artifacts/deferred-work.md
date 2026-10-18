@@ -22,3 +22,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-3-status-glow-and-notifications.md`
   summary: The "no toast while focused" check is not exercised end to end, because Tauri's mock runtime always reports an unfocused window.
   evidence: `MockRuntime::is_focused` returns `Ok(false)`; making the focus query injectable (like the notifier) would let a wiring test assert that a focused window suppresses the toast.
+
+## From Story 4.1 (PTY terminal pane) review
+
+- Watermark flow control: pause the PTY reader when xterm's write callbacks fall behind (high/low watermarks); 4.1 only caps the payload per event.
+- A coalescing test that observes event spacing; needs the emitter loop separated from the PTY to be non-flaky.
+- Keyboard-operable terminal pane resize handle (tabIndex, aria-valuenow/min/max, arrow keys).

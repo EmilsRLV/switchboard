@@ -221,3 +221,61 @@ describe("handleKeydown (the dispatcher)", () => {
     expect(a.mock.calls.length + b.mock.calls.length).toBe(1);
   });
 });
+
+describe("handleKeydown inside a terminal", () => {
+  beforeEach(() => clearCommands());
+  afterEach(() => clearCommands());
+
+  /** A target whose `closest('[data-terminal]')` finds a terminal host (xterm's textarea). */
+  const inTerminal = { tagName: "TEXTAREA", closest: (selector: string) => (selector === "[data-terminal]" ? {} : null) };
+  const outside = { tagName: "BUTTON", closest: () => null };
+
+  it("yields every key to the terminal except ctrl+` and ctrl+shift+k", () => {
+    const ran: string[] = [];
+    for (const [id, keybinding] of [
+      ["pane.close", "escape"],
+      ["project.add", "ctrl+o"],
+      ["palette.toggle", "ctrl+k"],
+      ["copy", "ctrl+c"],
+      ["history", "ctrl+r"],
+      ["terminal.toggle", "ctrl+`"],
+      ["palette.terminal", "ctrl+shift+k"],
+    ] as const) {
+      registerCommand({ id, title: id, keybinding, run: () => void ran.push(id) });
+    }
+    const escape = key("Escape", { target: inTerminal });
+    expect(handleKeydown(escape)).toBe(false);
+    expect(escape.preventDefault).not.toHaveBeenCalled();
+    expect(handleKeydown(key("o", { ctrlKey: true, target: inTerminal }))).toBe(false);
+    expect(handleKeydown(key("k", { ctrlKey: true, target: inTerminal }))).toBe(false);
+    expect(handleKeydown(key("c", { ctrlKey: true, target: inTerminal }))).toBe(false);
+    expect(handleKeydown(key("r", { ctrlKey: true, target: inTerminal }))).toBe(false);
+    expect(ran).toEqual([]);
+
+    expect(handleKeydown(key("`", { ctrlKey: true, target: inTerminal }))).toBe(true);
+    expect(handleKeydown(key("K", { ctrlKey: true, shiftKey: true, target: inTerminal }))).toBe(true);
+    expect(ran).toEqual(["terminal.toggle", "palette.terminal"]);
+
+    // Outside a terminal the usual rules apply: Esc closes, ctrl+k toggles the palette.
+    expect(handleKeydown(key("Escape", { target: outside }))).toBe(true);
+    expect(handleKeydown(key("k", { ctrlKey: true, target: outside }))).toBe(true);
+    expect(ran).toEqual(["terminal.toggle", "palette.terminal", "pane.close", "palette.toggle"]);
+  });
+});
+
+describe("handleKeydown on another keyboard layout", () => {
+  beforeEach(() => clearCommands());
+  afterEach(() => clearCommands());
+
+  it("runs ctrl+` and ctrl+shift+k by physical key, in and out of a terminal", () => {
+    const ran: string[] = [];
+    registerCommand({ id: "terminal.toggle", title: "t", keybinding: "ctrl+`", run: () => void ran.push("toggle") });
+    registerCommand({ id: "palette", title: "p", keybinding: "ctrl+shift+k", run: () => void ran.push("palette") });
+    const inTerminal = { closest: () => ({}) };
+    const german = key("^", { ctrlKey: true, code: "Backquote", target: inTerminal });
+    expect(handleKeydown(german)).toBe(true);
+    expect(german.preventDefault).toHaveBeenCalledOnce();
+    expect(handleKeydown(key("Л", { ctrlKey: true, shiftKey: true, code: "KeyK" }))).toBe(true);
+    expect(ran).toEqual(["toggle", "palette"]);
+  });
+});

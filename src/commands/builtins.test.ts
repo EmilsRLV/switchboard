@@ -48,7 +48,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the thirty-two commands with the spec's keybindings", () => {
+  it("register the thirty-six commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
@@ -59,6 +59,7 @@ describe("built-in commands", () => {
       "elsewhere.toggle",
       "palette.close",
       "palette.toggle",
+      "palette.toggleFromTerminal",
       "pane.close",
       "project.add",
       "project.collapse",
@@ -82,6 +83,9 @@ describe("built-in commands", () => {
       "settings.open",
       "settings.reveal",
       "settings.toggle",
+      "terminal.kill",
+      "terminal.restart",
+      "terminal.toggle",
     ]);
     expect(getCommand("elsewhere.close")?.keybinding).toBe("escape");
     expect(getCommand("elsewhere.toggle")?.keybinding).toBeUndefined();
@@ -100,6 +104,11 @@ describe("built-in commands", () => {
     expect(listCommands().map((c) => c.keybinding)).not.toContain("/");
     expect(listCommands().map((c) => c.keybinding)).not.toContain("delete");
     expect(getCommand("palette.toggle")?.keybinding).toBe("ctrl+k");
+    expect(getCommand("palette.toggleFromTerminal")?.keybinding).toBe("ctrl+shift+k");
+    expect(getCommand("palette.toggleFromTerminal")?.hidden).toBe(true);
+    expect(getCommand("terminal.toggle")?.keybinding).toBe("ctrl+`");
+    expect(getCommand("terminal.kill")?.keybinding).toBeUndefined();
+    expect(getCommand("terminal.restart")?.keybinding).toBeUndefined();
     expect(getCommand("settings.toggle")?.keybinding).toBe("ctrl+,");
     expect(getCommand("settings.open")?.keybinding).toBeUndefined();
     expect(getCommand("app.quit")?.keybinding).toBe("ctrl+q");
@@ -117,7 +126,7 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the twenty-one actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the twenty-four actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
@@ -140,6 +149,9 @@ describe("built-in commands", () => {
       "session.attach",
       "settings.open",
       "settings.reveal",
+      "terminal.kill",
+      "terminal.restart",
+      "terminal.toggle",
     ]);
   });
 
@@ -167,7 +179,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(32);
+    expect(listCommands()).toHaveLength(36);
   });
 
   const PROJECT_ACTIONS = [
@@ -280,14 +292,12 @@ describe("built-in commands", () => {
     expect(titles).toEqual([...titles].sort((a, b) => a.localeCompare(b)));
   });
 
-  it("the stubs show their 3 s notice and nothing else", () => {
+  it("the New session stub shows its 3 s notice and nothing else", () => {
     vi.useFakeTimers();
     useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(false)], stubs(3)) });
     useUiStore.getState().select({ kind: "project", id: "ide" });
     expect(runCommand("project.newSession")).toBe(true);
     expect(useUiStore.getState().notice).toEqual({ text: "New session arrives in Epic 4" });
-    expect(runCommand("project.terminal")).toBe(true);
-    expect(useUiStore.getState().notice).toEqual({ text: "Plain terminal arrives in Epic 4" });
     expect(useWorkspaceStore.getState().loadError).toBeNull();
     expect(useUiStore.getState().selection).toEqual({ kind: "project", id: "ide" });
     vi.advanceTimersByTime(3000);

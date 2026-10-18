@@ -3,6 +3,7 @@
 // workspace store. Nothing rejects: `runCommand` has no error UI, so a failure lands in the
 // workspace load-error banner.
 
+import { forgetProjectTerminals } from "./terminal";
 import { flowIdOf, rightClickAction, type CanvasTarget } from "../canvas/nodes";
 import {
   workspaceMoveNode,
@@ -106,6 +107,8 @@ export async function removeProject(projectId: string): Promise<boolean> {
     const ui = useUiStore.getState();
     if (pointedAtIt && sameTarget(ui.selection, selection)) ui.clearSelection();
     if (ui.showAll.includes(projectId)) ui.toggleShowAll(projectId);
+    // Rust killed its terminals; their views go too.
+    forgetProjectTerminals(projectId);
   }
   return removed;
 }

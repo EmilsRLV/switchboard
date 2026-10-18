@@ -6,6 +6,15 @@ import {
   liveSessionsGet,
   NoTauriRuntimeError,
   onNotifyReveal,
+  onTermData,
+  onTermExit,
+  termBuffer,
+  termKill,
+  termList,
+  termOpen,
+  termResize,
+  termRestart,
+  termWrite,
   sessionAcknowledge,
   projectOpenEditor,
   projectOpenFolder,
@@ -176,5 +185,51 @@ describe("workspace command wrappers", () => {
   it("the toast-click subscription is a no-op without a runtime", async () => {
     const unlisten = await onNotifyReveal(() => {});
     expect(() => unlisten()).not.toThrow();
+  });
+});
+
+describe("terminal command wrappers", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const info = { id: "plain-p1", project_id: "p1", title: "ide", cwd: "/p/ide", exited: null, error: null, cols: 80, rows: 24 };
+
+  it("invoke their wire names with camelCase arguments", async () => {
+    const invoke = vi.fn().mockResolvedValue(info);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await expect(termOpen("p1", 100, 30)).resolves.toBe(info);
+    expect(invoke).toHaveBeenCalledWith("term_open", { kind: "plain", projectId: "p1", cols: 100, rows: 30 }, undefined);
+    await expect(termRestart("plain-p1")).resolves.toBe(info);
+    expect(invoke).toHaveBeenCalledWith("term_restart", { id: "plain-p1" }, undefined);
+    invoke.mockResolvedValue(undefined);
+    await termWrite("plain-p1", "ls\r");
+    expect(invoke).toHaveBeenCalledWith("term_write", { id: "plain-p1", data: "ls\r" }, undefined);
+    await termResize("plain-p1", 80, 24);
+    expect(invoke).toHaveBeenCalledWith("term_resize", { id: "plain-p1", cols: 80, rows: 24 }, undefined);
+    await termKill("plain-p1");
+    expect(invoke).toHaveBeenCalledWith("term_kill", { id: "plain-p1" }, undefined);
+    invoke.mockResolvedValue({ data: "output", offset: 6 });
+    await expect(termBuffer("plain-p1")).resolves.toEqual({ data: "output", offset: 6 });
+    expect(invoke).toHaveBeenCalledWith("term_buffer", { id: "plain-p1" }, undefined);
+    invoke.mockResolvedValue([info]);
+    await expect(termList()).resolves.toEqual([info]);
+    expect(invoke).toHaveBeenCalledWith("term_list", {}, undefined);
+  });
+
+  it("a size the pane could not measure goes as null (Rust uses 120 x 30)", async () => {
+    const invoke = vi.fn().mockResolvedValue(info);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await termOpen("p1", null, null);
+    expect(invoke).toHaveBeenCalledWith("term_open", { kind: "plain", projectId: "p1", cols: null, rows: null }, undefined);
+  });
+
+  it("the event subscriptions are no-ops without a runtime", async () => {
+    const data = await onTermData(() => {});
+    const exit = await onTermExit(() => {});
+    expect(() => {
+      data();
+      exit();
+    }).not.toThrow();
   });
 });

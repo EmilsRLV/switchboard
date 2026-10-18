@@ -29,9 +29,22 @@ thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 dunce = "1"
 tokio = { version = "1", features = ["time", "sync"] }
+portable-pty = "0.9"
+
+# Signals for terminal children (`pty`); already in the tree through portable-pty.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
+
+# Kill-on-close Job Objects for terminal shells (`pty`); already in the tree.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects"] }
+
+# The PTY tests ask Windows whether a process still runs and who its children are.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
 
 # See https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

@@ -23,7 +23,6 @@ const projectRevealClaudeDir = vi.mocked(ipc.projectRevealClaudeDir);
 
 const {
   NEW_SESSION_NOTICE,
-  PLAIN_TERMINAL_NOTICE,
   activateSelection,
   clickNode,
   moveSelection,
@@ -31,7 +30,6 @@ const {
   notify,
   openProjectFolder,
   openProjectInEditor,
-  plainTerminalStub,
   revealClaudeProjectDir,
 } = await import("./navigation");
 
@@ -280,14 +278,11 @@ describe("notices", () => {
     expect(useUiStore.getState().notice).toBeNull();
   });
 
-  it("the stubs only say what arrives in Epic 4", () => {
+  it("the New session stub only says what arrives in Epic 4", () => {
     vi.useFakeTimers();
     newSessionStub();
     expect(useUiStore.getState().notice).toEqual({ text: "New session arrives in Epic 4" });
-    plainTerminalStub();
-    expect(useUiStore.getState().notice).toEqual({ text: "Plain terminal arrives in Epic 4" });
     expect(NEW_SESSION_NOTICE).toBe("New session arrives in Epic 4");
-    expect(PLAIN_TERMINAL_NOTICE).toBe("Plain terminal arrives in Epic 4");
     expect(useWorkspaceStore.getState().loadError).toBeNull();
     vi.advanceTimersByTime(3000);
     expect(useUiStore.getState().notice).toBeNull();

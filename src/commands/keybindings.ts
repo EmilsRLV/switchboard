@@ -4,9 +4,13 @@
 // parsed once when the command is registered and matched against `keydown` events here.
 // Nothing outside this module installs a keydown listener: every shortcut is a command.
 // While focus is in an editable element, bare-key bindings (no modifier) other than
-// escape/enter/arrows are left to the element, so typing never triggers a command.
+// escape/enter/arrows are left to the element, so typing never triggers a command. While focus
+// is inside a terminal (`[data-terminal]`, xterm's helper textarea included) every key is the
+// terminal's except the two pass-through bindings (`terminal/keys`), so Esc, ctrl+c, ctrl+o and
+// ctrl+k reach the program running there.
 
 import { useEffect } from "react";
+import { isInsideTerminal, layoutKey, terminalKeyAllowed } from "../terminal/keys";
 import { listCommands, runCommand } from "./registry";
 
 export type Keybinding = {
@@ -20,6 +24,8 @@ export type Keybinding = {
 /** The slice of `KeyboardEvent` the dispatcher reads; tests build these as plain objects. */
 export type KeyEventLike = {
   key: string;
+  /** `KeyboardEvent.code` (the physical key); read for the layout-independent terminal keys. */
+  code?: string;
   ctrlKey: boolean;
   shiftKey: boolean;
   altKey: boolean;
@@ -119,23 +125,41 @@ export function formatKeybinding(binding: Keybinding): string {
  * The dispatcher: resolve the event to the first enabled command whose binding matches, run it
  * and swallow the event. Auto-repeat is ignored (a held `ctrl+k` toggles once). Returns true
  * when a command ran. Commands whose `when` is false are skipped, which is how `escape` is
- * shared: `palette.close` only when the palette is open, `pane.close` only otherwise.
+ * shared: `palette.close` only when the palette is open, `pane.close` only otherwise. Inside a
+ * terminal only ``ctrl+` `` and `ctrl+shift+k` are dispatched; every other key is left alone.
  */
 export function handleKeydown(event: KeyEventLike): boolean {
   if (event.repeat || event.defaultPrevented === true) return false;
+  if (isInsideTerminal(event.target) && !terminalKeyAllowed(event)) return false;
   const editable = isEditableTarget(event.target);
+  // ctrl+Backquote / ctrl+shift+KeyK match their bindings on any keyboard layout.
+  const probe: KeyEventLike = { ...pick(event), key: layoutKey(event) };
   for (const command of listCommands({ enabledOnly: true })) {
     const binding = command.binding;
     if (binding === null) continue;
     const bare = !binding.ctrl && !binding.shift && !binding.alt;
     if (editable && bare && !EDITABLE_PASS_KEYS.has(binding.key)) continue;
-    if (matchesEvent(binding, event)) {
+    if (matchesEvent(binding, probe)) {
       event.preventDefault();
       runCommand(command.id);
       return true;
     }
   }
   return false;
+}
+
+/** The fields of a key event the matching reads (a real `KeyboardEvent` does not spread). */
+function pick(event: KeyEventLike): KeyEventLike {
+  return {
+    key: event.key,
+    code: event.code,
+    ctrlKey: event.ctrlKey,
+    shiftKey: event.shiftKey,
+    altKey: event.altKey,
+    metaKey: event.metaKey,
+    repeat: event.repeat,
+    preventDefault: () => {},
+  };
 }
 
 /** Install the single window `keydown` listener for the lifetime of the calling component. */

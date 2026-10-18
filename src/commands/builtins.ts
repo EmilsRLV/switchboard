@@ -7,6 +7,8 @@
 // commands, the `ctrl+,` toggle, the arrows, Enter) are `hidden`: the dispatcher sees them,
 // the palette does not. The project commands act on the selected project and are tagged
 // `menu: "node"` with a `menuOrder`, which is what the right-click menu lists, in that order.
+// With focus in a terminal the dispatcher yields every key to it (Esc included) except
+// `terminal.toggle` (ctrl+`) and the palette's second binding, ctrl+shift+k (`terminal/keys`).
 
 import type { Direction } from "../canvas/nodes";
 import { appQuit } from "../ipc";
@@ -24,7 +26,6 @@ import {
   newSessionStub,
   openProjectFolder,
   openProjectInEditor,
-  plainTerminalStub,
   revealClaudeProjectDir,
   selectedLiveSessionId,
   toggleShowAllOfSelected,
@@ -35,6 +36,16 @@ import { closeOpenPane, openPane, togglePane } from "./panes";
 import { addProjectFromPicker, isPickerIdle } from "./projects";
 import { registerCommands, type Command } from "./registry";
 import { hasSettingsPath, redetectBinaries, revealSettingsFile } from "./settings";
+import {
+  canKillTerminal,
+  canRestartTerminal,
+  canToggleTerminal,
+  killTerminal,
+  openProjectTerminal,
+  restartTerminal,
+  toggleTerminalPane,
+} from "./terminal";
+import { PALETTE_TERMINAL_KEY, TERMINAL_TOGGLE_KEY } from "../terminal/keys";
 
 function isPaletteOpen(): boolean {
   return usePaletteStore.getState().isOpen;
@@ -78,6 +89,14 @@ export function builtinCommands(): Command[] {
       id: "palette.toggle",
       title: "Toggle command palette",
       keybinding: "ctrl+k",
+      run: () => usePaletteStore.getState().toggle(),
+    },
+    {
+      // The palette's second binding: the one that still works with focus in a terminal.
+      id: "palette.toggleFromTerminal",
+      title: "Toggle command palette",
+      keybinding: PALETTE_TERMINAL_KEY,
+      hidden: true,
       run: () => usePaletteStore.getState().toggle(),
     },
     {
@@ -217,7 +236,30 @@ export function builtinCommands(): Command[] {
       menu: "node",
       menuOrder: 11,
       when: hasSelectedProject,
-      run: plainTerminalStub,
+      run: withSelectedProject(openProjectTerminal),
+    },
+    {
+      id: "terminal.toggle",
+      title: "Toggle terminal",
+      keybinding: TERMINAL_TOGGLE_KEY,
+      when: canToggleTerminal,
+      run: toggleTerminalPane,
+    },
+    {
+      id: "terminal.kill",
+      title: "Kill terminal",
+      when: canKillTerminal,
+      run: async () => {
+        await killTerminal();
+      },
+    },
+    {
+      id: "terminal.restart",
+      title: "Restart terminal",
+      when: canRestartTerminal,
+      run: async () => {
+        await restartTerminal();
+      },
     },
     {
       id: "project.openEditor",

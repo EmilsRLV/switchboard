@@ -4,7 +4,8 @@
 // node is off screen; Enter runs the selected node's default action. The external actions
 // (editor, file manager, Claude project dir) are thin calls into Rust, which performs them;
 // what cannot run is a transient notice over the canvas top, never a banner and never a throw
-// (`runCommand` has no error UI). The two Epic 4 stubs only show what they will do.
+// (`runCommand` has no error UI). The remaining Epic 4 stubs (new session, attach) only show
+// what they will do.
 
 import {
   nearestInDirection,
@@ -27,9 +28,8 @@ import { projectHasChildren, useWorkspaceStore } from "../state/workspace";
 import { setExpanded } from "./nodes";
 import type { Timers } from "./projects";
 
-/** The notices the two Epic 4 stubs show. */
+/** The notice of the `project.newSession` stub. */
 export const NEW_SESSION_NOTICE = "New session arrives in Epic 4";
-export const PLAIN_TERMINAL_NOTICE = "Plain terminal arrives in Epic 4";
 
 /** The notice of the `session.attach` stub for session `id`. */
 export function attachNotice(id: string): string {
@@ -188,11 +188,6 @@ export function toggleShowAllOfSelected(): boolean {
 /** `project.newSession`: a stub until Epic 4; says so. */
 export function newSessionStub(): void {
   notify(NEW_SESSION_NOTICE);
-}
-
-/** `project.terminal`: a stub until Epic 4; says so. */
-export function plainTerminalStub(): void {
-  notify(PLAIN_TERMINAL_NOTICE);
 }
 
 /**

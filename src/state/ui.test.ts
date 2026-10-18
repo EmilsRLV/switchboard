@@ -3,7 +3,13 @@ import type { LiveSession, SessionState, WorkspaceSnapshot } from "../ipc";
 import {
   FLASH_MS,
   NOTICE_MS,
+  TERMINAL_MIN_WIDTH,
+  TERMINAL_WIDTH_KEY,
+  clampTerminalWidth,
   clampToArea,
+  defaultTerminalWidth,
+  loadTerminalWidth,
+  saveTerminalWidth,
   hasSelection,
   isContextMenuOpen,
   isElsewhereOpen,
@@ -315,5 +321,69 @@ describe("acknowledgement on selection (Story 3.3)", () => {
     expect(isAcknowledging("s1")).toBe(false);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe("terminal pane state", () => {
+  beforeEach(() => {
+    useUiStore.setState({ pane: null, activeTerminal: null, terminalWidth: null });
+  });
+
+  it("the terminal is a pane like the others: opening it replaces settings or import", () => {
+    const s = useUiStore.getState();
+    s.openPane("settings");
+    s.openPane("terminal");
+    expect(useUiStore.getState().pane).toBe("terminal");
+    s.togglePane("terminal");
+    expect(useUiStore.getState().pane).toBeNull();
+  });
+
+  it("remembers the active terminal and the dragged width", () => {
+    const s = useUiStore.getState();
+    s.setActiveTerminal("plain-p1");
+    expect(useUiStore.getState().activeTerminal).toBe("plain-p1");
+    s.setActiveTerminal("plain-p1");
+    expect(useUiStore.getState().activeTerminal).toBe("plain-p1");
+    s.setTerminalWidth(600);
+    expect(useUiStore.getState().terminalWidth).toBe(600);
+    s.setTerminalWidth(null);
+    expect(useUiStore.getState().terminalWidth).toBeNull();
+  });
+
+  it("the default width is min(720px, 70vw)", () => {
+    expect(defaultTerminalWidth(1920)).toBe(720);
+    expect(defaultTerminalWidth(1000)).toBe(700);
+    expect(defaultTerminalWidth(800)).toBe(560);
+  });
+
+  it("a dragged width stays between 360 px and 90vw", () => {
+    expect(clampTerminalWidth(100, 1600)).toBe(TERMINAL_MIN_WIDTH);
+    expect(clampTerminalWidth(900.4, 1600)).toBe(900);
+    expect(clampTerminalWidth(1590, 1600)).toBe(1440);
+    // Too narrow a window for both: 90vw wins.
+    expect(clampTerminalWidth(100, 300)).toBe(270);
+    expect(clampTerminalWidth(Number.NaN, 1000)).toBe(700);
+  });
+
+  it("the width is stored with try/catch: unreadable or throwing storage is no width", () => {
+    const store = new Map<string, string>();
+    const storage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) };
+    expect(loadTerminalWidth(storage)).toBeNull();
+    saveTerminalWidth(612.6, storage);
+    expect(store.get(TERMINAL_WIDTH_KEY)).toBe("613");
+    expect(loadTerminalWidth(storage)).toBe(613);
+    store.set(TERMINAL_WIDTH_KEY, "wide");
+    expect(loadTerminalWidth(storage)).toBeNull();
+    const throwing = {
+      getItem: () => {
+        throw new Error("denied");
+      },
+      setItem: () => {
+        throw new Error("denied");
+      },
+    };
+    expect(loadTerminalWidth(throwing)).toBeNull();
+    expect(() => saveTerminalWidth(500, throwing)).not.toThrow();
+    expect(loadTerminalWidth(null)).toBeNull();
   });
 });

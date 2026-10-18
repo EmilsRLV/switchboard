@@ -23,7 +23,61 @@ import {
 } from "./live";
 import { useWorkspaceStore } from "./workspace";
 
-export type Pane = "settings" | "import";
+export type Pane = "settings" | "import" | "terminal";
+
+/** The terminal pane's narrowest width, in CSS pixels. */
+export const TERMINAL_MIN_WIDTH = 360;
+/** The terminal pane's widest width, as a fraction of the window. */
+export const TERMINAL_MAX_FRACTION = 0.9;
+/** Where the dragged terminal pane width is remembered (a per-viewer convenience). */
+export const TERMINAL_WIDTH_KEY = "switchboard.terminalWidth";
+
+/** The default terminal pane width for a window `viewport` px wide: `min(720px, 70vw)`. */
+export function defaultTerminalWidth(viewport: number): number {
+  return Math.min(720, Math.round(viewport * 0.7));
+}
+
+/**
+ * A terminal pane width kept between 360 px and 90vw (`viewport` px wide); 90vw wins in a
+ * window too narrow for both. A non-finite width is the default.
+ */
+export function clampTerminalWidth(width: number, viewport: number): number {
+  if (!Number.isFinite(width)) return defaultTerminalWidth(viewport);
+  const max = Math.floor(viewport * TERMINAL_MAX_FRACTION);
+  return Math.max(Math.min(TERMINAL_MIN_WIDTH, max), Math.min(Math.round(width), max));
+}
+
+/** The minimal `Storage` slice the width uses; tests pass a fake. */
+export type WidthStorage = Pick<Storage, "getItem" | "setItem">;
+
+function browserStorage(): WidthStorage | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** The remembered terminal pane width, or `null` (none stored, unreadable storage). */
+export function loadTerminalWidth(storage: WidthStorage | null = browserStorage()): number | null {
+  try {
+    const raw = storage?.getItem(TERMINAL_WIDTH_KEY);
+    if (raw === null || raw === undefined) return null;
+    const width = Number(raw);
+    return Number.isFinite(width) && width > 0 ? width : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Remember the terminal pane width; storage that throws (private window) is ignored. */
+export function saveTerminalWidth(width: number, storage: WidthStorage | null = browserStorage()): void {
+  try {
+    storage?.setItem(TERMINAL_WIDTH_KEY, String(Math.round(width)));
+  } catch {
+    // A convenience only: the pane still works at its default width.
+  }
+}
 
 /** How long a duplicate-add highlight stays on the existing node. */
 export const FLASH_MS = 1500;
@@ -59,6 +113,10 @@ export type UiState = {
   showAll: readonly string[];
   /** Whether the Elsewhere tray's list is open (it shows only while it has rows). */
   elsewhereOpen: boolean;
+  /** The terminal the terminal pane shows: the most recently opened or selected one. */
+  activeTerminal: string | null;
+  /** The dragged terminal pane width in CSS pixels, or `null` for the default. */
+  terminalWidth: number | null;
   openPane: (pane: Pane) => void;
   /** Close whichever pane is open (no-op when none is). */
   closePane: () => void;
@@ -81,6 +139,8 @@ export type UiState = {
   toggleElsewhere: () => void;
   openElsewhere: () => void;
   closeElsewhere: () => void;
+  setActiveTerminal: (id: string | null) => void;
+  setTerminalWidth: (width: number | null) => void;
 };
 
 const NO_IDS: readonly string[] = Object.freeze([]);
@@ -93,6 +153,8 @@ export const useUiStore = create<UiState>()((set, get) => ({
   notice: null,
   showAll: NO_IDS,
   elsewhereOpen: false,
+  activeTerminal: null,
+  terminalWidth: loadTerminalWidth(),
   openPane: (pane) => set({ pane }),
   closePane: () => set({ pane: null }),
   togglePane: (pane) => set({ pane: get().pane === pane ? null : pane }),
@@ -128,6 +190,8 @@ export const useUiStore = create<UiState>()((set, get) => ({
   toggleElsewhere: () => set((s) => ({ elsewhereOpen: !s.elsewhereOpen })),
   openElsewhere: () => set((s) => (s.elsewhereOpen ? {} : { elsewhereOpen: true })),
   closeElsewhere: () => set((s) => (s.elsewhereOpen ? { elsewhereOpen: false } : {})),
+  setActiveTerminal: (id) => set((s) => (s.activeTerminal === id ? {} : { activeTerminal: id })),
+  setTerminalWidth: (width) => set((s) => (s.terminalWidth === width ? {} : { terminalWidth: width })),
 }));
 
 // The tray's list closes for good when its last row leaves, so a later row shows the chip
