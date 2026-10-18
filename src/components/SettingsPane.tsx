@@ -1,6 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { runCommand } from "../commands/registry";
-import { hasTauriRuntime, type Binary } from "../ipc";
+import { diagnosticsGet, hasTauriRuntime, type Binary, type DiagnosticsSnapshot } from "../ipc";
+import { DIAGNOSTICS_REFRESH_MS, diagnosticsError, diagnosticsRows } from "./diagnostics";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
 
@@ -84,12 +85,71 @@ export function SettingsPane() {
             <h3 className="pane-heading">Effective settings</h3>
             <Tree value={snapshot.settings} />
           </section>
+
+          <Diagnostics />
         </>
       )}
 
       {snapshot !== null && loadError !== null && <p className="pane-error">{loadError}</p>}
       {error !== null && <p className="pane-error">{error}</p>}
     </aside>
+  );
+}
+
+/**
+ * Settings → Diagnostics (Story 4.3): the hooks endpoint and its counters, read through
+ * `diagnostics_get` on open and every 2 s while the pane is open.
+ */
+function Diagnostics() {
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!hasTauriRuntime()) return;
+    let live = true;
+    const read = () => {
+      diagnosticsGet().then(
+        (next) => {
+          if (!live) return;
+          setDiagnostics(next);
+          setError(null);
+        },
+        (err: unknown) => {
+          if (live) setError(String(err));
+        },
+      );
+    };
+    read();
+    const timer = setInterval(read, DIAGNOSTICS_REFRESH_MS);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, []);
+
+  // A failed read shows even after earlier successes (the counters below are then stale).
+  const failure = diagnosticsError(error, diagnostics !== null);
+  return (
+    <section className="pane-section" aria-label="Diagnostics">
+      <h3 className="pane-heading">Diagnostics</h3>
+      {diagnostics !== null && failure !== null && (
+        <p className="pane-error" role="alert">
+          {failure}
+        </p>
+      )}
+      {diagnostics === null ? (
+        <p className="muted">{failure ?? (hasTauriRuntime() ? "reading…" : "no Tauri runtime")}</p>
+      ) : (
+        <dl className="diagnostics">
+          {diagnosticsRows(diagnostics).map((row) => (
+            <div key={row.label} className="diagnostics-row">
+              <dt className="diagnostics-label">{row.label}</dt>
+              <dd className={row.attention ? "diagnostics-value attention" : "diagnostics-value"}>{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </section>
   );
 }
 

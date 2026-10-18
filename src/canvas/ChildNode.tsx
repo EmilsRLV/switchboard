@@ -2,9 +2,10 @@ import { memo, useSyncExternalStore } from "react";
 import type { NodeProps } from "@xyflow/react";
 import type { ChildKind } from "../ipc";
 import {
+  childAriaLabel,
   moreLabel,
   sessionCardMeta,
-  sessionHoverText,
+  sessionCardTitle,
   type BranchFlowNode,
   type ChildNodeData,
   type MoreFlowNode,
@@ -17,7 +18,9 @@ import {
  * the state word while the poll has seen the session this run: `busy` in `--fg` after a
  * pulsing dot, `finished` / `waiting` in the accent after a pulsing accent dot (and the card's
  * border in the accent: `session-attention`, Story 3.3), `starting` (a session the app just
- * launched, Story 4.2), `idle`, `exited` and unrecognised states muted, historic sessions none. The
+ * launched, Story 4.2), `idle`, `exited` and unrecognised states muted, historic sessions none. A
+ * `finished` card from a hook shows the turn's last assistant line after the state word, muted
+ * and cut with an ellipsis; a `waiting` card's tooltip leads with the hook's reason (Story 4.3). The
  * full title and exact times are on hover. Stubs and branches show the label and a muted
  * detail on one row. `SessionNode` and `BranchNode` are thin wrappers so xyflow has a type per
  * child kind. A right-click opens the node menu (only its enabled entries: Attach for a live
@@ -27,7 +30,7 @@ function ChildCard({ data, kind }: { data: ChildNodeData; kind: ChildKind }) {
   const { child, selected, attention } = data;
   const className =
     `child-node child-node-${kind}` + (selected ? " is-selected" : "") + (attention ? " session-attention" : "");
-  const ariaLabel = `${kind === "session" ? "Session" : "Branch"} ${child.label}${attention ? ", needs you" : ""}`;
+  const ariaLabel = childAriaLabel(kind, data);
   if (child.session !== null) {
     return <SessionCard className={className + " child-node-two-line"} ariaLabel={ariaLabel} data={data} />;
   }
@@ -45,19 +48,14 @@ function ChildCard({ data, kind }: { data: ChildNodeData; kind: ChildKind }) {
 
 function SessionCard({ className, ariaLabel, data }: { className: string; ariaLabel: string; data: ChildNodeData }) {
   const now = useMinute();
-  const { child, state, attention } = data;
+  const { child, state } = data;
   const meta = child.session;
   if (meta === null) return null;
-  const parts = sessionCardMeta(meta, now, state);
+  const parts = sessionCardMeta(meta, now, state, data.lastLine);
   // Only the branch shrinks (ellipsis); the state word, the count and the age never do.
   const tail = parts.age === null ? parts.count : `${parts.count} · ${parts.age}`;
   return (
-    <div
-      className={className}
-      role="group"
-      aria-label={ariaLabel}
-      title={sessionHoverText(child.label, meta) + (attention ? "\nneeds you" : "")}
-    >
+    <div className={className} role="group" aria-label={ariaLabel} title={sessionCardTitle(data, meta)}>
       <span className="child-node-label">{child.label}</span>
       <span className="child-node-meta">
         {parts.state !== null && (
@@ -67,13 +65,20 @@ function SessionCard({ className, ariaLabel, data }: { className: string; ariaLa
           </span>
         )}
         {parts.state !== null && <span aria-hidden="true">·</span>}
-        {parts.branch !== null && (
+        {parts.lastLine !== null ? (
+          // A finished turn's last assistant line (Story 4.3), in place of branch, count, age.
+          <span className="session-last-line">{parts.lastLine}</span>
+        ) : (
           <>
-            <span className="child-node-meta-branch">{parts.branch}</span>
-            <span aria-hidden="true">·</span>
+            {parts.branch !== null && (
+              <>
+                <span className="child-node-meta-branch">{parts.branch}</span>
+                <span aria-hidden="true">·</span>
+              </>
+            )}
+            <span>{tail}</span>
           </>
         )}
-        <span>{tail}</span>
       </span>
     </div>
   );

@@ -33,3 +33,8 @@
 
 - A `launch_session` test asserting the system prompt's branch line (present for an attached branch, absent when detached).
 - A test of the app `setup` wiring: the session dir is set and the startup sweep runs.
+
+## From Story 4.3 (hook-driven status) review
+
+- A false `finished` card and toast when the user's own `Stop` hook blocks the stop: Switchboard's `Stop` hook runs in parallel and cannot see that decision. Possible fix: hold `finished` briefly and cancel it on a following busy signal.
+- Following `/clear` to the new session id (re-keying the token and the live entry); out of scope in 4.3.

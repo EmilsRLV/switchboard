@@ -46,6 +46,8 @@ function live(states: Record<string, [SessionState, number | null]>, elsewhere: 
       cwd: "/p/ide",
       started_at: 1,
       attention_since: since,
+      last_line: null,
+      detail: null,
     };
   }
   const rows = elsewhere.map((id) => ({ session_id: id, state: sessions[id]!.state, name: id, cwd: "/work/x", started_at: 1 }));

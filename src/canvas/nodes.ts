@@ -5,6 +5,7 @@
 
 import type { Node } from "@xyflow/react";
 import type {
+  ChildKind,
   ChildNode,
   LiveSession,
   NodeTarget,
@@ -50,6 +51,10 @@ export type ChildNodeData = {
   state: SessionState | null;
   /** True while the session is `finished` or `waiting`: the accent card (Story 3.3). */
   attention: boolean;
+  /** A `finished` session's last assistant line (Story 4.3); `null` otherwise. */
+  lastLine: string | null;
+  /** A `waiting` session's reason, the card's tooltip (Story 4.3); `null` otherwise. */
+  detail: string | null;
 };
 
 /** What a `MoreNode` (the `show all (N)` / `show fewer` row) renders from. */
@@ -260,6 +265,16 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
   // The card's state by session id, whatever project the live row's cwd maps to.
   const stateOf = (child: ChildNode): SessionState | null =>
     child.kind === "session" && Object.hasOwn(live, child.id) ? (live[child.id]?.state ?? null) : null;
+  // The hook's extras (Story 4.3): the last line while finished, the reason while waiting.
+  const liveOf = (child: ChildNode) => (child.kind === "session" && Object.hasOwn(live, child.id) ? live[child.id] : undefined);
+  const lastLineOf = (child: ChildNode): string | null => {
+    const session = liveOf(child);
+    return session?.state.kind === "finished" ? (session.last_line ?? null) : null;
+  };
+  const detailOf = (child: ChildNode): string | null => {
+    const session = liveOf(child);
+    return session?.state.kind === "waiting" ? (session.detail ?? null) : null;
+  };
   const before = new Map<string, CanvasFlowNode>();
   for (const node of previous) before.set(node.id, node);
 
@@ -311,7 +326,14 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
         type: child.kind,
         parentId: project.id,
         position: childDrag ?? slots[index] ?? columnSlot(index),
-        data: { child, selected: childSelected, state: stateOf(child), attention: needsAttention(stateOf(child)) },
+        data: {
+          child,
+          selected: childSelected,
+          state: stateOf(child),
+          attention: needsAttention(stateOf(child)),
+          lastLine: lastLineOf(child),
+          detail: detailOf(child),
+        },
         zIndex: layer(childSelected, childDrag),
         draggable: true,
         selectable: false,
@@ -379,6 +401,8 @@ function sameNode(a: CanvasFlowNode, b: CanvasFlowNode): boolean {
     return (
       a.data.selected === b.data.selected &&
       a.data.attention === b.data.attention &&
+      a.data.lastLine === b.data.lastLine &&
+      a.data.detail === b.data.detail &&
       sameState(a.data.state, b.data.state) &&
       sameChild(a.data.child, b.data.child)
     );
@@ -461,6 +485,11 @@ export type SessionCardMeta = {
   count: string;
   /** `now`, `5m`, …; `null` when the last activity is unknown (a live session without a transcript). */
   age: string | null;
+  /**
+   * A `finished` session's last assistant line (Story 4.3): when set, the card shows it after
+   * the state word in place of branch, count and age (muted, one line, ellipsis).
+   */
+  lastLine: string | null;
 };
 
 /**
@@ -469,9 +498,11 @@ export type SessionCardMeta = {
  * `waiting` in the accent with the pulsing dot, the rest muted); the branch is left out when
  * the transcript names none; the age when `lastActive` is unknown.
  */
-export function sessionCardMeta(meta: SessionMeta, now: number, state: SessionState | null): SessionCardMeta {
+export function sessionCardMeta(meta: SessionMeta, now: number, state: SessionState | null, lastLine: string | null = null): SessionCardMeta {
   const tone = sessionStateTone(state);
+  const line = lastLine?.trim() ?? "";
   return {
+    lastLine: state?.kind === "finished" && line !== "" ? line : null,
     state: state === null || tone === null ? null : { word: stateWord(state), tone, dot: tone !== "muted" },
     branch: meta.branch !== null && meta.branch !== "" ? meta.branch : null,
     count: `${meta.messages} ${meta.messages === 1 ? "msg" : "msgs"}`,
@@ -497,6 +528,33 @@ export function sessionStateTone(state: SessionState | null): SessionStateTone |
   if (state === null) return null;
   if (state.kind === "busy") return "busy";
   return needsAttention(state) ? "attention" : "muted";
+}
+
+/**
+ * A child card's accessible name: `Session <label>` (or `Branch …`), then a `waiting`
+ * session's reason, a `finished` session's last line (Story 4.3) and `needs you` while it
+ * needs attention.
+ */
+export function childAriaLabel(kind: ChildKind, data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine">): string {
+  const parts = [`${kind === "session" ? "Session" : "Branch"} ${data.child.label}`];
+  if (data.detail !== null && data.detail !== "") parts.push(`waiting: ${data.detail}`);
+  if (data.lastLine !== null && data.lastLine !== "") parts.push(`last line: ${data.lastLine}`);
+  if (data.attention) parts.push("needs you");
+  return parts.join(", ");
+}
+
+/**
+ * A session card's `title` attribute: a `waiting` session's reason (`detail`, Story 4.3)
+ * first, then the hover text, then a `finished` session's last line (as Rust cut it: at most
+ * 200 characters, `…` when cut), then `needs you` while it needs attention.
+ */
+export function sessionCardTitle(data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine">, meta: SessionMeta): string {
+  const lines: string[] = [];
+  if (data.detail !== null && data.detail !== "") lines.push(data.detail);
+  lines.push(sessionHoverText(data.child.label, meta));
+  if (data.lastLine !== null && data.lastLine !== "") lines.push(data.lastLine);
+  if (data.attention) lines.push("needs you");
+  return lines.join("\n");
 }
 
 /** A session card's hover text: the full title and the exact local start and last-active times (each only when known). */

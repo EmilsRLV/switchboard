@@ -236,6 +236,16 @@
   text-overflow: ellipsis;
 }
 
+/* A finished turn's last assistant line (Story 4.3): muted, one line, ellipsis; it takes the
+   room of branch, count and age. No accent beyond the finished state word. */
+.child-node-meta > .session-last-line {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-muted);
+}
+
 /* --- the `show all (N)` / `show fewer` row after the tenth child: muted, no border --------- */
 
 .more-node {

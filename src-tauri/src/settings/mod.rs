@@ -287,6 +287,8 @@ pub struct SettingsState {
     pub watch_banner: Option<Banner>,
     /// Banners produced by binary detection (missing, wrong path, version failure).
     pub binary_banners: Vec<Banner>,
+    /// Set when the hooks endpoint could not start (Story 4.3): `hooks endpoint unavailable`.
+    pub hooks_banner: Option<Banner>,
 }
 
 impl SettingsState {
@@ -301,6 +303,7 @@ impl SettingsState {
                 .chain(self.validation_banners.iter())
                 .chain(self.watch_banner.iter())
                 .chain(self.binary_banners.iter())
+                .chain(self.hooks_banner.iter())
                 .cloned()
                 .collect(),
         }
@@ -363,6 +366,9 @@ pub struct AppState {
     /// The session launcher (`crate::claude::launch`, Story 4.2): the temp folder for
     /// per-session settings files, the files it wrote, the ids proposed to open sheets.
     pub launcher: crate::claude::launch::Launcher,
+    /// The hooks endpoint's registry (`crate::claude::hooks`, Story 4.3): its state, each
+    /// launched session's token, the diagnostics counters.
+    pub hooks: crate::claude::hooks::Hooks,
 }
 
 impl AppState {
@@ -613,7 +619,7 @@ fn parse_banner(path: &Path, err: &store::ParseError) -> Banner {
     Banner::new("settings.parse", format!("{file}:{err}"))
 }
 
-fn emit<R: Runtime>(app: &AppHandle<R>, snapshot: &Snapshot) {
+pub(crate) fn emit<R: Runtime>(app: &AppHandle<R>, snapshot: &Snapshot) {
     if let Err(err) = app.emit(CHANGED_EVENT, snapshot.clone()) {
         eprintln!("settings: emit failed: {err}");
     }
@@ -744,6 +750,7 @@ mod tests {
             validation_banners: vec![],
             watch_banner: None,
             binary_banners: vec![Banner::new("git.configured_missing", "git: configured path …")],
+            hooks_banner: None,
         };
         assert_eq!(
             serde_json::to_value(st.snapshot()).unwrap(),

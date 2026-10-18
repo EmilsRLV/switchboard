@@ -1,5 +1,6 @@
 //! OS toasts for sessions that need the operator (Story 3.3). When the live poll sees a
-//! session enter `Finished` (or, from Story 4.3, `Waiting`) while the main window is not
+//! session enter `Finished` or `Waiting` (from the poll, or from a hook: Story 4.3 feeds hook
+//! transitions through the same [`on_transitions`]) while the main window is not
 //! focused and that kind is on in `settings.notifications`, one toast names the project and
 //! the session. The decision ([`decide`]) is pure; the sending goes through a [`Notifier`]:
 //! the notification plugin in the app, a recorder in tests (injected into

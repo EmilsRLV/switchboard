@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
+use super::hooks::{HookSignal, WaitKind};
 use crate::graph::{self, LiveChild, Workspace};
 use crate::process::{self, RunError};
 use crate::settings::{AppState, BinaryStatus, SettingsState};
@@ -149,13 +150,15 @@ impl SessionState {
 
 /// Where a state came from: the poll, the operator's acknowledgement (selecting a session
 /// that needed attention turns it `Idle` with source `Ack`), or the app itself (`App`, Story
-/// 4.2: a launch, its first PTY output, its PTY exit). Story 4.3 adds hooks.
+/// 4.2: a launch, its first PTY output, its PTY exit), or a Claude Code hook (`Hook`, Story
+/// 4.3; also the keypress that answers a prompt in the session's terminal).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StateSource {
     Poll,
     Ack,
     App,
+    Hook,
 }
 
 /// One session as the live map holds it (and `sessions://live` carries it).
@@ -174,6 +177,12 @@ pub struct LiveSession {
     /// When the session entered `Finished` / `Waiting` (milliseconds since the epoch); `None`
     /// in every other state. `attention.next` goes to the oldest first.
     pub attention_since: Option<i64>,
+    /// A `finished` session's last assistant line (from the `Stop` hook, Story 4.3), cut to
+    /// 200 characters; `None` in every other state.
+    pub last_line: Option<String>,
+    /// A `waiting` session's reason (the hook's message), the card's tooltip; `None` in every
+    /// other state.
+    pub detail: Option<String>,
 }
 
 /// A session that has just entered `Finished` or `Waiting`: what [`LiveMap::apply_at`]
@@ -239,10 +248,74 @@ pub struct LiveMap {
     /// expires after [`APP_EXITED_TTL_MS`] (or with the session's eviction); a new launch of
     /// the id clears it.
     pub app_exited: HashMap<String, i64>,
+    /// Hooked sessions (Story 4.3: at least one hook event accepted), each with how many polls
+    /// in a row disagreed with its hook state since the last hook event. The poll's busy → idle
+    /// `finished` guess does not apply to these.
+    pub hooked: HashMap<String, u8>,
+    /// What each hooked `Waiting` session waits for (it decides the answering keys).
+    pub waits: HashMap<String, WaitKind>,
+    /// When each session last left `waiting` through a terminal answer (ms since the epoch).
+    pub answered: HashMap<String, i64>,
+    /// Times the poll overrode a hooked session's state (Settings → Diagnostics).
+    pub poll_overrides: u64,
 }
 
 /// How long a poll row for an app-launched session whose process exited is ignored.
 pub const APP_EXITED_TTL_MS: i64 = 10_000;
+
+/// Disagreeing polls in a row (with no hook event between) before the poll wins.
+pub const POLLS_TO_OVERRIDE: u8 = 2;
+
+/// A `Notification` wait this soon (ms) after the session left `waiting` through a terminal
+/// answer is the late notice of the answered prompt (it fires ~6 s after the dialog) and is
+/// ignored.
+pub const LATE_NOTIFICATION_MS: i64 = 10_000;
+
+/// Whether a poll's state agrees with a hooked session's hook state (Story 4.3): `busy`/busy,
+/// `waiting`/busy, `waiting`/idle, `finished`/idle, `idle`/idle, `starting`/anything,
+/// `finished` or `waiting` with an `Other` status (which the 3.3 fold would keep anyway), and any
+/// state the poll reports verbatim (an `Other` status equal to the one held).
+pub fn hook_agrees(hook: &SessionState, polled: &SessionState) -> bool {
+    use SessionState::*;
+    matches!(
+        (hook, polled),
+        (Busy, Busy)
+            | (Waiting, Busy)
+            | (Waiting, Idle)
+            | (Finished, Idle)
+            | (Idle, Idle)
+            | (Starting, _)
+            | (Finished | Waiting, Other { .. })
+    ) || hook == polled
+}
+
+/// A key that can answer a waiting prompt in the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerKey {
+    /// Enter (`\r`, or `\n` / `\r\n`).
+    Enter,
+    /// A lone Esc.
+    Esc,
+    /// A digit, or `y` / `n` (either case): a menu choice.
+    Choice,
+}
+
+/// The answer key a terminal write is, when it is exactly one such key press. Anything else —
+/// pasted text, several keys, terminal reply sequences (CSI, OSC, DCS, focus and mouse reports),
+/// bracketed paste, Esc followed by anything — is `None`.
+pub fn answer_key(data: &str) -> Option<AnswerKey> {
+    match data {
+        "\r" | "\n" | "\r\n" => Some(AnswerKey::Enter),
+        "\u{1b}" => Some(AnswerKey::Esc),
+        _ => {
+            let mut chars = data.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) if c.is_ascii_digit() || matches!(c, 'y' | 'Y' | 'n' | 'N') => Some(AnswerKey::Choice),
+                _ => None,
+            }
+        }
+    }
+}
 
 impl LiveMap {
     /// [`LiveMap::apply_at`] at the current time.
@@ -295,8 +368,40 @@ impl LiveMap {
                 SessionState::Idle => false,
                 _ => self.busy_seen.contains(&row.session_id),
             };
-            let was_busy = self.busy_seen.contains(&row.session_id) || previous.is_some_and(|p| p.state == SessionState::Busy);
-            let (state, source, attention_since) = fold_state(previous, polled, was_busy, now);
+            let hooked = self.hooked.get(&row.session_id).copied();
+            let (state, source, attention_since, last_line, detail) = match (previous, hooked) {
+                // A hooked session (Story 4.3): the hook state stands while the poll agrees; two
+                // disagreeing polls in a row with no hook event between, and the poll wins.
+                (Some(p), Some(disagreed)) if p.state != SessionState::Starting => {
+                    let keep = (p.state.clone(), p.source, p.attention_since, p.last_line.clone(), p.detail.clone());
+                    if hook_agrees(&p.state, &polled) {
+                        self.hooked.insert(row.session_id.clone(), 0);
+                        keep
+                    } else if disagreed.saturating_add(1) < POLLS_TO_OVERRIDE {
+                        self.hooked.insert(row.session_id.clone(), disagreed.saturating_add(1));
+                        keep
+                    } else {
+                        self.hooked.insert(row.session_id.clone(), 0);
+                        // No busy → idle guess for a hooked session.
+                        let (state, _, since) = fold_state(previous, polled.clone(), false, now);
+                        // Counted only when the poll changed the state; either way it is now the
+                        // poll's.
+                        if state != p.state {
+                            self.poll_overrides = self.poll_overrides.saturating_add(1);
+                            self.waits.remove(&row.session_id);
+                        }
+                        let (last_line, detail) = carried(p, &state);
+                        (state, StateSource::Poll, since, last_line, detail)
+                    }
+                }
+                _ => {
+                    let was_busy = hooked.is_none()
+                        && (self.busy_seen.contains(&row.session_id) || previous.is_some_and(|p| p.state == SessionState::Busy));
+                    let (state, source, since) = fold_state(previous, polled.clone(), was_busy, now);
+                    let (last_line, detail) = previous.map(|p| carried(p, &state)).unwrap_or_default();
+                    (state, source, since, last_line, detail)
+                }
+            };
             if busy_seen {
                 self.busy_seen.insert(row.session_id.clone());
             } else {
@@ -325,6 +430,8 @@ impl LiveMap {
                     cwd: row.cwd,
                     started_at: row.started_at,
                     attention_since,
+                    last_line,
+                    detail,
                 },
             );
         }
@@ -349,6 +456,8 @@ impl LiveMap {
             gone.state = SessionState::Exited;
             gone.source = StateSource::Poll;
             gone.attention_since = None;
+            gone.last_line = None;
+            gone.detail = None;
             gone.project_id = graph::project_for_cwd(workspace, &gone.cwd);
             next.insert(id.clone(), gone);
         }
@@ -382,14 +491,157 @@ impl LiveMap {
                 cwd: cwd.to_string(),
                 started_at: Some(started_at),
                 attention_since: None,
+                last_line: None,
+                detail: None,
             },
         );
         self.exited_order.retain(|known| known != id);
         self.exited.remove(id);
         self.busy_seen.remove(id);
         self.app_exited.remove(id);
+        self.forget_hooks(id);
         self.app_running.insert(id.to_string());
     }
+
+    /// Drop session `id`'s hook bookkeeping (hooked mark, wait kind, last terminal answer).
+    fn forget_hooks(&mut self, id: &str) {
+        self.hooked.remove(id);
+        self.waits.remove(id);
+        self.answered.remove(id);
+    }
+
+    /// The hooks endpoint failed: no hook will arrive, so every session goes back to the
+    /// poll's Story 3.3 rules (the busy → idle guess included).
+    pub fn clear_hooked(&mut self) {
+        self.hooked.clear();
+        self.waits.clear();
+        self.answered.clear();
+    }
+
+    /// Apply one hook event's `signal` to session `id` at `now` (source `Hook`). The first
+    /// accepted event makes the session hooked (the poll's busy → idle guess off, reconciliation
+    /// on); every event resets its disagreeing-poll count.
+    /// - `Started` turns `Starting` into `Idle`.
+    /// - `Prompted` makes it busy; `ToolDone` too, except that a `Waiting` session stays waiting
+    ///   (a parallel tool or a subagent finishing does not answer the prompt).
+    /// - `Waiting` waits (keeping `detail` and the wait's kind); a `Notification` within
+    ///   [`LATE_NOTIFICATION_MS`] of a terminal answer is ignored (it was about the answered
+    ///   prompt).
+    /// - `Finished` finishes (keeping `last_line`).
+    ///
+    /// Entering `Waiting` / `Finished` stamps `attention_since` and is returned as a transition,
+    /// as for the poll. An unknown or exited session is left alone.
+    pub fn apply_hook(&mut self, id: &str, signal: &HookSignal, now: i64) -> Vec<Transition> {
+        let Some(session) = self.sessions.get_mut(id) else {
+            return Vec::new();
+        };
+        if !session.state.is_live() {
+            return Vec::new();
+        }
+        self.hooked.insert(id.to_string(), 0);
+        self.busy_seen.remove(id);
+        let before = session.state.clone();
+        let busy = |session: &mut LiveSession| {
+            session.state = SessionState::Busy;
+            session.source = StateSource::Hook;
+            session.attention_since = None;
+            session.last_line = None;
+            session.detail = None;
+        };
+        match signal {
+            HookSignal::Started => {
+                if session.state != SessionState::Starting {
+                    return Vec::new();
+                }
+                session.state = SessionState::Idle;
+                session.source = StateSource::Hook;
+            }
+            HookSignal::Prompted => busy(session),
+            HookSignal::ToolDone => {
+                if session.state == SessionState::Waiting {
+                    return Vec::new();
+                }
+                busy(session);
+            }
+            HookSignal::Waiting { kind, detail, notification } => {
+                let late = self.answered.get(id).is_some_and(|at| now.saturating_sub(*at) < LATE_NOTIFICATION_MS);
+                if *notification && late && session.state != SessionState::Waiting {
+                    return Vec::new();
+                }
+                if session.state != SessionState::Waiting {
+                    session.state = SessionState::Waiting;
+                    session.attention_since = Some(now);
+                }
+                session.source = StateSource::Hook;
+                session.detail = detail.clone();
+                session.last_line = None;
+                self.waits.insert(id.to_string(), *kind);
+            }
+            HookSignal::Finished { last_line } => {
+                if session.state != SessionState::Finished {
+                    session.state = SessionState::Finished;
+                    session.attention_since = Some(now);
+                }
+                session.source = StateSource::Hook;
+                session.last_line = last_line.clone();
+                session.detail = None;
+            }
+        }
+        if session.state != SessionState::Waiting {
+            self.waits.remove(id);
+        }
+        if session.state.needs_attention() && session.state != before {
+            vec![Transition {
+                session_id: id.to_string(),
+                state: session.state.clone(),
+                project_id: session.project_id.clone(),
+                cwd: session.cwd.clone(),
+                name: session.name.clone(),
+                project_label: None,
+                title: None,
+            }]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// [`LiveMap::terminal_input_at`] at the current time.
+    pub fn terminal_input(&mut self, id: &str, data: &str) -> bool {
+        self.terminal_input_at(id, data, now_ms())
+    }
+
+    /// The operator wrote `data` to session `id`'s terminal at `now`. While it is `Waiting`, a
+    /// single-key write ([`answer_key`]) answers the prompt at once (source `Hook`; the tool's
+    /// `PostToolUse` only arrives after it ran): on a permission wait Enter, a digit or `y`/`n`
+    /// turns it `Busy` and a lone Esc (a rejection, which ends the turn) `Idle`; on an
+    /// elicitation or `agent_needs_input` wait only Enter counts (`Busy`). Returns whether
+    /// anything changed.
+    pub fn terminal_input_at(&mut self, id: &str, data: &str, now: i64) -> bool {
+        let Some(session) = self.sessions.get_mut(id).filter(|s| s.state == SessionState::Waiting) else {
+            return false;
+        };
+        let Some(key) = answer_key(data) else {
+            return false;
+        };
+        let kind = self.waits.get(id).copied().unwrap_or(WaitKind::Permission);
+        let state = match (kind, key) {
+            (WaitKind::Permission, AnswerKey::Esc) => SessionState::Idle,
+            (WaitKind::Permission, _) | (WaitKind::Input, AnswerKey::Enter) => SessionState::Busy,
+            (WaitKind::Input, _) => return false,
+        };
+        session.state = state;
+        session.source = StateSource::Hook;
+        session.attention_since = None;
+        session.detail = None;
+        session.last_line = None;
+        self.waits.remove(id);
+        self.answered.insert(id.to_string(), now);
+        if let Some(count) = self.hooked.get_mut(id) {
+            *count = 0;
+        }
+        true
+    }
+
 
     /// Session `id`'s PTY printed its first output: `Starting` turns `Idle` (source `App`).
     /// Returns whether anything changed (a poll row may have got there first).
@@ -425,7 +677,10 @@ impl LiveMap {
         session.state = SessionState::Exited;
         session.source = StateSource::App;
         session.attention_since = None;
+        session.last_line = None;
+        session.detail = None;
         self.busy_seen.remove(id);
+        self.forget_hooks(id);
         self.exited_order.push_back(id.to_string());
         while self.exited_order.len() > MAX_EXITED {
             if let Some(oldest) = self.exited_order.pop_front() {
@@ -450,6 +705,10 @@ impl LiveMap {
             sessions,
             app_running: self.app_running.clone(),
             app_exited: self.app_exited.clone(),
+            hooked: self.hooked.iter().filter(|(id, _)| ours(id)).map(|(id, n)| (id.clone(), *n)).collect(),
+            waits: self.waits.iter().filter(|(id, _)| ours(id)).map(|(id, k)| (id.clone(), *k)).collect(),
+            answered: self.answered.iter().filter(|(id, _)| ours(id)).map(|(id, t)| (id.clone(), *t)).collect(),
+            poll_overrides: self.poll_overrides,
             ..LiveMap::default()
         }
     }
@@ -460,6 +719,7 @@ impl LiveMap {
         self.app_running.remove(id);
         self.app_exited.remove(id);
         self.busy_seen.remove(id);
+        self.forget_hooks(id);
         self.exited.remove(id);
         self.exited_order.retain(|known| known != id);
     }
@@ -475,6 +735,9 @@ impl LiveMap {
                 session.state = SessionState::Idle;
                 session.source = StateSource::Ack;
                 session.attention_since = None;
+                session.last_line = None;
+                session.detail = None;
+                self.waits.remove(id);
                 true
             }
             _ => false,
@@ -543,6 +806,16 @@ fn fold_state(previous: Option<&LiveSession>, polled: SessionState, was_busy: bo
         // An acknowledged session stays acknowledged while the poll keeps reporting `idle`.
         Some(p) if p.state == SessionState::Idle && p.source == StateSource::Ack => (SessionState::Idle, StateSource::Ack, None),
         _ => (SessionState::Idle, StateSource::Poll, None),
+    }
+}
+
+/// The `last_line` and `detail` a session keeps after a poll: the previous ones while it stays
+/// in the same attention state (an unacknowledged `Finished` / `Waiting`), else none.
+fn carried(previous: &LiveSession, state: &SessionState) -> (Option<String>, Option<String>) {
+    if state.needs_attention() && *state == previous.state {
+        (previous.last_line.clone(), previous.detail.clone())
+    } else {
+        (None, None)
     }
 }
 
@@ -644,10 +917,49 @@ pub fn apply_and_emit<R: Runtime>(app: &AppHandle<R>, polled: Result<Vec<LiveRow
         graph::set_live_children(app, map.live_children());
         (after, transitions)
     };
+    notify_transitions(app, &mut transitions);
+    after
+}
+
+/// Apply hook event `signal` to session `id` (Story 4.3; called by the hooks endpoint): under
+/// the map's write lock the state changes and, when the snapshot changed, `sessions://live`
+/// goes out at once; a session entering `Finished` / `Waiting` goes to the same toast decision
+/// as the poll's transitions. Returns the snapshot after.
+pub fn hook_and_emit<R: Runtime>(app: &AppHandle<R>, id: &str, signal: super::hooks::HookSignal) -> LiveSnapshot {
+    let state = app.state::<AppState>();
+    let (after, mut transitions) = {
+        let mut map = state.write_sessions_live();
+        let before = map.snapshot();
+        let transitions = map.apply_hook(id, &signal, now_ms());
+        let after = map.snapshot();
+        if after != before {
+            emit_live(app, &after);
+        }
+        (after, transitions)
+    };
+    notify_transitions(app, &mut transitions);
+    after
+}
+
+/// The operator typed `data` into session `id`'s terminal: a waiting session answered in the
+/// terminal turns busy at once ([`LiveMap::terminal_input`]), announced on `sessions://live`.
+pub fn terminal_input_and_emit<R: Runtime>(app: &AppHandle<R>, id: &str, data: &str) {
+    let state = app.state::<AppState>();
+    // Most keystrokes change nothing: look before taking the write lock.
+    if state.read_sessions_live().sessions.get(id).is_none_or(|s| s.state != SessionState::Waiting) {
+        return;
+    }
+    update_and_emit(app, |map| map.terminal_input(id, data));
+}
+
+/// Label `transitions` from the workspace (project label, transcript title) and hand them to
+/// the toast decision (`crate::notify::on_transitions`).
+fn notify_transitions<R: Runtime>(app: &AppHandle<R>, transitions: &mut [Transition]) {
+    let state = app.state::<AppState>();
     if !transitions.is_empty() {
         {
             let ws = state.read_workspace();
-            for transition in &mut transitions {
+            for transition in transitions.iter_mut() {
                 transition.project_label = transition
                     .project_id
                     .as_ref()
@@ -662,9 +974,8 @@ pub fn apply_and_emit<R: Runtime>(app: &AppHandle<R>, polled: Result<Vec<LiveRow
                     .filter(|t| t != super::transcript::UNTITLED);
             }
         }
-        crate::notify::on_transitions(app, &transitions);
+        crate::notify::on_transitions(app, transitions);
     }
-    after
 }
 
 /// Change the stored map with `change` (which says whether it changed anything) and, when it
@@ -1407,5 +1718,333 @@ mod tests {
         found(&app, &printing_claude(cfg.path(), &out));
         assert_eq!(tauri::async_runtime::block_on(refresh(app.handle())).banner, None);
         assert_eq!(rx.try_recv().unwrap().banner, None);
+    }
+
+    // --- Story 4.3: hooks -----------------------------------------------------------------
+
+    use crate::claude::hooks::{HookSignal, WaitKind};
+
+    /// A launched session `s1` in `ide`, not yet hooked (no hook event yet).
+    fn launched() -> LiveMap {
+        let mut map = LiveMap::default();
+        map.launched("s1", Some("ide".into()), ide_path(), "ide-ab12", 1);
+        map
+    }
+
+    /// A launched session whose first hook event (`SessionStart`) has arrived: hooked, idle.
+    fn hooked() -> LiveMap {
+        let mut map = launched();
+        map.apply_hook("s1", &HookSignal::Started, 1);
+        map
+    }
+
+    fn state_of(map: &LiveMap) -> (SessionState, StateSource) {
+        (map.sessions["s1"].state.clone(), map.sessions["s1"].source)
+    }
+
+    fn permission(detail: &str) -> HookSignal {
+        HookSignal::Waiting { kind: WaitKind::Permission, detail: Some(detail.into()), notification: false }
+    }
+
+    fn notice(kind: WaitKind, detail: &str) -> HookSignal {
+        HookSignal::Waiting { kind, detail: Some(detail.into()), notification: true }
+    }
+
+    #[test]
+    fn a_session_is_hooked_only_from_its_first_hook_event() {
+        let ws = workspace_with_ide();
+        let mut map = launched();
+        assert!(!map.hooked.contains_key("s1"), "a launch alone does not hook it");
+        // Unhooked, the 3.3 guess applies.
+        map.apply_at(one("busy"), &ws, 2);
+        assert_eq!(ids(&map.apply_at(one("idle"), &ws, 3)), ["s1"]);
+        assert_eq!(map.sessions["s1"].state, SessionState::Finished);
+        map.apply_hook("s1", &HookSignal::Prompted, 4);
+        assert!(map.hooked.contains_key("s1"));
+        // The endpoint failed: every mark goes, the guess is back.
+        map.clear_hooked();
+        assert!(map.hooked.is_empty() && map.waits.is_empty() && map.answered.is_empty());
+        map.apply_at(one("busy"), &ws, 5);
+        assert_eq!(ids(&map.apply_at(one("idle"), &ws, 6)), ["s1"]);
+    }
+
+    #[test]
+    fn hook_events_drive_the_state_machine() {
+        let mut map = launched();
+        // SessionStart: starting → idle; afterwards it changes nothing.
+        assert!(map.apply_hook("s1", &HookSignal::Started, 2).is_empty());
+        assert_eq!(state_of(&map), (SessionState::Idle, StateSource::Hook));
+        map.apply_hook("s1", &HookSignal::Prompted, 3);
+        assert!(map.apply_hook("s1", &HookSignal::Started, 4).is_empty());
+        assert_eq!(state_of(&map), (SessionState::Busy, StateSource::Hook));
+
+        // PermissionRequest: waiting, stamped, one transition with its detail.
+        let entered = map.apply_hook("s1", &permission("permission: Bash"), 5);
+        assert_eq!(ids(&entered), ["s1"]);
+        assert_eq!(entered[0].state, SessionState::Waiting);
+        assert_eq!(entered[0].project_id.as_deref(), Some("ide"));
+        let s = &map.sessions["s1"];
+        assert_eq!((s.state.clone(), s.attention_since, s.detail.as_deref()), (SessionState::Waiting, Some(5), Some("permission: Bash")));
+        assert_eq!(map.waits.get("s1"), Some(&WaitKind::Permission));
+        // The 6 s Notification for the same prompt: no second transition, the time kept.
+        assert!(map.apply_hook("s1", &notice(WaitKind::Permission, "Claude needs your permission"), 6).is_empty());
+        assert_eq!(map.sessions["s1"].attention_since, Some(5));
+        assert_eq!(map.sessions["s1"].detail.as_deref(), Some("Claude needs your permission"));
+
+        // A parallel tool finishing does not answer the prompt.
+        assert!(map.apply_hook("s1", &HookSignal::ToolDone, 7).is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Waiting);
+        assert_eq!(map.sessions["s1"].attention_since, Some(5));
+        // A new prompt does.
+        assert!(map.apply_hook("s1", &HookSignal::Prompted, 8).is_empty());
+        let s = &map.sessions["s1"];
+        assert_eq!((s.state.clone(), s.attention_since, s.detail.clone()), (SessionState::Busy, None, None));
+        assert!(map.waits.is_empty());
+        // A tool finishing while busy keeps it busy.
+        map.apply_hook("s1", &HookSignal::ToolDone, 9);
+        assert_eq!(state_of(&map), (SessionState::Busy, StateSource::Hook));
+
+        // Stop: finished with the last line.
+        let entered = map.apply_hook("s1", &HookSignal::Finished { last_line: Some("Done.".into()) }, 10);
+        assert_eq!(ids(&entered), ["s1"]);
+        let s = &map.sessions["s1"];
+        assert_eq!((s.state.clone(), s.attention_since, s.last_line.as_deref()), (SessionState::Finished, Some(10), Some("Done.")));
+        let wire = serde_json::to_value(map.snapshot()).unwrap();
+        assert_eq!(wire["sessions"]["s1"]["last_line"], "Done.");
+        assert_eq!(wire["sessions"]["s1"]["source"], "hook");
+
+        // Acknowledging works as in 3.3, and drops the last line.
+        assert!(map.acknowledge("s1", Some(10)));
+        assert_eq!(state_of(&map), (SessionState::Idle, StateSource::Ack));
+        assert_eq!(map.sessions["s1"].last_line, None);
+
+        // StopFailure after a new prompt: finished, "turn failed".
+        map.apply_hook("s1", &HookSignal::Prompted, 11);
+        map.apply_hook("s1", &HookSignal::Finished { last_line: Some(crate::claude::hooks::TURN_FAILED.into()) }, 12);
+        assert_eq!(map.sessions["s1"].last_line.as_deref(), Some("turn failed"));
+        // Waiting → finished is a new kind of attention: a transition.
+        map.apply_hook("s1", &HookSignal::Prompted, 13);
+        map.apply_hook("s1", &permission("x"), 14);
+        assert_eq!(ids(&map.apply_hook("s1", &HookSignal::Finished { last_line: None }, 15)), ["s1"]);
+        assert_eq!(map.sessions["s1"].detail, None);
+        assert!(map.waits.is_empty());
+
+        // Exit: hooks change nothing any more; unknown ids neither.
+        assert!(map.process_exited_at("s1", 16));
+        assert!(!map.hooked.contains_key("s1"));
+        assert!(map.apply_hook("s1", &HookSignal::Prompted, 17).is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Exited);
+        assert!(map.apply_hook("nope", &HookSignal::Prompted, 17).is_empty());
+    }
+
+    #[test]
+    fn answer_keys_are_single_key_presses_only() {
+        assert_eq!(answer_key("\r"), Some(AnswerKey::Enter));
+        assert_eq!(answer_key("\n"), Some(AnswerKey::Enter));
+        assert_eq!(answer_key("\u{1b}"), Some(AnswerKey::Esc));
+        for c in ["1", "9", "y", "Y", "n", "N"] {
+            assert_eq!(answer_key(c), Some(AnswerKey::Choice), "{c}");
+        }
+        // Pastes, several keys, escape sequences (CSI, SS3, OSC, DCS, bracketed paste), alt+key.
+        for other in [
+            "", "a", "12", "yes", "1\r", "\x1b[A", "\x1bOB", "\x1b[I", "\x1b[<0;12;5M", "\x1b]11;rgb:0000/0000/0000\x07",
+            "\x1bP1$r0m\x1b\\", "\x1b[200~1\x1b[201~", "\x1by", "\x1b\r",
+        ] {
+            assert_eq!(answer_key(other), None, "{other:?}");
+        }
+    }
+
+    #[test]
+    fn a_permission_wait_is_answered_by_enter_a_digit_or_y_n_and_rejected_by_esc() {
+        let mut map = hooked();
+        assert!(!map.terminal_input_at("s1", "1", 2), "not waiting: nothing to answer");
+        for answer in ["\r", "1", "2", "y", "N"] {
+            map.apply_hook("s1", &permission("permission: Bash"), 3);
+            assert!(map.terminal_input_at("s1", answer, 4), "{answer:?}");
+            let s = &map.sessions["s1"];
+            assert_eq!((s.state.clone(), s.source, s.attention_since), (SessionState::Busy, StateSource::Hook, None), "{answer:?}");
+        }
+        map.apply_hook("s1", &permission("permission: Bash"), 5);
+        assert!(map.terminal_input_at("s1", "\u{1b}", 6));
+        assert_eq!(state_of(&map), (SessionState::Idle, StateSource::Hook), "Esc rejects: the turn ends");
+        assert_eq!(map.sessions["s1"].attention_since, None);
+        map.apply_hook("s1", &permission("permission: Bash"), 7);
+        for other in ["\x1b[A", "\x1b[I", "\x1b[<0;12;5M", "a", "q", "", "pasted 1\r", "\x1b[200~y\x1b[201~"] {
+            assert!(!map.terminal_input_at("s1", other, 8), "{other:?}");
+        }
+        assert_eq!(map.sessions["s1"].state, SessionState::Waiting);
+        assert!(!map.terminal_input_at("nope", "\r", 8));
+    }
+
+    #[test]
+    fn an_input_wait_is_answered_by_enter_only() {
+        let mut map = hooked();
+        // Each round starts well past the late-notification window of the previous answer.
+        for (t, kind_signal) in [
+            (0, HookSignal::Waiting { kind: WaitKind::Input, detail: Some("Pick one".into()), notification: false }),
+            (100_000, notice(WaitKind::Input, "Claude needs your input")),
+        ] {
+            map.apply_hook("s1", &HookSignal::Prompted, t + 2);
+            map.apply_hook("s1", &kind_signal, t + 3);
+            assert_eq!(map.waits.get("s1"), Some(&WaitKind::Input));
+            for other in ["1", "y", "n", "\u{1b}"] {
+                assert!(!map.terminal_input_at("s1", other, t + 4), "{other:?}");
+            }
+            assert_eq!(map.sessions["s1"].state, SessionState::Waiting);
+            assert!(map.terminal_input_at("s1", "\r", t + 5));
+            assert_eq!(state_of(&map), (SessionState::Busy, StateSource::Hook));
+        }
+    }
+
+    #[test]
+    fn a_late_notification_after_a_terminal_answer_is_ignored() {
+        let mut map = hooked();
+        map.apply_hook("s1", &permission("permission: Bash"), 1_000);
+        assert!(map.terminal_input_at("s1", "1", 2_000));
+        // The ~6 s Notification for the prompt just answered: ignored.
+        assert!(map.apply_hook("s1", &notice(WaitKind::Permission, "Claude needs your permission"), 7_000).is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Busy);
+        // A PermissionRequest is a new prompt, whenever it comes.
+        assert_eq!(ids(&map.apply_hook("s1", &permission("permission: Edit"), 7_500)), ["s1"]);
+        assert!(map.terminal_input_at("s1", "\r", 8_000));
+        // A Notification 10 s or more after the answer counts.
+        assert_eq!(ids(&map.apply_hook("s1", &notice(WaitKind::Permission, "again"), 8_000 + LATE_NOTIFICATION_MS)), ["s1"]);
+        assert_eq!(map.sessions["s1"].state, SessionState::Waiting);
+    }
+
+    #[test]
+    fn agreeing_pairs_are_the_listed_ones() {
+        use SessionState::*;
+        let other = |raw: &str| Other { raw: raw.into() };
+        for (hook, poll) in [
+            (Busy, Busy),
+            (Waiting, Busy),
+            (Waiting, Idle),
+            (Finished, Idle),
+            (Idle, Idle),
+            (Starting, Busy),
+            (Starting, Idle),
+            (other("c"), other("c")),
+            (Finished, other("c")),
+            (Waiting, other("c")),
+        ] {
+            assert!(hook_agrees(&hook, &poll), "{hook:?}/{poll:?}");
+        }
+        for (hook, poll) in [(Idle, Busy), (Busy, Idle), (Finished, Busy), (Busy, other("c")), (other("c"), other("d"))] {
+            assert!(!hook_agrees(&hook, &poll), "{hook:?}/{poll:?}");
+        }
+    }
+
+    #[test]
+    fn two_disagreeing_polls_without_a_hook_between_and_the_poll_wins() {
+        let ws = workspace_with_ide();
+        let mut map = hooked();
+        // Hooks silent: hook state idle, poll busy twice.
+        assert!(map.apply_at(one("busy"), &ws, 3).is_empty());
+        assert_eq!(state_of(&map), (SessionState::Idle, StateSource::Hook), "one disagreeing poll: the hook state stands");
+        assert_eq!(map.poll_overrides, 0);
+        map.apply_at(one("busy"), &ws, 4);
+        assert_eq!(state_of(&map), (SessionState::Busy, StateSource::Poll), "the second: the poll wins");
+        assert_eq!(map.poll_overrides, 1);
+
+        // One disagreeing poll, then a hook: the hook state is kept, no override.
+        map.apply_hook("s1", &HookSignal::Finished { last_line: Some("Done.".into()) }, 5);
+        map.apply_at(one("busy"), &ws, 6);
+        map.apply_hook("s1", &HookSignal::Finished { last_line: Some("Done.".into()) }, 7);
+        map.apply_at(one("busy"), &ws, 8);
+        assert_eq!(map.sessions["s1"].state, SessionState::Finished);
+        assert_eq!(map.sessions["s1"].last_line.as_deref(), Some("Done."));
+        assert_eq!(map.poll_overrides, 1);
+        // An agreeing poll in between resets the count too.
+        map.apply_at(one("idle"), &ws, 9);
+        map.apply_at(one("busy"), &ws, 10);
+        assert_eq!(map.sessions["s1"].state, SessionState::Finished);
+        assert_eq!(map.poll_overrides, 1);
+    }
+
+    #[test]
+    fn every_override_that_changes_the_state_is_counted_and_sourced_poll() {
+        let ws = workspace_with_ide();
+        let mut map = hooked();
+        map.apply_hook("s1", &HookSignal::Prompted, 2);
+        // busy held, `compacting` polled twice: the fold applies `compacting`: counted.
+        map.apply_at(one("compacting"), &ws, 3);
+        map.apply_at(one("compacting"), &ws, 4);
+        assert_eq!(map.sessions["s1"].state, SessionState::Other { raw: "compacting".into() });
+        assert_eq!(map.poll_overrides, 1);
+        // `idle` held (by an Esc rejection), the poll says `compacting` twice: the 3.3 fold gives
+        // `compacting`, a change: counted.
+        map.apply_hook("s1", &permission("permission: Bash"), 5);
+        map.terminal_input_at("s1", "\u{1b}", 6);
+        map.apply_at(one("compacting"), &ws, 7);
+        map.apply_at(one("compacting"), &ws, 8);
+        assert_eq!(map.poll_overrides, 2);
+        // A Hook-sourced `busy` with two `idle` polls whose fold is `idle`: a change, counted.
+        map.apply_hook("s1", &HookSignal::Prompted, 9);
+        map.apply_at(one("idle"), &ws, 10);
+        map.apply_at(one("idle"), &ws, 11);
+        assert_eq!(state_of(&map), (SessionState::Idle, StateSource::Poll));
+        assert_eq!(map.poll_overrides, 3);
+        // One disagreement already counted, then a differing `Other` status: applied, counted.
+        let s = map.sessions.get_mut("s1").unwrap();
+        s.state = SessionState::Other { raw: "x".into() };
+        s.source = StateSource::Hook;
+        map.hooked.insert("s1".into(), 1);
+        // `Other{x}` held, `Other{y}` polled: the fold gives `Other{y}`, a change.
+        map.apply_at(one("y"), &ws, 12);
+        assert_eq!(map.poll_overrides, 4);
+        assert_eq!(map.sessions["s1"].source, StateSource::Poll);
+    }
+
+    #[test]
+    fn no_poll_state_ever_overrides_a_waiting_session() {
+        let ws = workspace_with_ide();
+        let mut map = hooked();
+        map.apply_hook("s1", &permission("permission: Bash"), 2);
+        for (status, t) in [("busy", 3), ("busy", 4), ("idle", 5), ("idle", 6), ("compacting", 7), ("compacting", 8), ("busy", 9)] {
+            assert!(map.apply_at(one(status), &ws, t).is_empty(), "{status}");
+        }
+        let s = &map.sessions["s1"];
+        assert_eq!((s.state.clone(), s.source, s.attention_since, s.detail.as_deref()), (SessionState::Waiting, StateSource::Hook, Some(2), Some("permission: Bash")));
+        assert_eq!(map.poll_overrides, 0);
+        // Only its process exit ends it from outside the hooks.
+        assert!(map.process_exited_at("s1", 10));
+        assert_eq!(map.sessions["s1"].state, SessionState::Exited);
+    }
+
+    #[test]
+    fn the_busy_to_idle_guess_does_not_apply_to_a_hooked_session() {
+        let ws = workspace_with_ide();
+        let mut map = hooked();
+        map.apply_hook("s1", &HookSignal::Prompted, 2);
+        map.apply_at(one("busy"), &ws, 3);
+        // The turn ended but the Stop hook is late: idle polls disagree with busy …
+        assert!(map.apply_at(one("idle"), &ws, 4).is_empty());
+        assert_eq!(map.sessions["s1"].state, SessionState::Busy);
+        // … and after two the poll wins with `idle`, not a guessed `finished`.
+        assert!(map.apply_at(one("idle"), &ws, 5).is_empty());
+        assert_eq!(state_of(&map), (SessionState::Idle, StateSource::Poll));
+        assert_eq!(map.poll_overrides, 1);
+
+        // An unhooked session behaves exactly as before.
+        let mut plain = LiveMap::default();
+        plain.apply_at(one("busy"), &ws, 1);
+        assert_eq!(ids(&plain.apply_at(one("idle"), &ws, 2)), ["s1"]);
+        assert_eq!(plain.poll_overrides, 0);
+    }
+
+    #[test]
+    fn a_starting_hooked_session_still_turns_idle_on_its_first_poll_row() {
+        let ws = workspace_with_ide();
+        let mut map = launched();
+        map.hooked.insert("s1".into(), 0);
+        map.apply_at(one("idle"), &ws, 2);
+        assert_eq!(state_of(&map), (SessionState::Idle, StateSource::Poll));
+        assert_eq!(map.poll_overrides, 0);
+        assert!(map.hooked.contains_key("s1"));
+        // Losing claude keeps the mark for the app's sessions; forget drops it.
+        assert!(map.cleared_keeping_app().hooked.contains_key("s1"));
+        map.forget("s1");
+        assert!(map.hooked.is_empty());
     }
 }

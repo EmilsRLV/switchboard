@@ -21,7 +21,7 @@ import {
 } from "./live";
 
 function session(state: SessionState, project_id: string | null = "ide"): LiveSession {
-  return { state, source: "poll", pid: 7, kind: "interactive", name: "ide-6e", project_id, cwd: "/p/ide", started_at: 1, attention_since: null };
+  return { state, source: "poll", pid: 7, kind: "interactive", name: "ide-6e", project_id, cwd: "/p/ide", started_at: 1, attention_since: null, last_line: null, detail: null };
 }
 
 const snapshot: LiveSnapshot = {

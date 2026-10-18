@@ -242,6 +242,8 @@ describe("acknowledgement on selection (Story 3.3)", () => {
     cwd: "/p/ide",
     started_at: 1,
     attention_since: state.kind === "finished" ? 1 : null,
+    last_line: null,
+    detail: null,
   });
 
   beforeEach(() => {

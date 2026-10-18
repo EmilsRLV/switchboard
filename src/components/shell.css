@@ -245,6 +245,30 @@
   content: ":";
 }
 
+/* Settings → Diagnostics (Story 4.3): label / value rows, values in mono. */
+.diagnostics {
+  margin: 0;
+  display: grid;
+  gap: 0.25rem;
+  font-size: var(--text-md);
+}
+
+.diagnostics-row {
+  display: grid;
+  grid-template-columns: 11rem 1fr;
+  gap: 0.5rem;
+}
+
+.diagnostics-label {
+  color: var(--fg-muted);
+}
+
+.diagnostics-value {
+  margin: 0;
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
 /* --- import pane ---------------------------------------------------------------------- */
 
 .import-list {

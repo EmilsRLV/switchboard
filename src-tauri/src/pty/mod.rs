@@ -993,9 +993,12 @@ pub fn plain_id(project_id: &str) -> String {
     format!("plain-{project_id}")
 }
 
+/// What a session terminal's id starts with; the session id follows.
+pub const SESSION_PREFIX: &str = "session:";
+
 /// The id of the terminal a launched session runs in (Story 4.2).
 pub fn session_id(session_id: &str) -> String {
-    format!("session:{session_id}")
+    format!("{SESSION_PREFIX}{session_id}")
 }
 
 impl TermManager {

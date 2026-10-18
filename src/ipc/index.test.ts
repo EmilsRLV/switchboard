@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   appInfo,
   claudeProjectsList,
+  diagnosticsGet,
   hasTauriRuntime,
   launchDefaults,
   liveSessionsGet,
@@ -185,6 +186,21 @@ describe("workspace command wrappers", () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
     await expect(sessionAcknowledge("s1", 42)).resolves.toBe(live);
     expect(invoke).toHaveBeenCalledWith("session_acknowledge", { sessionId: "s1", attentionSince: 42 }, undefined);
+  });
+
+  it("diagnosticsGet invokes diagnostics_get with no arguments", async () => {
+    const diagnostics = {
+      endpoint: "127.0.0.1:4242",
+      endpoint_error: null,
+      hook_events: 3,
+      refused: 1,
+      session_mismatches: 0,
+      poll_overrides: 0,
+    };
+    const invoke = vi.fn().mockResolvedValue(diagnostics);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await expect(diagnosticsGet()).resolves.toBe(diagnostics);
+    expect(invoke).toHaveBeenCalledWith("diagnostics_get", {}, undefined);
   });
 
   it("the toast-click subscription is a no-op without a runtime", async () => {

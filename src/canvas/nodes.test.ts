@@ -40,7 +40,9 @@ import {
   moreFlowId,
   moreLabel,
   rightClickAction,
+  childAriaLabel,
   sessionCardMeta,
+  sessionCardTitle,
   sessionHoverText,
   sessionMetaLine,
   sessionStateTone,
@@ -436,6 +438,8 @@ describe("statusLine / aheadBehind", () => {
       cwd: "/x",
       started_at: 0,
       attention_since: null,
+      last_line: null,
+      detail: null,
     });
     const child = (id: string, projectId: string): ChildNode => ({ ...stub(1, projectId), id });
     const children = [child("s1", "a"), child("s2", "a"), child("s3", "a"), child("s4", "a"), child("historic", "a"), child("moved", "a")];
@@ -465,6 +469,8 @@ describe("statusLine / aheadBehind", () => {
       cwd: "/p/a",
       started_at: 0,
       attention_since: state.kind === "finished" ? 5 : null,
+      last_line: null,
+      detail: null,
     });
     const children = [stub(1, "a"), stub(2, "a"), stub(1, "b")];
     const collapsed = [project("a", "/p/a"), project("b", "/p/b", 300)];
@@ -510,6 +516,8 @@ describe("statusLine / aheadBehind", () => {
       cwd: "/p/a",
       started_at: 0,
       attention_since: null,
+      last_line: null,
+      detail: null,
     });
     const first = toFlowNodes(inputs({ projects: expanded, children, live: { "stub-1-a": session({ kind: "busy" }) } }));
     const kid = (nodes: typeof first, i: number) => {
@@ -842,16 +850,77 @@ describe("formatAge / sessionMetaLine", () => {
       branch: "HEAD",
       count: "455 msgs",
       age: "now",
+      lastLine: null,
     });
     expect(sessionCardMeta(meta, now, { kind: "other", raw: "compacting" }).state).toEqual({ word: "compacting", tone: "muted", dot: false });
     expect(sessionCardMeta(meta, now, { kind: "exited" }).state).toEqual({ word: "exited", tone: "muted", dot: false });
-    expect(sessionCardMeta({ ...meta, branch: "", messages: 1 }, now, null)).toEqual({ state: null, branch: null, count: "1 msg", age: "now" });
+    expect(sessionCardMeta({ ...meta, branch: "", messages: 1 }, now, null)).toEqual({ state: null, branch: null, count: "1 msg", age: "now", lastLine: null });
     const liveOnly: SessionMeta = { startedAt: "", lastActive: "", branch: null, messages: 0 };
     expect(sessionCardMeta(liveOnly, now, { kind: "idle" }).age).toBeNull();
     expect(sessionMetaLine(liveOnly, now, { kind: "idle" })).toBe("idle · 0 msgs");
     expect(sessionHoverText("new session", liveOnly)).toBe("new session");
     const started = { ...liveOnly, startedAt: "2026-10-16T09:00:00.000Z" };
     expect(sessionHoverText("t", started)).toBe(`t\nstarted ${new Date("2026-10-16T09:00:00.000Z").toLocaleString()}`);
+  });
+
+  it("a finished card shows the last line in place of branch, count and age; only while finished", () => {
+    const meta: SessionMeta = { startedAt: ago(0), lastActive: ago(0), branch: "master", messages: 12 };
+    expect(sessionCardMeta(meta, now, { kind: "finished" }, "Done.").lastLine).toBe("Done.");
+    expect(sessionCardMeta(meta, now, { kind: "finished" }, "  ").lastLine).toBeNull();
+    expect(sessionCardMeta(meta, now, { kind: "finished" }).lastLine).toBeNull();
+    expect(sessionCardMeta(meta, now, { kind: "busy" }, "Done.").lastLine, "a stale line never shows").toBeNull();
+  });
+
+  it("the card title leads with a waiting session's detail and adds a finished one's last line", () => {
+    const meta: SessionMeta = { startedAt: "", lastActive: "", branch: null, messages: 0 };
+    const child = { ...stub(1, "a"), label: "fix login" };
+    expect(sessionCardTitle({ child, attention: true, detail: "permission: Bash", lastLine: null }, meta)).toBe("permission: Bash\nfix login\nneeds you");
+    expect(sessionCardTitle({ child, attention: true, detail: null, lastLine: "Done." }, meta)).toBe("fix login\nDone.\nneeds you");
+    expect(sessionCardTitle({ child, attention: false, detail: null, lastLine: null }, meta)).toBe("fix login");
+  });
+
+  it("the accessible name carries the waiting reason and the finished last line", () => {
+    const child = { ...stub(1, "a"), label: "fix login" };
+    expect(childAriaLabel("session", { child, attention: true, detail: "permission: Bash", lastLine: null })).toBe(
+      "Session fix login, waiting: permission: Bash, needs you",
+    );
+    expect(childAriaLabel("session", { child, attention: true, detail: null, lastLine: "Done." })).toBe(
+      "Session fix login, last line: Done., needs you",
+    );
+    expect(childAriaLabel("branch", { child, attention: false, detail: null, lastLine: null })).toBe("Branch fix login");
+  });
+
+  it("a hooked session's card carries the last line while finished and the detail while waiting", () => {
+    const expanded = [project("a", "/p/a", 0, 0, true)];
+    const children = [stub(1, "a"), stub(2, "a")];
+    const session = (state: SessionState, extra: Partial<LiveSession> = {}): LiveSession => ({
+      state,
+      source: "hook",
+      pid: 1,
+      kind: "interactive",
+      name: null,
+      project_id: "a",
+      cwd: "/p/a",
+      started_at: 0,
+      attention_since: 5,
+      last_line: null,
+      detail: null,
+      ...extra,
+    });
+    const live = {
+      "stub-1-a": session({ kind: "finished" }, { last_line: "Done." }),
+      "stub-2-a": session({ kind: "waiting" }, { detail: "permission: Bash", last_line: "stale" }),
+    };
+    const nodes = toFlowNodes(inputs({ projects: expanded, children, live }));
+    const kids = nodes.filter((n) => n.type === "session");
+    expect(kids.map((n) => (n.type === "session" ? [n.data.lastLine, n.data.detail] : null))).toEqual([
+      ["Done.", null],
+      [null, "permission: Bash"],
+    ]);
+    // A new last line re-renders that card only.
+    const next = toFlowNodes(inputs({ projects: expanded, children, live: { ...live, "stub-1-a": session({ kind: "finished" }, { last_line: "Next." }) } }), nodes);
+    expect(next[1]).not.toBe(nodes[1]);
+    expect(next[2]).toBe(nodes[2]);
   });
 
   it("the meta line starts with the state word when the session is live or exited", () => {

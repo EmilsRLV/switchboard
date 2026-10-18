@@ -50,6 +50,7 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::term_close,
             ipc::launch_defaults,
             ipc::session_launch,
+            ipc::diagnostics_get,
         ])
 }
 
@@ -97,6 +98,9 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
     with_commands(builder)
         .setup(|app| {
             use tauri::Manager;
+            // The hooks endpoint (Story 4.3) on 127.0.0.1:<ephemeral>, before the first settings
+            // snapshot goes out, so a failed bind's banner is in it.
+            let _ = claude::hooks::start(app.handle());
             settings::initialise(app.handle());
             // Read once, before the workspace loads and copies it; off by default.
             let stubs = stub_children_from_env(std::env::var(STUB_CHILDREN_ENV).ok().as_deref());
@@ -755,7 +759,7 @@ mod tests {
                 "sessions": { "s1": {
                     "state": { "kind": "busy" }, "source": "poll", "pid": 7, "kind": "interactive", "name": "n",
                     "project_id": null, "cwd": "/nowhere", "started_at": 1791553254656_i64,
-                    "attention_since": null
+                    "attention_since": null, "last_line": null, "detail": null
                 } },
                 "elsewhere": [{ "session_id": "s1", "state": { "kind": "busy" }, "name": "n", "cwd": "/nowhere", "started_at": 1791553254656_i64 }],
                 "banner": null
@@ -1005,14 +1009,14 @@ mod tests {
         #[cfg(windows)]
         let program = (
             std::path::PathBuf::from("cmd.exe"),
-            ["/d", "/c", "set", "/p", "x=", "&", "echo", "node=%SWITCHBOARD_NODE%", "&", "echo"]
+            ["/d", "/c", "set", "/p", "x=", "&", "echo", "node=%SWITCHBOARD_NODE%", "port=%SWITCHBOARD_PORT%", "&", "echo"]
                 .map(String::from)
                 .to_vec(),
         );
         #[cfg(not(windows))]
         let program = (
             std::path::PathBuf::from("/bin/sh"),
-            ["-c", "read x; printf 'node=%s\\n' \"$SWITCHBOARD_NODE\"; printf '[%s]\\n' \"$@\"", "sh"]
+            ["-c", "read x; printf 'node=%s port=%s\\n' \"$SWITCHBOARD_NODE\" \"$SWITCHBOARD_PORT\"; printf '[%s]\\n' \"$@\"", "sh"]
                 .map(String::from)
                 .to_vec(),
         );
@@ -1347,6 +1351,176 @@ mod tests {
         .to_vec();
         assert_eq!(printed, expected, "output:\n{text}");
         super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
+    }
+
+    /// Story 4.3: with the endpoint up, a launch writes the hooks block, passes the port, and
+    /// raw-HTTP hook POSTs drive the session (waiting → answered in the terminal → finished),
+    /// emitting at once and toasting through the injected recorder; the token dies with the
+    /// session. The fixture program stands in for `claude`.
+    #[test]
+    fn hook_posts_drive_a_launched_session_and_its_token_dies_with_it() {
+        use super::claude::hooks::{self, tests::{eventually, http}};
+        use super::claude::live::{SessionState, StateSource};
+        use serde_json::json;
+        let (app, webview, _dir, _folder, sessions) = launch_fixture();
+        let state = app.state::<super::AppState>();
+        let recorder = std::sync::Arc::new(super::notify::fixtures::Recorder::default());
+        *state.notifier.lock().unwrap() = Some(recorder.clone());
+        let server = hooks::start_on(app.handle(), hooks::bind()).expect("the endpoint starts");
+        let port = state.hooks.port().expect("up");
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            use tauri::Listener;
+            app.listen_any(super::claude::live::LIVE_EVENT, move |event| {
+                let _ = tx.send(serde_json::from_str::<serde_json::Value>(event.payload()).unwrap());
+            });
+        }
+
+        let prefill = call("launch_defaults", json!({ "projectId": "ide" })).unwrap();
+        let request = json!({ "projectId": "ide", "sessionId": prefill["sessionId"], "name": prefill["name"] });
+        let reply = call("session_launch", json!({ "request": request, "cols": 200, "rows": 30 })).expect("session_launch");
+        let id = reply["session_id"].as_str().unwrap().to_string();
+        let term_id = format!("session:{id}");
+
+        // The settings file holds the hooks block with this session's token.
+        let settings: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(sessions.join(format!("{id}.settings.json"))).unwrap()).unwrap();
+        let auth = settings["hooks"]["Stop"][0]["hooks"][0]["headers"]["Authorization"].as_str().unwrap().to_string();
+        let token = auth.strip_prefix("Bearer ").unwrap().to_string();
+        assert_eq!(settings, hooks::settings_json(port, &token));
+        assert!(!state.read_sessions_live().hooked.contains_key(&id), "hooked only from its first hook event");
+        let post = |event: &str, body: serde_json::Value| http(port, "POST", &format!("/hooks/{event}"), Some(&token), body.to_string().as_bytes());
+        let live = |id: &str| state.read_sessions_live().sessions[id].clone();
+        // Hook events are applied just after the reply.
+        let becomes = |what: &str, want: SessionState| eventually(what, || live(&id).state == want);
+
+        assert_eq!(post("SessionStart", json!({ "session_id": id })), (200, String::new()));
+        becomes("idle from SessionStart", SessionState::Idle);
+        assert_eq!(live(&id).source, StateSource::Hook);
+        assert!(state.read_sessions_live().hooked.contains_key(&id));
+        while rx.try_recv().is_ok() {}
+
+        // Permission: waiting, emitted, with a toast.
+        assert_eq!(post("PermissionRequest", json!({ "session_id": id, "tool_name": "Bash" })).0, 200);
+        becomes("waiting", SessionState::Waiting);
+        assert_eq!(live(&id).detail.as_deref(), Some("permission: Bash"));
+        eventually("the waiting emit", || {
+            rx.try_iter().any(|e| e["sessions"][&id]["state"]["kind"] == "waiting")
+        });
+        eventually("the waiting toast", || !recorder.sent.lock().unwrap().is_empty());
+        assert_eq!(recorder.sent.lock().unwrap()[0].0, "ide — waiting");
+
+        // A pasted line does not answer it; a single "1" does (no Enter: the fixture keeps
+        // waiting for its line).
+        call("term_write", json!({ "id": term_id, "data": "pasted 1" })).expect("term_write");
+        assert_eq!(live(&id).state, SessionState::Waiting);
+        call("term_write", json!({ "id": term_id, "data": "1" })).expect("term_write");
+        assert_eq!((live(&id).state, live(&id).source), (SessionState::Busy, StateSource::Hook));
+
+        // The ~6 s permission Notification for the prompt just answered: ignored (late notice).
+        assert_eq!(
+            post("Notification", json!({ "session_id": id, "notification_type": "permission_prompt", "message": "Claude needs your permission" })).0,
+            200
+        );
+        eventually("the notification counted", || state.hooks.diagnostics(0).hook_events == 3);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(live(&id).state, SessionState::Busy);
+        // The turn ends.
+        assert_eq!(post("Stop", json!({ "session_id": id, "last_assistant_message": "Done.\nDetails…" })).0, 200);
+        becomes("finished", SessionState::Finished);
+        assert_eq!(live(&id).last_line.as_deref(), Some("Done."));
+        eventually("the finished toast", || recorder.sent.lock().unwrap().len() == 2);
+
+        // A new prompt, then a turn that fails.
+        assert_eq!(post("UserPromptSubmit", json!({ "session_id": id })).0, 200);
+        becomes("busy again", SessionState::Busy);
+        assert_eq!(post("StopFailure", json!({ "session_id": id, "error": "rate_limit" })).0, 200);
+        becomes("finished (failed)", SessionState::Finished);
+        assert_eq!(live(&id).last_line.as_deref(), Some("turn failed"));
+
+        // A bad token changes nothing.
+        assert_eq!(http(port, "POST", "/hooks/UserPromptSubmit", Some("nope"), b"{}").0, 401);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(live(&id).state, SessionState::Finished);
+
+        // Let the fixture print and exit: the port was in its env; the token is dropped.
+        state.terms.write(&term_id, b"\r").unwrap();
+        let output = || super::pty::tests::strip_escapes(&state.terms.buffer(&term_id).unwrap().data);
+        wait_until(&app, &term_id, "the fixture's output", || output().contains(&format!("port={port}")));
+        wait_until(&app, &term_id, "the exit", || live(&id).state == SessionState::Exited);
+        assert!(!state.hooks.has_token(&id));
+        assert!(!state.read_sessions_live().hooked.contains_key(&id));
+        assert_eq!(post("UserPromptSubmit", json!({})).0, 401);
+        assert_eq!(live(&id).state, SessionState::Exited);
+
+        let diagnostics = call("diagnostics_get", json!({})).expect("diagnostics_get");
+        assert_eq!(diagnostics["endpoint"], format!("127.0.0.1:{port}"));
+        assert_eq!(diagnostics["endpoint_error"], serde_json::Value::Null);
+        assert_eq!(diagnostics["hook_events"], 6);
+        assert_eq!(diagnostics["refused"], 2);
+        assert_eq!(diagnostics["session_mismatches"], 0);
+        assert_eq!(diagnostics["poll_overrides"], 0);
+        server.abort();
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
+    }
+
+    /// With the endpoint up, a launch that fails after its token was issued (the settings file
+    /// cannot be written, or the program cannot start) leaves no token and no hooked mark.
+    #[test]
+    fn a_failed_launch_with_the_endpoint_up_leaves_no_token() {
+        use serde_json::json;
+        let (app, webview, dir, _folder, sessions) = launch_fixture();
+        let state = app.state::<super::AppState>();
+        let server = super::claude::hooks::start_on(app.handle(), super::claude::hooks::bind()).expect("up");
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        let prefill = call("launch_defaults", json!({ "projectId": "ide" })).unwrap();
+        let request = json!({ "projectId": "ide", "sessionId": prefill["sessionId"], "name": prefill["name"] });
+        let id = prefill["sessionId"].as_str().unwrap().to_string();
+
+        // The settings file is already there (planted): refused.
+        std::fs::create_dir_all(&sessions).unwrap();
+        let planted = sessions.join(format!("{id}.settings.json"));
+        std::fs::write(&planted, "planted").unwrap();
+        let err = call("session_launch", json!({ "request": request })).expect_err("the file exists");
+        assert!(err.as_str().unwrap().starts_with("could not write session settings"), "{err}");
+        assert_eq!(state.hooks.token_count(), 0);
+        assert!(state.read_sessions_live().hooked.is_empty());
+        std::fs::remove_file(&planted).unwrap();
+
+        // The program cannot start: refused (the id was given back, so the same sheet retries).
+        *state.launcher.program.lock().unwrap() = Some((dir.path().join("no-claude.exe"), Vec::new()));
+        call("session_launch", json!({ "request": request })).expect_err("spawn fails");
+        assert_eq!(state.hooks.token_count(), 0);
+        assert!(state.read_sessions_live().hooked.is_empty());
+        assert!(state.terms.list().is_empty());
+        server.abort();
+    }
+
+    #[test]
+    fn a_failed_bind_leaves_launches_without_hooks_and_raises_the_banner() {
+        use serde_json::json;
+        let (app, webview, ..) = app_with_ide();
+        let state = app.state::<super::AppState>();
+        // A session that was hooked while the endpoint was up (the serve task failing later
+        // takes the same path).
+        state.hooks.register("s1");
+        state.write_sessions_live().hooked.insert("s1".into(), 0);
+        assert!(super::claude::hooks::start_on(app.handle(), Err(std::io::Error::other("address in use"))).is_none());
+        assert_eq!(state.hooks.token_count(), 0, "every token dropped");
+        assert!(state.read_sessions_live().hooked.is_empty(), "back on the poll's 3.3 rules");
+        assert_eq!(state.hooks.port(), None, "no port: the settings file is `{{}}` and no SWITCHBOARD_PORT");
+        let banners = state.read().snapshot().banners;
+        assert_eq!(banners.len(), 1);
+        assert_eq!(banners[0].id, super::claude::hooks::BANNER_ID);
+        assert_eq!(banners[0].text, "hooks endpoint unavailable: address in use");
+        let diagnostics: serde_json::Value = invoke_with(&webview, "diagnostics_get", InvokeBody::Json(json!({}))).unwrap().deserialize().unwrap();
+        assert_eq!(diagnostics["endpoint"], serde_json::Value::Null);
+        assert_eq!(diagnostics["endpoint_error"], "address in use");
     }
 
     #[test]

@@ -755,7 +755,7 @@ describe("built-in commands", () => {
   function liveSnapshot(states: Record<string, SessionState>, elsewhere = 0): LiveSnapshot {
     const sessions: Record<string, LiveSession> = {};
     for (const [id, state] of Object.entries(states)) {
-      sessions[id] = { state, source: "poll", pid: 1, kind: "interactive", name: id, project_id: "ide", cwd: "/p/ide", started_at: 1, attention_since: null };
+      sessions[id] = { state, source: "poll", pid: 1, kind: "interactive", name: id, project_id: "ide", cwd: "/p/ide", started_at: 1, attention_since: null, last_line: null, detail: null };
     }
     const rows = Array.from({ length: elsewhere }, (_, i) => ({
       session_id: `e${i}`,

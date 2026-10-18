@@ -477,8 +477,10 @@ npm, uninstall the global npm package after installing the native one.
 
 in the project folder, in a terminal (`TERM=xterm-256color`, `COLORTERM=truecolor`, `SWITCHBOARD_NODE=<uuid>`).
 `<context>` is a few lines saying the session runs inside Switchboard, with the project's label, folder and
-branch (when known) and the session's name and node id; no instructions. The settings file holds `{}` for now
-(hooks arrive in Story 4.3); your own Claude settings are untouched and nothing is written under `~/.claude`.
+branch (when known) and the session's name and node id; no instructions. The settings file holds the session's
+hooks (see [Status](#status)), or `{}` when the hooks endpoint is down; the env then also has
+`SWITCHBOARD_PORT=<port>`. Your own Claude settings and hooks are untouched (settings layers merge) and
+nothing is written under `~/.claude`.
 The session dir is per user: `%TEMP%\switchboard\sessions` on Windows, `$XDG_RUNTIME_DIR/switchboard/sessions`
 on Linux (else `~/.cache/switchboard/sessions`). On Linux the folder is created 0700 and refused if another
 user owns it or it is a symlink, and each file is created new (0600), never overwritten. The file is deleted
@@ -499,6 +501,61 @@ has **Kill** but no **Restart**: an exited session is not restarted (resume arri
 exited, **Close** (`terminal.close`) forgets the terminal and its output. **Show
 terminal** (the session card's menu, or the palette, with the session selected) opens the pane on it again.
 Quitting the app kills the session like any terminal.
+
+## Status
+
+A session Switchboard starts reports its own state through **Claude Code hooks**; sessions started elsewhere
+keep the 2-second `claude agents --json` poll alone, exactly as before.
+
+**Hooks.** On start the app writes `http` hooks into the session's `--settings` file for `SessionStart`,
+`UserPromptSubmit`, `PermissionRequest`, `Notification` (permission, elicitation and needs-input types only),
+`Elicitation`, `PostToolUse`, `PostToolUseFailure`, `Stop` and `StopFailure`. Each POSTs its event to an
+endpoint inside the app on `127.0.0.1:<ephemeral port>` with a per-session bearer token (32 random bytes,
+dropped when the session exits). The endpoint binds 127.0.0.1 only. It checks the path and token from the
+request head before reading any body, refuses an unknown token (401), any other path or method (404) and a body
+over 1 MiB (413) and closes the connection after a refusal; it serves at most 64 connections at once and closes
+one that sends nothing for 10 s. Every accepted hook gets an **empty 200**, sent before the event is applied, so
+a hook never approves, denies, blocks or waits on anything: Claude's own permission dialog still decides.
+
+| Hook | State |
+|---|---|
+| `SessionStart` | `starting` → `idle` |
+| `UserPromptSubmit` | `busy` |
+| `PostToolUse`, `PostToolUseFailure` | `busy`, except that a `waiting` session stays waiting (a parallel tool or a subagent finishing does not answer its prompt) |
+| `PermissionRequest`, `Elicitation`, `Notification` (wired types) | `waiting`; the reason is the card's tooltip and part of its accessible name |
+| `Stop` | `finished`; the card shows `finished · <last line>` (the turn's first non-empty line, cut to 200 characters) until acknowledged |
+| `StopFailure` | `finished`, `turn failed` |
+
+A session counts as hooked from its first accepted hook event. **Answering in the terminal:** while a session is
+`waiting`, a single key press typed into its terminal answers at once, before the tool's own hook arrives. On a
+permission prompt, Enter, a digit, `y` or `n` turns it `busy`, and a lone Esc (a rejection, which ends the turn)
+turns it `idle`; on an elicitation or needs-input prompt only Enter counts (`busy`). Pasted text and the
+terminal's own reply sequences never count. The permission `Notification` that arrives about 6 s after the
+dialog is ignored for 10 s after such an answer. The glow, toasts and acknowledgement follow
+[Needs you](#needs-you) whatever the source.
+
+**Polling stays the baseline.** For a hooked session the poll's busy → idle `finished` guess is off; the poll
+is checked against the hook state instead (`busy`/busy, `waiting`/busy, idle or another status, `finished`/idle
+or another status, `idle`/idle and `starting`/anything agree). When it disagrees for two polls in a row with no
+hook event between, the poll's state is applied and, when that changed the state, the **poll overrides**
+counter goes up. If the endpoint cannot bind (or stops), launches still work without hooks (`{}` settings),
+every session goes back to the poll's rules, and a banner reads `hooks endpoint unavailable: <cause>`.
+
+**Diagnostics.** Settings (`ctrl+,`) → **Diagnostics** shows the endpoint (`127.0.0.1:<port>` or the bind
+error), hook events received, refused requests, session-id mismatches (an event whose `session_id` is not the
+token's session, nor one a `SessionStart` on that token announced, as after `/clear`; it still applies to the
+token's session) and poll overrides, refreshed every 2 s while open. A failed read shows next to the last
+counters read.
+
+**Limits worth knowing.**
+- The bearer token is written in the session's settings file, so the session's own processes (Claude, its
+  tools, anything it runs) can read it and could post hook events for that session. It only ever changes that
+  session's status on the canvas.
+- On Windows the settings file is protected only by the per-user `%TEMP%` folder's permissions (on Linux it is
+  0600 in a 0700 folder).
+- If one of your own `Stop` hooks blocks the stop (asks Claude to continue), Switchboard's `Stop` hook still
+  fires in parallel, so the card may show `finished` and a toast may go out while Claude keeps working; the
+  next hook event corrects the state.
 
 ## Settings
 

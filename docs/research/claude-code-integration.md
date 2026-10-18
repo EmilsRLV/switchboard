@@ -46,8 +46,21 @@ Works without a TTY. Output observed:
 
 ## Hooks (status channel)
 
-Claude Code hook events include `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification` (fires for permission prompts and idle notifications), `Stop`, `SubagentStop`, `SessionEnd`, `PreCompact`. Hook `command`s receive JSON on stdin. Plan: `curl -s -X POST --data-binary @- http://127.0.0.1:<port>/hooks/<token>/<event>`.
-**verify** in Story 4.3: exact `Notification` payload fields that distinguish permission prompts, and whether a dedicated `PermissionRequest` event exists in 2.1.x.
+Claude Code hook events include `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `PostToolUseFailure`, `Notification`, `Elicitation`, `Stop`, `StopFailure`, `SubagentStop`, `SessionEnd`, `PreCompact`.
+
+Facts used by Story 4.3 (hooks reference, read 2026-10-18):
+- **`http` hooks** take `{ "type": "http", "url", "headers", "timeout" }` and POST the event JSON. A 2xx with an empty body is success and changes nothing; a non-2xx, a timeout or a connection error is non-blocking by default. Switchboard therefore uses `http` hooks (no `curl` command) and always answers with an empty 200.
+- **`PermissionRequest`** fires as soon as a permission dialog is about to show, with `tool_name` and `tool_input`. The `Notification` with `notification_type: "permission_prompt"` fires only after about 6 s without input. Other wired notification types: `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input` (the `Notification` matcher matches on `notification_type`).
+- **`Stop`** carries `last_assistant_message`.
+- **Common fields:** every event has `session_id`, `transcript_path`, `cwd` and `hook_event_name`.
+
+**Verified with 2.1.302** (orchestrator's GUI pass, 2026-10-18, real `claude`, Emils' consent):
+- `http` hooks given through `--settings <file>` fire and reach the localhost endpoint.
+- `PermissionRequest` fires as soon as the permission dialog shows. An empty 200 leaves Claude's own dialog in place; Enter in the terminal then approves.
+- `Stop` carries `last_assistant_message`.
+- In `manual` permission mode a read-only Bash `echo` ran without any permission request (read-only commands are auto-allowed), so a test of the waiting path needs a command that writes or is otherwise not read-only.
+
+Not covered by that pass: `StopFailure`, `Elicitation`, the `elicitation_*` / `agent_needs_input` notification types, and Linux.
 
 ## MCP
 

@@ -5,7 +5,8 @@
 //! appended system prompt, the launch-sheet prefill, and the temp settings files' lifecycle
 //! (write, delete, sweep). The wiring lives in `crate::ipc::session_launch`.
 //!
-//! Nothing here writes under `~/.claude`: the settings file is `{}` (Story 4.3 adds hooks) and
+//! Nothing here writes under `~/.claude`: the settings file is `{}`, or the hooks block of Story
+//! 4.3 while the endpoint is up, and
 //! goes to `<session dir>/<sessionId>.settings.json` ([`default_dir`]: `%TEMP%` on Windows,
 //! `$XDG_RUNTIME_DIR` else the cache dir on Linux; on Unix the folder is 0700 and must be the
 //! user's own, and each file is created exclusively), deleted when the session's process exits
@@ -61,7 +62,8 @@ pub const ID_IN_USE: &str = "that session id is already in use; open the sheet a
 /// The settings file's name after the session id.
 pub const SETTINGS_SUFFIX: &str = ".settings.json";
 
-/// What the per-session settings file holds in this story (Story 4.3 adds the hooks).
+/// The per-session settings file while the hooks endpoint is down (Story 4.3 writes the hooks
+/// block, `crate::claude::hooks::settings_json`, while it is up).
 pub const SETTINGS_CONTENT: &str = "{}";
 
 /// Files older than this, whose session is not running, are swept at startup.
@@ -392,9 +394,14 @@ pub fn settings_path(dir: &Path, session_id: &str) -> PathBuf {
     dir.join(format!("{session_id}{SETTINGS_SUFFIX}"))
 }
 
-/// Write `{}` to a new settings file for the session ([`prepare_dir`] first). The file is
-/// created exclusively (0600 on Unix): one already there is an `Err`, never overwritten.
+/// Write `{}` to a new settings file for the session (see [`write_settings_file_with`]).
 pub fn write_settings_file(dir: &Path, session_id: &str) -> std::io::Result<PathBuf> {
+    write_settings_file_with(dir, session_id, SETTINGS_CONTENT)
+}
+
+/// Write `content` to a new settings file for the session ([`prepare_dir`] first). The file is
+/// created exclusively (0600 on Unix): one already there is an `Err`, never overwritten.
+pub fn write_settings_file_with(dir: &Path, session_id: &str, content: &str) -> std::io::Result<PathBuf> {
     use std::io::Write;
     prepare_dir(dir)?;
     let path = settings_path(dir, session_id);
@@ -405,7 +412,7 @@ pub fn write_settings_file(dir: &Path, session_id: &str) -> std::io::Result<Path
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(&path)?.write_all(SETTINGS_CONTENT.as_bytes())?;
+    options.open(&path)?.write_all(content.as_bytes())?;
     Ok(path)
 }
 
@@ -494,8 +501,14 @@ impl Launcher {
 
     /// Write the session's settings file and remember it for deletion.
     pub fn write_settings(&self, session_id: &str) -> Result<PathBuf, String> {
+        self.write_settings_with(session_id, SETTINGS_CONTENT)
+    }
+
+    /// Write the session's settings file with `content` (`{}`, or the hooks block of Story
+    /// 4.3) and remember it for deletion.
+    pub fn write_settings_with(&self, session_id: &str, content: &str) -> Result<PathBuf, String> {
         let dir = self.dir().ok_or_else(|| "no folder for session settings files".to_string())?;
-        let path = write_settings_file(&dir, session_id).map_err(|err| format!("could not write session settings: {err}"))?;
+        let path = write_settings_file_with(&dir, session_id, content).map_err(|err| format!("could not write session settings: {err}"))?;
         lock(&self.files).insert(session_id.to_string());
         Ok(path)
     }

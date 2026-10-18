@@ -264,9 +264,10 @@ export type LiveSession = {
   state: SessionState;
   /**
    * Where the state came from: the poll, the operator's acknowledgement (`ack`), or the app
-   * itself (`app`: a launch, its first output, its exit; Story 4.2).
+   * itself (`app`: a launch, its first output, its exit; Story 4.2), or a Claude Code hook
+   * (`hook`, Story 4.3; also the keypress that answers a prompt in the session's terminal).
    */
-  source: "poll" | "ack" | "app";
+  source: "poll" | "ack" | "app" | "hook";
   pid: number | null;
   kind: string | null;
   name: string | null;
@@ -277,6 +278,22 @@ export type LiveSession = {
   started_at: number | null;
   /** When it entered `finished` / `waiting` (ms since the epoch); `null` in other states. */
   attention_since: number | null;
+  /** A `finished` session's last assistant line (the `Stop` hook), cut to 200 chars; `null` otherwise. */
+  last_line: string | null;
+  /** A `waiting` session's reason (the hook's message), the card's tooltip; `null` otherwise. */
+  detail: string | null;
+};
+
+/** Mirrors `hooks::DiagnosticsSnapshot`: what `diagnostics_get` returns (Settings → Diagnostics). */
+export type DiagnosticsSnapshot = {
+  /** `127.0.0.1:<port>` while the hooks endpoint is up. */
+  endpoint: string | null;
+  /** Why the endpoint is not up, when it failed. */
+  endpoint_error: string | null;
+  hook_events: number;
+  refused: number;
+  session_mismatches: number;
+  poll_overrides: number;
 };
 
 /** Mirrors `live::ElsewhereRow`: a live session in a folder that is not on the canvas. */
@@ -421,6 +438,7 @@ type Commands = {
   launch_defaults: LaunchPrefill;
   session_launch: LaunchResult;
   term_close: void;
+  diagnostics_get: DiagnosticsSnapshot;
 };
 
 declare global {
@@ -582,6 +600,14 @@ export function liveSessionsGet(): Promise<LiveSnapshot> {
  */
 export function sessionAcknowledge(sessionId: string, attentionSince: number | null): Promise<LiveSnapshot | null> {
   return call("session_acknowledge", { sessionId, attentionSince });
+}
+
+/**
+ * `ipc::diagnostics_get` -- the hooks endpoint (or why it is down) and the counters: hook
+ * events received, refused requests, session-id mismatches, poll overrides (Story 4.3).
+ */
+export function diagnosticsGet(): Promise<DiagnosticsSnapshot> {
+  return call("diagnostics_get");
 }
 
 /** `ipc::app_quit` -- exit the app with status 0. Resolves only if the exit did not happen. */

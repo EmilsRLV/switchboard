@@ -8,6 +8,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime, State};
 use tauri_plugin_opener::OpenerExt;
 
+use crate::claude::hooks::{self, DiagnosticsSnapshot};
 use crate::claude::launch::{self, LaunchPrefill, LaunchRequest};
 use crate::claude::live::{self, LiveSnapshot};
 use crate::claude::{self, ClaudeProject};
@@ -523,10 +524,23 @@ pub async fn term_open<R: Runtime>(
 
 /// Send input (typed keys, a paste) to a terminal. Synchronous on purpose: it only queues the
 /// bytes for the terminal's writer thread (never blocking on the PTY), and sync commands run
-/// in the order they were invoked, so keystrokes are never reordered.
+/// in the order they were invoked, so keystrokes are never reordered. A write to a session
+/// terminal that answers a waiting session's prompt turns it busy at once (Story 4.3).
 #[tauri::command]
-pub fn term_write(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
-    state.terms.write(&id, data.as_bytes())
+pub fn term_write<R: Runtime>(app: AppHandle<R>, id: String, data: String) -> Result<(), String> {
+    app.state::<AppState>().terms.write(&id, data.as_bytes())?;
+    if let Some(session_id) = id.strip_prefix(pty::SESSION_PREFIX) {
+        live::terminal_input_and_emit(&app, session_id, &data);
+    }
+    Ok(())
+}
+
+/// Settings → Diagnostics (Story 4.3): the hooks endpoint (or why it is down), hook events
+/// received, refused requests, session-id mismatches and poll overrides.
+#[tauri::command]
+pub fn diagnostics_get(state: State<'_, AppState>) -> DiagnosticsSnapshot {
+    let overrides = state.read_sessions_live().poll_overrides;
+    state.hooks.diagnostics(overrides)
 }
 
 /// Resize a terminal's PTY (clamped to at least 2 × 1).
@@ -687,18 +701,33 @@ pub fn launch_session<R: Runtime>(app: &AppHandle<R>, request: LaunchRequest, si
         map.launched(&session_id, Some(request.project_id.clone()), &path, &name, live::now_ms());
     }
     let forget = || {
+        state.hooks.drop_session(&session_id);
         live::update_and_emit(app, |map| {
             map.forget(&session_id);
             true
         });
     };
-    if let Err(message) = state.launcher.write_settings(&session_id) {
+    // Hooks (Story 4.3) while the endpoint is up: a token for this session, the hooks block in
+    // its settings file, its port in the env. Otherwise `{}` and no port, as in Story 4.2.
+    let port = state.hooks.port();
+    let content = match port {
+        Some(port) => {
+            // The session counts as hooked only once its first hook event is accepted.
+            let token = state.hooks.register(&session_id);
+            serde_json::to_string_pretty(&hooks::settings_json(port, &token)).unwrap_or_else(|_| launch::SETTINGS_CONTENT.to_string())
+        }
+        None => launch::SETTINGS_CONTENT.to_string(),
+    };
+    if let Err(message) = state.launcher.write_settings_with(&session_id, &content) {
         forget();
         give_back();
         return Err(message);
     }
     let mut spec = SpawnSpec::new(program, args, &path);
     spec.env.push((launch::NODE_ENV.to_string(), session_id.clone()));
+    if let Some(port) = port {
+        spec.env.push((hooks::PORT_ENV.to_string(), port.to_string()));
+    }
     let hooks = {
         let (output_app, exit_app) = (app.clone(), app.clone());
         let (output_id, exit_id) = (session_id.clone(), session_id.clone());
@@ -707,6 +736,8 @@ pub fn launch_session<R: Runtime>(app: &AppHandle<R>, request: LaunchRequest, si
                 live::update_and_emit(&output_app, |map| map.first_output(&output_id));
             }),
             exit: Box::new(move |_code| {
+                // The token dies with the session: a later POST with it is 401.
+                exit_app.state::<AppState>().hooks.drop_session(&exit_id);
                 live::update_and_emit(&exit_app, |map| map.process_exited(&exit_id));
                 exit_app.state::<AppState>().launcher.remove_settings(&exit_id);
             }),

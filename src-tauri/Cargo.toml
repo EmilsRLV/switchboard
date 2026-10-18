@@ -28,7 +28,9 @@ tempfile = "3"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 dunce = "1"
-tokio = { version = "1", features = ["time", "sync"] }
+tokio = { version = "1", features = ["time", "sync", "net"] }
+# The hooks endpoint (Story 4.3): a localhost-only HTTP/1 server for Claude Code `http` hooks.
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }
 portable-pty = "0.9"
 
 # Signals for terminal children (`pty`); already in the tree through portable-pty.
