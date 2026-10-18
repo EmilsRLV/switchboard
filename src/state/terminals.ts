@@ -82,7 +82,7 @@ export function isTerminalExited(id: string | null): boolean {
 
 /**
  * True when terminal `id` has exited and can be restarted: a plain terminal. A session
- * terminal is never restarted (resume arrives in Story 4.4).
+ * terminal is never restarted; its session is resumed instead (`session.resume`, Story 4.4).
  */
 export function isTerminalRestartable(id: string | null): boolean {
   const info = terminalInfo(id);
@@ -90,11 +90,13 @@ export function isTerminalRestartable(id: string | null): boolean {
 }
 
 /**
- * The header's state word: `running`, `exited N`, or the reason the shell could not start.
+ * The header's state word: `running` (`stopping` while a Stop is under way, Story 4.4),
+ * `exited N`, or the reason the shell could not start.
  */
 export function terminalStateText(info: TermInfo): string {
   if (info.error !== null) return info.error;
-  return info.exited === null ? "running" : `exited ${info.exited}`;
+  if (info.exited !== null) return `exited ${info.exited}`;
+  return info.stopping ? "stopping" : "running";
 }
 
 /** Mirrors `pty::plain_id`: the id of a project's plain terminal (one per project). */
@@ -105,6 +107,27 @@ export function plainTerminalId(projectId: string): string {
 /** Mirrors `pty::session_id`: the id of the terminal a launched session runs in (Story 4.2). */
 export function sessionTerminalId(sessionId: string): string {
   return `session:${sessionId}`;
+}
+
+/** The inverse of {@link sessionTerminalId}: the session a session terminal id names, else `null`. */
+export function sessionIdOfTerminal(terminalId: string): string | null {
+  const prefix = sessionTerminalId("");
+  return terminalId.startsWith(prefix) && terminalId.length > prefix.length ? terminalId.slice(prefix.length) : null;
+}
+
+/**
+ * The sessions whose Switchboard terminal is being stopped (Story 4.4): session terminals with
+ * `stopping` set that have not exited, by session id, in `infos` order. What the canvas reads
+ * for the `stopping` word.
+ */
+export function stoppingSessionIds(infos: Readonly<Record<string, TermInfo>>): string[] {
+  const ids: string[] = [];
+  for (const info of Object.values(infos)) {
+    if (info.kind !== "session" || !info.stopping || info.exited !== null) continue;
+    const id = sessionIdOfTerminal(info.id);
+    if (id !== null) ids.push(id);
+  }
+  return ids;
 }
 
 /** The terminal Switchboard runs session `sessionId` in, when it launched it; else `null`. */

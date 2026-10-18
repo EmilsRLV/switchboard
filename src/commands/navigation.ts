@@ -123,7 +123,7 @@ function canvasSize(element: CanvasElement | null): Size | null {
 /**
  * `selection.activate` (Enter): the selected node's default action. A project with children
  * toggles expand/collapse (persisted); a project's `more` row toggles its `show all` (UI
- * only); a childless project and child cards do nothing (resume and fork arrive in Epic 4).
+ * only); a childless project and child cards do nothing (Resume, Fork and Stop are menu and palette commands, Story 4.4).
  * Resolves to whether anything was done.
  */
 export async function activateSelection(): Promise<boolean> {

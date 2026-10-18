@@ -50,6 +50,9 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::term_close,
             ipc::launch_defaults,
             ipc::session_launch,
+            ipc::session_resume,
+            ipc::session_fork,
+            ipc::session_stop,
             ipc::diagnostics_get,
         ])
 }
@@ -1521,6 +1524,332 @@ mod tests {
         let diagnostics: serde_json::Value = invoke_with(&webview, "diagnostics_get", InvokeBody::Json(json!({}))).unwrap().deserialize().unwrap();
         assert_eq!(diagnostics["endpoint"], serde_json::Value::Null);
         assert_eq!(diagnostics["endpoint_error"], "address in use");
+    }
+
+    /// A discovered transcript for session `id` under `ide`, titled `title`, recorded in `cwd`.
+    fn discover(app: &tauri::App<tauri::test::MockRuntime>, id: &str, title: &str, cwd: &str) {
+        let summary = super::claude::SessionSummary {
+            id: id.into(),
+            title: title.into(),
+            started_at: "2026-10-18T10:00:00.000Z".into(),
+            last_active: "2026-10-18T10:05:00.000Z".into(),
+            branch: None,
+            messages: 4,
+            cwd: Some(cwd.into()),
+        };
+        super::graph::set_discovered(app.handle(), std::collections::HashMap::from([("ide".to_string(), vec![summary])]));
+    }
+
+    /// The program Resume / Fork run in these tests (never `claude`): waits for one line, then
+    /// prints `node=<SWITCHBOARD_NODE> got=<the line>`, its working folder, and its argv.
+    fn echo_program() -> (std::path::PathBuf, Vec<String>) {
+        #[cfg(windows)]
+        let program = (
+            std::path::PathBuf::from("cmd.exe"),
+            ["/d", "/v:on", "/c", "set", "/p", "x=", "&", "echo", "node=!SWITCHBOARD_NODE!", "got=!x!", "&", "cd", "&", "echo"]
+                .map(String::from)
+                .to_vec(),
+        );
+        #[cfg(not(windows))]
+        let program = (
+            std::path::PathBuf::from("/bin/sh"),
+            ["-c", "read x; printf 'node=%s got=%s\\n' \"$SWITCHBOARD_NODE\" \"$x\"; pwd; printf '[%s]\\n' \"$@\"", "sh"]
+                .map(String::from)
+                .to_vec(),
+        );
+        program
+    }
+
+    /// A program that ignores Ctrl+C and typed input and runs for a minute (Stop must kill it).
+    fn stubborn_program(dir: &std::path::Path) -> (std::path::PathBuf, Vec<String>) {
+        #[cfg(windows)]
+        {
+            let script = dir.join("stubborn.ps1");
+            std::fs::write(&script, "[Console]::TreatControlCAsInput = $true\r\nStart-Sleep -Seconds 60\r\n").unwrap();
+            (
+                std::path::PathBuf::from("powershell.exe"),
+                ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]
+                    .map(String::from)
+                    .into_iter()
+                    .chain([script.display().to_string()])
+                    .collect(),
+            )
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = dir;
+            (
+                std::path::PathBuf::from("/bin/sh"),
+                ["-c", "trap '' INT; sleep 60", "sh"].map(String::from).to_vec(),
+            )
+        }
+    }
+
+    /// Story 4.4: Resume runs `--resume <id>` in the transcript's folder with the standard app
+    /// flags, under the same node and terminal id; while it runs it is not resumed again; Stop
+    /// on the `starting` session types `/exit` + Enter, which ends it; a second resume reuses
+    /// the exited terminal's id. Fork runs `--resume <id> --fork-session --session-id <new>
+    /// --name <original>-fork-<4 hex>` as a new node with `forkedFrom` recorded.
+    #[test]
+    fn resume_fork_and_an_idle_stop_run_their_recipes() {
+        use super::claude::live::SessionState;
+        use serde_json::json;
+        let (app, webview, _dir, folder, sessions) = launch_fixture();
+        let state = app.state::<super::AppState>();
+        *state.launcher.program.lock().unwrap() = Some(echo_program());
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        state.write_workspace().workspace.projects[0].launch_defaults = Some(super::graph::LaunchDefaults {
+            model: Some("opus".into()),
+            effort: Some("default".into()),
+            permission_mode: Some("plan".into()),
+        });
+        let orig = "59cd1e3f-5b7d-4e8f-9a0b-1c2d3e4f5a6b";
+        let recorded = tempfile::tempdir().unwrap();
+        let cwd = dunce::canonicalize(recorded.path()).unwrap().display().to_string();
+        assert_eq!(call("session_resume", json!({ "projectId": "ide", "sessionId": orig })), Err(json!(super::ipc::NO_TRANSCRIPT)));
+        discover(&app, orig, "ide-59cd", &cwd);
+        assert_eq!(
+            call("session_resume", json!({ "projectId": "gone", "sessionId": orig })),
+            Err(json!("unknown project")),
+            "the card's project is gone"
+        );
+
+        // Resume: the same node, in the transcript's folder.
+        let reply = call("session_resume", json!({ "projectId": "ide", "sessionId": orig, "cols": 1000, "rows": 40 })).expect("session_resume");
+        assert_eq!(reply["session_id"], orig);
+        let term_id = format!("session:{orig}");
+        assert_eq!(reply["term"]["id"], term_id.as_str());
+        assert_eq!(reply["term"]["cwd"], cwd.as_str());
+        assert_eq!(reply["term"]["title"], "ide-59cd");
+        assert_eq!(reply["term"]["stopping"], false);
+        assert_eq!(state.read_sessions_live().sessions[orig].state, SessionState::Starting);
+        assert_eq!(state.read_sessions_live().sessions[orig].project_id.as_deref(), Some("ide"));
+        assert_eq!(call("session_resume", json!({ "projectId": "ide", "sessionId": orig })), Err(json!(super::ipc::SESSION_RUNNING)));
+        let settings_file = sessions.join(format!("{orig}.settings.json"));
+        assert!(settings_file.exists());
+
+        state.terms.write(&term_id, b"go\r").unwrap();
+        let output = |id: &str| super::pty::tests::strip_escapes(&state.terms.buffer(id).unwrap().data);
+        wait_until(&app, &term_id, "the resumed fixture's exit", || {
+            state.read_sessions_live().sessions[orig].state == SessionState::Exited
+        });
+        assert!(!settings_file.exists(), "deleted before the node shows exited");
+        let text = output(&term_id);
+        assert!(text.contains(&format!("node={orig} got=go")), "{text}");
+        assert!(text.contains(&cwd), "runs in the transcript's folder: {text}");
+        let settings_arg = settings_file.display().to_string();
+        if cfg!(windows) {
+            let flat = text.replace(['\r', '\n'], "");
+            let part = format!("--resume {orig} --model opus --permission-mode plan --settings {settings_arg} --append-system-prompt");
+            assert!(flat.contains(&part), "{part:?} missing from {flat:?}");
+        } else {
+            let expected: Vec<String> = ["--resume", orig, "--model", "opus", "--permission-mode", "plan", "--settings", &settings_arg, "--append-system-prompt"]
+                .iter()
+                .map(|a| format!("[{a}]"))
+                .collect();
+            assert!(text.contains(&expected.join("\r\n")), "argv not as built:\n{text}");
+        }
+        assert!(!text.contains("--session-id") && !text.contains("--name") && !text.contains("--effort"), "{text}");
+
+        // A failed resume leaves the exited session exactly as it was: a spawn that fails, and
+        // a settings file that cannot be written.
+        let before = state.read_sessions_live().clone();
+        *state.launcher.program.lock().unwrap() = Some((folder.path().join("no-claude.exe"), Vec::new()));
+        call("session_resume", json!({ "projectId": "ide", "sessionId": orig })).expect_err("spawn fails");
+        assert_eq!(*state.read_sessions_live(), before, "live state restored after a spawn failure");
+        *state.launcher.program.lock().unwrap() = Some(echo_program());
+        let blocker = folder.path().join("not-a-folder");
+        std::fs::write(&blocker, "x").unwrap();
+        state.launcher.set_dir(blocker.clone());
+        let err = call("session_resume", json!({ "projectId": "ide", "sessionId": orig })).expect_err("settings write fails");
+        assert!(err.as_str().unwrap().starts_with("could not write session settings"), "{err}");
+        assert_eq!(*state.read_sessions_live(), before, "live state restored after a settings failure");
+        state.launcher.set_dir(sessions.clone());
+        assert_eq!(state.terms.get(&term_id).unwrap().info().exited, Some(0), "the old terminal is still there");
+
+        // A stale settings file of this id (an app that crashed) does not block a resume.
+        std::fs::write(&settings_file, "stale").unwrap();
+
+        // Resume again: the exited terminal is replaced under the same id. Stop once it is
+        // `idle` clears the line (Ctrl+U), types `/exit` + Enter, and the fixture ends on that line.
+        let reply = call("session_resume", json!({ "projectId": "ide", "sessionId": orig })).expect("a second resume");
+        assert_eq!(reply["term"]["id"], term_id.as_str());
+        assert_eq!(reply["term"]["exited"], serde_json::Value::Null);
+        assert_eq!(reply["choices"], json!({ "model": "opus", "effort": "default", "permission_mode": "plan" }));
+        assert_eq!(std::fs::read_to_string(&settings_file).unwrap(), "{}", "the stale file was replaced");
+        assert_eq!(state.terms.list().iter().filter(|t| t.id == term_id).count(), 1);
+        assert!(!output(&term_id).contains("got=go"), "a fresh buffer");
+        state.write_sessions_live().sessions.get_mut(orig).unwrap().state = SessionState::Idle;
+        let stopped_at = std::time::Instant::now();
+        let stop = call("session_stop", json!({ "sessionId": orig })).expect("session_stop");
+        assert_eq!(stop["stopping"], true);
+        wait_until(&app, &term_id, "the stop's exit", || {
+            state.read_sessions_live().sessions[orig].state == SessionState::Exited
+        });
+        assert!(stopped_at.elapsed() < super::claude::launch::STOP_KILL_AFTER, "ended by /exit, not the kill");
+        // (On Unix the tty's line discipline drops the Ctrl+U itself; `cmd`'s `set /p` keeps it
+        // as a character, so on Windows only the `/exit` that follows is checked.)
+        let line = output(&term_id);
+        if cfg!(windows) {
+            assert!(line.contains("got=") && line.contains("/exit"), "{line}");
+        } else {
+            assert!(line.contains("got=/exit"), "{line}");
+        }
+        assert_eq!(state.terms.get(&term_id).unwrap().info().exited, Some(0));
+        assert!(!state.terms.get(&term_id).unwrap().info().stopping);
+        assert_eq!(call("session_stop", json!({ "sessionId": orig })), Err(json!(super::ipc::NOT_STOPPABLE)));
+
+        // Fork: a new id and node, named after the original, linked to it.
+        let reply = call("session_fork", json!({ "projectId": "ide", "sessionId": orig })).expect("session_fork");
+        let fork = reply["session_id"].as_str().unwrap().to_string();
+        assert_ne!(fork, orig);
+        assert_eq!(uuid::Uuid::parse_str(&fork).unwrap().get_version_num(), 4);
+        let name = super::claude::launch::fork_name("ide-59cd", &fork);
+        assert!(name.starts_with("ide-59cd-fork-") && name.len() == "ide-59cd-fork-".len() + 4, "{name}");
+        let fork_term = format!("session:{fork}");
+        assert_eq!(reply["term"]["title"], name.as_str());
+        assert_eq!(reply["term"]["cwd"], cwd.as_str());
+        let snapshot = state.read_workspace().snapshot();
+        let child = snapshot.children.iter().find(|c| c.id == fork).expect("a new node");
+        assert_eq!(child.forked_from.as_deref(), Some(orig));
+        assert!(snapshot.workspace.sessions.iter().any(|s| s.session_id == fork && s.forked_from.as_deref() == Some(orig)));
+        state.terms.write(&fork_term, b"go\r").unwrap();
+        wait_until(&app, &fork_term, "the fork's exit", || {
+            state.read_sessions_live().sessions[&fork].state == SessionState::Exited
+        });
+        let text = output(&fork_term);
+        assert!(text.contains(&format!("node={fork} got=go")), "{text}");
+        let fork_settings = sessions.join(format!("{fork}.settings.json")).display().to_string();
+        if cfg!(windows) {
+            let flat = text.replace(['\r', '\n'], "");
+            let part = format!(
+                "--resume {orig} --fork-session --session-id {fork} --name {name} --model opus --permission-mode plan --settings {fork_settings} --append-system-prompt"
+            );
+            assert!(flat.contains(&part), "{part:?} missing from {flat:?}");
+        } else {
+            let expected: Vec<String> = [
+                "--resume",
+                orig,
+                "--fork-session",
+                "--session-id",
+                &fork,
+                "--name",
+                &name,
+                "--model",
+                "opus",
+                "--permission-mode",
+                "plan",
+                "--settings",
+                &fork_settings,
+                "--append-system-prompt",
+            ]
+            .iter()
+            .map(|a| format!("[{a}]"))
+            .collect();
+            assert!(text.contains(&expected.join("\r\n")), "argv not as built:\n{text}");
+        }
+
+        // A fork whose spawn fails takes its link back: no ref but the first fork's.
+        *state.launcher.program.lock().unwrap() = Some((folder.path().join("no-claude.exe"), Vec::new()));
+        call("session_fork", json!({ "projectId": "ide", "sessionId": orig })).expect_err("spawn fails");
+        let refs: Vec<String> = state.read_workspace().workspace.sessions.iter().map(|s| s.session_id.clone()).collect();
+        assert_eq!(refs, std::slice::from_ref(&fork), "the failed fork left no ref");
+        assert!(state.launcher.pending_forks().is_empty());
+        *state.launcher.program.lock().unwrap() = Some(echo_program());
+
+        // A session live elsewhere (the poll sees it, no Switchboard terminal): Resume is
+        // refused, no terminal is made and its live entry is untouched.
+        let elsewhere = "e1sewhe7-5b7d-4e8f-9a0b-1c2d3e4f5a6b";
+        let summary = super::claude::SessionSummary {
+            id: elsewhere.into(),
+            title: "theirs".into(),
+            started_at: "2026-10-18T10:00:00.000Z".into(),
+            last_active: "2026-10-18T10:05:00.000Z".into(),
+            branch: None,
+            messages: 2,
+            cwd: Some(cwd.clone()),
+        };
+        let mut found = state.read_workspace().discovered.clone();
+        found.get_mut("ide").unwrap().push(summary);
+        super::graph::set_discovered(app.handle(), found);
+        super::claude::live::apply_and_emit(app.handle(), live_rows(&cwd, elsewhere, "busy"));
+        let live_before = state.read_sessions_live().sessions[elsewhere].clone();
+        let terms_before = state.terms.list().len();
+        assert_eq!(
+            call("session_resume", json!({ "projectId": "ide", "sessionId": elsewhere })),
+            Err(json!(super::ipc::SESSION_RUNNING))
+        );
+        assert_eq!(state.terms.list().len(), terms_before);
+        assert!(state.terms.get(&format!("session:{elsewhere}")).is_none());
+        assert_eq!(state.read_sessions_live().sessions[elsewhere], live_before);
+
+        // Neither folder there: refused, nothing started.
+        drop(recorded);
+        state.write_workspace().workspace.projects[0].path = folder.path().join("gone").display().to_string();
+        let err = call("session_fork", json!({ "projectId": "ide", "sessionId": orig })).expect_err("no folder");
+        assert_eq!(err, json!(format!("{}{cwd}", super::claude::launch::FOLDER_NOT_FOUND)));
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
+    }
+
+    /// Story 4.4: Stop on a busy session sends Ctrl+C twice; a session that ignores them is
+    /// killed 5 s after the Stop and turns `exited`. A second Stop kills at once.
+    #[test]
+    fn a_busy_stop_interrupts_then_kills_at_five_seconds_and_a_second_stop_kills_at_once() {
+        use super::claude::live::SessionState;
+        use serde_json::json;
+        let (app, webview, dir, _folder, _sessions) = launch_fixture();
+        let state = app.state::<super::AppState>();
+        *state.launcher.program.lock().unwrap() = Some(stubborn_program(dir.path()));
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        let id = "0b7c1e3f-5b7d-4e8f-9a0b-1c2d3e4f5a6b";
+        let path = state.read_workspace().workspace.projects[0].path.clone();
+        discover(&app, id, "busy one", &path);
+        let term_id = format!("session:{id}");
+        let busy = || {
+            state.write_sessions_live().sessions.get_mut(id).unwrap().state = SessionState::Busy;
+        };
+
+        call("session_resume", json!({ "projectId": "ide", "sessionId": id })).expect("session_resume");
+        let pid = state.terms.get(&term_id).unwrap().pid().expect("runs");
+        // Let it start (and answer ConPTY's cursor query) before interrupting it.
+        let started = std::time::Instant::now();
+        wait_until(&app, &term_id, "start-up", || started.elapsed() > std::time::Duration::from_millis(1500));
+        busy();
+        let stopped_at = std::time::Instant::now();
+        let stop = call("session_stop", json!({ "sessionId": id })).expect("session_stop");
+        assert_eq!(stop["stopping"], true);
+        assert_eq!(call("term_list", json!({})).unwrap()[0]["stopping"], true);
+        wait_until(&app, &term_id, "the kill", || {
+            state.read_sessions_live().sessions[id].state == SessionState::Exited
+        });
+        let took = stopped_at.elapsed();
+        assert!(took >= std::time::Duration::from_millis(4500), "killed at 5 s, not before: {took:?}");
+        assert!(!state.terms.get(&term_id).unwrap().info().stopping);
+        super::pty::tests::wait_dead(pid);
+
+        // Again, and Stop twice: the second kills at once.
+        call("session_resume", json!({ "projectId": "ide", "sessionId": id })).expect("resume again");
+        let pid = state.terms.get(&term_id).unwrap().pid().expect("runs");
+        let started = std::time::Instant::now();
+        wait_until(&app, &term_id, "start-up", || started.elapsed() > std::time::Duration::from_millis(1500));
+        busy();
+        let stopped_at = std::time::Instant::now();
+        call("session_stop", json!({ "sessionId": id })).expect("first stop");
+        call("session_stop", json!({ "sessionId": id })).expect("second stop");
+        wait_until(&app, &term_id, "the immediate kill", || {
+            state.read_sessions_live().sessions[id].state == SessionState::Exited
+        });
+        assert!(stopped_at.elapsed() < std::time::Duration::from_millis(4000), "{:?}", stopped_at.elapsed());
+        super::pty::tests::wait_dead(pid);
+
+        // A session started elsewhere (no Switchboard terminal) is never stopped.
+        state.write_sessions_live().sessions.get_mut(id).unwrap().state = SessionState::Busy;
+        assert_eq!(call("session_stop", json!({ "sessionId": "elsewhere" })), Err(json!(super::ipc::NOT_STOPPABLE)));
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
     }
 
     #[test]

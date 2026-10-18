@@ -1,11 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { LaunchRequest, Project, TermInfo, WorkspaceSnapshot } from "../ipc";
+import type { ChildNode, LaunchRequest, LiveSession, Project, SessionState, TermInfo, WorkspaceSnapshot } from "../ipc";
+import { EMPTY_LIVE, useLiveStore } from "../state/live";
 import { useLaunchStore } from "../state/launch";
 import { useTerminalStore } from "../state/terminals";
 import { useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 import { formFromPrefill } from "./launch";
-import { canShowSessionTerminal, openLaunchSheet, pickAddDir, removeAddDir, startLaunch } from "./sessions";
+import {
+  canForkSession,
+  canResumeSession,
+  canShowSessionTerminal,
+  canStopSession,
+  forkSelectedSession,
+  hasTranscript,
+  openLaunchSheet,
+  pickAddDir,
+  removeAddDir,
+  resumeSelectedSession,
+  startLaunch,
+  startedNotice,
+  stopSelectedSession,
+} from "./sessions";
 
 function project(expanded: boolean): Project {
   return { id: "ide", path: "/p/ide", label: "ide", position: { x: 0, y: 0 }, expanded, color: null, launchDefaults: null };
@@ -39,6 +54,7 @@ const term: TermInfo = {
   error: null,
   cols: 120,
   rows: 30,
+  stopping: false,
 };
 
 async function flush(): Promise<void> {
@@ -210,5 +226,153 @@ describe("the launch sheet commands", () => {
     const invoke = runtime({});
     await expect(startLaunch()).resolves.toBe(false);
     expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe("resume, fork and stop (Story 4.4)", () => {
+  const historic: ChildNode = {
+    id: "orig",
+    projectId: "ide",
+    kind: "session",
+    label: "ide-59cd",
+    detail: null,
+    position: null,
+    session: { startedAt: "2026-10-18T10:00:00.000Z", lastActive: "2026-10-18T10:05:00.000Z", branch: null, messages: 4 },
+    branchId: null,
+    forkedFrom: null,
+    hasTranscript: true,
+  };
+  const choices = { model: "opus", effort: "default", permission_mode: "plan" };
+  const liveOnly: ChildNode = { ...historic, id: "fresh", hasTranscript: false, session: { startedAt: "", lastActive: "", branch: null, messages: 0 } };
+
+  function live(states: Record<string, SessionState>): void {
+    const sessions = Object.fromEntries(
+      Object.entries(states).map(([id, state]) => [
+        id,
+        { state, source: "poll", pid: null, kind: null, name: null, project_id: "ide", cwd: "/p/ide", started_at: null, attention_since: null, last_line: null, detail: null } as LiveSession,
+      ]),
+    );
+    useLiveStore.getState().applySnapshot({ sessions, elsewhere: [], banner: null });
+  }
+
+  function sessionTerm(id: string, overrides: Partial<TermInfo> = {}): TermInfo {
+    return { ...term, id: `session:${id}`, title: id, ...overrides };
+  }
+
+  beforeEach(() => {
+    const snapshot = workspace(true);
+    useWorkspaceStore.setState({ snapshot: { ...snapshot, children: [historic, liveOnly] }, loadError: null });
+    useUiStore.setState({ pane: null, selection: { kind: "session", id: "orig" }, notice: null, activeTerminal: null });
+    useTerminalStore.setState({ infos: {}, pendingExits: {} });
+    useLiveStore.setState({ snapshot: EMPTY_LIVE, received: false, loadError: null });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("Resume is offered for a session with a transcript that is not live; Fork for any with a transcript", () => {
+    expect(hasTranscript(historic)).toBe(true);
+    expect(hasTranscript(liveOnly)).toBe(false);
+    // Historic (never seen this run), then exited: Resume and Fork.
+    expect([canResumeSession(), canForkSession(), canStopSession()]).toEqual([true, true, false]);
+    live({ orig: { kind: "exited" } });
+    expect([canResumeSession(), canForkSession()]).toEqual([true, true]);
+    // Live (here or elsewhere, starting included): Fork only.
+    for (const state of [{ kind: "starting" }, { kind: "busy" }, { kind: "idle" }, { kind: "other", raw: "compacting" }] as SessionState[]) {
+      live({ orig: state });
+      expect([canResumeSession(), canForkSession()], state.kind).toEqual([false, true]);
+    }
+    // A running Switchboard terminal: Stop, and never Resume.
+    live({ orig: { kind: "exited" } });
+    useTerminalStore.getState().upsert(sessionTerm("orig"));
+    expect([canResumeSession(), canStopSession()]).toEqual([false, true]);
+    useTerminalStore.getState().markExited("session:orig", 0);
+    expect([canResumeSession(), canStopSession()]).toEqual([true, false]);
+    // No transcript (a live-only child), or no session selected: neither.
+    useUiStore.setState({ selection: { kind: "session", id: "fresh" } });
+    expect([canResumeSession(), canForkSession()]).toEqual([false, false]);
+    useUiStore.setState({ selection: { kind: "project", id: "ide" } });
+    expect([canResumeSession(), canForkSession(), canStopSession()]).toEqual([false, false, false]);
+  });
+
+  it("Resume starts at once: the old exited terminal is replaced, the node selected, the pane open on it", async () => {
+    useTerminalStore.getState().upsert(sessionTerm("orig", { exited: 0 }));
+    const invoke = runtime({ session_resume: () => ({ session_id: "orig", term: sessionTerm("orig"), choices }) });
+    await expect(resumeSelectedSession()).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledWith("session_resume", { projectId: "ide", sessionId: "orig", cols: null, rows: null }, undefined);
+    expect(useUiStore.getState().notice).toEqual({ text: "resumed with model opus, effort default, mode plan" });
+    expect(useTerminalStore.getState().infos["session:orig"]?.exited).toBeNull();
+    expect(useUiStore.getState().selection).toEqual({ kind: "session", id: "orig" });
+    expect(useUiStore.getState().pane).toBe("terminal");
+    expect(useUiStore.getState().activeTerminal).toBe("session:orig");
+  });
+
+  it("a refused Resume is the notice, and the earlier run's terminal stays known", async () => {
+    const old = sessionTerm("orig", { exited: 0 });
+    useTerminalStore.getState().upsert(old);
+    runtime({
+      session_resume: () => {
+        throw "that session is already running";
+      },
+      term_buffer: () => ({ data: "", offset: 0 }),
+    });
+    await expect(resumeSelectedSession()).resolves.toBe(false);
+    expect(useUiStore.getState().notice).toEqual({ text: "that session is already running" });
+    expect(useTerminalStore.getState().infos["session:orig"]).toEqual(old);
+    expect(useUiStore.getState().pane).toBeNull();
+  });
+
+  it("Fork starts a new session at once and selects it", async () => {
+    const invoke = runtime({ session_fork: () => ({ session_id: "fork-1", term: sessionTerm("fork-1"), choices }) });
+    await expect(forkSelectedSession()).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledWith("session_fork", { projectId: "ide", sessionId: "orig", cols: null, rows: null }, undefined);
+    expect(useUiStore.getState().notice).toEqual({ text: "forked with model opus, effort default, mode plan" });
+    expect(useUiStore.getState().selection).toEqual({ kind: "session", id: "fork-1" });
+    expect(useUiStore.getState().activeTerminal).toBe("session:fork-1");
+  });
+
+  it("a second Fork of the same session while the first is in flight is refused with a notice", async () => {
+    let release: (value: unknown) => void = () => {};
+    const invoke = runtime({
+      session_fork: () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    });
+    const first = forkSelectedSession();
+    await flush();
+    await expect(forkSelectedSession()).resolves.toBe(false);
+    expect(useUiStore.getState().notice).toEqual({ text: "a fork of that session is already starting" });
+    expect(invoke).toHaveBeenCalledTimes(1);
+    release({ session_id: "fork-1", term: sessionTerm("fork-1"), choices });
+    await expect(first).resolves.toBe(true);
+    expect(startedNotice("forked", { model: "default", effort: "high", permission_mode: "default" })).toBe(
+      "forked with model default, effort high, mode default",
+    );
+  });
+
+  it("Stop marks the terminal stopping, keeps an exit that overtook the reply, and a refusal is the notice", async () => {
+    useTerminalStore.getState().upsert(sessionTerm("orig"));
+    const invoke = runtime({ session_stop: () => sessionTerm("orig", { stopping: true }) });
+    await expect(stopSelectedSession()).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledWith("session_stop", { sessionId: "orig" }, undefined);
+    expect(useTerminalStore.getState().infos["session:orig"]?.stopping).toBe(true);
+
+    runtime({
+      session_stop: () => {
+        useTerminalStore.getState().markExited("session:orig", 1);
+        return sessionTerm("orig", { stopping: true });
+      },
+    });
+    await expect(stopSelectedSession()).resolves.toBe(true);
+    expect(useTerminalStore.getState().infos["session:orig"]?.exited).toBe(1);
+
+    runtime({
+      session_stop: () => {
+        throw "only a session running in a Switchboard terminal can be stopped";
+      },
+    });
+    await expect(stopSelectedSession()).resolves.toBe(false);
+    expect(useUiStore.getState().notice).toEqual({ text: "only a session running in a Switchboard terminal can be stopped" });
   });
 });

@@ -137,7 +137,7 @@ function element(): FakeElement {
 }
 
 function info(overrides: Partial<TermInfo> = {}): TermInfo {
-  return { id: "t", kind: "plain", project_id: "p", title: "p", cwd: "/p", exited: null, error: null, cols: 100, rows: 30, ...overrides };
+  return { id: "t", kind: "plain", project_id: "p", title: "p", cwd: "/p", exited: null, error: null, cols: 100, rows: 30, stopping: false, ...overrides };
 }
 
 async function flush(): Promise<void> {
@@ -211,6 +211,33 @@ describe("views and the hidden holder", () => {
     registry.disposeView("t");
     expect(term.disposed).toBe(true);
     expect(registry.hasView("t")).toBe(false);
+  });
+});
+
+describe("view versions (Story 4.4)", () => {
+  it("bump when a view is made or disposed, so the pane re-attaches a resumed session's fresh view", async () => {
+    const { registry } = await load();
+    const seen: number[] = [];
+    const stop = registry.subscribeViews(() => seen.push(registry.viewVersion("t")));
+    registry.setHolder(element() as unknown as HTMLElement);
+    expect(registry.viewVersion("t")).toBe(0);
+    registry.ensureView("t");
+    const first = FakeTerminal.last;
+    expect(registry.viewVersion("t")).toBe(1);
+    registry.ensureView("t");
+    expect(registry.viewVersion("t"), "the same view: no change").toBe(1);
+    // A resume disposes the old view; the pane then shows a new one under the same id.
+    registry.disposeView("t");
+    const host = element();
+    registry.showView("t", host as unknown as HTMLElement);
+    expect(FakeTerminal.last).not.toBe(first);
+    expect(host.children).toHaveLength(1);
+    expect(registry.viewVersion("t")).toBe(3);
+    expect(seen).toEqual([1, 2, 3]);
+    expect(registry.viewVersion("other")).toBe(0);
+    stop();
+    registry.disposeView("t");
+    expect(seen, "unsubscribed").toHaveLength(3);
   });
 });
 

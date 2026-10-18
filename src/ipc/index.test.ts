@@ -18,7 +18,10 @@ import {
   termRestart,
   termWrite,
   sessionAcknowledge,
+  sessionFork,
   sessionLaunch,
+  sessionResume,
+  sessionStop,
   termClose,
   projectOpenEditor,
   projectOpenFolder,
@@ -135,7 +138,7 @@ describe("workspace command wrappers", () => {
       detail: null,
       position: null,
       session: { startedAt: "2026-10-16T10:00:00.000Z", lastActive: "2026-10-16T11:00:00.000Z", branch: "main", messages: 4 },
-      branchId: null,
+      branchId: null, forkedFrom: null, hasTranscript: false,
     };
     const withChild: WorkspaceSnapshot = { ...snapshot, children: [child] };
     const invoke = vi.fn().mockResolvedValue(JSON.parse(JSON.stringify(withChild)));
@@ -287,6 +290,21 @@ describe("session launch wrappers", () => {
     expect(invoke).toHaveBeenCalledWith("session_launch", { request, cols: null, rows: null }, undefined);
     invoke.mockRejectedValueOnce("claude not found; set claude.path in settings");
     await expect(sessionLaunch(request, 80, 24)).rejects.toBe("claude not found; set claude.path in settings");
+  });
+
+  it("sessionResume, sessionFork and sessionStop invoke their wire names with { projectId, sessionId }", async () => {
+    const term = { id: "session:s1", kind: "session" as const, project_id: "p1", title: "ide-59cd", cwd: "/p/ide", exited: null, error: null, cols: 120, rows: 30, stopping: false };
+    const invoke = vi.fn().mockResolvedValue({ session_id: "s1", term });
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await expect(sessionResume("p1", "s1", null, null)).resolves.toEqual({ session_id: "s1", term });
+    expect(invoke).toHaveBeenCalledWith("session_resume", { projectId: "p1", sessionId: "s1", cols: null, rows: null }, undefined);
+    await sessionFork("p1", "s1", 100, 30);
+    expect(invoke).toHaveBeenCalledWith("session_fork", { projectId: "p1", sessionId: "s1", cols: 100, rows: 30 }, undefined);
+    invoke.mockResolvedValue({ ...term, stopping: true });
+    await expect(sessionStop("s1")).resolves.toEqual({ ...term, stopping: true });
+    expect(invoke).toHaveBeenCalledWith("session_stop", { sessionId: "s1" }, undefined);
+    invoke.mockRejectedValueOnce("that session is already running");
+    await expect(sessionResume("p1", "s1", null, null)).rejects.toBe("that session is already running");
   });
 
   it("termClose and the titled folder picker invoke their wire names", async () => {

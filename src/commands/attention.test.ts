@@ -12,7 +12,7 @@ function project(id: string, expanded: boolean): Project {
 }
 
 function session(id: string, projectId: string): ChildNode {
-  return { id, projectId, kind: "session", label: id, detail: null, position: null, session: null, branchId: null };
+  return { id, projectId, kind: "session", label: id, detail: null, position: null, session: null, branchId: null, forkedFrom: null, hasTranscript: false };
 }
 
 function workspace(projects: Project[], children: ChildNode[], revision = 1): WorkspaceSnapshot {

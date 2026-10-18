@@ -1,10 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
 import "@xterm/xterm/css/xterm.css";
 import { runCommand } from "../commands/registry";
 import { isTerminalRestartable, terminalStateText, useTerminalStore } from "../state/terminals";
 import { clampTerminalWidth, defaultTerminalWidth, saveTerminalWidth, useUiStore } from "../state/ui";
 import { TERMINAL_ATTRIBUTE } from "./keys";
-import { focusView, hideView, setHolder, showView, syncSize } from "./registry";
+import { focusView, hideView, setHolder, showView, subscribeViews, syncSize, viewVersion } from "./registry";
 
 /** How long the pane waits after the last size change before refitting and resizing the PTY. */
 export const RESIZE_DEBOUNCE_MS = 50;
@@ -36,6 +36,10 @@ export function TerminalPane() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
+  // The active terminal's view instance: a resumed session gets a fresh view under the same
+  // id (Story 4.4), and the pane must show that one, not the disposed one.
+  const version = useSyncExternalStore(subscribeViews, () => (id === null ? 0 : viewVersion(id)));
+
   // Show the active terminal here and focus it; put it back in the holder when it goes.
   useLayoutEffect(() => {
     const host = hostRef.current;
@@ -44,7 +48,7 @@ export function TerminalPane() {
     syncSize(id);
     focusView(id);
     return () => hideView(id);
-  }, [id]);
+  }, [id, version]);
 
   // Once Rust knows the terminal (its info arrived), it gets the pane's size.
   const known = info !== undefined;
@@ -90,7 +94,7 @@ export function TerminalPane() {
   };
 
   const exited = info !== undefined && info.exited !== null;
-  // A session terminal is never restarted (resume arrives in Story 4.4); once exited it closes.
+  // A session terminal is never restarted (its session is resumed instead); once exited it closes.
   const restartable = isTerminalRestartable(id);
   const closable = exited && info.kind === "session";
   const terminalProps = { [TERMINAL_ATTRIBUTE]: "" };

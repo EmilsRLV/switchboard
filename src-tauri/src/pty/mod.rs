@@ -67,7 +67,8 @@ const RESET: &str = "\x1bc";
 // ---------------------------------------------------------------------------------------
 
 /// What a terminal runs: a plain shell (Story 4.1) or a Claude session the app launched
-/// (Story 4.2). A session terminal is never restarted (resume arrives in Story 4.4).
+/// (Story 4.2). A session terminal is never restarted; a resumed session (Story 4.4) opens a
+/// new session terminal over the exited one with the same id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TermKind {
@@ -92,6 +93,8 @@ pub struct TermInfo {
     /// The PTY's size: a view made while hidden is made at it.
     pub cols: u16,
     pub rows: u16,
+    /// A Stop is under way (Story 4.4): true from the Stop until the child exits.
+    pub stopping: bool,
 }
 
 /// `term://data`. `offset` (added to the spec's `{ id, data }`) is the terminal's output
@@ -408,6 +411,28 @@ pub fn has_printable(bytes: &[u8]) -> bool {
     false
 }
 
+/// Windows: make sure the children see Ctrl+C. A process started with Ctrl+C ignored (by a
+/// parent that ignored it, as some launchers and shells do) passes that on to every child, and
+/// a terminal's child would then never be interrupted by the `\x03` the terminal sends (Stop's
+/// interrupt included, Story 4.4). Restoring normal Ctrl+C processing in this process, once,
+/// before the first spawn, gives every child the default. This also restores Switchboard's own
+/// default Ctrl+C handling: a debug build run from a console now ends on Ctrl+C there, as any
+/// console program does (a release build has no console). A failure is logged and the spawn
+/// goes ahead. Elsewhere a no-op.
+fn allow_ctrl_c() {
+    #[cfg(windows)]
+    {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            // SAFETY: a plain flag change; a null handler with FALSE only restores the default.
+            let ok = unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 0) };
+            if ok == 0 {
+                eprintln!("pty: could not restore Ctrl+C handling for terminals: {}", std::io::Error::last_os_error());
+            }
+        });
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // Windows Job Object
 // ---------------------------------------------------------------------------------------
@@ -543,6 +568,8 @@ pub struct Term {
     starting: Mutex<()>,
     first_output: Mutex<Option<OutputHook>>,
     on_exit: Mutex<Option<ExitHook>>,
+    /// A Stop of the current spawn is under way (cleared by the next spawn).
+    stopping: AtomicBool,
 }
 
 impl Term {
@@ -562,18 +589,21 @@ impl Term {
             starting: Mutex::new(()),
             first_output: Mutex::new(None),
             on_exit: Mutex::new(None),
+            stopping: AtomicBool::new(false),
         }
     }
 
     pub fn info(&self) -> TermInfo {
         let (cols, rows) = self.size();
+        let exited = *lock(&self.exited);
         TermInfo {
+            stopping: exited.is_none() && self.stopping.load(Ordering::SeqCst),
             id: self.id.clone(),
             kind: self.kind,
             project_id: self.project_id.clone(),
             title: self.title.clone(),
             cwd: self.cwd.clone(),
-            exited: *lock(&self.exited),
+            exited,
             error: lock(&self.error).clone(),
             cols,
             rows,
@@ -638,6 +668,7 @@ impl Term {
             .spawn(spec)
             .map_err(|cause| format!("could not start {}: {cause}", spec.program.display()))?;
         let reaped = live.reaped.clone();
+        self.stopping.store(false, Ordering::SeqCst);
         *lock(&self.error) = None;
         *lock(&self.exited) = None;
         *lock(&self.live) = Some(live);
@@ -654,6 +685,7 @@ impl Term {
         spec: &SpawnSpec,
     ) -> Result<(Live, Box<dyn Read + Send>, Box<dyn portable_pty::Child + Send + Sync>), String> {
         let (cols, rows) = *lock(&self.size);
+        allow_ctrl_c();
         let pair = native_pty_system()
             .openpty(pty_size(cols, rows))
             .map_err(|err| err.to_string())?;
@@ -879,6 +911,63 @@ impl Term {
     /// Unix a child still running after [`KILL_GRACE`] (it ignored SIGHUP) is killed hard.
     pub fn kill(self: &Arc<Self>) {
         let _starting = lock(&self.starting);
+        self.kill_locked();
+    }
+
+    /// [`Term::kill`], only while spawn `generation` is the current one (the caller of a
+    /// delayed kill must never end a newer spawn).
+    fn kill_if(self: &Arc<Self>, generation: u64) {
+        let _starting = lock(&self.starting);
+        if self.generation.load(Ordering::SeqCst) == generation {
+            self.kill_locked();
+        }
+    }
+
+    /// Stop the running child (Story 4.4): `writes` go to its input in order, each after its
+    /// pause; then, [`kill_after`](Duration) from now, a child of this same spawn still running
+    /// is killed ([`Term::kill`]) and the waiter reports the exit as usual. A Stop while one is
+    /// under way kills at once. `Ok(true)` when it killed at once; `Err` once exited.
+    pub fn stop(self: &Arc<Self>, writes: Vec<(Duration, Vec<u8>)>, kill_after: Duration) -> Result<bool, String> {
+        let generation = {
+            let _starting = lock(&self.starting);
+            if !self.is_running() {
+                return Err("terminal has exited".to_string());
+            }
+            if self.stopping.swap(true, Ordering::SeqCst) {
+                self.kill_locked();
+                return Ok(true);
+            }
+            self.generation.load(Ordering::SeqCst)
+        };
+        let term = self.clone();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let current = |t: &Term| t.generation.load(Ordering::SeqCst) == generation && t.is_running();
+            for (pause, bytes) in writes {
+                std::thread::sleep(pause);
+                if !current(&term) {
+                    return;
+                }
+                let _ = term.write(&bytes);
+            }
+            // Wait out the rest of the grace, ending early once the child is gone.
+            loop {
+                if !current(&term) {
+                    return;
+                }
+                let left = kill_after.saturating_sub(started.elapsed());
+                if left.is_zero() {
+                    break;
+                }
+                std::thread::sleep(left.min(Duration::from_millis(50)));
+            }
+            term.kill_if(generation);
+        });
+        Ok(false)
+    }
+
+    /// The body of [`Term::kill`]; the caller holds `starting`.
+    fn kill_locked(self: &Arc<Self>) {
         let Some((pid, reaped)) = lock(&self.live).as_mut().map(|live| {
             live.signal();
             (live.pid, live.reaped.clone())
@@ -1064,8 +1153,10 @@ impl TermManager {
 
     /// Open a session terminal (Story 4.2): `spec` runs under the new id `id`, titled with the
     /// session's name. Unlike [`TermManager::open`] a spawn failure is an `Err` (the line
-    /// `could not start <program>: <cause>`) and leaves no terminal behind. `hooks` run once
-    /// each: on the first output, and with the exit code after `term://exit`.
+    /// `could not start <program>: <cause>`) and leaves no new terminal behind. `hooks` run once
+    /// each: on the first output, and with the exit code after `term://exit`. An exited
+    /// terminal with the same id (a resumed session's last run, Story 4.4) is replaced, keeping
+    /// its place in the list (and is put back when the spawn fails); a running one is an `Err`.
     #[allow(clippy::too_many_arguments)]
     pub fn open_session(
         &self,
@@ -1079,8 +1170,12 @@ impl TermManager {
         hooks: SessionHooks,
     ) -> Result<TermInfo, String> {
         let mut terms = lock(&self.terms);
-        if terms.contains_key(id) {
-            return Err("terminal already exists".to_string());
+        let previous = terms.get(id).cloned();
+        if let Some(previous) = &previous {
+            let _starting = lock(&previous.starting);
+            if previous.is_running() {
+                return Err("terminal already exists".to_string());
+            }
         }
         let term = Arc::new(Term::new(
             id.to_string(),
@@ -1096,11 +1191,20 @@ impl TermManager {
         let starting = term.clone();
         let _starting = lock(&starting.starting);
         terms.insert(id.to_string(), term.clone());
-        lock(&self.order).push(id.to_string());
+        if previous.is_none() {
+            lock(&self.order).push(id.to_string());
+        }
         drop(terms);
         if let Err(message) = term.try_start(&spec, sink) {
-            lock(&self.terms).remove(id);
-            lock(&self.order).retain(|known| known != id);
+            match previous {
+                Some(previous) => {
+                    lock(&self.terms).insert(id.to_string(), previous);
+                }
+                None => {
+                    lock(&self.terms).remove(id);
+                    lock(&self.order).retain(|known| known != id);
+                }
+            }
             return Err(message);
         }
         Ok(term.info())
@@ -1124,6 +1228,13 @@ impl TermManager {
     pub fn kill(&self, id: &str) -> Result<(), String> {
         self.require(id)?.kill();
         Ok(())
+    }
+
+    /// Stop terminal `id` (see [`Term::stop`]); replies with its info, `stopping` set.
+    pub fn stop(&self, id: &str, writes: Vec<(Duration, Vec<u8>)>, kill_after: Duration) -> Result<TermInfo, String> {
+        let term = self.require(id)?;
+        term.stop(writes, kill_after)?;
+        Ok(term.info())
     }
 
     /// Forget an exited session terminal (its "Close"): it leaves the list and its buffer goes.

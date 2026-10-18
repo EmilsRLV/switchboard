@@ -1,5 +1,5 @@
 import { memo, useSyncExternalStore } from "react";
-import type { NodeProps } from "@xyflow/react";
+import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { ChildKind } from "../ipc";
 import {
   childAriaLabel,
@@ -22,7 +22,9 @@ import {
  * `finished` card from a hook shows the turn's last assistant line after the state word, muted
  * and cut with an ellipsis; a `waiting` card's tooltip leads with the hook's reason (Story 4.3). The
  * full title and exact times are on hover. Stubs and branches show the label and a muted
- * detail on one row. `SessionNode` and `BranchNode` are thin wrappers so xyflow has a type per
+ * detail on one row. A live session whose Switchboard terminal is being stopped reads `stopping`
+ * (muted, Story 4.4), and a fork's tooltip and label say what it was forked from; a session card
+ * also carries the invisible anchors of the "forked from" line. `SessionNode` and `BranchNode` are thin wrappers so xyflow has a type per
  * child kind. A right-click opens the node menu (only its enabled entries: Attach for a live
  * session); selection is an outline in `--fg`, never the accent.
  */
@@ -51,7 +53,7 @@ function SessionCard({ className, ariaLabel, data }: { className: string; ariaLa
   const { child, state } = data;
   const meta = child.session;
   if (meta === null) return null;
-  const parts = sessionCardMeta(meta, now, state, data.lastLine);
+  const parts = sessionCardMeta(meta, now, state, data.lastLine, data.stopping);
   // Only the branch shrinks (ellipsis); the state word, the count and the age never do.
   const tail = parts.age === null ? parts.count : `${parts.count} · ${parts.age}`;
   return (
@@ -85,8 +87,26 @@ function SessionCard({ className, ariaLabel, data }: { className: string; ariaLa
 }
 
 export const SessionNode = memo(function SessionNode({ data }: NodeProps<SessionFlowNode>) {
-  return <ChildCard data={data} kind="session" />;
+  return (
+    <>
+      <ChildCard data={data} kind="session" />
+      <ForkHandles />
+    </>
+  );
 });
+
+/**
+ * The anchors of the "forked from" line (Story 4.4) at the card's left edge: invisible and
+ * inert (no connecting, no pointer events), only there so xyflow can route the line.
+ */
+function ForkHandles() {
+  return (
+    <>
+      <Handle type="source" position={Position.Left} className="fork-handle" isConnectable={false} />
+      <Handle type="target" position={Position.Left} className="fork-handle" isConnectable={false} />
+    </>
+  );
+}
 
 export const BranchNode = memo(function BranchNode({ data }: NodeProps<BranchFlowNode>) {
   return <ChildCard data={data} kind="branch" />;

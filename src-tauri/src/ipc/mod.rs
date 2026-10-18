@@ -596,6 +596,29 @@ pub async fn term_list<R: Runtime>(app: AppHandle<R>) -> Result<Vec<TermInfo>, S
 pub struct LaunchResult {
     pub session_id: String,
     pub term: TermInfo,
+    /// The model, effort and permission mode the session was started with (`default`: the
+    /// flag was left out). Resume and Fork name them in their notice (Story 4.4).
+    pub choices: LaunchChoices,
+}
+
+/// The three choices a launch used, as `LaunchResult.choices` carries them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LaunchChoices {
+    pub model: String,
+    pub effort: String,
+    pub permission_mode: String,
+}
+
+impl LaunchChoices {
+    fn of(request: &LaunchRequest) -> Self {
+        let remembered = launch::remembered(request);
+        let value = |v: Option<String>| v.unwrap_or_else(|| launch::DEFAULT_CHOICE.to_string());
+        Self {
+            model: value(remembered.model),
+            effort: value(remembered.effort),
+            permission_mode: value(remembered.permission_mode),
+        }
+    }
 }
 
 /// The launch sheet's prefill for a project: its last choices, else `settings.defaults`, else
@@ -648,6 +671,32 @@ fn launch_program(state: &AppState) -> Result<(PathBuf, Vec<String>), String> {
         .ok_or_else(|| launch::NO_CLAUDE.to_string())
 }
 
+/// Why Resume is refused while the session runs (in Switchboard, or elsewhere).
+pub const SESSION_RUNNING: &str = "that session is already running";
+
+/// Why Resume or Fork is refused for a session with no transcript on the canvas.
+pub const NO_TRANSCRIPT: &str = "that session has no transcript to resume";
+
+/// Why Stop is refused: only a session running in a Switchboard terminal can be stopped.
+pub const NOT_STOPPABLE: &str = "only a session running in a Switchboard terminal can be stopped";
+
+/// A launch once its kind's specifics are resolved: what [`run_launch`] starts.
+struct Launch {
+    kind: launch::LaunchKind,
+    project_id: String,
+    /// The project's folder (the system prompt's "Project folder").
+    project_path: String,
+    label: String,
+    /// The folder the session runs in.
+    cwd: String,
+    /// The id the session runs under: its node, its terminal (`session:<id>`), its env.
+    session_id: String,
+    /// The terminal's title and the live entry's name.
+    name: String,
+    /// The flags (model, effort, permission mode; add-dirs and prompt for New only).
+    request: LaunchRequest,
+}
+
 /// The work of [`session_launch`], on a blocking thread. Everything that can be checked
 /// without side effects is checked first; then the sheet's session id is claimed (atomically,
 /// once), and a failure after that undoes only what this call created and gives the id back.
@@ -663,47 +712,262 @@ pub fn launch_session<R: Runtime>(app: &AppHandle<R>, request: LaunchRequest, si
             .ok_or_else(|| "unknown project".to_string())?;
         (project.path.clone(), project.label.clone())
     };
-    let (program, leading) = launch_program(&state)?;
-    let extensions = if cfg!(windows) { settings::detect::platform_extensions() } else { Vec::new() };
-    launch::refuse_batch(&launch::pathext_target(&program, &extensions), cfg!(windows))?;
     let name = launch::validate_name(&request.name)?;
     let request = LaunchRequest {
         add_dirs: launch::normalise_add_dirs(&request.add_dirs, &path)?,
         ..request
     };
+    let launch = Launch {
+        kind: launch::LaunchKind::New,
+        project_id: request.project_id.clone(),
+        project_path: path.clone(),
+        label,
+        cwd: path,
+        session_id: request.session_id.clone(),
+        name,
+        request,
+    };
+    let (program, args) = prepare_launch(&state, &launch)?;
+    // The id the sheet showed, once: a stale sheet or a second start is refused here.
+    state.launcher.claim(&launch.project_id, &launch.session_id)?;
+    let (project_id, session_id) = (launch.project_id.clone(), launch.session_id.clone());
+    let give_back = || state.launcher.unclaim(&project_id, &session_id);
+    let remembered = launch::remembered(&launch.request);
+    let result = run_launch(app, launch, program, args, size, &give_back)?;
+    if let Err(err) = graph::set_launch_defaults(app, &project_id, remembered) {
+        eprintln!("launch: could not remember the choices: {err}");
+    }
+    Ok(result)
+}
+
+/// Resume (Story 4.4): `claude --resume <id>` for a session with a transcript that is not live,
+/// in its transcript's folder (else its project's), with the standard app flags; the same node
+/// becomes live. No sheet: the choices are the project's last ones, else settings.
+#[tauri::command]
+pub async fn session_resume<R: Runtime>(
+    app: AppHandle<R>,
+    project_id: String,
+    session_id: String,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<LaunchResult, String> {
+    let size = (cols.unwrap_or(pty::DEFAULT_COLS), rows.unwrap_or(pty::DEFAULT_ROWS));
+    blocking(move || resume_session(&app, &project_id, &session_id, size)).await?
+}
+
+/// Fork (Story 4.4): `--resume <id> --fork-session --session-id <new>` for any session with a
+/// transcript, live or not; a new node appears, joined to its original by a "forked from" line.
+#[tauri::command]
+pub async fn session_fork<R: Runtime>(
+    app: AppHandle<R>,
+    project_id: String,
+    session_id: String,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<LaunchResult, String> {
+    let size = (cols.unwrap_or(pty::DEFAULT_COLS), rows.unwrap_or(pty::DEFAULT_ROWS));
+    blocking(move || fork_session(&app, &project_id, &session_id, size)).await?
+}
+
+/// Stop (Story 4.4) a session running in a Switchboard terminal: Ctrl+U, `/exit` + Enter while
+/// it is `idle` or `finished`, else Ctrl+C, 300 ms, Ctrl+C; still running 5 s later, it
+/// is killed. A Stop while one is under way kills at once. Replies with the terminal's info
+/// (`stopping` set); the node turns `exited` through the PTY exit as usual.
+#[tauri::command]
+pub async fn session_stop<R: Runtime>(app: AppHandle<R>, session_id: String) -> Result<TermInfo, String> {
+    blocking(move || stop_session(&app, &session_id)).await?
+}
+
+/// The work of [`session_stop`]. Sessions started elsewhere have no Switchboard terminal and
+/// are never signalled.
+pub fn stop_session<R: Runtime>(app: &AppHandle<R>, session_id: &str) -> Result<TermInfo, String> {
+    let state = app.state::<AppState>();
+    let term_id = pty::session_id(session_id);
+    state
+        .terms
+        .get(&term_id)
+        .filter(|term| term.kind == TermKind::Session && term.is_running())
+        .ok_or_else(|| NOT_STOPPABLE.to_string())?;
+    let current = state.read_sessions_live().sessions.get(session_id).map(|s| s.state.clone());
+    // A session the map does not know is not known to be idle: interrupted.
+    let plan = current.map_or(launch::StopPlan::Interrupt, |s| launch::stop_plan(&s));
+    // A child that exited between the check and the stop is the same refusal.
+    state
+        .terms
+        .stop(&term_id, launch::stop_writes(plan), launch::STOP_KILL_AFTER)
+        .map_err(|_| NOT_STOPPABLE.to_string())
+}
+
+/// What Resume and Fork start from: a session with a discovered transcript, its project, and
+/// the name it goes by (the live entry's, else the transcript's title, else the project's
+/// label).
+struct Source {
+    project: graph::Project,
+    cwd: Option<String>,
+    name: String,
+}
+
+/// The session `session_id` as discovered under project `project_id` (the card the operator
+/// chose): `unknown project` when the project is gone, [`NO_TRANSCRIPT`] when no transcript of
+/// that id is discovered under it.
+fn source_session(state: &AppState, project_id: &str, session_id: &str) -> Result<Source, String> {
+    let (project, summary) = {
+        let ws = state.read_workspace();
+        let project = ws
+            .workspace
+            .projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .cloned()
+            .ok_or_else(|| "unknown project".to_string())?;
+        let summary = ws
+            .discovered
+            .get(project_id)
+            .and_then(|list| list.iter().find(|s| s.id == session_id))
+            .cloned()
+            .ok_or_else(|| NO_TRANSCRIPT.to_string())?;
+        (project, summary)
+    };
+    let live_name = state
+        .read_sessions_live()
+        .sessions
+        .get(session_id)
+        .and_then(|s| s.name.clone())
+        .filter(|n| !n.trim().is_empty());
+    let title = Some(summary.title.clone()).filter(|t| !t.trim().is_empty() && t != claude::transcript::UNTITLED);
+    let name = live_name.or(title).unwrap_or_else(|| project.label.clone());
+    Ok(Source {
+        cwd: summary.cwd.clone(),
+        name,
+        project,
+    })
+}
+
+/// The flags of a sheetless launch: the project's last choices, else settings (the 4.2 prefill).
+fn sheetless_request(state: &AppState, project: &graph::Project, session_id: &str, name: &str) -> LaunchRequest {
+    let settings = state.read().settings.defaults.clone();
+    let prefill = launch::prefill(project.launch_defaults.as_ref(), &settings, session_id.to_string(), name.to_string());
+    LaunchRequest {
+        project_id: project.id.clone(),
+        session_id: session_id.to_string(),
+        name: name.to_string(),
+        model: Some(prefill.model),
+        effort: Some(prefill.effort),
+        permission_mode: Some(prefill.permission_mode),
+        ..LaunchRequest::default()
+    }
+}
+
+/// The work of [`session_resume`].
+pub fn resume_session<R: Runtime>(app: &AppHandle<R>, project_id: &str, session_id: &str, size: (u16, u16)) -> Result<LaunchResult, String> {
+    let state = app.state::<AppState>();
+    let source = source_session(&state, project_id, session_id)?;
+    let cwd = launch::resume_cwd(source.cwd.as_deref(), &source.project.path)?;
+    let launch = Launch {
+        kind: launch::LaunchKind::Resume { id: session_id.to_string() },
+        request: sheetless_request(&state, &source.project, session_id, &source.name),
+        project_id: source.project.id.clone(),
+        project_path: source.project.path.clone(),
+        label: source.project.label.clone(),
+        cwd,
+        session_id: session_id.to_string(),
+        name: source.name,
+    };
+    let (program, args) = prepare_launch(&state, &launch)?;
+    run_launch(app, launch, program, args, size, &|| {})
+}
+
+/// The work of [`session_fork`]: a fresh v4 id, named `<original name>-fork-<4 hex>`; the
+/// workspace records which session it was forked from before the spawn (see [`run_launch`]).
+/// A second fork of the same session is refused while this one starts.
+pub fn fork_session<R: Runtime>(app: &AppHandle<R>, project_id: &str, from: &str, size: (u16, u16)) -> Result<LaunchResult, String> {
+    let state = app.state::<AppState>();
+    let source = source_session(&state, project_id, from)?;
+    let cwd = launch::resume_cwd(source.cwd.as_deref(), &source.project.path)?;
+    let new_id = uuid::Uuid::new_v4().to_string();
+    let _forking = state.launcher.begin_fork(from, &new_id)?;
+    let name = launch::fork_name(&source.name, &new_id);
+    let launch = Launch {
+        kind: launch::LaunchKind::Fork { from: from.to_string() },
+        request: sheetless_request(&state, &source.project, &new_id, &name),
+        project_id: source.project.id.clone(),
+        project_path: source.project.path.clone(),
+        label: source.project.label.clone(),
+        cwd,
+        session_id: new_id.clone(),
+        name,
+    };
+    let (program, args) = prepare_launch(&state, &launch)?;
+    run_launch(app, launch, program, args, size, &|| {})
+}
+
+/// The checks of a launch that have no side effects, and its program and argv: the claude
+/// binary (never a batch file on Windows), the session dir, the system prompt and the flags.
+fn prepare_launch(state: &AppState, launch: &Launch) -> Result<(PathBuf, Vec<String>), String> {
+    let (program, leading) = launch_program(state)?;
+    let extensions = if cfg!(windows) { settings::detect::platform_extensions() } else { Vec::new() };
+    launch::refuse_batch(&launch::pathext_target(&program, &extensions), cfg!(windows))?;
     let dir = state.launcher.dir().ok_or_else(|| "no folder for session settings files".to_string())?;
-    let session_id = request.session_id.clone();
-    let branch = match state.read_live().statuses.get(&request.project_id) {
+    let branch = match state.read_live().statuses.get(&launch.project_id) {
         Some(git::ProjectStatus::Repo(repo)) if !repo.detached => Some(repo.branch.clone()),
         _ => None,
     };
-    let context = launch::system_prompt(&label, &path, branch.as_deref(), &name, &session_id);
+    let context = launch::system_prompt(&launch.label, &launch.project_path, branch.as_deref(), &launch.name, &launch.session_id);
     let mut args = leading;
-    args.extend(launch::build_args(&request, &session_id, &launch::settings_path(&dir, &session_id), &context)?);
+    args.extend(launch::build_args(
+        &launch.kind,
+        &launch.request,
+        &launch.session_id,
+        &launch::settings_path(&dir, &launch.session_id),
+        &context,
+    )?);
+    Ok((program, args))
+}
 
-    // The id the sheet showed, once: a stale sheet or a second start is refused here.
-    state.launcher.claim(&request.project_id, &session_id)?;
-    let give_back = || state.launcher.unclaim(&request.project_id, &session_id);
+/// Start a prepared launch: the live entry (`starting`), the hooks token and settings file, the
+/// session terminal. A failure undoes what this call created and runs `give_back`.
+fn run_launch<R: Runtime>(
+    app: &AppHandle<R>,
+    launch: Launch,
+    program: PathBuf,
+    args: Vec<String>,
+    size: (u16, u16),
+    give_back: &dyn Fn(),
+) -> Result<LaunchResult, String> {
+    let state = app.state::<AppState>();
+    let resume = matches!(launch.kind, launch::LaunchKind::Resume { .. });
+    let session_id = launch.session_id.clone();
     let term_id = pty::session_id(&session_id);
-    if state.terms.get(&term_id).is_some() {
-        give_back();
-        return Err(launch::ID_IN_USE.to_string());
+    if let Some(term) = state.terms.get(&term_id) {
+        // A resume reuses the id: its exited terminal is replaced when the new one opens.
+        if !resume || term.is_running() {
+            give_back();
+            return Err(if resume { SESSION_RUNNING } else { launch::ID_IN_USE }.to_string());
+        }
     }
-    // In the live map before the spawn, so the first output always finds it; an id the map
-    // already knows is refused (it is someone else's).
-    {
+    // In the live map before the spawn, so the first output always finds it. A new id the map
+    // already knows is refused (it is someone else's); a resume is refused while the session
+    // is live (starting or running, here or elsewhere), atomically with taking the entry.
+    let saved = {
         let mut map = state.write_sessions_live();
-        if map.sessions.contains_key(&session_id) {
+        if let Some(known) = map.sessions.get(&session_id)
+            && (!resume || known.state.is_live())
+        {
             drop(map);
             give_back();
-            return Err(launch::ID_IN_USE.to_string());
+            return Err(if resume { SESSION_RUNNING } else { launch::ID_IN_USE }.to_string());
         }
-        map.launched(&session_id, Some(request.project_id.clone()), &path, &name, live::now_ms());
-    }
+        // Everything the map held for the id, so a failure puts it back exactly.
+        let saved = map.save(&session_id);
+        map.launched(&session_id, Some(launch.project_id.clone()), &launch.cwd, &launch.name, live::now_ms());
+        saved
+    };
     let forget = || {
         state.hooks.drop_session(&session_id);
+        // A launch that failed leaves the id as it was: unknown (new, fork), or exited /
+        // historic with all its marks (resume).
         live::update_and_emit(app, |map| {
-            map.forget(&session_id);
+            map.restore(&session_id, saved.clone());
             true
         });
     };
@@ -718,12 +982,33 @@ pub fn launch_session<R: Runtime>(app: &AppHandle<R>, request: LaunchRequest, si
         }
         None => launch::SETTINGS_CONTENT.to_string(),
     };
+    if resume {
+        // A settings file left by an earlier run of this session (an app that crashed; this
+        // run's own is deleted before its exit shows): the session is not live, so it goes.
+        if let Some(dir) = state.launcher.dir() {
+            let _ = std::fs::remove_file(launch::settings_path(&dir, &session_id));
+        }
+    }
     if let Err(message) = state.launcher.write_settings_with(&session_id, &content) {
         forget();
         give_back();
         return Err(message);
     }
-    let mut spec = SpawnSpec::new(program, args, &path);
+    // A fork's link to its original is saved before the spawn, so its node is emitted once,
+    // already linked; a link that cannot be saved refuses the fork.
+    let fork_of = match &launch.kind {
+        launch::LaunchKind::Fork { from } => Some(from.clone()),
+        _ => None,
+    };
+    if let Some(from) = &fork_of
+        && let Err(message) = graph::set_forked_from(app, &launch.project_id, &session_id, from)
+    {
+        forget();
+        state.launcher.remove_settings(&session_id);
+        give_back();
+        return Err(message);
+    }
+    let mut spec = SpawnSpec::new(program, args, &launch.cwd);
     spec.env.push((launch::NODE_ENV.to_string(), session_id.clone()));
     if let Some(port) = port {
         spec.env.push((hooks::PORT_ENV.to_string(), port.to_string()));
@@ -736,28 +1021,37 @@ pub fn launch_session<R: Runtime>(app: &AppHandle<R>, request: LaunchRequest, si
                 live::update_and_emit(&output_app, |map| map.first_output(&output_id));
             }),
             exit: Box::new(move |_code| {
-                // The token dies with the session: a later POST with it is 401.
+                // The token dies with the session (a later POST with it is 401) and its settings
+                // file goes, both before the node shows `exited`: once it does, a resume of the
+                // same id can issue its own.
                 exit_app.state::<AppState>().hooks.drop_session(&exit_id);
-                live::update_and_emit(&exit_app, |map| map.process_exited(&exit_id));
                 exit_app.state::<AppState>().launcher.remove_settings(&exit_id);
+                live::update_and_emit(&exit_app, |map| map.process_exited(&exit_id));
             }),
         }
     };
-    let term = match state.terms.open_session(&term_id, &request.project_id, &name, &path, size, spec, sink(app), hooks) {
+    let term = match state
+        .terms
+        .open_session(&term_id, &launch.project_id, &launch.name, &launch.cwd, size, spec, sink(app), hooks)
+    {
         Ok(term) => term,
         Err(message) => {
             forget();
             state.launcher.remove_settings(&session_id);
+            if fork_of.is_some() {
+                graph::clear_forked_from(app, &launch.project_id, &session_id);
+            }
             give_back();
             return Err(message);
         }
     };
-    // A `starting` live-only child on the canvas now, before any poll.
+    // A `starting` child on the canvas now, before any poll.
     live::update_and_emit(app, |_| true);
-    if let Err(err) = graph::set_launch_defaults(app, &request.project_id, launch::remembered(&request)) {
-        eprintln!("launch: could not remember the choices: {err}");
-    }
-    Ok(LaunchResult { session_id, term })
+    Ok(LaunchResult {
+        session_id,
+        term,
+        choices: LaunchChoices::of(&launch.request),
+    })
 }
 
 #[cfg(test)]

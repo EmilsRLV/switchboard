@@ -149,7 +149,7 @@ drag handle) follows every rule here.
 - **The terminal pane** is a pane, wider: `min(720px, 70vw)` by default, dragged between 360 px and 90vw by
   its left edge (a 6-px handle over the 1-px border, `--border` while hovered, `col-resize` cursor). A header
   row over a 1-px `--border` line holds the project label (`--text-md` / 500), its folder (mono `--text-xs`
-  `--fg-muted`, ellipsis), the state (mono `--text-xs` `--fg-muted`: `running`, `exited N`; `could not start
+  `--fg-muted`, ellipsis), the state (mono `--text-xs` `--fg-muted`: `running`, `stopping`, `exited N`; `could not start
   …` is `.pane-error`) and the buttons. Below it the terminal fills the rest on `--bg-raised` with no chrome
   inside it. It appears without animation, like every pane.
 - **The launch sheet** (`n` on a project, Story 4.2) is a pane like settings and import, at their width: the
@@ -213,8 +213,19 @@ session and branch children; the size is fixed like the project card's.
   when the poll gave none).
 
   The full title and the exact start and last-active times are on hover (`title`).
+
+  A **fork** (Story 4.4) is an ordinary session card; its tooltip and accessible name add `forked from
+  <original title>`.
 - **Branch, stub:** one row: the **label** in `--text-md` (ellipsis) and, at the right, the **detail** in mono
   `--text-xs` `--fg-muted`.
+
+### The fork line
+
+A fork's card and its original's are joined by a thin line (Story 4.4) whenever both cards are drawn: 1 px
+(`--line`) in `--border` like every line, a curve from the left edge of one card to the left edge of the other that bows 24 px
+to the left of both (so two cards of one column are joined beside the column, not along its edge). No
+arrowhead, no label, never the accent; it sits under the cards, cannot be hovered, selected or edited, and is
+not an edge kind (Epic 6's edges are something else). Its anchors are invisible.
 
 ### The more row
 
@@ -249,6 +260,7 @@ Monochrome steps; the accent only for attention.
 |---|---|
 | busy | `--fg`, after a small `currentColor` dot (4 px, round) that pulses: opacity 1 → 0.35, 1.2 s, ease-in-out, alternating; static under reduced motion |
 | starting, idle, exited | `--fg-muted`, no dot. `starting` is a session the app just launched, before its first output or poll row (Story 4.2): muted exactly like `idle`, with no glow and no toast. |
+| stopping | `--fg-muted`, no dot, in place of the state word of a live session whose Switchboard terminal is being stopped (Story 4.4), until its process exits (then `exited`). No glow, no accent, and a `finished` card's last line gives way to it. |
 | any other status the poll reports (`compacting`), kept verbatim | `--fg-muted` |
 | waiting, finished | `--accent` (attention), after the 4-px dot pulsing like `busy`'s; the card's border in `--accent` too. `finished` is a busy → idle turn seen by the poll (Story 3.3); `waiting` comes from hooks (Story 4.3). |
 

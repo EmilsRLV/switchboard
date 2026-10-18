@@ -234,34 +234,65 @@ pub fn system_prompt(label: &str, path: &str, branch: Option<&str>, name: &str, 
     lines.join("\n")
 }
 
-/// The argv after the program, as the Decisions recipe spells it:
-/// `--session-id <id> --name <name> [--model <m>] [--effort <e>] [--permission-mode <p>]
-/// [--add-dir <d>]… --settings <path> --append-system-prompt <context> [<prompt>]`. A choice
-/// left at `default` is omitted; the prompt is the last argument, only when not blank (after
-/// a `--` when it starts with `-`, so it is never read as a flag). `req.add_dirs` are taken
-/// as given (see [`normalise_add_dirs`]). Validation failures are `Err`: a blank name,
-/// `bypassPermissions`, an effort or mode not offered.
-pub fn build_args(req: &LaunchRequest, session_id: &str, settings_path: &Path, system_prompt: &str) -> Result<Vec<String>, String> {
-    let name = validate_name(&req.name)?;
+/// What a launch does (Story 4.4): start a new session (the sheet), resume a historic one
+/// under its own id, or fork one into a new id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchKind {
+    /// `--session-id <new> --name <n>`, with the sheet's add-dirs and prompt.
+    New,
+    /// `--resume <id>`: no `--session-id`, no `--name` (Claude keeps the session's own name).
+    Resume { id: String },
+    /// `--resume <from> --fork-session --session-id <new> --name <n>`.
+    Fork { from: String },
+}
+
+/// The argv after the program. The head depends on `kind`:
+/// - New: `--session-id <id> --name <name>`;
+/// - Resume: `--resume <id>` (its `id`; `session_id` is the same id);
+/// - Fork: `--resume <from> --fork-session --session-id <id> --name <name>`.
+///
+/// The common tail is `[--model <m>] [--effort <e>] [--permission-mode <p>] --settings <path>
+/// --append-system-prompt <context>`; a New launch also gets `[--add-dir <d>]…` before
+/// `--settings` and `[<prompt>]` last (Resume and Fork never pass add-dirs or a prompt). A
+/// choice left at `default` is omitted; the prompt is the last argument, only when not blank
+/// (after a `--` when it starts with `-`, so it is never read as a flag). `req.add_dirs` are
+/// taken as given (see [`normalise_add_dirs`]). Validation failures are `Err`: a blank name
+/// (New and Fork), `bypassPermissions`, an effort or mode not offered.
+pub fn build_args(kind: &LaunchKind, req: &LaunchRequest, session_id: &str, settings_path: &Path, system_prompt: &str) -> Result<Vec<String>, String> {
     let model = model_flag(req.model.as_deref())?;
     let effort = effort_flag(req.effort.as_deref())?;
     let mode = permission_mode_flag(req.permission_mode.as_deref())?;
-    let mut args: Vec<String> = vec!["--session-id".into(), session_id.into(), "--name".into(), name];
+    let mut args: Vec<String> = match kind {
+        LaunchKind::New => vec!["--session-id".into(), session_id.into(), "--name".into(), validate_name(&req.name)?],
+        LaunchKind::Resume { id } => vec!["--resume".into(), id.clone()],
+        LaunchKind::Fork { from } => vec![
+            "--resume".into(),
+            from.clone(),
+            "--fork-session".into(),
+            "--session-id".into(),
+            session_id.into(),
+            "--name".into(),
+            validate_name(&req.name)?,
+        ],
+    };
     for (flag, value) in [("--model", model), ("--effort", effort), ("--permission-mode", mode)] {
         if let Some(value) = value {
             args.push(flag.into());
             args.push(value.into());
         }
     }
-    for dir in &req.add_dirs {
-        args.push("--add-dir".into());
-        args.push(dir.clone());
+    let new = *kind == LaunchKind::New;
+    if new {
+        for dir in &req.add_dirs {
+            args.push("--add-dir".into());
+            args.push(dir.clone());
+        }
     }
     args.push("--settings".into());
     args.push(settings_path.display().to_string());
     args.push("--append-system-prompt".into());
     args.push(system_prompt.into());
-    if let Some(prompt) = req.prompt.as_deref().filter(|p| !p.trim().is_empty()) {
+    if let Some(prompt) = req.prompt.as_deref().filter(|p| new && !p.trim().is_empty()) {
         if prompt.starts_with('-') {
             args.push("--".into());
         }
@@ -279,6 +310,99 @@ pub fn default_name(label: &str, session_id: &str) -> String {
     let label = clean.trim_start_matches(|c: char| c == '-' || c.is_whitespace()).trim_end();
     let label = if label.is_empty() { "session" } else { label };
     format!("{label}-{hex}")
+}
+
+/// A fork's name: `<base>-fork-<first 4 hex of the new id>`, cleaned as [`default_name`]
+/// cleans a label (`base` is the original's name, else the project's label).
+///
+/// A base that is itself a fork's name loses its `-fork-<4 hex>` suffix first (a fork of
+/// `ide-fork-1a2b` is `ide-fork-<new>`, not `ide-fork-1a2b-fork-<new>`), and the base is cut to
+/// [`FORK_BASE_MAX`] characters.
+pub fn fork_name(base: &str, new_id: &str) -> String {
+    let clean = without_controls(base);
+    let mut base = clean.trim_start_matches(|c: char| c == '-' || c.is_whitespace()).trim_end();
+    while let Some(stripped) = strip_fork_suffix(base) {
+        base = stripped.trim_end();
+    }
+    let cut: String = base.chars().take(FORK_BASE_MAX).collect();
+    let cut = cut.trim_end();
+    let base = if cut.is_empty() { "session" } else { cut };
+    default_name(&format!("{base}-fork"), new_id)
+}
+
+/// The longest base (in characters) a fork's name keeps before `-fork-<4 hex>`.
+pub const FORK_BASE_MAX: usize = 40;
+
+/// `name` without a trailing `-fork-<4 hex>`, when it has one.
+fn strip_fork_suffix(name: &str) -> Option<&str> {
+    let (head, hex) = name.rsplit_once("-fork-")?;
+    (hex.len() == 4 && hex.chars().all(|c| c.is_ascii_hexdigit())).then_some(head)
+}
+
+/// The start of the refusal when a resumed or forked session has no folder to run in.
+pub const FOLDER_NOT_FOUND: &str = "session folder not found: ";
+
+/// Where a resume or fork runs: the transcript's recorded `cwd` when that folder exists (Claude
+/// finds a session through the folder it ran in), else the project's folder; neither existing
+/// is `Err("session folder not found: <path>")`, naming the transcript's cwd (else the
+/// project's folder).
+pub fn resume_cwd(transcript_cwd: Option<&str>, project_path: &str) -> Result<String, String> {
+    let cwd = transcript_cwd.map(str::trim).filter(|c| !c.is_empty());
+    if let Some(cwd) = cwd.filter(|c| Path::new(c).is_dir()) {
+        return Ok(cwd.to_string());
+    }
+    if Path::new(project_path).is_dir() {
+        return Ok(project_path.to_string());
+    }
+    Err(format!("{FOLDER_NOT_FOUND}{}", cwd.unwrap_or(project_path)))
+}
+
+/// How Stop asks a session to end (Story 4.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopPlan {
+    /// `/exit` then Enter: the session is at its prompt.
+    Exit,
+    /// Ctrl+C, a pause, Ctrl+C: the session is busy (or in a state not known to be idle).
+    Interrupt,
+}
+
+/// What `/exit` is typed as.
+pub const EXIT_COMMAND: &str = "/exit";
+
+/// The pause between the two Ctrl+C of an interrupt.
+pub const INTERRUPT_GAP: Duration = Duration::from_millis(300);
+
+/// The pause between `/exit` and its Enter, so the TUI reads them as typed, not pasted.
+pub const EXIT_ENTER_GAP: Duration = Duration::from_millis(100);
+
+/// How long after Stop a session still running is killed.
+pub const STOP_KILL_AFTER: Duration = Duration::from_secs(5);
+
+/// The plan for a session in `state`: `/exit` for `idle` or `finished`; Ctrl+C twice for
+/// `starting` (Claude may be showing a start-up dialog such as folder trust, whose default an
+/// Enter would accept), `busy`, `waiting` or any other state.
+pub fn stop_plan(state: &crate::claude::live::SessionState) -> StopPlan {
+    use crate::claude::live::SessionState;
+    match state {
+        SessionState::Idle | SessionState::Finished => StopPlan::Exit,
+        _ => StopPlan::Interrupt,
+    }
+}
+
+/// Ctrl+U: clears the prompt line, so an unsent draft is never submitted with `/exit`.
+pub const CLEAR_LINE: u8 = 0x15;
+
+/// The writes of a plan, each after its pause: Ctrl+U, `/exit`, then `\r`; or `\x03`, then
+/// (after [`INTERRUPT_GAP`]) `\x03` again.
+pub fn stop_writes(plan: StopPlan) -> Vec<(Duration, Vec<u8>)> {
+    match plan {
+        StopPlan::Exit => vec![
+            (Duration::ZERO, vec![CLEAR_LINE]),
+            (EXIT_ENTER_GAP, EXIT_COMMAND.as_bytes().to_vec()),
+            (EXIT_ENTER_GAP, b"\r".to_vec()),
+        ],
+        StopPlan::Interrupt => vec![(Duration::ZERO, b"\x03".to_vec()), (INTERRUPT_GAP, b"\x03".to_vec())],
+    }
 }
 
 /// The sheet's prefill: each choice from the project's last choices, else `settings.defaults`,
@@ -458,6 +582,9 @@ pub struct Launcher {
     files: Mutex<HashSet<String>>,
     /// Project id → the session id its sheet's default name was made from.
     proposed: Mutex<HashMap<String, String>>,
+    /// Forks under way (Story 4.4): original id → the new id. A second fork of the same
+    /// original is refused meanwhile, and discovery keeps the new id's ref.
+    forks: Mutex<HashMap<String, String>>,
     /// Tests only: the program (and leading arguments) run instead of `claude`.
     #[cfg(test)]
     pub program: Mutex<Option<(PathBuf, Vec<String>)>>,
@@ -538,6 +665,37 @@ impl Launcher {
     pub fn kept(&self) -> HashSet<String> {
         lock(&self.files).clone()
     }
+
+    /// Begin forking `from` into `new_id`: `Err(FORK_STARTING)` while a fork of `from` is
+    /// under way. The fork counts as under way until the guard drops.
+    pub fn begin_fork(&self, from: &str, new_id: &str) -> Result<ForkGuard<'_>, String> {
+        let mut forks = lock(&self.forks);
+        if forks.contains_key(from) {
+            return Err(FORK_STARTING.to_string());
+        }
+        forks.insert(from.to_string(), new_id.to_string());
+        Ok(ForkGuard { launcher: self, from: from.to_string() })
+    }
+
+    /// The new ids of the forks under way.
+    pub fn pending_forks(&self) -> HashSet<String> {
+        lock(&self.forks).values().cloned().collect()
+    }
+}
+
+/// Why a second Fork of a session is refused while one is starting.
+pub const FORK_STARTING: &str = "a fork of that session is already starting";
+
+/// A fork under way ([`Launcher::begin_fork`]); dropping it ends that.
+pub struct ForkGuard<'a> {
+    launcher: &'a Launcher,
+    from: String,
+}
+
+impl Drop for ForkGuard<'_> {
+    fn drop(&mut self) {
+        lock(&self.launcher.forks).remove(&self.from);
+    }
 }
 
 #[cfg(test)]
@@ -563,7 +721,7 @@ mod tests {
             prompt: Some("   ".into()),
             ..request()
         };
-        let args = build_args(&req, ID, Path::new("/tmp/s/x.settings.json"), "ctx").unwrap();
+        let args = build_args(&LaunchKind::New, &req, ID, Path::new("/tmp/s/x.settings.json"), "ctx").unwrap();
         assert_eq!(
             args,
             [
@@ -590,7 +748,7 @@ mod tests {
             prompt: Some("hi there".into()),
             ..request()
         };
-        let args = build_args(&req, ID, Path::new("s.json"), "line 1\nline 2").unwrap();
+        let args = build_args(&LaunchKind::New, &req, ID, Path::new("s.json"), "line 1\nline 2").unwrap();
         assert_eq!(
             args,
             [
@@ -621,7 +779,7 @@ mod tests {
             prompt: Some("-v please".into()),
             ..request()
         };
-        let args = build_args(&req, ID, Path::new("s.json"), "ctx").unwrap();
+        let args = build_args(&LaunchKind::New, &req, ID, Path::new("s.json"), "ctx").unwrap();
         assert_eq!(&args[4..6], ["--model", "claude-opus-4-1"]);
         assert_eq!(&args[args.len() - 2..], ["--", "-v please"]);
     }
@@ -631,7 +789,7 @@ mod tests {
         let with = |f: fn(&mut LaunchRequest)| {
             let mut req = request();
             f(&mut req);
-            build_args(&req, ID, Path::new("s.json"), "ctx")
+            build_args(&LaunchKind::New, &req, ID, Path::new("s.json"), "ctx")
         };
         assert_eq!(with(|r| r.name = "  ".into()), Err("name must not be blank".to_string()));
         assert_eq!(with(|r| r.name = "-x".into()), Err("name must not start with -".to_string()));
@@ -647,8 +805,100 @@ mod tests {
                 effort: Some(effort.into()),
                 ..request()
             };
-            assert!(build_args(&req, ID, Path::new("s.json"), "ctx").is_ok(), "{effort}");
+            assert!(build_args(&LaunchKind::New, &req, ID, Path::new("s.json"), "ctx").is_ok(), "{effort}");
         }
+    }
+
+    #[test]
+    fn resume_and_fork_change_only_the_head_and_never_pass_add_dirs_or_a_prompt() {
+        const NEW: &str = "9c1e3f2a-5b7d-4e8f-9a0b-1c2d3e4f5a6b";
+        let req = LaunchRequest {
+            name: "ide-59cd-fork-9c1e".into(),
+            model: Some("opus".into()),
+            effort: Some("default".into()),
+            permission_mode: Some("plan".into()),
+            add_dirs: vec!["/work/a".into()],
+            prompt: Some("hi".into()),
+            ..request()
+        };
+        let tail = ["--model", "opus", "--permission-mode", "plan", "--settings", "s.json", "--append-system-prompt", "ctx"];
+        let resume = build_args(&LaunchKind::Resume { id: ID.into() }, &req, ID, Path::new("s.json"), "ctx").unwrap();
+        let expected: Vec<&str> = ["--resume", ID].into_iter().chain(tail).collect();
+        assert_eq!(resume, expected);
+        assert!(!resume.iter().any(|a| a == "--session-id" || a == "--name" || a == "--add-dir" || a == "hi"));
+        // A resume needs no name: a blank one is not refused.
+        let blank = LaunchRequest { name: " ".into(), ..req.clone() };
+        assert!(build_args(&LaunchKind::Resume { id: ID.into() }, &blank, ID, Path::new("s.json"), "ctx").is_ok());
+
+        let fork = build_args(&LaunchKind::Fork { from: ID.into() }, &req, NEW, Path::new("s.json"), "ctx").unwrap();
+        let expected: Vec<&str> = ["--resume", ID, "--fork-session", "--session-id", NEW, "--name", "ide-59cd-fork-9c1e"]
+            .into_iter()
+            .chain(tail)
+            .collect();
+        assert_eq!(fork, expected);
+        assert_eq!(
+            build_args(&LaunchKind::Fork { from: ID.into() }, &blank, NEW, Path::new("s.json"), "ctx"),
+            Err("name must not be blank".to_string())
+        );
+        let bypass = LaunchRequest { permission_mode: Some(BYPASS_PERMISSIONS.into()), ..req };
+        assert_eq!(
+            build_args(&LaunchKind::Resume { id: ID.into() }, &bypass, ID, Path::new("s.json"), "ctx"),
+            Err(BYPASS_REFUSED.to_string())
+        );
+    }
+
+    #[test]
+    fn a_fork_is_named_after_its_original_and_the_new_id() {
+        assert_eq!(fork_name("ide-59cd", "9c1e3f2a-0000"), "ide-59cd-fork-9c1e");
+        assert_eq!(fork_name("ide", "abcd"), "ide-fork-abcd");
+        assert_eq!(fork_name("--x\n", "abcd"), "x-fork-abcd", "cleaned like the default name");
+        assert_eq!(fork_name("  ", "abcd"), "session-fork-abcd");
+        assert!(validate_name(&fork_name("-", "abcd")).is_ok());
+        // A fork of a fork: the old suffix goes first.
+        assert_eq!(fork_name("ide-59cd-fork-718f", "9c1e"), "ide-59cd-fork-9c1e");
+        assert_eq!(fork_name("x-fork-718f-fork-0000", "9c1e"), "x-fork-9c1e");
+        assert_eq!(fork_name("my-fork-thing", "9c1e"), "my-fork-thing-fork-9c1e", "not a fork suffix");
+        // The base is cut to 40 characters.
+        let long = "a".repeat(200);
+        assert_eq!(fork_name(&long, "9c1e"), format!("{}-fork-9c1e", "a".repeat(FORK_BASE_MAX)));
+        assert_eq!(fork_name(&"é".repeat(50), "9c1e"), format!("{}-fork-9c1e", "é".repeat(40)), "characters, not bytes");
+    }
+
+    #[test]
+    fn a_resume_runs_in_the_transcript_cwd_else_the_project_folder() {
+        let transcript = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let (t, p) = (transcript.path().display().to_string(), project.path().display().to_string());
+        assert_eq!(resume_cwd(Some(&t), &p), Ok(t.clone()));
+        assert_eq!(resume_cwd(None, &p), Ok(p.clone()));
+        assert_eq!(resume_cwd(Some("  "), &p), Ok(p.clone()));
+        let gone = transcript.path().join("gone").display().to_string();
+        assert_eq!(resume_cwd(Some(&gone), &p), Ok(p.clone()));
+        let gone_project = project.path().join("gone").display().to_string();
+        assert_eq!(resume_cwd(Some(&gone), &gone_project), Err(format!("{FOLDER_NOT_FOUND}{gone}")));
+        assert_eq!(resume_cwd(None, &gone_project), Err(format!("{FOLDER_NOT_FOUND}{gone_project}")));
+    }
+
+    #[test]
+    fn stop_types_exit_at_the_prompt_and_interrupts_otherwise() {
+        use crate::claude::live::SessionState::*;
+        for state in [Idle, Finished] {
+            assert_eq!(stop_plan(&state), StopPlan::Exit, "{state:?}");
+        }
+        // `starting` interrupts: an Enter could accept a start-up dialog's default.
+        for state in [Starting, Busy, Waiting, crate::claude::live::SessionState::Other { raw: "compacting".into() }] {
+            assert_eq!(stop_plan(&state), StopPlan::Interrupt, "{state:?}");
+        }
+        // The draft is cleared first, then `/exit`, then Enter.
+        assert_eq!(
+            stop_writes(StopPlan::Exit),
+            vec![(Duration::ZERO, vec![0x15]), (EXIT_ENTER_GAP, b"/exit".to_vec()), (EXIT_ENTER_GAP, b"\r".to_vec())]
+        );
+        assert_eq!(
+            stop_writes(StopPlan::Interrupt),
+            vec![(Duration::ZERO, vec![3u8]), (Duration::from_millis(300), vec![3u8])]
+        );
+        assert_eq!(STOP_KILL_AFTER, Duration::from_secs(5));
     }
 
     fn with_mode(mode: &str) -> Result<Vec<String>, String> {
@@ -656,7 +906,7 @@ mod tests {
             permission_mode: Some(mode.into()),
             ..request()
         };
-        build_args(&req, ID, Path::new("s.json"), "ctx")
+        build_args(&LaunchKind::New, &req, ID, Path::new("s.json"), "ctx")
     }
 
 
@@ -932,6 +1182,18 @@ mod tests {
         assert!(!old.exists());
         assert!(young.exists() && running.exists() && other.exists());
         assert!(sweep(&temp.path().join("missing"), &set, SWEEP_AGE, now).is_empty());
+    }
+
+    #[test]
+    fn a_second_fork_of_a_session_is_refused_while_the_first_starts() {
+        let launcher = Launcher::default();
+        let guard = launcher.begin_fork("orig", "new-1").unwrap();
+        assert_eq!(launcher.begin_fork("orig", "new-2").err(), Some(FORK_STARTING.to_string()));
+        assert!(launcher.begin_fork("other", "new-3").is_ok(), "another original is fine (and its guard drops here)");
+        assert_eq!(launcher.pending_forks(), HashSet::from(["new-1".to_string()]));
+        drop(guard);
+        assert!(launcher.pending_forks().is_empty());
+        assert!(launcher.begin_fork("orig", "new-4").is_ok());
     }
 
     #[test]

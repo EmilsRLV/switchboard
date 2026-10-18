@@ -80,7 +80,7 @@ describe("attention", () => {
     detail: null,
     position: null,
     session: null,
-    branchId: null,
+    branchId: null, forkedFrom: null, hasTranscript: false,
   });
   const at = (state: SessionState, since: number | null, project_id: string | null = "ide"): LiveSession => ({
     ...session(state, project_id),

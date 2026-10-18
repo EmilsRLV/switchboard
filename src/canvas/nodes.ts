@@ -55,6 +55,10 @@ export type ChildNodeData = {
   lastLine: string | null;
   /** A `waiting` session's reason, the card's tooltip (Story 4.3); `null` otherwise. */
   detail: string | null;
+  /** A Stop of the session's Switchboard terminal is under way (Story 4.4): the word reads `stopping`. */
+  stopping: boolean;
+  /** The title of the session this one was forked from, when that session is listed (Story 4.4). */
+  forkedFromTitle: string | null;
 };
 
 /** What a `MoreNode` (the `show all (N)` / `show fewer` row) renders from. */
@@ -240,6 +244,8 @@ export type FlowInputs = {
   showAll?: readonly string[];
   /** Every session the live poll has seen this run, by id (the live store); absent means none. */
   live?: Readonly<Record<string, LiveSession>>;
+  /** Session ids whose Switchboard terminal is being stopped (Story 4.4); absent means none. */
+  stopping?: readonly string[];
 };
 
 /**
@@ -275,6 +281,16 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
     const session = liveOf(child);
     return session?.state.kind === "waiting" ? (session.detail ?? null) : null;
   };
+  const stopping = inputs.stopping ?? [];
+  const stoppingOf = (child: ChildNode): boolean => {
+    const state = stateOf(child);
+    return state !== null && isLiveState(state) && stopping.includes(child.id);
+  };
+  // Every session's title by id, for a fork's "forked from" (Story 4.4).
+  const titles = new Map<string, string>();
+  for (const child of children) if (child.kind === "session") titles.set(child.id, child.label);
+  const forkedFromTitleOf = (child: ChildNode): string | null =>
+    child.forkedFrom === null || child.forkedFrom === undefined ? null : (titles.get(child.forkedFrom) ?? null);
   const before = new Map<string, CanvasFlowNode>();
   for (const node of previous) before.set(node.id, node);
 
@@ -333,6 +349,8 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
           attention: needsAttention(stateOf(child)),
           lastLine: lastLineOf(child),
           detail: detailOf(child),
+          stopping: stoppingOf(child),
+          forkedFromTitle: forkedFromTitleOf(child),
         },
         zIndex: layer(childSelected, childDrag),
         draggable: true,
@@ -403,6 +421,8 @@ function sameNode(a: CanvasFlowNode, b: CanvasFlowNode): boolean {
       a.data.attention === b.data.attention &&
       a.data.lastLine === b.data.lastLine &&
       a.data.detail === b.data.detail &&
+      a.data.stopping === b.data.stopping &&
+      a.data.forkedFromTitle === b.data.forkedFromTitle &&
       sameState(a.data.state, b.data.state) &&
       sameChild(a.data.child, b.data.child)
     );
@@ -432,6 +452,7 @@ function sameChild(a: ChildNode, b: ChildNode): boolean {
       a.label === b.label &&
       a.detail === b.detail &&
       a.branchId === b.branchId &&
+      a.forkedFrom === b.forkedFrom &&
       sameSession(a.session, b.session) &&
       (a.position === b.position || (a.position !== null && b.position !== null && samePosition(a.position, b.position))))
   );
@@ -492,18 +513,32 @@ export type SessionCardMeta = {
   lastLine: string | null;
 };
 
+/** The state word of a session being stopped (Story 4.4): muted, until its process exits. */
+export const STOPPING_WORD = "stopping";
+
 /**
  * The parts of a session card's meta line: `[state] · [branch] · N msgs · [age]`. The state
  * word leads while the session is live or exited (`busy` with the pulsing dot, `finished` /
  * `waiting` in the accent with the pulsing dot, the rest muted); the branch is left out when
- * the transcript names none; the age when `lastActive` is unknown.
+ * the transcript names none; the age when `lastActive` is unknown. While a live session is
+ * being stopped (`stopping`, Story 4.4) the word is `stopping`, muted, with no dot.
  */
-export function sessionCardMeta(meta: SessionMeta, now: number, state: SessionState | null, lastLine: string | null = null): SessionCardMeta {
-  const tone = sessionStateTone(state);
+export function sessionCardMeta(
+  meta: SessionMeta,
+  now: number,
+  state: SessionState | null,
+  lastLine: string | null = null,
+  stopping = false,
+): SessionCardMeta {
+  const halting = stopping && state !== null && isLiveState(state);
+  const tone = halting ? "muted" : sessionStateTone(state);
   const line = lastLine?.trim() ?? "";
   return {
-    lastLine: state?.kind === "finished" && line !== "" ? line : null,
-    state: state === null || tone === null ? null : { word: stateWord(state), tone, dot: tone !== "muted" },
+    lastLine: !halting && state?.kind === "finished" && line !== "" ? line : null,
+    state:
+      state === null || tone === null
+        ? null
+        : { word: halting ? STOPPING_WORD : stateWord(state), tone, dot: tone !== "muted" },
     branch: meta.branch !== null && meta.branch !== "" ? meta.branch : null,
     count: `${meta.messages} ${meta.messages === 1 ? "msg" : "msgs"}`,
     age: meta.lastActive === "" ? null : formatAge(meta.lastActive, now),
@@ -535,8 +570,13 @@ export function sessionStateTone(state: SessionState | null): SessionStateTone |
  * session's reason, a `finished` session's last line (Story 4.3) and `needs you` while it
  * needs attention.
  */
-export function childAriaLabel(kind: ChildKind, data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine">): string {
+export function childAriaLabel(
+  kind: ChildKind,
+  data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine"> & Partial<Pick<ChildNodeData, "stopping" | "forkedFromTitle">>,
+): string {
   const parts = [`${kind === "session" ? "Session" : "Branch"} ${data.child.label}`];
+  if (data.forkedFromTitle !== null && data.forkedFromTitle !== undefined) parts.push(forkedFromText(data.forkedFromTitle));
+  if (data.stopping === true) parts.push(STOPPING_WORD);
   if (data.detail !== null && data.detail !== "") parts.push(`waiting: ${data.detail}`);
   if (data.lastLine !== null && data.lastLine !== "") parts.push(`last line: ${data.lastLine}`);
   if (data.attention) parts.push("needs you");
@@ -548,13 +588,58 @@ export function childAriaLabel(kind: ChildKind, data: Pick<ChildNodeData, "child
  * first, then the hover text, then a `finished` session's last line (as Rust cut it: at most
  * 200 characters, `…` when cut), then `needs you` while it needs attention.
  */
-export function sessionCardTitle(data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine">, meta: SessionMeta): string {
+export function sessionCardTitle(
+  data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine"> & Partial<Pick<ChildNodeData, "forkedFromTitle">>,
+  meta: SessionMeta,
+): string {
   const lines: string[] = [];
   if (data.detail !== null && data.detail !== "") lines.push(data.detail);
   lines.push(sessionHoverText(data.child.label, meta));
+  if (data.forkedFromTitle !== null && data.forkedFromTitle !== undefined) lines.push(forkedFromText(data.forkedFromTitle));
   if (data.lastLine !== null && data.lastLine !== "") lines.push(data.lastLine);
   if (data.attention) lines.push("needs you");
   return lines.join("\n");
+}
+
+/** A fork's tooltip and accessible-name part (Story 4.4): `forked from <original title>`. */
+export function forkedFromText(title: string): string {
+  return `forked from ${title}`;
+}
+
+/** One "forked from" line the canvas draws (Story 4.4): between two drawn session cards, by flow id. */
+export type ForkLine = { id: string; source: string; target: string };
+
+/**
+ * The "forked from" lines to draw: one per drawn session card whose child names an original
+ * (`forkedFrom`) that is drawn too, from the fork's card to the original's. A rendering of
+ * `forkedFrom`, not an edge kind: nothing is stored, and a hidden or unlisted original draws
+ * no line.
+ */
+export function forkLines(nodes: readonly CanvasFlowNode[]): ForkLine[] {
+  const drawn = new Set(nodes.filter((n) => n.type === "session").map((n) => n.id));
+  const out: ForkLine[] = [];
+  for (const node of nodes) {
+    if (node.type !== "session") continue;
+    const from = node.data.child.forkedFrom;
+    if (from === null || from === undefined) continue;
+    const target = childFlowId({ kind: "session", id: from });
+    if (target === node.id || !drawn.has(target)) continue;
+    out.push({ id: `fork:${node.data.child.id}`, source: node.id, target });
+  }
+  return out;
+}
+
+/** How far left of the cards a "forked from" line bows (flow pixels). */
+export const FORK_LINE_BOW = 24;
+
+/**
+ * The SVG path of a "forked from" line between two cards' left-edge anchors: a cubic curve
+ * that bows {@link FORK_LINE_BOW} to the left, so two cards of one column are joined beside
+ * the column rather than along its edge.
+ */
+export function forkLinePath(sourceX: number, sourceY: number, targetX: number, targetY: number): string {
+  const bow = Math.min(sourceX, targetX) - FORK_LINE_BOW;
+  return `M ${sourceX},${sourceY} C ${bow},${sourceY} ${bow},${targetY} ${targetX},${targetY}`;
 }
 
 /** A session card's hover text: the full title and the exact local start and last-active times (each only when known). */

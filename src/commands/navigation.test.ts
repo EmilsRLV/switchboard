@@ -36,7 +36,7 @@ function project(id: string, x: number, y: number, expanded = false): Project {
 }
 
 function stub(index: number, projectId: string, position: Position | null = null): ChildNode {
-  return { id: `stub-${index}-${projectId}`, projectId, kind: "session", label: `session ${index}`, detail: "stub", position, session: null, branchId: null };
+  return { id: `stub-${index}-${projectId}`, projectId, kind: "session", label: `session ${index}`, detail: "stub", position, session: null, branchId: null, forkedFrom: null, hasTranscript: false };
 }
 
 function snapshot(projects: Project[], children: ChildNode[], revision = 1): WorkspaceSnapshot {
@@ -340,7 +340,7 @@ describe("show all from the keyboard", () => {
     expect(workspaceSetExpanded).not.toHaveBeenCalled();
   });
 
-  it("Enter on a session does nothing (resume and fork arrive in Epic 4)", async () => {
+  it("Enter on a session does nothing (Resume and Fork are menu commands)", async () => {
     useUiStore.getState().select({ kind: "session", id: "stub-1-ide" });
     await expect(activateSelection()).resolves.toBe(false);
     expect(useUiStore.getState().showAll).toEqual([]);

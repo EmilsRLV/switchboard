@@ -364,3 +364,26 @@
     animation: none;
   }
 }
+
+/* The "forked from" line (Story 4.4): a thin muted curve between a fork's card and its
+   original's, drawn under the cards, inert, no arrowhead, never the accent. Its anchors are
+   invisible handles at each session card's left edge. */
+.fork-handle {
+  opacity: 0;
+  pointer-events: none;
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+}
+
+.react-flow__edge-fork {
+  pointer-events: none;
+}
+
+.react-flow__edge-fork .fork-line {
+  stroke: var(--border);
+  stroke-width: var(--line);
+}

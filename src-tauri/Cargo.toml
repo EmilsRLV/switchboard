@@ -42,7 +42,7 @@ tauri = { version = "2", features = ["test"] }
 
 # Kill-on-close Job Objects for terminal shells (`pty`); already in the tree.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Console"] }
 
 # The PTY tests ask Windows whether a process still runs and who its children are.
 [target.'cfg(windows)'.dev-dependencies]

@@ -260,6 +260,20 @@ pub struct LiveMap {
     pub poll_overrides: u64,
 }
 
+/// One session's whole record in the map ([`LiveMap::save`] / [`LiveMap::restore`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SavedSession {
+    pub session: Option<LiveSession>,
+    /// Its place in `exited_order`, when it is there.
+    pub exited_at: Option<usize>,
+    pub app_running: bool,
+    pub app_exited: Option<i64>,
+    pub busy_seen: bool,
+    pub hooked: Option<u8>,
+    pub wait: Option<WaitKind>,
+    pub answered: Option<i64>,
+}
+
 /// How long a poll row for an app-launched session whose process exited is ignored.
 pub const APP_EXITED_TTL_MS: i64 = 10_000;
 
@@ -710,6 +724,53 @@ impl LiveMap {
             answered: self.answered.iter().filter(|(id, _)| ours(id)).map(|(id, t)| (id.clone(), *t)).collect(),
             poll_overrides: self.poll_overrides,
             ..LiveMap::default()
+        }
+    }
+
+    /// Everything the map holds about session `id`, for [`LiveMap::restore`]: taken before a
+    /// launch replaces it, so a failed resume leaves the session exactly as it was.
+    pub fn save(&self, id: &str) -> SavedSession {
+        SavedSession {
+            session: self.sessions.get(id).cloned(),
+            exited_at: self.exited_order.iter().position(|known| known == id),
+            app_running: self.app_running.contains(id),
+            app_exited: self.app_exited.get(id).copied(),
+            busy_seen: self.busy_seen.contains(id),
+            hooked: self.hooked.get(id).copied(),
+            wait: self.waits.get(id).copied(),
+            answered: self.answered.get(id).copied(),
+        }
+    }
+
+    /// Put back what [`LiveMap::save`] took for `id` (nothing saved: the id is forgotten).
+    pub fn restore(&mut self, id: &str, saved: SavedSession) {
+        self.forget(id);
+        let key = id.to_string();
+        if let Some(session) = saved.session {
+            self.sessions.insert(key.clone(), session);
+        }
+        if let Some(at) = saved.exited_at {
+            let at = at.min(self.exited_order.len());
+            self.exited_order.insert(at, key.clone());
+            self.exited.insert(key.clone());
+        }
+        if saved.app_running {
+            self.app_running.insert(key.clone());
+        }
+        if let Some(at) = saved.app_exited {
+            self.app_exited.insert(key.clone(), at);
+        }
+        if saved.busy_seen {
+            self.busy_seen.insert(key.clone());
+        }
+        if let Some(count) = saved.hooked {
+            self.hooked.insert(key.clone(), count);
+        }
+        if let Some(wait) = saved.wait {
+            self.waits.insert(key.clone(), wait);
+        }
+        if let Some(at) = saved.answered {
+            self.answered.insert(key, at);
         }
     }
 
@@ -1658,6 +1719,34 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_session_is_restored_whole_after_a_failed_relaunch() {
+        let mut map = LiveMap::default();
+        map.launched("a", Some("ide".into()), ide_path(), "n", 1);
+        map.launched("s", Some("ide".into()), ide_path(), "n", 1);
+        map.hooked.insert("s".into(), 1);
+        map.answered.insert("s".into(), 3);
+        map.busy_seen.insert("s".into());
+        assert!(map.process_exited_at("a", 4));
+        assert!(map.process_exited_at("s", 5));
+        map.hooked.insert("s".into(), 1); // marks as a relaunch could find them
+        map.busy_seen.insert("s".into());
+        let before = map.clone();
+        let saved = map.save("s");
+        assert_eq!(saved.exited_at, Some(1));
+        assert_eq!(saved.app_exited, Some(5));
+        // A relaunch takes the entry over, then fails: everything comes back, order included.
+        map.launched("s", Some("ide".into()), ide_path(), "n2", 9);
+        assert_eq!(map.sessions["s"].state, SessionState::Starting);
+        map.restore("s", saved);
+        assert_eq!(map, before);
+        // Nothing saved (a new id): restoring forgets it.
+        let empty = map.save("new");
+        map.launched("new", None, ide_path(), "n", 9);
+        map.restore("new", empty);
+        assert_eq!(map, before);
+    }
+
+    #[test]
     fn app_exited_entries_expire_are_cleared_by_a_new_launch_and_survive_a_lost_claude() {
         let ws = workspace_with_ide();
         let mut map = LiveMap::default();
@@ -1679,6 +1768,19 @@ mod tests {
         map.launched("s2", Some("ide".into()), ide_path(), "n", 6);
         assert!(!map.app_exited.contains_key("s2"), "launched clears app_exited");
         assert!(map.app_running.contains("s2"));
+
+        // The relaunch (a resume, Story 4.4) is the same node starting again: `starting`, not
+        // exited by a poll gap or a lagging row of the old run, then `idle` on first output.
+        assert_eq!(map.sessions["s2"].state, SessionState::Starting);
+        assert_eq!(map.sessions["s2"].source, StateSource::App);
+        assert!(!map.exited.contains("s2") && !map.exited_order.contains(&"s2".to_string()));
+        map.apply_at(Ok(vec![]), &ws, 7);
+        assert_eq!(map.sessions["s2"].state, SessionState::Starting, "a poll gap does not exit it");
+        assert!(map.first_output("s2"));
+        assert_eq!(map.sessions["s2"].state, SessionState::Idle);
+        assert!(map.process_exited_at("s2", 8), "and it can exit again");
+        assert_eq!(map.sessions["s2"].state, SessionState::Exited);
+        map.launched("s2", Some("ide".into()), ide_path(), "n", 9);
 
         // claude lost: the poll's sessions go, the app's stay.
         let kept = map.cleared_keeping_app();

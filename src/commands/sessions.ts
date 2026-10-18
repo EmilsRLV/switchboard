@@ -3,11 +3,14 @@
 // launched session runs in. Rust owns the launch; these only call it and keep the stores and
 // panes in step. A result that arrives after its sheet closed (or another opened) is not applied
 // to the sheet showing now; a failure is the sheet's error, or the notice when its sheet is
-// gone, never a throw.
+// gone, never a throw. Story 4.4 adds `session.resume`, `session.fork` and `session.stop`
+// (no sheet; a refusal is the notice).
 
-import { launchDefaults, projectPickFolder, sessionLaunch } from "../ipc";
+import { launchDefaults, projectPickFolder, sessionFork, sessionLaunch, sessionResume, sessionStop, type ChildNode, type LaunchChoices, type LaunchResult } from "../ipc";
 import { isSheetOpen, sheetToken, useLaunchStore } from "../state/launch";
-import { sessionTerminal, useTerminalStore } from "../state/terminals";
+import { sessionState } from "../state/live";
+import { isTerminalRunning, sessionTerminal, sessionTerminalId, terminalInfo, useTerminalStore } from "../state/terminals";
+import { disposeView, restore } from "../terminal/registry";
 import { useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 import { canStart, formFromPrefill, launchRequest, missingAddDirs, withAddDir, withoutAddDir } from "./launch";
@@ -129,4 +132,151 @@ export function canShowSessionTerminal(): boolean {
 export async function showSelectedSessionTerminal(): Promise<boolean> {
   const id = selectedSessionTerminal();
   return id === null ? false : showTerminal(id);
+}
+
+// --- Resume, fork, stop (Story 4.4) ----------------------------------------------------------
+
+/** The selected session child (a session card), or `null`. */
+function selectedSessionChild(): ChildNode | null {
+  const selection = useUiStore.getState().selection;
+  if (selection === null || selection.kind !== "session") return null;
+  return useWorkspaceStore.getState().snapshot?.children.find((c) => c.kind === "session" && c.id === selection.id) ?? null;
+}
+
+/** Whether a session child has a transcript (Rust's `hasTranscript`: it was discovered from one). */
+export function hasTranscript(child: ChildNode | null): boolean {
+  return child !== null && child.kind === "session" && child.hasTranscript;
+}
+
+/** Session ids a Resume was sent for and has not replied yet. */
+const starting = new Set<string>();
+
+/** Session ids a Fork *from* was sent for and has not replied yet. */
+const forking = new Set<string>();
+
+/**
+ * The notice after a Resume or Fork: what it ran with, since no sheet showed it (the
+ * project's latest choices; a flag left out reads `default`).
+ */
+export function startedNotice(verb: "resumed" | "forked", choices: LaunchChoices): string {
+  return `${verb} with model ${choices.model}, effort ${choices.effort}, mode ${choices.permission_mode}`;
+}
+
+/**
+ * The `when` of `session.resume`: the selected session has a transcript and is not live (the
+ * live map has no entry for it, or it has `exited`), and no terminal of its runs.
+ */
+export function canResumeSession(): boolean {
+  const child = selectedSessionChild();
+  if (child === null || !hasTranscript(child)) return false;
+  const state = sessionState(child.id);
+  return (state === null || state.kind === "exited") && !isTerminalRunning(sessionTerminalId(child.id));
+}
+
+/** The `when` of `session.fork`: the selected session has a transcript, live or not. */
+export function canForkSession(): boolean {
+  return hasTranscript(selectedSessionChild());
+}
+
+/**
+ * The `when` of `session.stop`: the selected session runs in a Switchboard terminal. A session
+ * started elsewhere has no such terminal and is never signalled.
+ */
+export function canStopSession(): boolean {
+  const child = selectedSessionChild();
+  return child !== null && isTerminalRunning(sessionTerminalId(child.id));
+}
+
+/** A started Resume or Fork: its terminal is known, the node selected, the pane open on it. */
+async function showStarted(projectId: string, started: LaunchResult): Promise<void> {
+  useTerminalStore.getState().upsert(started.term);
+  const project = useWorkspaceStore.getState().snapshot?.workspace.projects.find((p) => p.id === projectId);
+  if (project !== undefined && !project.expanded) void setExpanded(projectId, true);
+  useUiStore.getState().select({ kind: "session", id: started.session_id });
+  await showTerminal(started.term.id);
+}
+
+/**
+ * `session.resume` ("Resume"): `claude --resume <id>` for the selected historic session, at
+ * once (no sheet). The same node turns `starting`, then live; the pane opens on its terminal,
+ * focused. An exited terminal of its earlier run is replaced (its view starts afresh). A
+ * refusal (it is starting or running, no folder, …) is the notice. Resolves whether it started.
+ */
+export async function resumeSelectedSession(): Promise<boolean> {
+  const child = selectedSessionChild();
+  if (child === null) return false;
+  if (starting.has(child.id)) {
+    notify("that session is already starting");
+    return false;
+  }
+  const termId = sessionTerminalId(child.id);
+  const previous = terminalInfo(termId);
+  starting.add(child.id);
+  // The new run's output counts from 0 again: the old view goes before any of it arrives,
+  // and the old info too (an exit of the new run that overtakes the reply then waits for it).
+  if (previous !== null) {
+    disposeView(termId);
+    useTerminalStore.getState().remove([termId]);
+  }
+  try {
+    const started = await sessionResume(child.projectId, child.id, null, null);
+    await showStarted(child.projectId, started);
+    notify(startedNotice("resumed", started.choices));
+    return true;
+  } catch (err) {
+    notify(describe(err));
+    // The earlier run's terminal is still Rust's: its info comes back and its view replays.
+    if (previous !== null && terminalInfo(termId) === null) {
+      useTerminalStore.getState().upsert(previous);
+      void restore(termId);
+    }
+    return false;
+  } finally {
+    starting.delete(child.id);
+  }
+}
+
+/**
+ * `session.fork` ("Fork"): a new session forked from the selected one, at once (no sheet). Its
+ * node appears with a thin line to the original; the pane opens on it, focused, and it is
+ * selected. A refusal is the notice. Resolves whether it started.
+ */
+export async function forkSelectedSession(): Promise<boolean> {
+  const child = selectedSessionChild();
+  if (child === null) return false;
+  if (forking.has(child.id)) {
+    notify("a fork of that session is already starting");
+    return false;
+  }
+  forking.add(child.id);
+  try {
+    const started = await sessionFork(child.projectId, child.id, null, null);
+    await showStarted(child.projectId, started);
+    notify(startedNotice("forked", started.choices));
+    return true;
+  } catch (err) {
+    notify(describe(err));
+    return false;
+  } finally {
+    forking.delete(child.id);
+  }
+}
+
+/**
+ * `session.stop` ("Stop"): stop the selected session's Switchboard terminal (Ctrl+U and `/exit`
+ * at its prompt, else Ctrl+C twice; Rust kills it 5 s later if it still runs; a second Stop kills at
+ * once). Its card reads `stopping` until it exits. A refusal is the notice.
+ */
+export async function stopSelectedSession(): Promise<boolean> {
+  const child = selectedSessionChild();
+  if (child === null) return false;
+  try {
+    const info = await sessionStop(child.id);
+    // An exit that overtook the reply stands.
+    if (terminalInfo(info.id)?.exited === null) useTerminalStore.getState().upsert(info);
+    return true;
+  } catch (err) {
+    notify(describe(err));
+    return false;
+  }
 }

@@ -157,6 +157,9 @@ pub struct SessionRef {
     pub label: Option<String>,
     pub pinned: bool,
     pub position: Option<Position>,
+    /// The session this one was forked from (Story 4.4): the canvas draws a thin line between
+    /// the two cards. Absent in older files.
+    pub forked_from: Option<String>,
 }
 
 /// A relation drawn between two nodes (Epic 6).
@@ -238,6 +241,12 @@ pub struct ChildNode {
     /// The branch a session belongs under: the branch whose `worktreePath` holds its `cwd`
     /// (else the one its ref names). `None` for the project root and for branch children.
     pub branch_id: Option<String>,
+    /// The session this one was forked from (its ref's `forkedFrom`, Story 4.4); `None` for
+    /// the rest.
+    pub forked_from: Option<String>,
+    /// A session discovered from its transcript (Resume and Fork need one, Story 4.4); false
+    /// for a live-only session, a stub and a branch.
+    pub has_transcript: bool,
 }
 
 /// The facts of a discovered session a card shows (Story 3.1). Times are ISO 8601 UTC.
@@ -355,6 +364,8 @@ pub fn children(
                         messages: summary.messages,
                     }),
                     branch_id: worktree_branch.or_else(|| session_ref.and_then(|r| r.branch_id.clone())),
+                    forked_from: session_ref.and_then(|r| r.forked_from.clone()),
+                    has_transcript: true,
                 }
             })
             .collect();
@@ -382,6 +393,8 @@ pub fn children(
                     messages: 0,
                 }),
                 branch_id: branch_for_cwd(&row.cwd, &branches).or_else(|| session_ref.and_then(|r| r.branch_id.clone())),
+                forked_from: session_ref.and_then(|r| r.forked_from.clone()),
+                has_transcript: false,
             });
         }
         // Live first; then pinned; then started-at, not last activity: two running sessions
@@ -408,6 +421,8 @@ pub fn children(
                 position,
                 session: None,
                 branch_id: None,
+                forked_from: None,
+                has_transcript: false,
             });
         }
         for branch in branches {
@@ -420,6 +435,8 @@ pub fn children(
                 position: branch.position,
                 session: None,
                 branch_id: None,
+                forked_from: None,
+                has_transcript: false,
             });
         }
     }
@@ -479,10 +496,11 @@ pub(crate) fn path_within(path: &str, root: &str) -> bool {
 }
 
 impl SessionRef {
-    /// True when the ref records nothing any more: no label, pin, branch or position. Such
-    /// a ref is pruned by [`relayout_children`] (it only ever held a dragged position).
+    /// True when the ref records nothing any more: no label, pin, branch, position or fork
+    /// origin. Such a ref is pruned by [`relayout_children`] (it only ever held a dragged
+    /// position).
     pub fn is_bare(&self) -> bool {
-        self.label.is_none() && !self.pinned && self.branch_id.is_none() && self.position.is_none()
+        self.label.is_none() && !self.pinned && self.branch_id.is_none() && self.position.is_none() && self.forked_from.is_none()
     }
 }
 
@@ -840,6 +858,103 @@ pub fn set_launch_defaults<R: Runtime>(app: &AppHandle<R>, project_id: &str, def
     Ok(persist_and_emit(app, target, &workspace))
 }
 
+/// Record that session `session_id` (under `project_id`) was forked from `from` (Story 4.4):
+/// its [`SessionRef`] (created when it has none) gets `forkedFrom`, the file is written and
+/// `workspace://changed` emitted. The same origin again changes nothing. An unknown project is
+/// an `Err` and nothing changes.
+pub fn set_forked_from<R: Runtime>(app: &AppHandle<R>, project_id: &str, session_id: &str, from: &str) -> Result<WorkspaceSnapshot, String> {
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        if !st.workspace.projects.iter().any(|p| p.id == project_id) {
+            return Err("unknown project".to_string());
+        }
+        match st
+            .workspace
+            .sessions
+            .iter_mut()
+            .find(|s| s.session_id == session_id && s.project_id == project_id)
+        {
+            Some(existing) if existing.forked_from.as_deref() == Some(from) => return Ok(st.snapshot()),
+            Some(existing) => existing.forked_from = Some(from.to_string()),
+            None => st.workspace.sessions.push(SessionRef {
+                session_id: session_id.to_string(),
+                project_id: project_id.to_string(),
+                forked_from: Some(from.to_string()),
+                ..SessionRef::default()
+            }),
+        }
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    let outcome = target.map(|path| store::write(&path, &workspace));
+    if let Some(Err(err)) = outcome {
+        // Not saved: the link is taken back (the file keeps what it had), with the banner.
+        state.write_workspace().file_banner = Some(write_banner(&err));
+        clear_forked_from(app, project_id, session_id);
+        return Err(format!("could not save the fork link: {err}"));
+    }
+    let snapshot = {
+        let mut st = state.write_workspace();
+        if outcome.is_some() {
+            st.file_banner = None;
+        }
+        st.snapshot()
+    };
+    emit(app, &snapshot);
+    Ok(snapshot)
+}
+
+/// Take back a fork link (a fork that did not start, Story 4.4): the session's ref loses its
+/// `forkedFrom`, and goes when nothing else is left in it; written and emitted. Nothing to
+/// take back changes nothing.
+pub fn clear_forked_from<R: Runtime>(app: &AppHandle<R>, project_id: &str, session_id: &str) {
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        let Some(existing) = st
+            .workspace
+            .sessions
+            .iter_mut()
+            .find(|s| s.session_id == session_id && s.project_id == project_id && s.forked_from.is_some())
+        else {
+            return;
+        };
+        existing.forked_from = None;
+        st.workspace
+            .sessions
+            .retain(|s| !(s.session_id == session_id && s.project_id == project_id && s.is_bare()));
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    persist_and_emit(app, target, &workspace);
+}
+
+/// Fork refs (`forkedFrom` set) whose fork session is neither discovered nor a live child of
+/// any project, nor a fork still starting (`pending`): their sessions are gone. The ids go;
+/// `true` when any went. A missing *original* is not a reason: it only hides the line.
+fn prune_fork_refs(st: &mut WorkspaceState, pending: &HashSet<String>) -> bool {
+    let known: HashSet<&str> = st
+        .discovered
+        .values()
+        .flatten()
+        .map(|s| s.id.as_str())
+        .chain(st.live_children.values().flatten().map(|l| l.id.as_str()))
+        .collect();
+    let gone: Vec<usize> = st
+        .workspace
+        .sessions
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.forked_from.is_some() && !known.contains(s.session_id.as_str()) && !pending.contains(&s.session_id))
+        .map(|(i, _)| i)
+        .collect();
+    for i in gone.iter().rev() {
+        st.workspace.sessions.remove(*i);
+    }
+    !gone.is_empty()
+}
+
 /// Put every child of a project back into its column slot: clear the stored positions of
 /// its sessions and branches and drop the session refs left with nothing in them. An
 /// unknown id is an `Err` and nothing changes.
@@ -914,21 +1029,33 @@ pub fn remove_project<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Resul
 
 /// Store what the latest discovery pass found (project id → its sessions). When it differs
 /// from what is stored, the revision is bumped and `workspace://changed` emitted with the new
-/// children; the file is not written (discovered sessions are not persisted). Returns the
-/// new snapshot, or `None` when nothing changed.
+/// children; the file is not written (discovered sessions are not persisted). Fork refs whose
+/// sessions are gone are pruned too, and then the file is written. Returns the new snapshot,
+/// or `None` when nothing changed.
 pub fn set_discovered<R: Runtime>(app: &AppHandle<R>, discovered: HashMap<String, Vec<SessionSummary>>) -> Option<WorkspaceSnapshot> {
     let state = app.state::<AppState>();
-    let snapshot = {
+    let (snapshot, pruned) = {
         let mut st = state.write_workspace();
-        if st.discovered == discovered {
+        let changed = st.discovered != discovered;
+        st.discovered = discovered;
+        // A pass also drops the refs of forks whose sessions are gone (Story 4.4).
+        let pending = state.launcher.pending_forks();
+        let pruned = prune_fork_refs(&mut st, &pending);
+        if !changed && !pruned {
             return None;
         }
-        st.discovered = discovered;
         st.revision += 1;
-        st.snapshot()
+        let pruned = pruned.then(|| (st.write_target(), st.workspace.clone()));
+        (st.snapshot(), pruned)
     };
-    emit(app, &snapshot);
-    Some(snapshot)
+    match pruned {
+        // The refs live in the file: written (and emitted) like any mutation.
+        Some((target, workspace)) => Some(persist_and_emit(app, target, &workspace)),
+        None => {
+            emit(app, &snapshot);
+            Some(snapshot)
+        }
+    }
 }
 
 /// Store which sessions the live poll places under which project (project id → its live
@@ -1175,6 +1302,7 @@ mod tests {
                 label: None,
                 pinned: true,
                 position: Some(Position { x: 1.0, y: 2.0 }),
+                forked_from: Some("s0".into()),
             }],
             edges: vec![Edge {
                 id: "e1".into(),
@@ -1199,6 +1327,7 @@ mod tests {
             "\"worktreePath\"",
             "\"sessionId\"",
             "\"branchId\"",
+            "\"forkedFrom\": \"s0\"",
             "\"createdAt\"",
             "\"type\": \"session\"",
             "\"type\": \"folder\"",
@@ -2006,13 +2135,15 @@ mod tests {
             position: None,
             session: None,
             branch_id: None,
+            forked_from: None,
+            has_transcript: false,
         };
         assert_eq!(
             serde_json::to_value(&child).unwrap(),
             serde_json::json!({
                 "id": "stub-1-p", "projectId": "p", "kind": "session",
                 "label": "session 1", "detail": "stub", "position": null,
-                "session": null, "branchId": null
+                "session": null, "branchId": null, "forkedFrom": null, "hasTranscript": false
             })
         );
         let real = ChildNode {
@@ -2321,6 +2452,79 @@ mod tests {
         assert_eq!(set_launch_defaults(app.handle(), "ide", chosen.clone()).unwrap().revision, 1);
         assert!(rx.try_recv().is_err());
         assert_eq!(set_launch_defaults(app.handle(), "nope", chosen), Err("unknown project".to_string()));
+    }
+
+    // -- fork link (Story 4.4) ---------------------------------------------------------
+
+    #[test]
+    fn set_forked_from_is_persisted_exposed_on_the_child_and_survives_a_relayout() {
+        let (app, _cfg, path) = app_with_ide(0);
+        let rx = listen(&app);
+        let snapshot = set_forked_from(app.handle(), "ide", "fork-1", "orig").unwrap();
+        assert_eq!(snapshot.revision, 1);
+        assert_eq!(snapshot.workspace.sessions[0].forked_from.as_deref(), Some("orig"));
+        assert_eq!(rx.try_recv().expect("workspace://changed"), snapshot);
+        let on_file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(on_file["sessions"][0]["sessionId"], "fork-1");
+        assert_eq!(on_file["sessions"][0]["forkedFrom"], "orig");
+        // Read back (an app restart): kept.
+        assert_eq!(on_disk(&path).sessions[0].forked_from.as_deref(), Some("orig"));
+        // The same origin again: nothing; an unknown project: an error.
+        assert_eq!(set_forked_from(app.handle(), "ide", "fork-1", "orig").unwrap().revision, 1);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(set_forked_from(app.handle(), "nope", "x", "orig"), Err("unknown project".to_string()));
+        // A relayout keeps the ref: it is not bare.
+        let snapshot = relayout_children(app.handle(), "ide").unwrap();
+        assert_eq!(snapshot.workspace.sessions.len(), 1);
+    }
+
+    #[test]
+    fn a_discovery_pass_prunes_fork_refs_whose_session_is_gone_but_not_a_missing_original() {
+        let (app, _cfg, path) = app_with_ide(0);
+        set_forked_from(app.handle(), "ide", "fork-kept", "orig-gone").unwrap();
+        set_forked_from(app.handle(), "ide", "fork-gone", "orig").unwrap();
+        set_forked_from(app.handle(), "ide", "fork-starting", "orig").unwrap();
+        let state = app.state::<AppState>();
+        let _starting = state.launcher.begin_fork("orig", "fork-starting").unwrap();
+        // `fork-kept` is discovered (its original is not: that only hides the line).
+        let snapshot = set_discovered(app.handle(), discovered_of("ide", vec![summary("fork-kept", "2026-10-18T10:00:00.000Z")])).unwrap();
+        let ids: Vec<&str> = snapshot.workspace.sessions.iter().map(|s| s.session_id.as_str()).collect();
+        assert_eq!(ids, ["fork-kept", "fork-starting"]);
+        assert_eq!(on_disk(&path).sessions.len(), 2, "the pruned ref left the file");
+        // A live child keeps its ref too.
+        state.write_workspace().live_children = HashMap::from([("ide".to_string(), vec![live("fork-starting", None, None, false)])]);
+        drop(_starting);
+        assert!(set_discovered(app.handle(), discovered_of("ide", vec![summary("fork-kept", "2026-10-18T10:00:00.000Z")])).is_none(), "nothing changed");
+        assert_eq!(state.read_workspace().workspace.sessions.len(), 2);
+    }
+
+    #[test]
+    fn a_fork_child_carries_its_origin_and_an_older_ref_has_none() {
+        let mut ws = Workspace {
+            projects: vec![project_with("a")],
+            ..Workspace::default()
+        };
+        ws.sessions.push(SessionRef {
+            session_id: "fork".into(),
+            project_id: "a".into(),
+            forked_from: Some("orig".into()),
+            ..SessionRef::default()
+        });
+        let found = discovered_of("a", vec![summary("orig", "2026-10-18T10:00:00.000Z")]);
+        let live_fork = HashMap::from([("a".to_string(), vec![live("fork", Some("a-fork-1234"), Some(1_792_160_868_400), true)])]);
+        let kids = children(&ws, &found, &live_fork, 0);
+        let fork = kids.iter().find(|c| c.id == "fork").unwrap();
+        assert_eq!(fork.forked_from.as_deref(), Some("orig"), "a live-only fork");
+        assert!(!fork.has_transcript, "live-only: no transcript yet");
+        assert!(kids.iter().find(|c| c.id == "orig").unwrap().has_transcript);
+        assert_eq!(kids.iter().find(|c| c.id == "orig").unwrap().forked_from, None);
+        let both = discovered_of("a", vec![summary("orig", "2026-10-18T10:00:00.000Z"), summary("fork", "2026-10-18T11:00:00.000Z")]);
+        let kids = children(&ws, &both, &HashMap::new(), 0);
+        assert_eq!(kids.iter().find(|c| c.id == "fork").unwrap().forked_from.as_deref(), Some("orig"), "a discovered fork");
+        assert_eq!(serde_json::to_value(kids.iter().find(|c| c.id == "fork").unwrap()).unwrap()["forkedFrom"], "orig");
+        let old: SessionRef = serde_json::from_value(serde_json::json!({ "sessionId": "s", "projectId": "a", "pinned": true })).unwrap();
+        assert_eq!(old.forked_from, None);
+        assert!(!SessionRef { forked_from: Some("x".into()), ..SessionRef::default() }.is_bare());
     }
 
     #[test]

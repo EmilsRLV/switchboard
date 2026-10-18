@@ -22,7 +22,7 @@ const workspaceRemoveProject = vi.mocked(ipc.workspaceRemoveProject);
 const ide: Project = { id: "ide", path: "/p/ide", label: "ide", position: { x: 0, y: 0 }, expanded: false, color: null, launchDefaults: null };
 
 function stub(index: number, position: ChildNode["position"] = null): ChildNode {
-  return { id: `stub-${index}-ide`, projectId: "ide", kind: "session", label: `session ${index}`, detail: "stub", position, session: null, branchId: null };
+  return { id: `stub-${index}-ide`, projectId: "ide", kind: "session", label: `session ${index}`, detail: "stub", position, session: null, branchId: null, forkedFrom: null, hasTranscript: false };
 }
 
 function snapshot(revision: number, over: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot {

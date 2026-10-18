@@ -31,7 +31,17 @@ import {
 } from "./navigation";
 import { canGoToAttention, goToNextAttention } from "./attention";
 import { relayoutChildren, removeProject, setExpanded } from "./nodes";
-import { canShowSessionTerminal, openLaunchSheet, showSelectedSessionTerminal } from "./sessions";
+import {
+  canForkSession,
+  canResumeSession,
+  canShowSessionTerminal,
+  canStopSession,
+  forkSelectedSession,
+  openLaunchSheet,
+  resumeSelectedSession,
+  showSelectedSessionTerminal,
+  stopSelectedSession,
+} from "./sessions";
 import { closeOpenPane, openPane, togglePane } from "./panes";
 import { addProjectFromPicker, isPickerIdle } from "./projects";
 import { registerCommands, type Command } from "./registry";
@@ -217,6 +227,28 @@ export function builtinCommands(): Command[] {
       },
     },
     {
+      // A historic session (a transcript, not live): `claude --resume <id>`, the same node.
+      id: "session.resume",
+      title: "Resume",
+      menu: "node",
+      menuOrder: 7,
+      when: canResumeSession,
+      run: async () => {
+        await resumeSelectedSession();
+      },
+    },
+    {
+      // Any session with a transcript, live or not: a new node forked from it.
+      id: "session.fork",
+      title: "Fork",
+      menu: "node",
+      menuOrder: 8,
+      when: canForkSession,
+      run: async () => {
+        await forkSelectedSession();
+      },
+    },
+    {
       id: "session.showTerminal",
       title: "Show terminal",
       menu: "node",
@@ -234,6 +266,17 @@ export function builtinCommands(): Command[] {
       menuOrder: 10,
       when: () => selectedLiveSessionId() !== null && !canShowSessionTerminal(),
       run: attachStub,
+    },
+    {
+      // Only a session running in a Switchboard terminal; one started elsewhere is never signalled.
+      id: "session.stop",
+      title: "Stop",
+      menu: "node",
+      menuOrder: 12,
+      when: canStopSession,
+      run: async () => {
+        await stopSelectedSession();
+      },
     },
     {
       // `n` on a project; on a session or branch it does nothing. Not while the sheet is open,

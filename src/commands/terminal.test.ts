@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Project, TermInfo, WorkspaceSnapshot } from "../ipc";
 import { usePaletteStore } from "../state/palette";
-import { isTerminalRestartable, plainTerminalId, sessionTerminalId, terminalStateText, useTerminalStore } from "../state/terminals";
+import {
+  isTerminalRestartable,
+  plainTerminalId,
+  sessionIdOfTerminal,
+  sessionTerminalId,
+  stoppingSessionIds,
+  terminalStateText,
+  useTerminalStore,
+} from "../state/terminals";
 import { useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 import { registerBuiltins } from "./builtins";
@@ -10,7 +18,7 @@ import { clearCommands, listCommands, runCommand } from "./registry";
 import { forgetProjectTerminals, openProjectTerminal } from "./terminal";
 
 function info(overrides: Partial<TermInfo> = {}): TermInfo {
-  return { id: "plain-ide", kind: "plain", project_id: "ide", title: "ide", cwd: "/p/ide", exited: null, error: null, cols: 80, rows: 24, ...overrides };
+  return { id: "plain-ide", kind: "plain", project_id: "ide", title: "ide", cwd: "/p/ide", exited: null, error: null, cols: 80, rows: 24, stopping: false, ...overrides };
 }
 
 function project(id: string): Project {
@@ -234,6 +242,24 @@ describe("terminals store", () => {
   it("the header state reads running, exited N or why the shell could not start", () => {
     expect(terminalStateText(info())).toBe("running");
     expect(terminalStateText(info({ exited: 0 }))).toBe("exited 0");
+    // The sessions being stopped, by session id: running session terminals with `stopping`.
+    const infos = Object.fromEntries(
+      [
+        info({ id: "session:a", kind: "session", stopping: true }),
+        info({ id: "session:b", kind: "session", stopping: true, exited: 0 }),
+        info({ id: "session:c", kind: "session" }),
+        info({ id: "plain-ide", stopping: true }),
+        info({ id: "session:d", kind: "session", stopping: true }),
+      ].map((i) => [i.id, i]),
+    );
+    expect(stoppingSessionIds(infos)).toEqual(["a", "d"]);
+    expect(stoppingSessionIds({})).toEqual([]);
+    expect(sessionIdOfTerminal(sessionTerminalId("s:1"))).toBe("s:1");
+    expect(sessionIdOfTerminal("plain-ide")).toBeNull();
+    expect(sessionIdOfTerminal("session:")).toBeNull();
+    // A Stop under way (Story 4.4) reads `stopping` until the child exits.
+    expect(terminalStateText(info({ stopping: true }))).toBe("stopping");
+    expect(terminalStateText(info({ stopping: true, exited: 0 }))).toBe("exited 0");
     expect(terminalStateText(info({ exited: -1, error: "could not start zsh: not found on PATH" }))).toBe(
       "could not start zsh: not found on PATH",
     );

@@ -104,6 +104,8 @@ export type SessionRef = {
   label: string | null;
   pinned: boolean;
   position: Position | null;
+  /** The session this one was forked from (Story 4.4); `null` for the rest. */
+  forkedFrom: string | null;
 };
 
 /** Mirrors `graph::NodeRef`; `folder` is an ad-hoc path target that is not a node. */
@@ -162,6 +164,10 @@ export type ChildNode = {
   session: SessionMeta | null;
   /** The branch whose worktree holds the session's `cwd`; `null` under the project root. */
   branchId: string | null;
+  /** The session this one was forked from (its ref's `forkedFrom`, Story 4.4); `null` otherwise. */
+  forkedFrom: string | null;
+  /** Discovered from its transcript (Resume and Fork need one); false for live-only sessions, stubs, branches. */
+  hasTranscript: boolean;
 };
 
 /** Mirrors `graph::NodeKind`: the node types a position can be written for. */
@@ -350,6 +356,8 @@ export type TermInfo = {
   /** The PTY's size; a view made while hidden is made at it. */
   cols: number;
   rows: number;
+  /** A Stop is under way (Story 4.4): from the Stop until the child exits. */
+  stopping: boolean;
 };
 
 /**
@@ -403,8 +411,11 @@ export type LaunchPrefill = {
   permissionMode: string;
 };
 
-/** Mirrors `ipc::LaunchResult`: the new session and the terminal it runs in. */
-export type LaunchResult = { session_id: string; term: TermInfo };
+/** Mirrors `ipc::LaunchChoices`: the model, effort and permission mode a launch used (`default`: no flag). */
+export type LaunchChoices = { model: string; effort: string; permission_mode: string };
+
+/** Mirrors `ipc::LaunchResult`: the new session, the terminal it runs in and the choices it used. */
+export type LaunchResult = { session_id: string; term: TermInfo; choices: LaunchChoices };
 
 /** Return type of every command, keyed by command name. */
 type Commands = {
@@ -437,6 +448,9 @@ type Commands = {
   term_list: TermInfo[];
   launch_defaults: LaunchPrefill;
   session_launch: LaunchResult;
+  session_resume: LaunchResult;
+  session_fork: LaunchResult;
+  session_stop: TermInfo;
   term_close: void;
   diagnostics_get: DiagnosticsSnapshot;
 };
@@ -672,6 +686,33 @@ export function launchDefaults(projectId: string): Promise<LaunchPrefill> {
  */
 export function sessionLaunch(request: LaunchRequest, cols: number | null, rows: number | null): Promise<LaunchResult> {
   return call("session_launch", { request, cols, rows });
+}
+
+/**
+ * `ipc::session_resume` (Story 4.4) -- `claude --resume <id>` for the historic session the card
+ * under project `projectId` shows (Rust checks it is discovered there), in its
+ * transcript's folder, under the same id and terminal id; no sheet. Rejects with the reason
+ * (it is running, no transcript, no folder, …) and starts nothing then.
+ */
+export function sessionResume(projectId: string, sessionId: string, cols: number | null, rows: number | null): Promise<LaunchResult> {
+  return call("session_resume", { projectId, sessionId, cols, rows });
+}
+
+/**
+ * `ipc::session_fork` (Story 4.4) -- `--resume <id> --fork-session --session-id <new>`: a new
+ * session (the reply's `session_id`) forked from `sessionId`; no sheet.
+ */
+export function sessionFork(projectId: string, sessionId: string, cols: number | null, rows: number | null): Promise<LaunchResult> {
+  return call("session_fork", { projectId, sessionId, cols, rows });
+}
+
+/**
+ * `ipc::session_stop` (Story 4.4) -- stop a session running in a Switchboard terminal (`/exit`
+ * at its prompt, else Ctrl+C twice; killed after 5 s; a second Stop kills at once). Replies with
+ * the terminal's info, `stopping` set.
+ */
+export function sessionStop(sessionId: string): Promise<TermInfo> {
+  return call("session_stop", { sessionId });
 }
 
 /**

@@ -47,6 +47,11 @@ import {
   sessionMetaLine,
   sessionStateTone,
   visibleChildren,
+  FORK_LINE_BOW,
+  STOPPING_WORD,
+  forkLinePath,
+  forkLines,
+  forkedFromText,
 } from "./nodes";
 import type { LiveSession, SessionMeta, SessionState } from "../ipc";
 
@@ -63,7 +68,7 @@ function project(id: string, path: string, x = 0, y = 0, expanded = false): Proj
 }
 
 function stub(index: number, projectId: string, position: ChildNode["position"] = null): ChildNode {
-  return { id: `stub-${index}-${projectId}`, projectId, kind: "session", label: `session ${index}`, detail: "stub", position, session: null, branchId: null };
+  return { id: `stub-${index}-${projectId}`, projectId, kind: "session", label: `session ${index}`, detail: "stub", position, session: null, branchId: null, forkedFrom: null, hasTranscript: false };
 }
 
 function inputs(over: Partial<FlowInputs> = {}): FlowInputs {
@@ -148,7 +153,7 @@ describe("toFlowNodes", () => {
 
   it("branch children come as branch nodes with their own flow id", () => {
     const expanded = [project("a", "/p/a", 0, 0, true)];
-    const branch: ChildNode = { id: "br1", projectId: "a", kind: "branch", label: "main", detail: "/p/a/.worktrees/x", position: null, session: null, branchId: null };
+    const branch: ChildNode = { id: "br1", projectId: "a", kind: "branch", label: "main", detail: "/p/a/.worktrees/x", position: null, session: null, branchId: null, forkedFrom: null, hasTranscript: false };
     const nodes = toFlowNodes(inputs({ projects: expanded, children: [stub(1, "a"), branch] }));
     expect(nodes[2]?.id).toBe("branch:br1");
     expect(nodes[2]?.type).toBe("branch");
@@ -574,7 +579,7 @@ describe("nodeRects", () => {
   });
 
   it("leaves out the children of a collapsed project, and a branch child keeps its kind", () => {
-    const branch: ChildNode = { id: "br", projectId: "projects", kind: "branch", label: "main", detail: null, position: null, session: null, branchId: null };
+    const branch: ChildNode = { id: "br", projectId: "projects", kind: "branch", label: "main", detail: null, position: null, session: null, branchId: null, forkedFrom: null, hasTranscript: false };
     const rects = nodeRects([ideAt(false), { ...projectsAt, expanded: true }], [...matrixChildren, branch]);
     expect(rects.map((r) => r.target)).toEqual([
       { kind: "project", id: "ide" },
@@ -682,7 +687,7 @@ function session(id: string, projectId: string, lastActive = "2026-10-16T10:00:0
     detail: null,
     position: null,
     session: { startedAt: "2026-10-16T09:00:00.000Z", lastActive, branch: "main", messages: 3, ...meta },
-    branchId: null,
+    branchId: null, forkedFrom: null, hasTranscript: false,
   };
 }
 
@@ -956,5 +961,102 @@ describe("formatAge / sessionMetaLine", () => {
     expect(lines[0]).toBe("A very long title that the card cuts");
     expect(lines[1]).toBe(`started ${new Date("2026-10-16T09:00:00.000Z").toLocaleString()}`);
     expect(lines[2]).toBe(`last active ${new Date("2026-10-16T10:00:00.000Z").toLocaleString()}`);
+  });
+});
+
+describe("fork lines and the stopping word (Story 4.4)", () => {
+  const ide = project("ide", "/p/ide", 100, 50, true);
+  const orig = session("orig", "ide");
+  const fork: ChildNode = { ...session("fork", "ide"), forkedFrom: "orig" };
+  const liveOf = (states: Record<string, SessionState>): Record<string, LiveSession> =>
+    Object.fromEntries(
+      Object.entries(states).map(([id, state]) => [
+        id,
+        { state, source: "poll", pid: null, kind: null, name: null, project_id: "ide", cwd: "/p/ide", started_at: null, attention_since: null, last_line: null, detail: null } as LiveSession,
+      ]),
+    );
+
+  it("a fork card carries its original's title; forkLines joins the two drawn cards", () => {
+    const nodes = toFlowNodes(inputs({ projects: [ide], children: [fork, orig] }));
+    const forkNode = nodes.find((n) => n.id === "session:fork");
+    if (forkNode === undefined || forkNode.type !== "session") throw new Error("no fork node");
+    expect(forkNode.data.forkedFromTitle).toBe("title orig");
+    expect(forkLines(nodes)).toEqual([{ id: "fork:fork", source: "session:fork", target: "session:orig" }]);
+  });
+
+  it("no line when the original is not drawn (collapsed, hidden or not listed), and none for a self-reference", () => {
+    const collapsed = { ...ide, expanded: false };
+    expect(forkLines(toFlowNodes(inputs({ projects: [collapsed], children: [fork, orig] })))).toEqual([]);
+    const alone = toFlowNodes(inputs({ projects: [ide], children: [fork] }));
+    expect(forkLines(alone)).toEqual([]);
+    const lone = alone.find((n) => n.id === "session:fork");
+    if (lone === undefined || lone.type !== "session") throw new Error("no fork node");
+    expect(lone.data.forkedFromTitle).toBeNull();
+    // Past the tenth child the original is hidden: no line.
+    const many = [fork, ...sessions(10, "ide"), orig];
+    expect(forkLines(toFlowNodes(inputs({ projects: [ide], children: many })))).toEqual([]);
+    expect(forkLines(toFlowNodes(inputs({ projects: [ide], children: many, showAll: ["ide"] })))).toHaveLength(1);
+    const selfie: ChildNode = { ...session("x", "ide"), forkedFrom: "x" };
+    expect(forkLines(toFlowNodes(inputs({ projects: [ide], children: [selfie] })))).toEqual([]);
+  });
+
+  it("a card is re-made when its stopping or forked-from changes, and reused when neither does", () => {
+    const live = liveOf({ orig: { kind: "busy" }, fork: { kind: "idle" } });
+    const base = inputs({ projects: [ide], children: [orig, fork], live });
+    const first = toFlowNodes(base);
+    const same = toFlowNodes(base, first);
+    const byId = (nodes: ReturnType<typeof toFlowNodes>, id: string) => nodes.find((n) => n.id === id);
+    expect(byId(same, "session:orig")).toBe(byId(first, "session:orig"));
+    expect(byId(same, "session:fork")).toBe(byId(first, "session:fork"));
+    // Stopping the original: only its card changes.
+    const stopping = toFlowNodes({ ...base, stopping: ["orig"] }, same);
+    expect(byId(stopping, "session:orig")).not.toBe(byId(same, "session:orig"));
+    expect(byId(stopping, "session:fork")).toBe(byId(same, "session:fork"));
+    // The fork's link goes (its ref was pruned): its card changes.
+    const unlinked = toFlowNodes({ ...base, children: [orig, { ...fork, forkedFrom: null }] }, same);
+    expect(byId(unlinked, "session:fork")).not.toBe(byId(same, "session:fork"));
+    // The original is renamed: the fork's "forked from" title changes with it.
+    const renamed = toFlowNodes({ ...base, children: [{ ...orig, label: "renamed" }, fork] }, same);
+    const forkNode = byId(renamed, "session:fork");
+    expect(forkNode).not.toBe(byId(same, "session:fork"));
+    if (forkNode === undefined || forkNode.type !== "session") throw new Error("no fork node");
+    expect(forkNode.data.forkedFromTitle).toBe("renamed");
+  });
+
+  it("the line bows left of both anchors", () => {
+    expect(forkLinePath(16, 112, 16, 160)).toBe(`M 16,112 C ${16 - FORK_LINE_BOW},112 ${16 - FORK_LINE_BOW},160 16,160`);
+    expect(forkLinePath(40, 0, 10, 50)).toBe(`M 40,0 C ${10 - FORK_LINE_BOW},0 ${10 - FORK_LINE_BOW},50 10,50`);
+  });
+
+  it("a live session being stopped reads stopping, muted with no dot; an exited one does not", () => {
+    const meta: SessionMeta = { startedAt: "2026-10-16T09:00:00.000Z", lastActive: "2026-10-16T10:00:00.000Z", branch: "main", messages: 3 };
+    const now = Date.parse("2026-10-16T10:00:30.000Z");
+    expect(STOPPING_WORD).toBe("stopping");
+    for (const state of [{ kind: "busy" }, { kind: "idle" }, { kind: "waiting" }] as SessionState[]) {
+      expect(sessionCardMeta(meta, now, state, null, true).state, state.kind).toEqual({ word: "stopping", tone: "muted", dot: false });
+    }
+    expect(sessionCardMeta(meta, now, { kind: "finished" }, "Done.", true).lastLine).toBeNull();
+    expect(sessionCardMeta(meta, now, { kind: "exited" }, null, true).state?.word).toBe("exited");
+    expect(sessionCardMeta(meta, now, null, null, true).state).toBeNull();
+
+    const nodes = toFlowNodes(inputs({ projects: [ide], children: [orig, fork], live: liveOf({ orig: { kind: "busy" }, fork: { kind: "exited" } }), stopping: ["orig", "fork"] }));
+    const data = (id: string) => {
+      const node = nodes.find((n) => n.id === `session:${id}`);
+      if (node === undefined || node.type !== "session") throw new Error(id);
+      return node.data;
+    };
+    expect(data("orig").stopping).toBe(true);
+    expect(data("fork").stopping, "already exited").toBe(false);
+  });
+
+  it("the fork's tooltip and accessible name say what it was forked from; a stopping card says so", () => {
+    const meta = fork.session;
+    if (meta === null) throw new Error("no meta");
+    const base = { child: fork, attention: false, detail: null, lastLine: null };
+    expect(forkedFromText("ide-59cd")).toBe("forked from ide-59cd");
+    expect(childAriaLabel("session", { ...base, forkedFromTitle: "ide-59cd" })).toBe("Session title fork, forked from ide-59cd");
+    expect(childAriaLabel("session", { ...base, forkedFromTitle: null, stopping: true })).toBe("Session title fork, stopping");
+    expect(sessionCardTitle({ ...base, forkedFromTitle: "ide-59cd" }, meta).split("\n")).toContain("forked from ide-59cd");
+    expect(sessionCardTitle({ ...base, forkedFromTitle: null }, meta)).not.toContain("forked from");
   });
 });

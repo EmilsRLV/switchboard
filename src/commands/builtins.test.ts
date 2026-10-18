@@ -38,6 +38,7 @@ describe("built-in commands", () => {
     useLiveStore.setState({ snapshot: EMPTY_LIVE, received: false, loadError: null });
     useImportStore.getState().reset();
     useCanvasStore.setState({ instance: null, element: null, dragging: {} });
+    useTerminalStore.setState({ infos: {}, pendingExits: {} });
     registerBuiltins();
   });
   afterEach(() => {
@@ -50,7 +51,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the thirty-eight commands with the spec's keybindings", () => {
+  it("register the forty-one commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
@@ -82,7 +83,10 @@ describe("built-in commands", () => {
       "selection.move.right",
       "selection.move.up",
       "session.attach",
+      "session.fork",
+      "session.resume",
       "session.showTerminal",
+      "session.stop",
       "settings.open",
       "settings.reveal",
       "settings.toggle",
@@ -99,7 +103,17 @@ describe("built-in commands", () => {
     expect(getCommand("selection.move.up")?.keybinding).toBe("arrowup");
     expect(getCommand("selection.move.down")?.keybinding).toBe("arrowdown");
     expect(getCommand("selection.activate")?.keybinding).toBe("enter");
-    for (const id of ["project.terminal", "project.openEditor", "project.openFolder", "project.revealClaudeDir", "project.remove", "session.showTerminal"]) {
+    for (const id of [
+      "project.terminal",
+      "project.openEditor",
+      "project.openFolder",
+      "project.revealClaudeDir",
+      "project.remove",
+      "session.showTerminal",
+      "session.resume",
+      "session.fork",
+      "session.stop",
+    ]) {
       expect(getCommand(id)?.keybinding, id).toBeUndefined();
     }
     // `n` opens the launch sheet (Story 4.2); `e`, `/` and Delete stay unbound.
@@ -130,7 +144,7 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the twenty-six actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the twenty-nine actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
@@ -151,7 +165,10 @@ describe("built-in commands", () => {
       "project.terminal",
       "project.toggleShowAll",
       "session.attach",
+      "session.fork",
+      "session.resume",
       "session.showTerminal",
+      "session.stop",
       "settings.open",
       "settings.reveal",
       "terminal.close",
@@ -161,7 +178,7 @@ describe("built-in commands", () => {
     ]);
   });
 
-  it("exactly the ten project commands, Show terminal and Attach are tagged for the node menu, and the menu lists none without a selection", () => {
+  it("exactly the ten project commands and the five session commands are tagged for the node menu, and the menu lists none without a selection", () => {
     expect(
       listCommands()
         .filter((c) => c.menu === "node")
@@ -179,14 +196,17 @@ describe("built-in commands", () => {
       "project.terminal",
       "project.toggleShowAll",
       "session.attach",
+      "session.fork",
+      "session.resume",
       "session.showTerminal",
+      "session.stop",
     ]);
     expect(nodeMenuCommands()).toEqual([]);
   });
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(38);
+    expect(listCommands()).toHaveLength(41);
   });
 
   const PROJECT_ACTIONS = [
@@ -356,11 +376,16 @@ describe("built-in commands", () => {
       error: null,
       cols: 80,
       rows: 24,
+      stopping: false,
     });
     useUiStore.getState().select({ kind: "session", id: "stub-1-ide" });
     expect(enabled()).toContain("session.showTerminal");
     expect(enabled()).not.toContain("session.attach");
-    expect(nodeMenuCommands().map((c) => [c.title, c.menuOrder])).toEqual([["Show terminal", 9]]);
+    // It runs in a Switchboard terminal: Stop too (no transcript yet: no Resume or Fork).
+    expect(nodeMenuCommands().map((c) => [c.title, c.menuOrder])).toEqual([
+      ["Show terminal", 9],
+      ["Stop", 12],
+    ]);
     expect(runCommand("session.showTerminal")).toBe(true);
     await flush();
     expect(useUiStore.getState().pane).toBe("terminal");
@@ -901,7 +926,7 @@ function stubs(count: number, projectId = "ide"): ChildNode[] {
     detail: "stub",
     position: null,
     session: null,
-    branchId: null,
+    branchId: null, forkedFrom: null, hasTranscript: false,
   }));
 }
 

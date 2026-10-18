@@ -71,6 +71,30 @@ export function setHolder(element: HTMLElement | null): void {
   }
 }
 
+/**
+ * A counter per id, bumped whenever its view instance is made or disposed (Story 4.4: a resumed
+ * session's terminal gets a fresh view under the same id). The pane re-attaches when it changes,
+ * not only when the id does, so it never keeps showing a disposed view.
+ */
+const versions = new Map<string, number>();
+const versionListeners = new Set<() => void>();
+
+function bumpVersion(id: string): void {
+  versions.set(id, (versions.get(id) ?? 0) + 1);
+  for (const listener of versionListeners) listener();
+}
+
+/** The current view version of `id` (see `subscribeViews`). */
+export function viewVersion(id: string): number {
+  return versions.get(id) ?? 0;
+}
+
+/** Be told whenever any view is made or disposed; returns the unsubscribe function. */
+export function subscribeViews(listener: () => void): () => void {
+  versionListeners.add(listener);
+  return () => versionListeners.delete(listener);
+}
+
 export function hasView(id: string): boolean {
   return views.has(id);
 }
@@ -90,6 +114,7 @@ export function ensureView(id: string): View | null {
   if (holder === null || typeof document === "undefined") return null;
   const view = createView(id, holder);
   views.set(id, view);
+  bumpVersion(id);
   return view;
 }
 
@@ -297,6 +322,7 @@ export function disposeView(id: string): void {
   views.delete(id);
   view.term.dispose();
   view.element.remove();
+  bumpVersion(id);
 }
 
 /**

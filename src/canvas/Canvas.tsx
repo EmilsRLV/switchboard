@@ -2,8 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, type PointerEvent as ReactPoin
 import {
   Background,
   BackgroundVariant,
+  BaseEdge,
   ReactFlow,
   ReactFlowProvider,
+  type Edge,
+  type EdgeProps,
+  type EdgeTypes,
   type NodeMouseHandler,
   type NodeTypes,
   type OnNodeDrag,
@@ -26,6 +30,7 @@ import {
 import { HOME_VIEWPORT, clientToFlow, useCanvasStore, type CanvasElement } from "../state/canvas";
 import { useLiveStore } from "../state/live";
 import { useStatusStore } from "../state/status";
+import { stoppingSessionIds, useTerminalStore } from "../state/terminals";
 import { useUiStore } from "../state/ui";
 import { persistViewport, useWorkspaceStore } from "../state/workspace";
 import { BranchNode, MoreNode, SessionNode } from "./ChildNode";
@@ -33,6 +38,8 @@ import { MAX_ZOOM, MIN_ZOOM } from "./limits";
 import {
   DRAG_THRESHOLD,
   dropTarget,
+  forkLinePath,
+  forkLines,
   parseFlowId,
   physicalToClient,
   rightClickTarget,
@@ -47,8 +54,19 @@ import "./nodes.css";
 // Stable collections: a fresh `[]` / `{}` per render would make xyflow diff every time.
 const NO_PROJECTS: readonly Project[] = [];
 const NO_CHILDREN: readonly ChildNode[] = [];
-const NO_EDGES: never[] = [];
+const NO_STOPPING: readonly string[] = [];
 const NODE_TYPES: NodeTypes = { project: ProjectNode, session: SessionNode, branch: BranchNode, more: MoreNode };
+
+/**
+ * The "forked from" line (Story 4.4): a thin, muted curve between the left edges of a fork's
+ * card and its original's, with no arrowhead and no accent. Not interactive, and not an edge
+ * kind: a rendering of the fork's `forkedFrom`.
+ */
+function ForkEdge({ sourceX, sourceY, targetX, targetY }: EdgeProps) {
+  return <BaseEdge path={forkLinePath(sourceX, sourceY, targetX, targetY)} className="fork-line" interactionWidth={0} />;
+}
+
+const EDGE_TYPES: EdgeTypes = { fork: ForkEdge };
 
 /** Pan with the middle (1) or right (2) button; the left button pans only while Space is held. */
 const PAN_BUTTONS = [1, 2];
@@ -165,14 +183,34 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
   const selection = useUiStore((s) => s.selection);
   const showAll = useUiStore((s) => s.showAll);
   const dragging = useCanvasStore((s) => s.dragging);
+  const terminals = useTerminalStore((s) => s.infos);
+  // Sessions whose Switchboard terminal is being stopped: their word reads `stopping`.
+  const stopping = useMemo(() => {
+    const ids = stoppingSessionIds(terminals);
+    return ids.length === 0 ? NO_STOPPING : ids;
+  }, [terminals]);
 
   // The previous derivation, so unchanged nodes keep their identity (and skip re-rendering).
   const previousRef = useRef<CanvasFlowNode[]>([]);
   const nodes = useMemo(() => {
-    const next = toFlowNodes({ projects, statuses, flashed, children, selection, dragging, showAll, live }, previousRef.current);
+    const next = toFlowNodes({ projects, statuses, flashed, children, selection, dragging, showAll, live, stopping }, previousRef.current);
     previousRef.current = next;
     return next;
-  }, [projects, statuses, flashed, children, selection, dragging, showAll, live]);
+  }, [projects, statuses, flashed, children, selection, dragging, showAll, live, stopping]);
+
+  // The "forked from" lines between drawn cards (Story 4.4); inert.
+  const edges = useMemo<Edge[]>(
+    () =>
+      forkLines(nodes).map((line) => ({
+        ...line,
+        type: "fork",
+        selectable: false,
+        focusable: false,
+        deletable: false,
+        interactionWidth: 0,
+      })),
+    [nodes],
+  );
 
   // The viewport most recently sent to Rust, acknowledged or not: a gesture that ends where
   // an in-flight write is going is skipped; one that comes back to the stored viewport goes.
@@ -268,8 +306,11 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
   return (
     <ReactFlow
       nodes={nodes}
-      edges={NO_EDGES}
+      edges={edges}
       nodeTypes={NODE_TYPES}
+      edgeTypes={EDGE_TYPES}
+      edgesFocusable={false}
+      edgesReconnectable={false}
       defaultViewport={initialViewport}
       minZoom={MIN_ZOOM}
       maxZoom={MAX_ZOOM}

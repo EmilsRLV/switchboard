@@ -92,16 +92,17 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | `ctrl+shift+k` | The palette's second binding: the same toggle as `ctrl+k`, and the one that still works with focus in a terminal (where `ctrl+k` is the shell's). |
 | `ctrl+j` | Go to session that needs you: the session that has been `finished` (or `waiting`) longest is revealed and selected, its project expanded first when collapsed (see [Needs you](#needs-you)). Enabled only while a session on a canvas project needs you; press again for the next one. |
 | `←` `→` `↑` `↓` | Move the selection to the nearest node in that direction (see [Keyboard navigation](#keyboard-navigation)); with nothing selected, select the node nearest the middle of the view. Only while no palette, pane, menu or Elsewhere list is open: those keep their own arrow handling. |
-| Enter | The selected node's default action: a project with children expands or collapses (persisted); a `show all (N)` / `show fewer` row toggles the column (see [Sessions](#sessions)); a childless project or a child card does nothing yet (resume and fork arrive in Epic 4). Same condition as the arrows. |
+| Enter | The selected node's default action: a project with children expands or collapses (persisted); a `show all (N)` / `show fewer` row toggles the column (see [Sessions](#sessions)); a childless project or a child card does nothing (Resume, Fork and Stop are menu and palette commands; see [Resume, fork, stop](#resume-fork-stop)). Same condition as the arrows. |
 | Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings, import, terminal or the launch sheet), else clears the selected node. With all of them open, five presses. With focus in a terminal Esc is the terminal's (see [Terminal](#terminal)). |
 
 `e` and `/` are reserved for later epics and deliberately unbound; so is Delete (removal is a menu action).
 
-The palette lists twenty-six commands: Toggle command palette, Add project folder…, Import from Claude…, Open
+The palette lists twenty-nine commands: Toggle command palette, Add project folder…, Import from Claude…, Open
 settings, Reveal settings file (only when the file's location is known), Re-detect binaries (not while one
 runs), Fit view (once the canvas has mounted; the two project commands need it too), Quit, Toggle Elsewhere
 sessions (only while the Elsewhere tray has rows), Go to session that needs you (only while one does),
-Show terminal (only while a session Switchboard started is selected; see
+Resume, Fork and Stop (for the selected session card, each when it applies; see
+[Resume, fork, stop](#resume-fork-stop)), Show terminal (only while a session Switchboard started is selected; see
 [Starting sessions](#starting-sessions)), Attach in terminal (only while a live session card started elsewhere
 is selected; see [Live sessions](#live-sessions)), Toggle terminal (only while there is a terminal; see
 [Terminal](#terminal)), Kill terminal (only while the pane's terminal runs), Restart terminal (only once a plain terminal has
@@ -242,7 +243,7 @@ then the most recently started (so running sessions keep their slots); the colla
 card; clicking it, Enter while it is selected, or **Show all sessions** in the palette or the
 card's menu shows the rest and the row becomes **`show fewer`** (a per-project view choice, not saved). A
 session card can be dragged like any child and keeps its spot; a dragged child past the tenth is drawn even
-while the rest are hidden. Enter on a session does nothing yet (resume and fork arrive in Epic 4).
+while the rest are hidden. Enter on a session does nothing (Resume and Fork are in its menu and the palette).
 
 Reading is **read-only**: nothing under `~/.claude` is written, renamed, locked or created. Transcripts are
 streamed line by line on a background thread, and unknown record types, broken lines and a half-written last
@@ -406,7 +407,7 @@ terminal, and **Restart**.
 
 The pane is wider than the others (`min(720px, 70vw)`) and its left edge drags it between 360 px and 90vw; the
 width is remembered in this browser profile (`localStorage`, best effort). Its header shows the project, its
-folder, the state (`running`, `exited N`) and **Restart** (once exited), **Hide** and **Kill**; below it the
+folder, the state (`running`, `stopping` during a Stop, `exited N`) and **Restart** (once exited), **Hide** and **Kill**; below it the
 terminal itself, with 10 000 lines of scrollback. Resizing the pane or the window refits the terminal and resizes
 the PTY (debounced to 50 ms). The pane shows one terminal at a time: the one most recently opened or shown.
 
@@ -497,10 +498,54 @@ at once and stays as a historic child. When its transcript appears, it is the sa
 id), now with the transcript's title and facts.
 
 **The terminal.** The session's terminal is titled with the session's name and runs in the project folder. It
-has **Kill** but no **Restart**: an exited session is not restarted (resume arrives in Story 4.4). Once it has
-exited, **Close** (`terminal.close`) forgets the terminal and its output. **Show
-terminal** (the session card's menu, or the palette, with the session selected) opens the pane on it again.
-Quitting the app kills the session like any terminal.
+has **Kill** but no **Restart**: an exited session is resumed instead (see
+[Resume, fork, stop](#resume-fork-stop)). Once it has exited, **Close** (`terminal.close`) forgets the terminal
+and its output. **Show terminal** (the session card's menu, or the palette, with the session selected) opens
+the pane on it again. Quitting the app kills the session like any terminal.
+
+## Resume, fork, stop
+
+Three commands on a selected session card (its menu, in this order, and the palette; no keys):
+
+| Command | Offered for | What it does |
+|---|---|---|
+| **Resume** | A session with a transcript that is not live (never seen running this run, or `exited`) | Runs `claude --resume <id>` at once (no sheet). The **same node** turns `starting`, then `idle`, … as for a new session; the terminal pane opens on it, focused, and it is selected. |
+| **Fork** | Any session with a transcript, live or not | Runs `claude --resume <id> --fork-session --session-id <new id>` at once. A **new node** appears, joined to the original's card by a thin muted "forked from" line; it is selected and the pane opens on it. |
+| **Stop** | A session running in a Switchboard terminal | At its prompt (`idle`, `finished`) clears the input line (Ctrl+U, so an unsent draft is never submitted), then types `/exit` and Enter; otherwise (`starting`, `busy`, `waiting`, …) sends Ctrl+C, waits 300 ms, sends Ctrl+C again. A `starting` session is interrupted rather than sent Enter, which could accept a start-up dialog's default (such as folder trust). Still running 5 s later, it is killed. The card reads `stopping` (muted) until the process ends, then `exited`. Stop again while it is stopping kills at once. |
+
+**What runs.** Resume and Fork use the same path as a new session (see [Starting sessions](#starting-sessions)),
+with the **project's latest choices** (the last ones a launch sheet started with, else `defaults`) for model,
+effort and permission mode, not the ones the session itself last ran with. The notice after each says what was
+used, for example `resumed with model opus, effort default, mode plan` (`default`: the flag was left out). The
+rest is the same: the hooks `--settings` file, the `--append-system-prompt` context and the environment; no
+add-dirs and no first prompt:
+
+```
+<claude> --resume <id> [--model …] [--effort …] [--permission-mode …] --settings … --append-system-prompt …
+<claude> --resume <id> --fork-session --session-id <new> --name <name>-fork-<4 hex> [--model …] … --settings … --append-system-prompt …
+```
+
+A resume passes no `--session-id` and no `--name`, so the session keeps its own name; a fork is named after the
+original (its name, else its title, else the project's label, cut to 40 characters, and without the
+`-fork-<4 hex>` of a fork it was itself forked from) with `-fork-` and the first four hex of its new id.
+Claude finds a session through the folder it ran in, so both run in the **transcript's recorded folder** when it
+still exists, else in the project's folder; when neither exists the command is refused with
+`session folder not found: <path>`.
+
+**Refusals** are the notice: resuming a session that is starting or running (here or elsewhere), a second Fork of a
+session while its first is still starting, a session with no transcript, a project that is gone, a folder that is
+gone, no usable `claude`; a fork whose link to its original cannot be saved is refused too. A resume reuses the terminal id `session:<id>`: the exited
+terminal of the earlier run is replaced and its view starts afresh.
+
+**The fork line** is saved: the fork's entry in `workspace.json` records `forkedFrom`, so after a restart the
+line is drawn again whenever both cards are drawn (not when the original is in a collapsed project, past the
+tenth child, or no longer listed). It is a drawing of that field, not an edge: it cannot be selected or edited.
+When the fork itself is gone (neither its transcript nor a live or exited node of this run remains), the next
+discovery pass drops its entry; a missing original only hides the line.
+The fork card's tooltip and accessible name say `forked from <original title>`.
+
+**Only Switchboard's own sessions are stopped.** A session started in another terminal keeps **Attach in
+terminal** (still a stub) and is never signalled or killed.
 
 ## Status
 

@@ -38,3 +38,9 @@
 
 - A false `finished` card and toast when the user's own `Stop` hook blocks the stop: Switchboard's `Stop` hook runs in parallel and cannot see that decision. Possible fix: hold `finished` briefly and cancel it on a following busy signal.
 - Following `/clear` to the new session id (re-keying the token and the live entry); out of scope in 4.3.
+
+## From Story 4.4 (resume, fork, stop) review
+
+- An isolated test for `pty::allow_ctrl_c` with the test process set to ignore Ctrl+C (process-wide console state, so a separate test binary).
+- Component tests for the fork edge and its handles, once a component test environment exists.
+- Resume and Fork with the session's own last model and permission mode, read from its transcript, instead of the project's latest launch choices.

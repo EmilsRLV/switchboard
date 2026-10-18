@@ -739,3 +739,112 @@ fn a_session_that_cannot_start_leaves_no_terminal() {
     assert!(f.manager.list().is_empty());
     assert!(lock(&f.sink.log).is_empty(), "nothing reported for a terminal that never was");
 }
+
+fn no_hooks() -> SessionHooks {
+    SessionHooks {
+        first_output: Box::new(|| {}),
+        exit: Box::new(|_| {}),
+    }
+}
+
+/// A program that waits for one line, prints `got=<line>`, then exits.
+fn line_echo_fixture(cwd: &std::path::Path) -> SpawnSpec {
+    #[cfg(windows)]
+    let mut spec = SpawnSpec::new("cmd.exe", ["/d", "/v:on", "/c", "set", "/p", "x=", "&", "echo", "got=!x!"].map(String::from).to_vec(), cwd);
+    #[cfg(not(windows))]
+    let mut spec = SpawnSpec::new("/bin/sh", ["-c", "read x; echo \"got=$x\""].map(String::from).to_vec(), cwd);
+    spec.env_remove = vec!["ENV".into(), "BASH_ENV".into()];
+    spec
+}
+
+#[test]
+fn a_session_terminal_reopened_over_an_exited_one_replaces_it_and_a_running_one_is_refused() {
+    let f = Fixture::new();
+    let cwd = f.dir.path().display().to_string();
+    let open = |spec: SpawnSpec| f.manager.open_session("session:s", "p", "p-1", &cwd, (100, 30), spec, f.sink.clone(), no_hooks());
+    open(waiting_fixture(f.dir.path())).unwrap();
+    assert_eq!(open(waiting_fixture(f.dir.path())).unwrap_err(), "terminal already exists");
+    f.manager.write("session:s", b"go\r").unwrap();
+    f.wait_for("session:s", "hello", |t| t.contains("hello"));
+    assert_eq!(f.wait_exit("session:s"), Some(0));
+    let old = f.manager.get("session:s").unwrap();
+
+    // A failed reopen puts the exited terminal back.
+    let gone = f.dir.path().join("no-such-program.exe");
+    assert!(open(SpawnSpec::new(&gone, vec![], f.dir.path())).is_err());
+    assert!(Arc::ptr_eq(&f.manager.get("session:s").unwrap(), &old));
+
+    // A reopen replaces it, in its place in the list, with a fresh buffer.
+    let info = open(waiting_fixture(f.dir.path())).unwrap();
+    assert_eq!(info.exited, None);
+    let new = f.manager.get("session:s").unwrap();
+    assert!(!Arc::ptr_eq(&new, &old));
+    assert_eq!(f.manager.list().iter().filter(|t| t.id == "session:s").count(), 1);
+    assert!(!strip_escapes(&new.buffer().data).contains("hello"));
+    let pid = new.pid().unwrap();
+    f.manager.kill("session:s").unwrap();
+    f.wait_exit("session:s");
+    wait_dead(pid);
+}
+
+#[test]
+fn stop_writes_its_input_in_order_then_kills_only_a_child_still_running() {
+    let f = Fixture::new();
+    let cwd = f.dir.path().display().to_string();
+    let info = f
+        .manager
+        .open_session("session:a", "p", "a", &cwd, (100, 30), line_echo_fixture(f.dir.path()), f.sink.clone(), no_hooks())
+        .unwrap();
+    assert!(!info.stopping);
+    let pid = f.manager.get("session:a").unwrap().pid().unwrap();
+    let writes = vec![(Duration::ZERO, b"/ex".to_vec()), (Duration::from_millis(100), b"it".to_vec()), (Duration::from_millis(100), b"\r".to_vec())];
+    let started = Instant::now();
+    let info = f.manager.stop("session:a", writes, Duration::from_secs(5)).unwrap();
+    assert!(info.stopping, "stopping until it exits");
+    f.wait_for("session:a", "the line", |t| t.contains("got=/exit"));
+    assert_eq!(f.wait_exit("session:a"), Some(0), "it ended on its own");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(!f.manager.get("session:a").unwrap().info().stopping);
+    assert_eq!(f.manager.stop("session:a", Vec::new(), Duration::ZERO).unwrap_err(), "terminal has exited");
+    wait_dead(pid);
+
+    // Ctrl+C written to the PTY interrupts the child (as Stop's busy plan relies on).
+    #[cfg(windows)]
+    let sleeper = SpawnSpec::new(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60"].map(String::from).to_vec(),
+        f.dir.path(),
+    );
+    #[cfg(not(windows))]
+    let sleeper = {
+        let mut spec = SpawnSpec::new("/bin/sh", ["-c", "sleep 60; echo late"].map(String::from).to_vec(), f.dir.path());
+        spec.env_remove = vec!["ENV".into(), "BASH_ENV".into()];
+        spec
+    };
+    f.manager
+        .open_session("session:c", "p", "c", &cwd, (100, 30), sleeper, f.sink.clone(), no_hooks())
+        .unwrap();
+    let pid = f.manager.get("session:c").unwrap().pid().unwrap();
+    let settle = Instant::now();
+    while settle.elapsed() < Duration::from_millis(1500) {
+        f.answer_cursor_queries();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let started = Instant::now();
+    let interrupt = vec![(Duration::ZERO, vec![3u8]), (Duration::from_millis(300), vec![3u8])];
+    f.manager.stop("session:c", interrupt, Duration::from_secs(10)).unwrap();
+    f.wait_exit("session:c");
+    assert!(started.elapsed() < Duration::from_secs(5), "interrupted, not killed: {:?}", started.elapsed());
+    wait_dead(pid);
+
+    // A child that does not end is killed once the grace is over.
+    f.manager
+        .open_session("session:b", "p", "b", &cwd, (100, 30), waiting_fixture(f.dir.path()), f.sink.clone(), no_hooks())
+        .unwrap();
+    let pid = f.manager.get("session:b").unwrap().pid().unwrap();
+    let started = Instant::now();
+    f.manager.stop("session:b", Vec::new(), Duration::from_millis(400)).unwrap();
+    f.wait_exit("session:b");
+    assert!(started.elapsed() >= Duration::from_millis(400));
+    wait_dead(pid);
+}
