@@ -2,7 +2,7 @@
 title: 'Story 4.4: Resume, fork, stop'
 type: 'feature'
 created: '2026-10-18'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '5aaf549fd7c9c747519168eee3a1e2d985f43f00'
