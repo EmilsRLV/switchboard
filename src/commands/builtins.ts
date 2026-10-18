@@ -8,7 +8,8 @@
 // the palette does not. The project commands act on the selected project and are tagged
 // `menu: "node"` with a `menuOrder`, which is what the right-click menu lists, in that order.
 // With focus in a terminal the dispatcher yields every key to it (Esc included) except
-// `terminal.toggle` (ctrl+`) and the palette's second binding, ctrl+shift+k (`terminal/keys`).
+// `terminal.toggle` (ctrl+`), the palette's second binding, ctrl+shift+k, and the tab keys
+// `terminal.prevTab` / `terminal.nextTab` (ctrl+pageup / ctrl+pagedown, Story 4.5; `terminal/keys`).
 
 import type { Direction } from "../canvas/nodes";
 import { appQuit } from "../ipc";
@@ -49,15 +50,19 @@ import { hasSettingsPath, redetectBinaries, revealSettingsFile } from "./setting
 import {
   canKillTerminal,
   canCloseTerminal,
+  canPopOut,
   canRestartTerminal,
+  canSwitchTab,
   closeTerminal,
   canToggleTerminal,
   killTerminal,
   openProjectTerminal,
+  popOutTerminal,
   restartTerminal,
+  switchTab,
   toggleTerminalPane,
 } from "./terminal";
-import { PALETTE_TERMINAL_KEY, TERMINAL_TOGGLE_KEY } from "../terminal/keys";
+import { NEXT_TAB_KEY, PALETTE_TERMINAL_KEY, PREV_TAB_KEY, TERMINAL_TOGGLE_KEY } from "../terminal/keys";
 
 function isPaletteOpen(): boolean {
   return usePaletteStore.getState().isOpen;
@@ -328,6 +333,29 @@ export function builtinCommands(): Command[] {
       run: async () => {
         await closeTerminal();
       },
+    },
+    {
+      // The active terminal into its own OS window (Story 4.5); not when it already is in one.
+      id: "terminal.popOut",
+      title: "Pop out terminal",
+      when: canPopOut,
+      run: async () => {
+        await popOutTerminal();
+      },
+    },
+    {
+      id: "terminal.nextTab",
+      title: "Next terminal tab",
+      keybinding: NEXT_TAB_KEY,
+      when: canSwitchTab,
+      run: () => switchTab(1),
+    },
+    {
+      id: "terminal.prevTab",
+      title: "Previous terminal tab",
+      keybinding: PREV_TAB_KEY,
+      when: canSwitchTab,
+      run: () => switchTab(-1),
     },
     {
       id: "project.openEditor",

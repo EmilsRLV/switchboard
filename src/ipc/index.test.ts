@@ -10,6 +10,12 @@ import {
   onNotifyReveal,
   onTermData,
   onTermExit,
+  onTermClosed,
+  onTermInfo,
+  onTermPopped,
+  termPopOut,
+  termPopped,
+  termReturn,
   termBuffer,
   termKill,
   termList,
@@ -251,10 +257,29 @@ describe("terminal command wrappers", () => {
   it("the event subscriptions are no-ops without a runtime", async () => {
     const data = await onTermData(() => {});
     const exit = await onTermExit(() => {});
+    const popped = await onTermPopped(() => {});
+    const info = await onTermInfo(() => {});
+    const closed = await onTermClosed(() => {});
     expect(() => {
       data();
       exit();
+      popped();
+      info();
+      closed();
     }).not.toThrow();
+  });
+
+  it("the pop-out wrappers invoke their wire names (Story 4.5)", async () => {
+    const invoke = vi.fn().mockResolvedValue("term-1");
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await expect(termPopOut("session:s1")).resolves.toBe("term-1");
+    expect(invoke).toHaveBeenCalledWith("term_pop_out", { id: "session:s1" }, undefined);
+    invoke.mockResolvedValue(undefined);
+    await termReturn("session:s1");
+    expect(invoke).toHaveBeenCalledWith("term_return", { id: "session:s1" }, undefined);
+    invoke.mockResolvedValue([{ id: "session:s1", label: "term-1" }]);
+    await expect(termPopped()).resolves.toEqual([{ id: "session:s1", label: "term-1" }]);
+    expect(invoke).toHaveBeenCalledWith("term_popped", {}, undefined);
   });
 });
 

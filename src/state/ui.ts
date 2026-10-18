@@ -6,7 +6,8 @@
 // Selection is one node or none; xyflow never owns it (`elementsSelectable` is off), the
 // canvas writes it here on click and drag, the arrow commands on a key. Whenever the selection
 // becomes a session that needs the operator (`finished` / `waiting`), a subscription below
-// asks Rust to acknowledge it (Story 3.3): one place, whatever selected it.
+// asks Rust to acknowledge it (Story 3.3): one place, whatever selected it. While the terminal
+// pane is open, the selection also switches the pane to the node's terminal tab (Story 4.5).
 
 import { create } from "zustand";
 import type { CanvasTarget } from "../canvas/nodes";
@@ -21,6 +22,7 @@ import {
   unmarkAcknowledging,
   useLiveStore,
 } from "./live";
+import { plainTerminalId, sessionTerminalId, terminalInfo } from "./terminals";
 import { useWorkspaceStore } from "./workspace";
 
 /** The right-hand panes; `launch` is the new-session sheet (Story 4.2). */
@@ -116,6 +118,18 @@ export type UiState = {
   elsewhereOpen: boolean;
   /** The terminal the terminal pane shows: the most recently opened or selected one. */
   activeTerminal: string | null;
+  /**
+   * The terminal pane's tabs, in order (Story 4.5): every terminal opened or shown in it, until
+   * its × closes the tab. Reference-stable while unchanged.
+   */
+  openTerminals: readonly string[];
+  /** Terminals popped out into their own window: terminal id → window label (Story 4.5). */
+  poppedOut: Readonly<Record<string, string>>;
+  /**
+   * Whether the pane focuses the terminal it shows next: true for an open, a tab click or a tab
+   * key, false when a canvas selection switched the tab (focus stays on the canvas).
+   */
+  focusOnShow: boolean;
   /** The dragged terminal pane width in CSS pixels, or `null` for the default. */
   terminalWidth: number | null;
   openPane: (pane: Pane) => void;
@@ -140,11 +154,60 @@ export type UiState = {
   toggleElsewhere: () => void;
   openElsewhere: () => void;
   closeElsewhere: () => void;
+  /** Show terminal `id` (as {@link UiState.openTab}), or none (`null`; the tabs stay). */
   setActiveTerminal: (id: string | null) => void;
+  /** Add a tab for `id` at the end when missing and activate it; `focus` (default true) focuses it once shown. */
+  openTab: (id: string, focus?: boolean) => void;
+  /** Remove `id`'s tab; when it was active, its neighbour (right, else left) becomes active, or none. */
+  closeTab: (id: string) => void;
+  /** Activate the tab `delta` places from the active one, wrapping around (ctrl+pageup / pagedown). */
+  nextTab: (delta: number) => void;
+  /** Terminal `id` is popped out into window `label`, or back in the pane (`null`). */
+  setPopped: (id: string, label: string | null) => void;
   setTerminalWidth: (width: number | null) => void;
 };
 
 const NO_IDS: readonly string[] = Object.freeze([]);
+const NO_POPPED: Readonly<Record<string, string>> = Object.freeze({});
+
+/** `tabs` with `id` added at the end, or `tabs` itself when it is already there. */
+export function withTab(tabs: readonly string[], id: string): readonly string[] {
+  return tabs.includes(id) ? tabs : [...tabs, id];
+}
+
+/**
+ * `tabs` without `id`, and the active tab after: unchanged unless `id` was active, then the tab
+ * that takes its place (the one after it, else the one before), or `null` when none is left.
+ * `tabs` itself comes back when `id` was not a tab.
+ */
+export function withoutTab(
+  tabs: readonly string[],
+  active: string | null,
+  id: string,
+): { tabs: readonly string[]; active: string | null } {
+  const index = tabs.indexOf(id);
+  if (index < 0) return { tabs, active: active === id ? null : active };
+  const next = tabs.filter((tab) => tab !== id);
+  if (active !== id) return { tabs: next, active };
+  return { tabs: next, active: next[index] ?? next[index - 1] ?? null };
+}
+
+/**
+ * The tab `delta` places from `active`, wrapping around; the first tab when `active` is not
+ * one; `null` without tabs.
+ */
+export function stepTab(tabs: readonly string[], active: string | null, delta: number): string | null {
+  if (tabs.length === 0) return null;
+  const index = active === null ? -1 : tabs.indexOf(active);
+  if (index < 0) return tabs[0] ?? null;
+  const n = tabs.length;
+  return tabs[(((index + delta) % n) + n) % n] ?? null;
+}
+
+/** True when terminal `id` is popped out into its own window (Story 4.5). */
+export function isPoppedOut(id: string | null): boolean {
+  return id !== null && Object.hasOwn(useUiStore.getState().poppedOut, id);
+}
 
 export const useUiStore = create<UiState>()((set, get) => ({
   pane: null,
@@ -155,6 +218,9 @@ export const useUiStore = create<UiState>()((set, get) => ({
   showAll: NO_IDS,
   elsewhereOpen: false,
   activeTerminal: null,
+  openTerminals: NO_IDS,
+  poppedOut: NO_POPPED,
+  focusOnShow: true,
   terminalWidth: loadTerminalWidth(),
   openPane: (pane) => set({ pane }),
   closePane: () => set({ pane: null }),
@@ -191,7 +257,36 @@ export const useUiStore = create<UiState>()((set, get) => ({
   toggleElsewhere: () => set((s) => ({ elsewhereOpen: !s.elsewhereOpen })),
   openElsewhere: () => set((s) => (s.elsewhereOpen ? {} : { elsewhereOpen: true })),
   closeElsewhere: () => set((s) => (s.elsewhereOpen ? { elsewhereOpen: false } : {})),
-  setActiveTerminal: (id) => set((s) => (s.activeTerminal === id ? {} : { activeTerminal: id })),
+  setActiveTerminal: (id) => {
+    if (id === null) set((s) => (s.activeTerminal === null ? {} : { activeTerminal: null }));
+    else get().openTab(id);
+  },
+  openTab: (id, focus = true) =>
+    set((s) => {
+      const tabs = withTab(s.openTerminals, id);
+      if (tabs === s.openTerminals && s.activeTerminal === id && s.focusOnShow === focus) return {};
+      return { openTerminals: tabs, activeTerminal: id, focusOnShow: focus };
+    }),
+  closeTab: (id) =>
+    set((s) => {
+      const next = withoutTab(s.openTerminals, s.activeTerminal, id);
+      if (next.tabs === s.openTerminals) return {};
+      return { openTerminals: next.tabs.length === 0 ? NO_IDS : next.tabs, activeTerminal: next.active, focusOnShow: true };
+    }),
+  nextTab: (delta) =>
+    set((s) => {
+      const id = stepTab(s.openTerminals, s.activeTerminal, delta);
+      return id === null || id === s.activeTerminal ? {} : { activeTerminal: id, focusOnShow: true };
+    }),
+  setPopped: (id, label) =>
+    set((s) => {
+      const current = Object.hasOwn(s.poppedOut, id) ? s.poppedOut[id] : undefined;
+      if ((current ?? null) === label) return {};
+      const poppedOut = { ...s.poppedOut };
+      if (label === null) delete poppedOut[id];
+      else poppedOut[id] = label;
+      return { poppedOut };
+    }),
   setTerminalWidth: (width) => set((s) => (s.terminalWidth === width ? {} : { terminalWidth: width })),
 }));
 
@@ -244,13 +339,39 @@ export function acknowledgeIfNeeded(target: CanvasTarget | null): boolean {
 // click, `attention.next`). Selecting a project acknowledges nothing. Opening the Elsewhere
 // tray acknowledges every session it lists that needs attention (they cannot be selected).
 useUiStore.subscribe((ui, previous) => {
-  if (ui.selection !== previous.selection) acknowledgeIfNeeded(ui.selection);
+  if (ui.selection !== previous.selection) {
+    acknowledgeIfNeeded(ui.selection);
+    followSelection(ui.selection);
+  }
   if (ui.elsewhereOpen && !previous.elsewhereOpen) {
     for (const row of useLiveStore.getState().snapshot.elsewhere) {
       if (needsAttention(row.state)) acknowledgeIfNeeded({ kind: "session", id: row.session_id });
     }
   }
 });
+
+/**
+ * The terminal a selected node has, when it has one: a session's Switchboard terminal, or a
+ * project's plain terminal (open or exited). Else `null`.
+ */
+export function terminalOfTarget(target: CanvasTarget | null): string | null {
+  if (target === null) return null;
+  const id =
+    target.kind === "session" ? sessionTerminalId(target.id) : target.kind === "project" ? plainTerminalId(target.id) : null;
+  return id !== null && terminalInfo(id) !== null ? id : null;
+}
+
+/**
+ * Selection follows the tab (Story 4.5): while the terminal pane is open, selecting a node with
+ * a terminal switches to that terminal's tab (adding it when missing); focus stays on the canvas.
+ * With the pane closed nothing changes.
+ */
+export function followSelection(target: CanvasTarget | null): void {
+  const ui = useUiStore.getState();
+  if (ui.pane !== "terminal") return;
+  const id = terminalOfTarget(target);
+  if (id !== null && id !== ui.activeTerminal) ui.openTab(id, false);
+}
 
 /** True when both name the same node (or both are `null`). */
 export function sameTarget(a: CanvasTarget | null, b: CanvasTarget | null): boolean {

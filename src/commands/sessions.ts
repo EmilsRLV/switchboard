@@ -11,13 +11,13 @@ import { isSheetOpen, sheetToken, useLaunchStore } from "../state/launch";
 import { sessionState } from "../state/live";
 import { isTerminalRunning, sessionTerminal, sessionTerminalId, terminalInfo, useTerminalStore } from "../state/terminals";
 import { disposeView, restore } from "../terminal/registry";
-import { useUiStore } from "../state/ui";
+import { isPoppedOut, useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 import { canStart, formFromPrefill, launchRequest, missingAddDirs, withAddDir, withoutAddDir } from "./launch";
 import { notify } from "./navigation";
 import { setExpanded } from "./nodes";
 import { closeOpenPane, openPane } from "./panes";
-import { showTerminal } from "./terminal";
+import { returnToPane, showTerminal } from "./terminal";
 
 /** The add-dir picker's title. */
 export const ADD_DIR_PICKER_TITLE = "Add folder for this session";
@@ -220,6 +220,8 @@ export async function resumeSelectedSession(): Promise<boolean> {
   }
   try {
     const started = await sessionResume(child.projectId, child.id, null, null);
+    // Its pop-out (Story 4.5) shows the earlier run: once the new one runs, it returns to the pane.
+    if (isPoppedOut(termId)) await returnToPane(termId);
     await showStarted(child.projectId, started);
     notify(startedNotice("resumed", started.choices));
     return true;

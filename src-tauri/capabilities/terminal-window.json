@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "terminal-window",
+  "description": "Capability for pop-out terminal windows (Story 4.5)",
+  "windows": ["term-*"],
+  "permissions": ["core:default"]
+}

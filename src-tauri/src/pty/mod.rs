@@ -36,6 +36,12 @@ use serde::{Deserialize, Serialize};
 pub const DATA_EVENT: &str = "term://data";
 /// Event carrying [`ExitPayload`]: the terminal's child exited (or never started).
 pub const EXIT_EVENT: &str = "term://exit";
+/// Emitted with a [`TermInfo`] when a terminal is restarted, so every window showing it (the
+/// pane, a pop-out; Story 4.5) learns it runs again.
+pub const INFO_EVENT: &str = "term://info";
+/// Emitted with a [`ClosedPayload`] when a terminal is closed (`term_close`), so every window
+/// forgets it (Story 4.5).
+pub const CLOSED_EVENT: &str = "term://closed";
 
 /// Bytes of output each terminal keeps for a view created after output began.
 pub const RING_CAPACITY: usize = 2 * 1024 * 1024;
@@ -105,6 +111,12 @@ pub struct DataPayload {
     pub id: String,
     pub data: String,
     pub offset: u64,
+}
+
+/// `term://closed`: terminal `id` is gone (Story 4.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ClosedPayload {
+    pub id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

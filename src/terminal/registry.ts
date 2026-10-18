@@ -6,6 +6,11 @@
 // `term_buffer`, then follows `term://data`, dropping what the buffer already covered (every
 // chunk carries the byte offset it ends at).
 //
+// Story 4.5: a pop-out window runs the same registry for one terminal (`connectTerminals({ only })`)
+// with a view of its own, replayed from `term_buffer`. Whichever window owns the PTY's size sends
+// `term_resize`: the pop-out while it is open, else the main pane (`syncSize` skips a popped-out
+// terminal in the main window).
+//
 // WebGL renders when it can; when it cannot load, or its context is lost, the view switches to
 // xterm's DOM renderer for the rest of its life.
 
@@ -14,8 +19,20 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { onTermData, onTermExit, termBuffer, termList, termResize, termWrite } from "../ipc";
+import {
+  onTermClosed,
+  onTermData,
+  onTermExit,
+  onTermInfo,
+  onTermPopped,
+  termBuffer,
+  termList,
+  termPopped,
+  termResize,
+  termWrite,
+} from "../ipc";
 import { terminalInfo, useTerminalStore } from "../state/terminals";
+import { isPoppedOut, useUiStore } from "../state/ui";
 import { terminalKeyAction } from "./keys";
 import { buildFont, buildTheme, documentTokens } from "./theme";
 
@@ -53,6 +70,14 @@ const early = new Map<string, Chunk[]>();
 /** Terminals whose buffer is being replayed: their live output waits here, in order. */
 const replaying = new Map<string, Chunk[]>();
 let holder: HTMLElement | null = null;
+/** The one terminal this window follows when it is a pop-out (Story 4.5); `null` in the main window. */
+let only: string | null = null;
+/** The size the main window's pane last fitted a terminal to: what a returning pop-out gets. */
+let paneSize: TermSize | null = null;
+/** `term://popped` events seen per terminal: a pop-out / return reply older than one is not applied. */
+const poppedEvents = new Map<string, number>();
+/** Terminals this window is restarting: their own `term://info` must not reset the view again. */
+const restarting = new Set<string>();
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -144,7 +169,8 @@ function createView(id: string, parent: HTMLElement): View {
 
   term.attachCustomKeyEventHandler((event) => handleKey(term, event));
   term.onData((data) => {
-    if (view.replaying) return;
+    // While popped out, only the pop-out's view answers the program (its queries, DSR / DA).
+    if (view.replaying || (only === null && isPoppedOut(id))) return;
     termWrite(id, data).catch((err: unknown) => log(`write to ${id}`, err));
   });
   return view;
@@ -181,7 +207,10 @@ export type KeyTerminal = Pick<Terminal, "hasSelection" | "getSelection" | "past
  */
 export function handleKey(term: KeyTerminal, event: KeyboardEvent): boolean {
   const action = terminalKeyAction(event);
-  if (action === "terminal") return true;
+  // In a pop-out no dispatcher listens: the pass-through keys are the terminal's there.
+  if (action === "terminal" || (action === "dispatch" && only !== null)) return true;
+  // Alt+F4 closes the window: neither xterm nor anything here takes it or prevents its default.
+  if (action === "window") return false;
   if (event.type === "keydown") {
     const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
     if (action === "copy") {
@@ -293,15 +322,29 @@ export function markSent(id: string, size: TermSize | null): void {
   if (view !== undefined && size !== null) view.sent = size;
 }
 
-/** Fit `id` and send the size to Rust when it changed and Rust knows the terminal. */
+/**
+ * Fit `id` and send the size to Rust when it changed and Rust knows the terminal. In the main
+ * window a popped-out terminal is left alone: its pop-out owns the PTY's size.
+ */
 export function syncSize(id: string): void {
+  if (only === null && isPoppedOut(id)) return;
   const size = fitView(id);
   const view = views.get(id);
   if (size === null || view === undefined || terminalInfo(id) === null) return;
+  if (only === null) paneSize = size;
   if (view.sent !== null && view.sent.cols === size.cols && view.sent.rows === size.rows) return;
   view.sent = size;
   useTerminalStore.getState().setSize(id, size.cols, size.rows);
   termResize(id, size.cols, size.rows).catch((err: unknown) => log(`resize ${id}`, err));
+}
+
+/**
+ * Terminal `id` popped out: its pop-out now sizes the PTY, so the size this view last sent is
+ * stale, and the refit on its return sends one `term_resize` for the pane's size.
+ */
+export function forgetSentSize(id: string): void {
+  const view = views.get(id);
+  if (view !== undefined) view.sent = null;
 }
 
 export function focusView(id: string): void {
@@ -326,12 +369,67 @@ export function disposeView(id: string): void {
 }
 
 /**
- * Follow `term://data` and `term://exit`, then pick up the terminals Rust already runs (after
- * a webview reload): their infos go to the store and each view replays its buffer. Output
- * arriving while that list is on its way waits. Returns the unsubscribe function; after it
- * ran, nothing that was still on its way acts any more (React StrictMode mounts twice).
+ * Terminal `id` popped out (`label`) or returned (`null`): the ui store, and the stale size.
+ * A return in the main window brings the view back correct and sized (see {@link returned}).
  */
-export function connectTerminals(): () => void {
+export function applyPopped(id: string, label: string | null): void {
+  const was = isPoppedOut(id);
+  useUiStore.getState().setPopped(id, label);
+  if (label !== null) forgetSentSize(id);
+  else if (was && only === null) returned(id);
+}
+
+/** A `term://popped` event: applied, and counted (see {@link poppedSequence}). */
+export function applyPoppedEvent(id: string, label: string | null): void {
+  poppedEvents.set(id, poppedSequence(id) + 1);
+  applyPopped(id, label);
+}
+
+/** How many `term://popped` events this window has seen for `id`. */
+export function poppedSequence(id: string): number {
+  return poppedEvents.get(id) ?? 0;
+}
+
+/**
+ * Terminal `id` is back from its pop-out: the PTY gets the pane's size (the last one the pane
+ * fitted, else the view's own) at once, whether or not its tab shows, and the view starts over
+ * from the buffer, which the PTY's output at the pop-out's size had made stale.
+ */
+function returned(id: string): void {
+  const view = views.get(id);
+  if (view === undefined || terminalInfo(id) === null) return;
+  const size = paneSize ?? { cols: view.term.cols, rows: view.term.rows };
+  if (view.term.cols !== size.cols || view.term.rows !== size.rows) view.term.resize(size.cols, size.rows);
+  view.sent = size;
+  useTerminalStore.getState().setSize(id, size.cols, size.rows);
+  termResize(id, size.cols, size.rows).catch((err: unknown) => log(`resize ${id}`, err));
+  void restore(id);
+}
+
+/** This window restarts `id` (`true`) or is done (`false`): its own `term://info` resets nothing. */
+export function markRestarting(id: string, on: boolean): void {
+  if (on) restarting.add(id);
+  else restarting.delete(id);
+}
+
+export type ConnectOptions = {
+  /** Follow this one terminal only: the pop-out window's (Story 4.5). */
+  only?: string;
+  /** Terminal `id` was closed (`term://closed`); the main window drops its tab, view and info. */
+  onClosed?: (id: string) => void;
+};
+
+/**
+ * Follow `term://data`, `term://exit`, `term://info` and `term://closed` (and, in the main
+ * window, `term://popped`), then pick up the terminals Rust already runs (after a webview
+ * reload, or in a new pop-out): their infos go to the store and each view replays its buffer.
+ * Output arriving while that list is on its way waits. With `only`, every event of another
+ * terminal is ignored. Returns the unsubscribe function; after it ran, nothing that was still on
+ * its way acts any more (React StrictMode mounts twice).
+ */
+export function connectTerminals(options: ConnectOptions = {}): () => void {
+  only = options.only ?? null;
+  const mine = (id: string) => options.only === undefined || id === options.only;
   let disposed = false;
   const unlisten: (() => void)[] = [];
   const keep = (fn: () => void) => {
@@ -342,26 +440,56 @@ export function connectTerminals(): () => void {
   let listed = false;
   void Promise.all([
     onTermData(({ id, data, offset }) => {
-      if (disposed) return;
+      if (disposed || !mine(id)) return;
       if (listed) writeIncoming(id, data, offset);
       else pending.push([id, data, offset]);
     }).then(keep),
     onTermExit(({ id, code }) => {
-      if (!disposed) useTerminalStore.getState().markExited(id, code);
+      if (!disposed && mine(id)) useTerminalStore.getState().markExited(id, code);
     }).then(keep),
+    onTermInfo((info) => {
+      if (disposed || !mine(info.id)) return;
+      const previous = terminalInfo(info.id);
+      if (previous === null) return;
+      // Restarted in another window: this view starts clean too, as the restarting one did.
+      if (previous.exited !== null && info.exited === null && !restarting.has(info.id)) resetView(info.id);
+      useTerminalStore.getState().upsert(info);
+    }).then(keep),
+    onTermClosed(({ id }) => {
+      if (!disposed && mine(id)) options.onClosed?.(id);
+    }).then(keep),
+    ...(options.only === undefined
+      ? [
+          onTermPopped(({ id, label }) => {
+            if (!disposed) applyPoppedEvent(id, label);
+          }).then(keep),
+        ]
+      : []),
   ])
     .then(() => (disposed ? null : termList()))
     .then(
-      (infos) => {
-        if (disposed || infos === null) return;
+      (all) => {
+        if (disposed || all === null) return;
+        const infos = all.filter((info) => mine(info.id));
         const store = useTerminalStore.getState();
-        const late = infos.filter((info) => !hasView(info.id));
+        // A pop-out's view is new to this window even when it was made already: it replays too.
+        const late = infos.filter((info) => !hasView(info.id) || info.id === options.only);
         for (const info of infos) store.upsert(info);
         // Output for these waits until their buffer is written.
         for (const info of late) replaying.set(info.id, []);
         listed = true;
         for (const [id, data, offset] of pending.splice(0)) writeIncoming(id, data, offset);
         for (const info of late) void restore(info.id);
+        // A reloaded main window learns which terminals are in their own window.
+        if (options.only === undefined) {
+          termPopped().then(
+            (popped) => {
+              if (disposed) return;
+              for (const { id, label } of popped) applyPopped(id, label);
+            },
+            (err: unknown) => log("popped", err),
+          );
+        }
       },
       (err: unknown) => {
         if (disposed) return;
@@ -374,4 +502,9 @@ export function connectTerminals(): () => void {
     disposed = true;
     unlisten.splice(0).forEach((fn) => fn());
   };
+}
+
+/** The terminal this window follows when it is a pop-out, else `null` (the main window). */
+export function popOutTerminal(): string | null {
+  return only;
 }

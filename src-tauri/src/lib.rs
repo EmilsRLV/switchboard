@@ -10,6 +10,7 @@ pub mod persist;
 pub mod process;
 pub mod pty;
 pub mod settings;
+pub mod windows;
 
 use settings::AppState;
 
@@ -48,6 +49,9 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::term_kill,
             ipc::term_list,
             ipc::term_close,
+            ipc::term_pop_out,
+            ipc::term_return,
+            ipc::term_popped,
             ipc::launch_defaults,
             ipc::session_launch,
             ipc::session_resume,
@@ -57,17 +61,41 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         ])
 }
 
-/// What the app does on its way out: every terminal's child is killed and its PTY closed, so
-/// no shell or session outlives Switchboard, and every per-session settings file is deleted.
-/// Idempotent (both `ExitRequested` and `Exit` call it).
+/// What the app does on its way out: every pop-out window closes, every terminal's child is
+/// killed and its PTY closed, so no shell or session outlives Switchboard, and every
+/// per-session settings file is deleted. Idempotent (both `ExitRequested` and `Exit` call it).
+///
+/// A destroyed pop-out window returns its terminal to the pane (Story 4.5). The main window
+/// going closes every pop-out too, so closing it quits the app as it always did (the last
+/// window closed).
 pub(crate) fn on_run_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: &tauri::RunEvent) {
     use tauri::Manager;
-    if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
-        let state = app.state::<AppState>();
-        state.terms.kill_all();
-        state.launcher.remove_all();
+    match event {
+        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+            if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+                windows::close_all(app);
+            }
+            let state = app.state::<AppState>();
+            state.terms.kill_all();
+            state.launcher.remove_all();
+        }
+        tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } => on_window_destroyed(app, label),
+        _ => {}
     }
 }
+
+/// Window `label` was destroyed: a pop-out returns its terminal; the main window takes every
+/// pop-out with it.
+pub(crate) fn on_window_destroyed<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str) {
+    if label == MAIN_WINDOW {
+        windows::close_all(app);
+    } else if windows::is_popout_label(label) {
+        windows::window_destroyed(app, label);
+    }
+}
+
+/// The label of the app's main window (`tauri.conf.json`).
+pub const MAIN_WINDOW: &str = "main";
 
 /// Name of the environment variable asking for stub session children per project.
 pub const STUB_CHILDREN_ENV: &str = "SWITCHBOARD_STUB_CHILDREN";
@@ -93,7 +121,12 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             eprintln!("second instance ignored: argv={argv:?} cwd={cwd}");
             focus_main_window(app);
         }))
-        .plugin(tauri_plugin_window_state::Builder::new().build())
+        .plugin(
+            // Pop-out terminal windows (Story 4.5) open at their own size every time.
+            tauri_plugin_window_state::Builder::new()
+                .with_filter(|label| !windows::is_popout_label(label))
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         // Toasts are sent from Rust only (`notify`); no JS permission is granted.
@@ -132,7 +165,7 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
 /// a window the OS refuses to focus is not an error worth surfacing.
 pub(crate) fn focus_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     use tauri::Manager;
-    let Some(window) = app.get_webview_window("main") else {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
         return;
     };
     // Unminimising a normal window is harmless, so when the query fails, do it anyway.
@@ -989,6 +1022,182 @@ mod tests {
         assert!(term.pid().is_none(), "the PTY is closed on exit");
         super::pty::tests::wait_dead(restarted_pid);
         super::pty::tests::wait_dead(pid);
+    }
+
+    #[test]
+    fn pop_out_windows_are_counted_tracked_focused_returned_and_closed_on_quit() {
+        use serde_json::json;
+        use std::sync::{Arc, Mutex};
+        use tauri::Listener;
+        let (app, webview, _dir) = app_with_ide();
+        let folder = tempfile::tempdir().unwrap();
+        let state = app.state::<super::AppState>();
+        state.write_workspace().workspace.projects[0].path = folder.path().display().to_string();
+        state.write().settings.shell = Some(if cfg!(windows) { "cmd.exe /d" } else { "/bin/sh" }.to_string());
+        let events: Arc<Mutex<Vec<serde_json::Value>>> = Arc::default();
+        let sink = events.clone();
+        app.listen(super::windows::POPPED_EVENT, move |event| {
+            sink.lock().unwrap().push(serde_json::from_str(event.payload()).unwrap());
+        });
+        let take = || std::mem::take(&mut *events.lock().unwrap());
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+
+        assert_eq!(call("term_pop_out", json!({ "id": "plain-ide" })), Err(json!("unknown terminal")));
+        assert!(app.get_webview_window("term-1").is_none(), "nothing is built for an unknown terminal");
+        call("term_open", json!({ "kind": "plain", "projectId": "ide", "cols": 90, "rows": 20 })).expect("term_open");
+        let pid = state.terms.get("plain-ide").unwrap().pid().expect("the shell runs");
+
+        // Pop out: a `term-1` window, recorded and announced; the PTY is the same one.
+        assert_eq!(call("term_pop_out", json!({ "id": "plain-ide" })), Ok(json!("term-1")));
+        let window = app.get_webview_window("term-1").expect("the pop-out window exists");
+        // (The mock runtime keeps no title; `windows::window_title` is tested on its own.)
+        assert_eq!(window.url().unwrap().query(), Some("terminal=plain-ide"));
+        assert_eq!(take(), vec![json!({ "id": "plain-ide", "label": "term-1" })]);
+        assert_eq!(call("term_popped", json!({})), Ok(json!([{ "id": "plain-ide", "label": "term-1" }])));
+        assert_eq!(state.terms.get("plain-ide").unwrap().pid(), Some(pid), "a pop-out spawns nothing");
+
+        // Again: the same window (focused), no second one, no event.
+        assert_eq!(call("term_pop_out", json!({ "id": "plain-ide" })), Ok(json!("term-1")));
+        assert!(app.get_webview_window("term-2").is_none());
+        assert!(take().is_empty());
+
+        // The window closed by any means: back in the pane.
+        super::on_window_destroyed(app.handle(), "term-1");
+        assert_eq!(take(), vec![json!({ "id": "plain-ide", "label": null })]);
+        assert_eq!(call("term_popped", json!({})), Ok(json!([])));
+        // A late second report of the same window changes nothing.
+        super::on_window_destroyed(app.handle(), "term-1");
+        assert!(take().is_empty());
+
+        // Popped again: a fresh label. Return to pane forgets it at once.
+        assert_eq!(call("term_pop_out", json!({ "id": "plain-ide" })), Ok(json!("term-2")));
+        take();
+        call("term_return", json!({ "id": "plain-ide" })).expect("term_return");
+        assert_eq!(take(), vec![json!({ "id": "plain-ide", "label": null })]);
+        call("term_return", json!({ "id": "plain-ide" })).expect("returning twice is fine");
+        assert!(take().is_empty());
+
+        // The main window going takes the pop-outs with it; so does quitting.
+        assert_eq!(call("term_pop_out", json!({ "id": "plain-ide" })), Ok(json!("term-3")));
+        take();
+        super::on_window_destroyed(app.handle(), super::MAIN_WINDOW);
+        assert_eq!(take(), vec![json!({ "id": "plain-ide", "label": null })]);
+        assert_eq!(call("term_pop_out", json!({ "id": "plain-ide" })), Ok(json!("term-4")));
+        take();
+        super::windows::close_all(app.handle());
+        assert_eq!(take(), vec![json!({ "id": "plain-ide", "label": null })]);
+        assert!(state.popouts.list().is_empty());
+
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
+        super::pty::tests::wait_dead(pid);
+    }
+
+    /// Collect the payloads of `event` emitted on `app`.
+    fn record(app: &tauri::App<tauri::test::MockRuntime>, event: &str) -> std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> {
+        use tauri::Listener;
+        let events: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> = Default::default();
+        let sink = events.clone();
+        app.listen(event.to_string(), move |e| sink.lock().unwrap().push(serde_json::from_str(e.payload()).unwrap()));
+        events
+    }
+
+    fn drain(events: &std::sync::Mutex<Vec<serde_json::Value>>) -> Vec<serde_json::Value> {
+        std::mem::take(&mut *events.lock().unwrap())
+    }
+
+    #[test]
+    fn pop_out_edges_failed_builds_stale_records_restart_close_and_project_removal() {
+        use serde_json::json;
+        let (app, webview, _dir) = app_with_ide();
+        let folder = tempfile::tempdir().unwrap();
+        let state = app.state::<super::AppState>();
+        state.write_workspace().workspace.projects[0].path = folder.path().display().to_string();
+        state.write().settings.shell = Some(if cfg!(windows) { "cmd.exe /d" } else { "/bin/sh" }.to_string());
+        let popped = record(&app, super::windows::POPPED_EVENT);
+        let infos = record(&app, super::pty::INFO_EVENT);
+        let closed = record(&app, super::pty::CLOSED_EVENT);
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        call("term_open", json!({ "kind": "plain", "projectId": "ide" })).expect("term_open");
+        let term = state.terms.get("plain-ide").unwrap();
+        let first_pid = term.pid().expect("the shell runs");
+
+        // A pop-out whose window is still being built: a second one answers with its label and
+        // builds nothing.
+        let super::windows::Claim::New(building) = state.popouts.claim("plain-ide") else { panic!("fresh claim") };
+        assert_eq!(call("term_pop_out", json!({ "id": "plain-ide" })), Ok(json!(building.clone())));
+        assert!(app.get_webview_window(&building).is_none());
+        state.popouts.finish_build(&building);
+        assert!(state.popouts.release("plain-ide", &building));
+
+        // A window the OS (here: a taken label) will not make: an error, nothing recorded.
+        tauri::WebviewWindowBuilder::new(&app, "term-2", Default::default()).build().unwrap();
+        let err = call("term_pop_out", json!({ "id": "plain-ide" })).expect_err("the label is taken");
+        assert!(err.as_str().unwrap().starts_with("could not open the terminal window: "), "{err}");
+        assert!(state.popouts.list().is_empty());
+        assert!(drain(&popped).is_empty());
+
+        // A record whose window is gone: forgotten, and a new window built.
+        let super::windows::Claim::New(stale) = state.popouts.claim("plain-ide") else { panic!("fresh claim") };
+        state.popouts.finish_build(&stale);
+        assert_eq!(stale, "term-3");
+        assert_eq!(call("term_pop_out", json!({ "id": "plain-ide" })), Ok(json!("term-4")));
+        assert_eq!(
+            drain(&popped),
+            vec![json!({ "id": "plain-ide", "label": null }), json!({ "id": "plain-ide", "label": "term-4" })]
+        );
+        assert!(app.get_webview_window("term-4").is_some());
+
+        // A restart (of the popped terminal) tells every window its new info.
+        call("term_kill", json!({ "id": "plain-ide" })).expect("term_kill");
+        let started = std::time::Instant::now();
+        while term.is_running() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(20), "kill did not end the shell");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let restarted = call("term_restart", json!({ "id": "plain-ide" })).expect("term_restart");
+        assert_eq!(drain(&infos), vec![restarted]);
+        let second_pid = term.pid().expect("the restarted shell runs");
+
+        // The project leaving the canvas closes its terminals' pop-outs.
+        call("workspace_remove_project", json!({ "projectId": "ide" })).expect("remove");
+        assert_eq!(drain(&popped), vec![json!({ "id": "plain-ide", "label": null })]);
+        assert!(state.popouts.list().is_empty());
+        super::pty::tests::wait_dead(second_pid);
+        super::pty::tests::wait_dead(first_pid);
+
+        // Closing a popped-out exited session terminal: closed, popped null, the record gone.
+        #[cfg(windows)]
+        let (program, args) = ("cmd.exe", vec!["/d".to_string(), "/c".to_string(), "exit 0".to_string()]);
+        #[cfg(not(windows))]
+        let (program, args) = ("/bin/sh", vec!["-c".to_string(), "exit 0".to_string()]);
+        let hooks = super::pty::SessionHooks { first_output: Box::new(|| {}), exit: Box::new(|_| {}) };
+        let spec = super::pty::SpawnSpec::new(program, args, folder.path());
+        let sink = std::sync::Arc::new(super::pty::EventSink(app.handle().clone()));
+        state
+            .terms
+            .open_session("session:s1", "ide", "ide-s1", &folder.path().display().to_string(), (80, 24), spec, sink, hooks)
+            .expect("open_session");
+        let session = state.terms.get("session:s1").unwrap();
+        // (On Windows conhost holds the fixture until its cursor query is answered: kill it.)
+        state.terms.kill("session:s1").expect("kill");
+        let started = std::time::Instant::now();
+        while session.is_running() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(30), "the fixture did not exit");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(call("term_pop_out", json!({ "id": "session:s1" })), Ok(json!("term-5")));
+        drain(&popped);
+        call("term_close", json!({ "id": "session:s1" })).expect("term_close");
+        assert_eq!(drain(&popped), vec![json!({ "id": "session:s1", "label": null })]);
+        assert_eq!(drain(&closed), vec![json!({ "id": "session:s1" })]);
+        assert!(state.popouts.list().is_empty());
+        assert!(state.terms.get("session:s1").is_none());
+
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
     }
 
     /// An `ide` project in a real folder, a session folder in a temp dir, and the launcher's

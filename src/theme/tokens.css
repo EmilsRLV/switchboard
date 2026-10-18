@@ -16,6 +16,7 @@
 
   /* Lines and the one accent (attention only). */
   --border: #262a33;
+  --border-strong: var(--fg-muted); /* the active terminal tab's underline */
   --accent: #e8a33d;
 
   /* Focus rings, the node selection outline, text selection: never the accent. */

@@ -16,8 +16,14 @@ import {
   isPaneOpen,
   sameTarget,
   selectedProject,
+  stepTab,
+  terminalOfTarget,
   useUiStore,
+  withTab,
+  withoutTab,
+  isPoppedOut,
 } from "./ui";
+import { useTerminalStore } from "./terminals";
 import { EMPTY_LIVE, isAcknowledging, unmarkAcknowledging, useLiveStore } from "./live";
 import { useWorkspaceStore } from "./workspace";
 
@@ -387,5 +393,108 @@ describe("terminal pane state", () => {
     expect(loadTerminalWidth(throwing)).toBeNull();
     expect(() => saveTerminalWidth(500, throwing)).not.toThrow();
     expect(loadTerminalWidth(null)).toBeNull();
+  });
+});
+
+describe("terminal tabs (Story 4.5)", () => {
+  beforeEach(() => {
+    useUiStore.setState({ pane: null, selection: null, activeTerminal: null, openTerminals: [], poppedOut: {}, focusOnShow: true });
+    useTerminalStore.setState({ infos: {}, pendingExits: {} });
+  });
+
+  it("withTab adds at the end once; withoutTab hands the active place to a neighbour", () => {
+    const tabs = ["a", "b"];
+    expect(withTab(tabs, "c")).toEqual(["a", "b", "c"]);
+    expect(withTab(tabs, "a")).toBe(tabs);
+    expect(withoutTab(["a", "b", "c"], "b", "b")).toEqual({ tabs: ["a", "c"], active: "c" });
+    expect(withoutTab(["a", "b", "c"], "c", "c")).toEqual({ tabs: ["a", "b"], active: "b" });
+    expect(withoutTab(["a", "b", "c"], "a", "c")).toEqual({ tabs: ["a", "b"], active: "a" });
+    expect(withoutTab(["a"], "a", "a")).toEqual({ tabs: [], active: null });
+    expect(withoutTab(tabs, "a", "x").tabs).toBe(tabs);
+  });
+
+  it("stepTab moves either way and wraps around", () => {
+    expect(stepTab(["a", "b", "c"], "a", 1)).toBe("b");
+    expect(stepTab(["a", "b", "c"], "a", -1)).toBe("c");
+    expect(stepTab(["a", "b", "c"], "c", 1)).toBe("a");
+    expect(stepTab(["a", "b", "c"], "x", 1)).toBe("a");
+    expect(stepTab([], "a", 1)).toBeNull();
+  });
+
+  it("opening adds a tab at the end and activates it; closing and stepping follow the rules", () => {
+    const ui = useUiStore.getState();
+    ui.openTab("A");
+    ui.openTab("B");
+    expect(useUiStore.getState().openTerminals).toEqual(["A", "B"]);
+    expect(useUiStore.getState().activeTerminal).toBe("B");
+    ui.openTab("A");
+    expect(useUiStore.getState().openTerminals).toEqual(["A", "B"]);
+    expect(useUiStore.getState().activeTerminal).toBe("A");
+    ui.nextTab(1);
+    expect(useUiStore.getState().activeTerminal).toBe("B");
+    ui.nextTab(1);
+    expect(useUiStore.getState().activeTerminal).toBe("A");
+    ui.setActiveTerminal("C");
+    expect(useUiStore.getState().openTerminals).toEqual(["A", "B", "C"]);
+    ui.closeTab("C");
+    expect(useUiStore.getState().activeTerminal).toBe("B");
+    ui.setActiveTerminal(null);
+    expect(useUiStore.getState().activeTerminal).toBeNull();
+    expect(useUiStore.getState().openTerminals).toEqual(["A", "B"]);
+  });
+
+  it("records pop-outs by terminal", () => {
+    const ui = useUiStore.getState();
+    ui.setPopped("A", "term-1");
+    expect(isPoppedOut("A")).toBe(true);
+    expect(useUiStore.getState().poppedOut).toEqual({ A: "term-1" });
+    const before = useUiStore.getState().poppedOut;
+    ui.setPopped("A", "term-1");
+    expect(useUiStore.getState().poppedOut).toBe(before);
+    ui.setPopped("A", null);
+    expect(isPoppedOut("A")).toBe(false);
+    expect(isPoppedOut(null)).toBe(false);
+  });
+
+  const term = (id: string, kind: "plain" | "session", project = "ide") => ({
+    id,
+    kind,
+    project_id: project,
+    title: id,
+    cwd: "/p",
+    exited: null,
+    error: null,
+    cols: 80,
+    rows: 24,
+    stopping: false,
+  });
+
+  it("selecting a node with a terminal switches the open pane to its tab, without taking focus", () => {
+    useTerminalStore.getState().upsert(term("session:s1", "session"));
+    useTerminalStore.getState().upsert(term("plain-ide", "plain"));
+    expect(terminalOfTarget({ kind: "session", id: "s1" })).toBe("session:s1");
+    expect(terminalOfTarget({ kind: "project", id: "ide" })).toBe("plain-ide");
+    expect(terminalOfTarget({ kind: "project", id: "other" })).toBeNull();
+    expect(terminalOfTarget({ kind: "session", id: "s2" })).toBeNull();
+
+    // Pane closed: selecting changes nothing.
+    useUiStore.getState().select({ kind: "session", id: "s1" });
+    expect(useUiStore.getState().openTerminals).toEqual([]);
+    expect(useUiStore.getState().activeTerminal).toBeNull();
+
+    useUiStore.setState({ pane: "terminal", selection: null });
+    useUiStore.getState().select({ kind: "session", id: "s1" });
+    expect(useUiStore.getState().openTerminals).toEqual(["session:s1"]);
+    expect(useUiStore.getState().activeTerminal).toBe("session:s1");
+    expect(useUiStore.getState().focusOnShow).toBe(false);
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    expect(useUiStore.getState().openTerminals).toEqual(["session:s1", "plain-ide"]);
+    expect(useUiStore.getState().activeTerminal).toBe("plain-ide");
+    // A node without a terminal leaves the pane as it is.
+    useUiStore.getState().select({ kind: "session", id: "s2" });
+    expect(useUiStore.getState().activeTerminal).toBe("plain-ide");
+    // A tab click focuses again.
+    useUiStore.getState().openTab("session:s1");
+    expect(useUiStore.getState().focusOnShow).toBe(true);
   });
 });

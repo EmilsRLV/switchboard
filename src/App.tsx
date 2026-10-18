@@ -15,6 +15,7 @@ import { mirror } from "./ipc/mirror";
 import { revealToastSession } from "./commands/attention";
 import { registerBuiltins } from "./commands/builtins";
 import { useKeybindings } from "./commands/keybindings";
+import { forgetTerminal } from "./commands/terminal";
 import { useLiveStore } from "./state/live";
 import { useSettingsStore } from "./state/settings";
 import { useStatusStore } from "./state/status";
@@ -121,7 +122,8 @@ export default function App() {
   // Terminal output and exits stream in for every terminal, shown or not (Story 4.1).
   useEffect(() => {
     if (!hasTauriRuntime()) return;
-    return connectTerminals();
+    // A terminal closed in a pop-out window (Story 4.5) leaves the pane too.
+    return connectTerminals({ onClosed: forgetTerminal });
   }, []);
 
   useKeybindings();

@@ -369,6 +369,8 @@ pub struct AppState {
     /// The hooks endpoint's registry (`crate::claude::hooks`, Story 4.3): its state, each
     /// launched session's token, the diagnostics counters.
     pub hooks: crate::claude::hooks::Hooks,
+    /// Which terminal is popped out into which window (`crate::windows`, Story 4.5).
+    pub popouts: crate::windows::PopOuts,
 }
 
 impl AppState {

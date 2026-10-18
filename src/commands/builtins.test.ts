@@ -34,7 +34,7 @@ describe("built-in commands", () => {
     useWorkspaceStore.setState({ snapshot: null, loadError: null });
     usePaletteStore.setState({ isOpen: false, query: "", selected: 0 });
     useSettingsStore.setState({ snapshot: null, loadError: null, actionBusy: false, actionError: null });
-    useUiStore.setState({ pane: null, flashed: [], selection: null, contextMenu: null, notice: null, showAll: [], elsewhereOpen: false });
+    useUiStore.setState({ pane: null, flashed: [], selection: null, contextMenu: null, notice: null, showAll: [], elsewhereOpen: false, activeTerminal: null, openTerminals: [], poppedOut: {} });
     useLiveStore.setState({ snapshot: EMPTY_LIVE, received: false, loadError: null });
     useImportStore.getState().reset();
     useCanvasStore.setState({ instance: null, element: null, dragging: {} });
@@ -51,7 +51,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the forty-one commands with the spec's keybindings", () => {
+  it("register the forty-four commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
@@ -92,6 +92,9 @@ describe("built-in commands", () => {
       "settings.toggle",
       "terminal.close",
       "terminal.kill",
+      "terminal.nextTab",
+      "terminal.popOut",
+      "terminal.prevTab",
       "terminal.restart",
       "terminal.toggle",
     ]);
@@ -127,6 +130,11 @@ describe("built-in commands", () => {
     expect(getCommand("terminal.toggle")?.keybinding).toBe("ctrl+`");
     expect(getCommand("terminal.kill")?.keybinding).toBeUndefined();
     expect(getCommand("terminal.restart")?.keybinding).toBeUndefined();
+    // Story 4.5: the tab keys; pop out is a palette command and a header button, no key.
+    expect(getCommand("terminal.nextTab")?.keybinding).toBe("ctrl+pagedown");
+    expect(getCommand("terminal.prevTab")?.keybinding).toBe("ctrl+pageup");
+    expect(getCommand("terminal.popOut")?.keybinding).toBeUndefined();
+    expect(getCommand("terminal.popOut")?.title).toBe("Pop out terminal");
     expect(getCommand("settings.toggle")?.keybinding).toBe("ctrl+,");
     expect(getCommand("settings.open")?.keybinding).toBeUndefined();
     expect(getCommand("app.quit")?.keybinding).toBe("ctrl+q");
@@ -144,7 +152,7 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the twenty-nine actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the thirty-two actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
@@ -173,6 +181,9 @@ describe("built-in commands", () => {
       "settings.reveal",
       "terminal.close",
       "terminal.kill",
+      "terminal.nextTab",
+      "terminal.popOut",
+      "terminal.prevTab",
       "terminal.restart",
       "terminal.toggle",
     ]);
@@ -206,7 +217,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(41);
+    expect(listCommands()).toHaveLength(44);
   });
 
   const PROJECT_ACTIONS = [

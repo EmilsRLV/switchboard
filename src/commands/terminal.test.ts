@@ -15,7 +15,16 @@ import { useWorkspaceStore } from "../state/workspace";
 import { registerBuiltins } from "./builtins";
 import { handleKeydown, type KeyEventLike } from "./keybindings";
 import { clearCommands, listCommands, runCommand } from "./registry";
-import { forgetProjectTerminals, openProjectTerminal } from "./terminal";
+import {
+  closeTerminalTab,
+  forgetProjectTerminals,
+  forgetTerminal,
+  openProjectTerminal,
+  popOutTerminal,
+  returnToPane,
+  showTerminal,
+} from "./terminal";
+import { applyPoppedEvent } from "../terminal/registry";
 
 function info(overrides: Partial<TermInfo> = {}): TermInfo {
   return { id: "plain-ide", kind: "plain", project_id: "ide", title: "ide", cwd: "/p/ide", exited: null, error: null, cols: 80, rows: 24, stopping: false, ...overrides };
@@ -67,7 +76,16 @@ describe("terminal commands", () => {
   beforeEach(() => {
     clearCommands();
     useWorkspaceStore.setState({ snapshot: workspace([project("ide")]), loadError: null });
-    useUiStore.setState({ pane: null, selection: { kind: "project", id: "ide" }, contextMenu: null, notice: null, elsewhereOpen: false, activeTerminal: null });
+    useUiStore.setState({
+      pane: null,
+      selection: { kind: "project", id: "ide" },
+      contextMenu: null,
+      notice: null,
+      elsewhereOpen: false,
+      activeTerminal: null,
+      openTerminals: [],
+      poppedOut: {},
+    });
     usePaletteStore.setState({ isOpen: false, query: "", selected: 0 });
     useTerminalStore.setState({ infos: {}, pendingExits: {} });
     registerBuiltins();
@@ -189,10 +207,159 @@ describe("terminal commands", () => {
   });
 });
 
+describe("terminal tabs and pop-out (Story 4.5)", () => {
+  const A = () => info({ id: "session:a", kind: "session", title: "ide-aaaa" });
+  const B = () => info({ id: "session:b", kind: "session", title: "ide-bbbb" });
+
+  beforeEach(() => {
+    clearCommands();
+    useWorkspaceStore.setState({ snapshot: workspace([project("ide")]), loadError: null });
+    useUiStore.setState({
+      pane: null,
+      selection: null,
+      contextMenu: null,
+      notice: null,
+      elsewhereOpen: false,
+      activeTerminal: null,
+      openTerminals: [],
+      poppedOut: {},
+    });
+    usePaletteStore.setState({ isOpen: false, query: "", selected: 0 });
+    useTerminalStore.setState({ infos: {}, pendingExits: {} });
+    useTerminalStore.getState().upsert(A());
+    useTerminalStore.getState().upsert(B());
+    registerBuiltins();
+  });
+  afterEach(() => {
+    clearCommands();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("two sessions shown are two tabs, the last active; the tab keys move between them from inside a terminal", async () => {
+    await showTerminal("session:a");
+    await showTerminal("session:b");
+    expect(useUiStore.getState().openTerminals).toEqual(["session:a", "session:b"]);
+    expect(useUiStore.getState().activeTerminal).toBe("session:b");
+    const inTerminal = { closest: () => ({}) };
+    expect(handleKeydown(key("PageUp", { ctrlKey: true, code: "PageUp", target: inTerminal }))).toBe(true);
+    expect(useUiStore.getState().activeTerminal).toBe("session:a");
+    expect(handleKeydown(key("PageDown", { ctrlKey: true, code: "PageDown", target: inTerminal }))).toBe(true);
+    expect(useUiStore.getState().activeTerminal).toBe("session:b");
+    // With the pane hidden the tab keys are not taken.
+    useUiStore.getState().closePane();
+    expect(enabled()).not.toContain("terminal.nextTab");
+    expect(handleKeydown(key("PageDown", { ctrlKey: true }))).toBe(false);
+  });
+
+  it("× on a running terminal drops the tab only; Show terminal brings it back", async () => {
+    const invoke = runtime({});
+    await showTerminal("session:a");
+    await showTerminal("session:b");
+    await closeTerminalTab("session:b");
+    expect(useUiStore.getState().openTerminals).toEqual(["session:a"]);
+    expect(useUiStore.getState().activeTerminal).toBe("session:a");
+    expect(useUiStore.getState().pane).toBe("terminal");
+    expect(invoke).not.toHaveBeenCalled();
+    expect(useTerminalStore.getState().infos["session:b"]).toBeDefined();
+    await showTerminal("session:b");
+    expect(useUiStore.getState().openTerminals).toEqual(["session:a", "session:b"]);
+    // The last tab going puts the pane away.
+    await closeTerminalTab("session:a");
+    await closeTerminalTab("session:b");
+    expect(useUiStore.getState().pane).toBeNull();
+    expect(useUiStore.getState().activeTerminal).toBeNull();
+  });
+
+  it("× on an exited session terminal closes it, as Close does", async () => {
+    const invoke = runtime({ term_close: undefined });
+    await showTerminal("session:a");
+    await showTerminal("session:b");
+    useTerminalStore.getState().markExited("session:a", 0);
+    await closeTerminalTab("session:a");
+    expect(invoke).toHaveBeenCalledWith("term_close", { id: "session:a" }, undefined);
+    expect(useTerminalStore.getState().infos["session:a"]).toBeUndefined();
+    expect(useUiStore.getState().openTerminals).toEqual(["session:b"]);
+    expect(useUiStore.getState().activeTerminal).toBe("session:b");
+  });
+
+  it("Pop out is offered for the active terminal until it is popped; a failure is the notice and the tab stays", async () => {
+    vi.useFakeTimers();
+    const invoke = runtime({ term_pop_out: new Error("could not open the terminal window: no display") });
+    expect(enabled()).not.toContain("terminal.popOut");
+    await showTerminal("session:b");
+    expect(enabled()).toContain("terminal.popOut");
+    expect(await popOutTerminal()).toBe(false);
+    expect(useUiStore.getState().notice).toEqual({ text: "could not open the terminal window: no display" });
+    expect(useUiStore.getState().poppedOut).toEqual({});
+    expect(useUiStore.getState().activeTerminal).toBe("session:b");
+
+    invoke.mockImplementation(() => Promise.resolve("term-1"));
+    expect(runCommand("terminal.popOut")).toBe(true);
+    await flush();
+    expect(invoke).toHaveBeenCalledWith("term_pop_out", { id: "session:b" }, undefined);
+    expect(useUiStore.getState().poppedOut).toEqual({ "session:b": "term-1" });
+    expect(useUiStore.getState().openTerminals).toEqual(["session:b"]);
+    expect(enabled()).not.toContain("terminal.popOut");
+
+    invoke.mockImplementation(() => Promise.resolve(undefined));
+    expect(await returnToPane("session:b")).toBe(true);
+    expect(invoke).toHaveBeenCalledWith("term_return", { id: "session:b" }, undefined);
+    expect(useUiStore.getState().poppedOut).toEqual({});
+    expect(enabled()).toContain("terminal.popOut");
+  });
+
+  it("Pop out is offered only while the pane is open on the terminal", async () => {
+    await showTerminal("session:b");
+    expect(enabled()).toContain("terminal.popOut");
+    useUiStore.getState().closePane();
+    expect(enabled()).not.toContain("terminal.popOut");
+  });
+
+  it("a pop-out reply older than a term://popped event does not overwrite it", async () => {
+    const invoke = runtime({});
+    await showTerminal("session:b");
+    let answer: (label: string) => void = () => {};
+    invoke.mockImplementation(() => new Promise((resolve) => (answer = resolve as (label: string) => void)));
+    const pending = popOutTerminal();
+    // The window opened and was closed again before the reply arrived.
+    applyPoppedEvent("session:b", "term-1");
+    applyPoppedEvent("session:b", null);
+    answer("term-1");
+    expect(await pending).toBe(true);
+    expect(useUiStore.getState().poppedOut).toEqual({});
+  });
+
+  it("× on an exited session tab whose close is refused keeps the tab and shows the notice", async () => {
+    vi.useFakeTimers();
+    runtime({ term_close: new Error("terminal is still running") });
+    await showTerminal("session:a");
+    useTerminalStore.getState().markExited("session:a", 0);
+    await closeTerminalTab("session:a");
+    expect(useUiStore.getState().notice).toEqual({ text: "terminal is still running" });
+    expect(useUiStore.getState().openTerminals).toEqual(["session:a"]);
+    expect(useTerminalStore.getState().infos["session:a"]).toBeDefined();
+  });
+
+  it("a terminal closed in another window leaves its tab, info and pop-out record", async () => {
+    await showTerminal("session:a");
+    await showTerminal("session:b");
+    useUiStore.getState().setPopped("session:b", "term-1");
+    forgetTerminal("session:b");
+    expect(useTerminalStore.getState().infos["session:b"]).toBeUndefined();
+    expect(useUiStore.getState().openTerminals).toEqual(["session:a"]);
+    expect(useUiStore.getState().activeTerminal).toBe("session:a");
+    expect(useUiStore.getState().poppedOut).toEqual({});
+    // Idempotent.
+    forgetTerminal("session:b");
+    expect(useUiStore.getState().openTerminals).toEqual(["session:a"]);
+  });
+});
+
 describe("forgetProjectTerminals", () => {
   it("drops the project's terminals and puts the pane away when it showed one", () => {
     useTerminalStore.setState({ infos: { "plain-ide": info(), "plain-x": info({ id: "plain-x", project_id: "x" }) }, pendingExits: {} });
-    useUiStore.setState({ pane: "terminal", activeTerminal: "plain-ide" });
+    useUiStore.setState({ pane: "terminal", activeTerminal: "plain-ide", openTerminals: ["plain-ide"], poppedOut: {} });
     forgetProjectTerminals("ide");
     expect(Object.keys(useTerminalStore.getState().infos)).toEqual(["plain-x"]);
     expect(useUiStore.getState().pane).toBeNull();

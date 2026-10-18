@@ -4,7 +4,7 @@
 // `when`s of the terminal commands.
 
 import { create } from "zustand";
-import type { TermInfo } from "../ipc";
+import type { SessionState, TermInfo } from "../ipc";
 
 export type TerminalsState = {
   /** Every known terminal by id. */
@@ -133,4 +133,21 @@ export function stoppingSessionIds(infos: Readonly<Record<string, TermInfo>>): s
 /** The terminal Switchboard runs session `sessionId` in, when it launched it; else `null`. */
 export function sessionTerminal(sessionId: string): TermInfo | null {
   return terminalInfo(sessionTerminalId(sessionId));
+}
+
+/** What a terminal's tab shows after its title (Story 4.5): a muted state word, and the attention dot. */
+export type TabState = { word: string; attention: boolean };
+
+/**
+ * A tab's state: for a running session terminal the session's own state word (`busy`, `idle`,
+ * `waiting`, …), with the attention dot for `waiting` / `finished`; otherwise the header's word
+ * (`running`, `stopping`, `exited N`, or why it could not start). Nothing for an unknown terminal.
+ */
+export function tabState(info: TermInfo | null, session: SessionState | null): TabState {
+  if (info === null) return { word: "", attention: false };
+  if (info.kind !== "session" || info.error !== null || info.exited !== null || info.stopping || session === null) {
+    return { word: terminalStateText(info), attention: false };
+  }
+  const word = session.kind === "other" ? session.raw : session.kind;
+  return { word, attention: session.kind === "waiting" || session.kind === "finished" };
 }

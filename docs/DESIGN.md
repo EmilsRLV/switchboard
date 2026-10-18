@@ -35,6 +35,7 @@ files. `settings.theme` stays reserved; there is no light theme.
 | Token | Value | Use |
 |---|---|---|
 | `--border` | `#262a33` | Every border and separator. |
+| `--border-strong` | `var(--fg-muted)` | The active terminal tab's underline (Story 4.5). |
 | `--accent` | `#e8a33d` | Attention only (see [The accent](#the-accent)). |
 | `--focus` | `var(--fg)` | Focus rings and the node selection outline. |
 | `--selection` | `var(--fg-muted)` | Text selection background (text in `--bg`). |
@@ -152,6 +153,20 @@ drag handle) follows every rule here.
   `--fg-muted`, ellipsis), the state (mono `--text-xs` `--fg-muted`: `running`, `stopping`, `exited N`; `could not start
   …` is `.pane-error`) and the buttons. Below it the terminal fills the rest on `--bg-raised` with no chrome
   inside it. It appears without animation, like every pane.
+- **Terminal tabs and pop-outs** (Story 4.5). The terminal pane has a tab strip above its header: one tab
+  per terminal opened or shown in it, over a 1-px `--border` line, scrolling sideways when the tabs overflow.
+  Each tab is a plain `<button>` (the active one `aria-current`) followed by its own labelled × button; no
+  tablist roles. Tabs do not look like buttons: no border, no surface, the plain text style (`--text-md`, `--fg-muted`; `--fg` when
+  active or hovered), the active tab underlined by a 1-px `--border-strong` line. A tab holds the title
+  (ellipsis), the state word (mono `--text-xs` `--fg-muted`), the Story 3.3 attention dot before it for a
+  `waiting` / `finished` session (4 px, round, `--accent` through `.session-attention`; static, no pulse) and
+  `↗` in `--fg-muted` while the terminal is popped out, then its × in the same muted text. Keyboard focus is
+  the usual 1-px `--focus` outline. A popped-out tab's body is a placeholder: "In its own window" in
+  `--text-md` `--fg-muted`, centred, with **Focus window** and **Return to pane** as ordinary buttons; its header
+  keeps the title, state and Hide only. A pop-out window (900 × 600, at least 480 × 320) is the terminal alone
+  on `--bg-raised` (its native background is the same colour, kept equal to the token by a Rust test): the
+  pane's header row (with **Return to pane**) and the terminal filling the rest, no tab strip; the notice shows
+  over its top edge as in the main window. Alt+F4 inside a terminal closes the window, in both kinds of window. No new motion: tabs switch and windows appear without animation.
 - **The launch sheet** (`n` on a project, Story 4.2) is a pane like settings and import, at their width: the
   title `New session`, then labelled fields stacked in a column (label in `--text-sm` `--fg-muted`; inputs,
   selects and the prompt textarea on `--bg` with a 1-px `--border`, `--radius-sm`, `--text-md`, a `--fg-muted`
@@ -279,7 +294,7 @@ Only six motions exist; every one is instant (or static) under `prefers-reduced-
 | Attention pulse (the accent dot before `finished` / `waiting`: the busy pulse) | 1.2 s |
 | Project glow (the accent outline around a project needing you: opacity 1 → 0.4, ease-in-out, alternating, looping; opacity only) | 1.2 s |
 
-Panes (the terminal pane and the launch sheet too), banners, the notice, the menu and the Elsewhere tray appear without animation.
+Panes (the terminal pane and the launch sheet too), terminal tabs and pop-out windows, banners, the notice, the menu and the Elsewhere tray appear without animation.
 
 ## Icons
 

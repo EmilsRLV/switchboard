@@ -44,3 +44,9 @@
 - An isolated test for `pty::allow_ctrl_c` with the test process set to ignore Ctrl+C (process-wide console state, so a separate test binary).
 - Component tests for the fork edge and its handles, once a component test environment exists.
 - Resume and Fork with the session's own last model and permission mode, read from its transcript, instead of the project's latest launch choices.
+
+## From Story 4.5 (tabs and pop-outs) review
+
+- Restrict the commands a `term-*` pop-out window may invoke to `term_*` through an app permission manifest (all commands then need permissions, main included).
+- Remember pop-out window size and position (window-state currently skips `term-*`).
+- A test for `on_run_event` routing of `ExitRequested` / `WindowEvent::Destroyed` (Tauri's event types are non-exhaustive; pull the routing into a pure function first).

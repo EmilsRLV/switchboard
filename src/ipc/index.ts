@@ -379,6 +379,21 @@ export const TERM_DATA_EVENT = "term://data";
 /** Event name Rust emits with a `TermExit` when a terminal's child exits. */
 export const TERM_EXIT_EVENT = "term://exit";
 
+/** Mirrors `windows::PoppedPayload`: terminal `id` is in pop-out window `label`, or back in the pane (`null`). */
+export type TermPopped = { id: string; label: string | null };
+
+/** Mirrors `pty::ClosedPayload`: terminal `id` was closed (`term_close`) and is gone. */
+export type TermClosed = { id: string };
+
+/** Event name Rust emits with a `TermPopped` whenever a terminal pops out or returns (Story 4.5). */
+export const TERM_POPPED_EVENT = "term://popped";
+
+/** Event name Rust emits with a `TermInfo` when a terminal is restarted (every window learns it runs again). */
+export const TERM_INFO_EVENT = "term://info";
+
+/** Event name Rust emits with a `TermClosed` when a terminal is closed (every window forgets it). */
+export const TERM_CLOSED_EVENT = "term://closed";
+
 // --- launching sessions (`src-tauri/src/claude/launch.rs`, Story 4.2) ------------------------
 
 /**
@@ -452,6 +467,9 @@ type Commands = {
   session_fork: LaunchResult;
   session_stop: TermInfo;
   term_close: void;
+  term_pop_out: string;
+  term_return: void;
+  term_popped: TermPopped[];
   diagnostics_get: DiagnosticsSnapshot;
 };
 
@@ -667,6 +685,24 @@ export function termClose(id: string): Promise<void> {
   return call("term_close", { id });
 }
 
+/**
+ * `ipc::term_pop_out` (Story 4.5) -- pop a terminal out into its own window (`term-<n>`), or
+ * focus the window it is already in. Resolves the window's label.
+ */
+export function termPopOut(id: string): Promise<string> {
+  return call("term_pop_out", { id });
+}
+
+/** `ipc::term_return` -- close a terminal's pop-out window; it returns to the pane. */
+export function termReturn(id: string): Promise<void> {
+  return call("term_return", { id });
+}
+
+/** `ipc::term_popped` -- every popped-out terminal and its window (after a reload). */
+export function termPopped(): Promise<TermPopped[]> {
+  return call("term_popped");
+}
+
 /** `ipc::term_list` -- every terminal, in the order opened. */
 export function termList(): Promise<TermInfo[]> {
   return call("term_list");
@@ -802,4 +838,28 @@ export async function onFileDrop(callback: (drop: FileDrop) => void): Promise<Un
       callback({ paths, position: { x: position.x, y: position.y } });
     }
   });
+}
+
+/** Subscribe to `term://popped`; same contract as {@link onSettingsChanged}. */
+export async function onTermPopped(callback: (popped: TermPopped) => void): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return listen<TermPopped>(TERM_POPPED_EVENT, (event) => callback(event.payload));
+}
+
+/** Subscribe to `term://info`; same contract as {@link onSettingsChanged}. */
+export async function onTermInfo(callback: (info: TermInfo) => void): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return listen<TermInfo>(TERM_INFO_EVENT, (event) => callback(event.payload));
+}
+
+/** Subscribe to `term://closed`; same contract as {@link onSettingsChanged}. */
+export async function onTermClosed(callback: (closed: TermClosed) => void): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return listen<TermClosed>(TERM_CLOSED_EVENT, (event) => callback(event.payload));
 }

@@ -90,6 +90,7 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | `n` | New session…: with a project selected, open the launch sheet (see [Starting sessions](#starting-sessions)); on a session or branch it does nothing. Not while focus is in a text field or a select, nor while the context menu is open. |
 | ``ctrl+` `` | Toggle terminal: hide the terminal pane, or show it again with the last terminal focused. Works with focus in the terminal too. |
 | `ctrl+shift+k` | The palette's second binding: the same toggle as `ctrl+k`, and the one that still works with focus in a terminal (where `ctrl+k` is the shell's). |
+| `ctrl+pageup` / `ctrl+pagedown` | Previous / next terminal tab, wrapping around (see [Tabs and pop-outs](#tabs-and-pop-outs)). Only while the terminal pane shows two tabs or more; works with focus in the terminal too. |
 | `ctrl+j` | Go to session that needs you: the session that has been `finished` (or `waiting`) longest is revealed and selected, its project expanded first when collapsed (see [Needs you](#needs-you)). Enabled only while a session on a canvas project needs you; press again for the next one. |
 | `←` `→` `↑` `↓` | Move the selection to the nearest node in that direction (see [Keyboard navigation](#keyboard-navigation)); with nothing selected, select the node nearest the middle of the view. Only while no palette, pane, menu or Elsewhere list is open: those keep their own arrow handling. |
 | Enter | The selected node's default action: a project with children expands or collapses (persisted); a `show all (N)` / `show fewer` row toggles the column (see [Sessions](#sessions)); a childless project or a child card does nothing (Resume, Fork and Stop are menu and palette commands; see [Resume, fork, stop](#resume-fork-stop)). Same condition as the arrows. |
@@ -97,7 +98,7 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 
 `e` and `/` are reserved for later epics and deliberately unbound; so is Delete (removal is a menu action).
 
-The palette lists twenty-nine commands: Toggle command palette, Add project folder…, Import from Claude…, Open
+The palette lists thirty-two commands: Toggle command palette, Add project folder…, Import from Claude…, Open
 settings, Reveal settings file (only when the file's location is known), Re-detect binaries (not while one
 runs), Fit view (once the canvas has mounted; the two project commands need it too), Quit, Toggle Elsewhere
 sessions (only while the Elsewhere tray has rows), Go to session that needs you (only while one does),
@@ -106,7 +107,9 @@ Resume, Fork and Stop (for the selected session card, each when it applies; see
 [Starting sessions](#starting-sessions)), Attach in terminal (only while a live session card started elsewhere
 is selected; see [Live sessions](#live-sessions)), Toggle terminal (only while there is a terminal; see
 [Terminal](#terminal)), Kill terminal (only while the pane's terminal runs), Restart terminal (only once a plain terminal has
-exited), Close terminal (only once a session terminal has exited), and, while a
+exited), Close terminal (only once a session terminal has exited), Pop out terminal (only while the pane's
+terminal is not in its own window yet), Next / Previous terminal tab (only while the pane shows two tabs or
+more; see [Tabs and pop-outs](#tabs-and-pop-outs)), and, while a
 project card is selected, the project actions: New session…, Plain terminal…, Open in external editor, Open
 in file manager, Reveal Claude project dir, Re-layout children, Remove from canvas, plus exactly one of Expand
 project / Collapse project (neither for a project without children) and Show all sessions (only for an
@@ -409,12 +412,14 @@ The pane is wider than the others (`min(720px, 70vw)`) and its left edge drags i
 width is remembered in this browser profile (`localStorage`, best effort). Its header shows the project, its
 folder, the state (`running`, `stopping` during a Stop, `exited N`) and **Restart** (once exited), **Hide** and **Kill**; below it the
 terminal itself, with 10 000 lines of scrollback. Resizing the pane or the window refits the terminal and resizes
-the PTY (debounced to 50 ms). The pane shows one terminal at a time: the one most recently opened or shown.
+the PTY (debounced to 50 ms). The pane shows one terminal at a time, the active tab (see
+[Tabs and pop-outs](#tabs-and-pop-outs)).
 
 **Keys.** With focus in the terminal every key is the terminal's: Esc, `ctrl+c`, `ctrl+o`, `ctrl+k`, `ctrl+r`
-and the rest reach the shell (or the program running in it), and Esc does not close the pane. Only two keys
-still reach the app: ``ctrl+` `` hides the pane (and shows it again from anywhere, refocusing the terminal), and
-`ctrl+shift+k` opens the palette. Outside the terminal (on the header's buttons, say) Esc closes the pane as
+and the rest reach the shell (or the program running in it), and Esc does not close the pane. Only four keys
+still reach the app: ``ctrl+` `` hides the pane (and shows it again from anywhere, refocusing the terminal),
+`ctrl+shift+k` opens the palette, and `ctrl+pageup` / `ctrl+pagedown` move between the tabs. Alt+F4 is never
+the terminal's: it closes the window, as anywhere else. Outside the terminal (on the header's buttons, say) Esc closes the pane as
 usual.
 
 **Copy and paste.** `ctrl+shift+c` copies the selection; `ctrl+shift+v` pastes, as do `ctrl+v` and the
@@ -435,6 +440,40 @@ webview reload gets every terminal back with its recent output.
 GPU reset), it switches to its DOM renderer for the rest of its life: the same output, drawn more slowly. Links
 are underlined on hover but do not open a browser. Its colours come from the design tokens, the 16 ANSI colours
 included (see [Design](#design)).
+
+### Tabs and pop-outs
+
+Every terminal opened or shown in the pane (Plain terminal…, Show terminal, a launched, resumed or forked
+session, ``ctrl+` ``) becomes a **tab** in a strip over the header, added at the end and made active. A tab
+shows the terminal's title, its state word (muted: `running`, `exited N`, or a session's own `busy` /
+`idle` / …) and, for a `waiting` or `finished` session, the attention dot. The strip scrolls sideways when the
+tabs do not fit. Each tab is a plain button (screen readers hear the active one as current) with its own
+labelled × button ("Close tab <title>"), so Tab walks through them in order. Switching tabs is instant: every terminal's view lives on, hidden, and keeps receiving output.
+Click a tab, or press `ctrl+pageup` / `ctrl+pagedown` (from inside the terminal too). While the pane is open,
+selecting a session card with a Switchboard terminal, or a project whose plain terminal is open, switches to
+that terminal's tab (adding it if needed) and leaves focus on the canvas; with the pane closed, selecting
+changes nothing. A tab's **×** removes the tab only: the process keeps running, and Show terminal or Plain
+terminal… brings it back. On an exited session terminal × closes the terminal, as its Close does; if that is
+refused, the tab stays and the notice says why. There is no
+key for closing a tab. Removing a project from the canvas takes its terminals' tabs with it.
+
+**Pop out** (the header button, or Pop out terminal in the palette while the pane is open) moves the active
+terminal into its own OS window, `<title> — Switchboard terminal` (the title follows a restart), 900 × 600,
+resizable down to 480 × 320. It is the same process and the same output:
+the window replays what the terminal kept and follows it live, and typing there goes to the same shell. That
+window has only the terminal, its header (title, state, Restart / Close / Kill as in the pane, and **Return to
+pane**) and copy and paste; no canvas command runs there, and ``ctrl+` ``, `ctrl+shift+k` and the tab keys go to
+the program. Alt+F4 closes it. A refused action shows as the notice in that window. While it is open it sets
+the terminal's size, and only it answers the program's terminal queries. In the
+main window the tab stays, marked `↗`; the pane's header keeps only the title, the state and Hide, and the body
+shows "In its own window" with **Focus window** and **Return to pane**. Output keeps arriving in the pane's
+hidden view too. A Restart in either window clears the other window's view as well. Popping out a terminal that already is
+in a window focuses that window. Closing the window by any means, or Return to pane in either window, brings
+the terminal back: the PTY gets the pane's size at once (even when its tab is not the one showing) and the
+pane's view redraws from the kept output, so lines printed at the window's width are not garbled. Resuming a
+session whose earlier run is popped out returns it to the pane once the new run has started. If the process exits while
+popped out, the window stays and reads `exited N`. Quitting the app (or closing the main window) closes every
+pop-out and kills every terminal as before. Tabs and pop-outs do not survive a restart of the app.
 
 ## Starting sessions
 

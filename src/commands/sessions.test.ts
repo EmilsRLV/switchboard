@@ -262,7 +262,7 @@ describe("resume, fork and stop (Story 4.4)", () => {
   beforeEach(() => {
     const snapshot = workspace(true);
     useWorkspaceStore.setState({ snapshot: { ...snapshot, children: [historic, liveOnly] }, loadError: null });
-    useUiStore.setState({ pane: null, selection: { kind: "session", id: "orig" }, notice: null, activeTerminal: null });
+    useUiStore.setState({ pane: null, selection: { kind: "session", id: "orig" }, notice: null, activeTerminal: null, openTerminals: [], poppedOut: {} });
     useTerminalStore.setState({ infos: {}, pendingExits: {} });
     useLiveStore.setState({ snapshot: EMPTY_LIVE, received: false, loadError: null });
   });
@@ -305,6 +305,39 @@ describe("resume, fork and stop (Story 4.4)", () => {
     expect(useUiStore.getState().selection).toEqual({ kind: "session", id: "orig" });
     expect(useUiStore.getState().pane).toBe("terminal");
     expect(useUiStore.getState().activeTerminal).toBe("session:orig");
+  });
+
+  it("Resume over a popped-out terminal returns it to the pane only once the resume succeeded (Story 4.5)", async () => {
+    useTerminalStore.getState().upsert(sessionTerm("orig", { exited: 0 }));
+    useUiStore.setState({ poppedOut: { "session:orig": "term-1" }, openTerminals: [] });
+    const order: string[] = [];
+    runtime({
+      session_resume: () => {
+        order.push("session_resume");
+        return { session_id: "orig", term: sessionTerm("orig"), choices };
+      },
+      term_return: () => {
+        order.push("term_return");
+      },
+    });
+    await expect(resumeSelectedSession()).resolves.toBe(true);
+    expect(order).toEqual(["session_resume", "term_return"]);
+    expect(useUiStore.getState().poppedOut).toEqual({});
+  });
+
+  it("a refused Resume over a popped-out terminal leaves it in its window", async () => {
+    useTerminalStore.getState().upsert(sessionTerm("orig", { exited: 0 }));
+    useUiStore.setState({ poppedOut: { "session:orig": "term-1" } });
+    const invoke = runtime({
+      session_resume: () => {
+        throw "that session is already running";
+      },
+      term_buffer: () => ({ data: "", offset: 0 }),
+    });
+    await expect(resumeSelectedSession()).resolves.toBe(false);
+    expect(invoke).not.toHaveBeenCalledWith("term_return", expect.anything(), undefined);
+    expect(useUiStore.getState().poppedOut).toEqual({ "session:orig": "term-1" });
+    useUiStore.setState({ poppedOut: {} });
   });
 
   it("a refused Resume is the notice, and the earlier run's terminal stays known", async () => {

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::claude::hooks::{self, DiagnosticsSnapshot};
@@ -18,6 +18,7 @@ use crate::process;
 use crate::pty::{self, EventSink, SessionHooks, SpawnSpec, TermBuffer, TermInfo, TermKind};
 use crate::settings::detect::Search;
 use crate::settings::{self, AppState, Snapshot};
+use crate::windows;
 
 /// The notice behind "Open in external editor" when `settings.external_editor` is unset.
 pub const NO_EDITOR: &str = "No external editor configured — set external_editor in settings";
@@ -195,7 +196,11 @@ pub async fn workspace_remove_project<R: Runtime>(app: AppHandle<R>, project_id:
     // Its terminals go too: their children are killed and the terminals forgotten.
     let terms_app = app.clone();
     let forget_id = project_id.clone();
-    blocking(move || terms_app.state::<AppState>().terms.forget_project(&forget_id)).await?;
+    let forgotten = blocking(move || terms_app.state::<AppState>().terms.forget_project(&forget_id)).await?;
+    // Their pop-out windows close (Story 4.5).
+    for id in &forgotten {
+        windows::return_to_pane(&app, id);
+    }
     // Drop the removed project's discovered sessions now, not at the next tick.
     let sessions_app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -563,7 +568,11 @@ pub async fn term_restart<R: Runtime>(app: AppHandle<R>, id: String) -> Result<T
         let state = app.state::<AppState>();
         let cwd = state.terms.get(&id).map(|t| t.cwd.clone()).unwrap_or_default();
         let spec_app = app.clone();
-        state.terms.restart(&id, move || plain_spec(&spec_app, &cwd), sink(&app))
+        let info = state.terms.restart(&id, move || plain_spec(&spec_app, &cwd), sink(&app))?;
+        // The other windows showing it (a pop-out, the pane) learn it runs again (Story 4.5).
+        let _ = app.emit(pty::INFO_EVENT, &info);
+        windows::retitle(&app, &info.id, &info.title);
+        Ok(info)
     })
     .await?
 }
@@ -578,7 +587,35 @@ pub async fn term_kill<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), 
 /// "Close", `terminal.close`). A running or plain terminal is an `Err`.
 #[tauri::command]
 pub async fn term_close<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
-    blocking(move || app.state::<AppState>().terms.close(&id)).await?
+    let close_app = app.clone();
+    let close_id = id.clone();
+    blocking(move || close_app.state::<AppState>().terms.close(&close_id)).await??;
+    // Its pop-out goes with it, and every window forgets it (a pop-out's Close, Story 4.5).
+    windows::return_to_pane(&app, &id);
+    let _ = app.emit(pty::CLOSED_EVENT, pty::ClosedPayload { id });
+    Ok(())
+}
+
+/// Pop a terminal out into its own window (`term-<n>`, Story 4.5), or focus the window it is
+/// already in. Replies with the window's label; `term://popped` tells every webview. Async on
+/// purpose: building a window from a sync command deadlocks on Windows.
+#[tauri::command]
+pub async fn term_pop_out<R: Runtime>(app: AppHandle<R>, id: String) -> Result<String, String> {
+    windows::pop_out(&app, &id)
+}
+
+/// Return a popped-out terminal to the pane: its window closes and `term://popped` says so.
+/// A terminal that is not popped out is left alone.
+#[tauri::command]
+pub async fn term_return<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
+    windows::return_to_pane(&app, &id);
+    Ok(())
+}
+
+/// Every popped-out terminal and its window (a reloaded main window picks them up).
+#[tauri::command]
+pub fn term_popped(state: State<'_, AppState>) -> Vec<windows::PoppedPayload> {
+    state.popouts.list()
 }
 
 /// Every terminal, in the order they were opened.
@@ -1045,6 +1082,10 @@ fn run_launch<R: Runtime>(
             return Err(message);
         }
     };
+    // A resumed session's terminal may still be in a pop-out showing the earlier run (Story 4.5):
+    // now that the new run started, it returns to the pane, before its first output goes out
+    // (the pane's view answers the new program's queries).
+    windows::return_to_pane(app, &term.id);
     // A `starting` child on the canvas now, before any poll.
     live::update_and_emit(app, |_| true);
     Ok(LaunchResult {

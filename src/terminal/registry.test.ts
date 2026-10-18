@@ -106,6 +106,12 @@ vi.mock("../ipc", () => ({
   termRestart: vi.fn(),
   onTermData: vi.fn(() => Promise.resolve(() => {})),
   onTermExit: vi.fn(() => Promise.resolve(() => {})),
+  onTermInfo: vi.fn(() => Promise.resolve(() => {})),
+  onTermClosed: vi.fn(() => Promise.resolve(() => {})),
+  onTermPopped: vi.fn(() => Promise.resolve(() => {})),
+  termPopped: vi.fn(() => Promise.resolve([])),
+  termPopOut: vi.fn(),
+  termReturn: vi.fn(() => Promise.resolve()),
   workspaceRemoveProject: vi.fn(),
 }));
 
@@ -150,8 +156,12 @@ async function load() {
   const registry = await import("./registry");
   const ipc = await import("../ipc");
   const { useTerminalStore } = await import("../state/terminals");
+  const { useUiStore } = await import("../state/ui");
   useTerminalStore.setState({ infos: {}, pendingExits: {} });
-  return { registry, ipc: vi.mocked(ipc), useTerminalStore };
+  // Mock implementations outlive `resetModules`: the ones a test may change start over.
+  vi.mocked(ipc).termPopped.mockResolvedValue([]);
+  vi.mocked(ipc).termList.mockResolvedValue([]);
+  return { registry, ipc: vi.mocked(ipc), useTerminalStore, useUiStore };
 }
 
 function keyEvent(key: string, mods: Partial<KeyboardEvent> = {}) {
@@ -314,6 +324,24 @@ describe("handleKey", () => {
     expect(registry.handleKey(term, native)).toBe(false);
     expect(native.preventDefault).not.toHaveBeenCalled();
     expect(term.paste).toHaveBeenCalledTimes(1);
+
+    // Alt+F4 closes the window: xterm stays out and nothing prevents the default (Story 4.5).
+    const close = keyEvent("F4", { altKey: true });
+    expect(registry.handleKey(term, close)).toBe(false);
+    expect(close.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("in a pop-out, the app's pass-through keys are the terminal's (no dispatcher there); Alt+F4 still closes", async () => {
+    const { registry } = await load();
+    const stop = registry.connectTerminals({ only: "t" });
+    const term = { hasSelection: () => false, getSelection: () => "", paste: vi.fn() };
+    for (const k of [keyEvent("PageUp", { ctrlKey: true }), keyEvent("PageDown", { ctrlKey: true }), keyEvent("`", { ctrlKey: true }), keyEvent("K", { ctrlKey: true, shiftKey: true })]) {
+      expect(registry.handleKey(term, k), k.key).toBe(true);
+    }
+    const close = keyEvent("F4", { altKey: true });
+    expect(registry.handleKey(term, close)).toBe(false);
+    expect(close.preventDefault).not.toHaveBeenCalled();
+    stop();
   });
 });
 
@@ -335,6 +363,188 @@ describe("syncSize", () => {
     proposed = undefined; // cannot measure: nothing sent
     registry.syncSize("t");
     expect(ipc.termResize).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("pop-outs (Story 4.5)", () => {
+  it("the main window sends no size for a popped-out terminal, and one for the pane on its return", async () => {
+    const { registry, ipc, useTerminalStore } = await load();
+    registry.setHolder(element() as unknown as HTMLElement);
+    registry.ensureView("t");
+    useTerminalStore.getState().upsert(info());
+    proposed = { cols: 90, rows: 25 };
+    registry.syncSize("t");
+    expect(ipc.termResize).toHaveBeenCalledTimes(1);
+    registry.applyPopped("t", "term-1");
+    proposed = { cols: 70, rows: 20 };
+    registry.syncSize("t");
+    expect(ipc.termResize).toHaveBeenCalledTimes(1);
+    // Back in the pane at the size it had before: the pop-out resized the PTY, so it is sent again.
+    registry.applyPopped("t", null);
+    proposed = { cols: 90, rows: 25 };
+    registry.syncSize("t");
+    expect(ipc.termResize).toHaveBeenCalledTimes(2);
+    expect(ipc.termResize).toHaveBeenLastCalledWith("t", 90, 25);
+    registry.syncSize("t");
+    expect(ipc.termResize).toHaveBeenCalledTimes(2);
+  });
+
+  it("a pop-out follows its own terminal only and replays its buffer into a view it made already", async () => {
+    const { registry, ipc, useTerminalStore } = await load();
+    let onData: (data: { id: string; data: string; offset: number }) => void = () => {};
+    ipc.onTermData.mockImplementation((cb) => {
+      onData = cb;
+      return Promise.resolve(() => {});
+    });
+    ipc.termList.mockResolvedValue([info({ id: "t" }), info({ id: "other" })]);
+    ipc.termBuffer.mockResolvedValue({ data: "hello", offset: 5 });
+    registry.setHolder(element() as unknown as HTMLElement);
+    // The window shows its terminal before the list arrives.
+    registry.ensureView("t");
+    const term = FakeTerminal.last!;
+    const stop = registry.connectTerminals({ only: "t" });
+    await flush();
+    onData({ id: "other", data: "nope", offset: 4 });
+    onData({ id: "t", data: "lo!", offset: 6 });
+    await flush();
+    expect(Object.keys(useTerminalStore.getState().infos)).toEqual(["t"]);
+    expect(registry.hasView("other")).toBe(false);
+    expect(term.written).toEqual(["<reset>", "hello", "!"]);
+    expect(registry.popOutTerminal()).toBe("t");
+    // A pop-out never listens for pop-outs.
+    expect(ipc.onTermPopped).not.toHaveBeenCalled();
+    expect(ipc.termPopped).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("a reloaded main window picks up which terminals are popped out", async () => {
+    const { registry, ipc, useUiStore } = await load();
+    ipc.termList.mockResolvedValue([]);
+    ipc.termPopped.mockResolvedValue([{ id: "t", label: "term-3" }]);
+    const stop = registry.connectTerminals();
+    await flush();
+    expect(useUiStore.getState().poppedOut).toEqual({ t: "term-3" });
+    expect(registry.popOutTerminal()).toBeNull();
+    stop();
+  });
+});
+
+describe("pop-out events in the main window (Story 4.5)", () => {
+  type Handlers = {
+    popped: (p: { id: string; label: string | null }) => void;
+    info: (i: TermInfo) => void;
+    closed: (c: { id: string }) => void;
+    exit: (e: { id: string; code: number | null }) => void;
+  };
+
+  async function connected(options: { only?: string; onClosed?: (id: string) => void } = {}) {
+    const loaded = await load();
+    const { ipc } = loaded;
+    const handlers = {} as Handlers;
+    ipc.onTermPopped.mockImplementation((cb) => {
+      handlers.popped = cb;
+      return Promise.resolve(() => {});
+    });
+    ipc.onTermInfo.mockImplementation((cb) => {
+      handlers.info = cb;
+      return Promise.resolve(() => {});
+    });
+    ipc.onTermClosed.mockImplementation((cb) => {
+      handlers.closed = cb;
+      return Promise.resolve(() => {});
+    });
+    ipc.onTermExit.mockImplementation((cb) => {
+      handlers.exit = cb;
+      return Promise.resolve(() => {});
+    });
+    ipc.termList.mockResolvedValue([info({ id: "t" }), info({ id: "u" })]);
+    ipc.termBuffer.mockResolvedValue({ data: "", offset: 0 });
+    loaded.registry.setHolder(element() as unknown as HTMLElement);
+    const stop = loaded.registry.connectTerminals(options);
+    await flush();
+    vi.mocked(ipc.termBuffer).mockClear();
+    return { ...loaded, handlers, stop };
+  }
+
+  it("popped, then back: no size while out, the pane's size (even with the tab hidden) and a fresh replay on return", async () => {
+    const { registry, ipc, handlers, useUiStore, stop } = await connected();
+    proposed = { cols: 90, rows: 25 };
+    registry.syncSize("t"); // the pane fitted it: the last pane size
+    expect(ipc.termResize).toHaveBeenLastCalledWith("t", 90, 25);
+    handlers.popped({ id: "t", label: "term-1" });
+    expect(useUiStore.getState().poppedOut).toEqual({ t: "term-1" });
+    registry.syncSize("t");
+    expect(ipc.termResize).toHaveBeenCalledTimes(1);
+    // The pop-out resized the PTY; the view comes back without the pane showing it.
+    ipc.termBuffer.mockResolvedValue({ data: "after", offset: 5 });
+    handlers.popped({ id: "t", label: null });
+    expect(useUiStore.getState().poppedOut).toEqual({});
+    expect(ipc.termResize).toHaveBeenCalledTimes(2);
+    expect(ipc.termResize).toHaveBeenLastCalledWith("t", 90, 25);
+    await flush();
+    expect(ipc.termBuffer).toHaveBeenCalledWith("t");
+    const tView = registry.ensureView("t")!.term as unknown as FakeTerminal;
+    expect(tView.written.slice(-2)).toEqual(["<reset>", "after"]);
+    // The layout effect's own sync on return changes nothing more.
+    registry.syncSize("t");
+    expect(ipc.termResize).toHaveBeenCalledTimes(2);
+    // A second null (the reply after the event) does not replay again.
+    registry.applyPopped("t", null);
+    await flush();
+    expect(ipc.termBuffer).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it("while popped out the main view sends no input (the pop-out answers the program)", async () => {
+    const { registry, ipc, handlers, stop } = await connected();
+    const term = registry.ensureView("t")!.term as unknown as FakeTerminal;
+    handlers.popped({ id: "t", label: "term-1" });
+    term.dataHandler?.("\x1b[1;1R");
+    expect(ipc.termWrite).not.toHaveBeenCalled();
+    handlers.popped({ id: "t", label: null });
+    await flush();
+    term.flushWrites();
+    term.dataHandler?.("x");
+    expect(ipc.termWrite).toHaveBeenCalledWith("t", "x");
+    stop();
+  });
+
+  it("term://info resets a view restarted elsewhere (not one this window restarts); term://closed forgets", async () => {
+    const onClosed = vi.fn();
+    const { registry, handlers, useTerminalStore, stop } = await connected({ onClosed });
+    const term = registry.ensureView("t")!.term as unknown as FakeTerminal;
+    const base = term.resets; // the replay on connect
+    handlers.exit({ id: "t", code: 0 });
+    handlers.info(info({ id: "t" }));
+    expect(term.resets).toBe(base + 1);
+    expect(useTerminalStore.getState().infos.t?.exited).toBeNull();
+    handlers.exit({ id: "t", code: 0 });
+    registry.markRestarting("t", true);
+    handlers.info(info({ id: "t" }));
+    expect(term.resets).toBe(base + 1);
+    registry.markRestarting("t", false);
+    // A running info for a running terminal resets nothing; an unknown terminal is ignored.
+    handlers.info(info({ id: "t", title: "renamed" }));
+    expect(term.resets).toBe(base + 1);
+    expect(useTerminalStore.getState().infos.t?.title).toBe("renamed");
+    handlers.info(info({ id: "nope" }));
+    expect(useTerminalStore.getState().infos.nope).toBeUndefined();
+    handlers.closed({ id: "u" });
+    expect(onClosed).toHaveBeenCalledWith("u");
+    stop();
+  });
+
+  it("a pop-out ignores info and closed for other terminals", async () => {
+    const onClosed = vi.fn();
+    const { handlers, useTerminalStore, stop } = await connected({ only: "t", onClosed });
+    expect(Object.keys(useTerminalStore.getState().infos)).toEqual(["t"]);
+    handlers.info(info({ id: "u", title: "other" }));
+    expect(useTerminalStore.getState().infos.u).toBeUndefined();
+    handlers.closed({ id: "u" });
+    expect(onClosed).not.toHaveBeenCalled();
+    handlers.closed({ id: "t" });
+    expect(onClosed).toHaveBeenCalledWith("t");
+    stop();
   });
 });
 
