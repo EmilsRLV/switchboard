@@ -2,7 +2,7 @@
 title: 'Story 4.1: PTY terminal pane'
 type: 'feature'
 created: '2026-10-18'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'ff5203992aa01f2021ae613f7f912137592edd28'
