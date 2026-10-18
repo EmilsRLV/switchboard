@@ -2,7 +2,7 @@
 title: 'Story 3.3: Status glow and notifications'
 type: 'feature'
 created: '2026-10-18'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'd0cf81f6cfe58b78fac2ba8fdde233133261d33f'
@@ -160,6 +160,7 @@ context:
 - **Reveal:** `revealSession` also turns on `show all` for the project when the session sits past the ten-child cut, so it is drawn before it is selected and panned to.
 - Not run here (owner's constraints): `npm run tauri build`, the GUI/manual checks and the toast check.
 - Orchestrator (2026-10-18, review + GUI): GUI pass with a fake `claude` (a scratchpad `.cmd` answering `--version` and printing one row whose status the script flips), run before and after the patch round. Each time, after busy → idle, the collapsed `ide` card showed the accent glow; `ctrl+j` expanded `ide`, selected the fake session and acknowledged it (`idle · 0 msgs`). Emils' real sessions were not involved. The toast and its click were not driven: that needs Switchboard unfocused, which the guarded script refuses; left to Emils by hand (installed build for the Switchboard identity). Verification after patches: `cargo test` 280, vitest 333, clippy and `tsc` clean, debug build.
+- Orchestrator (2026-10-18, close): committed `eea61b9`, pushed; CI run 39078612318 green on ubuntu-24.04 and windows-latest at the first attempt (first Linux build with the notification plugin). Deferred: one new `deferred-work.md` entry (focused-window check through the mock runtime); component render tests join the existing entries. Epic 3 complete. Left to Emils: a real toast and its click (installed build).
 
 ## Spec Change Log
 
