@@ -2,7 +2,7 @@
 title: 'Story 4.2: New session launch sheet'
 type: 'feature'
 created: '2026-10-18'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '4c3106bfce14200da2813e609cfca3ba557c6733'
