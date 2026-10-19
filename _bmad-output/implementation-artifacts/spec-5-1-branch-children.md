@@ -2,7 +2,7 @@
 title: 'Story 5.1: Branch children'
 type: 'feature'
 created: '2026-10-19'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '5de4d7357f6d09c8976d773788d1e27ff0cd4b70'
