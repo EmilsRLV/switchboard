@@ -812,12 +812,12 @@ fn stop_writes_its_input_in_order_then_kills_only_a_child_still_running() {
     #[cfg(windows)]
     let sleeper = SpawnSpec::new(
         "powershell.exe",
-        ["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60"].map(String::from).to_vec(),
+        ["-NoProfile", "-NonInteractive", "-Command", "Write-Output sleeper-ready; Start-Sleep -Seconds 60"].map(String::from).to_vec(),
         f.dir.path(),
     );
     #[cfg(not(windows))]
     let sleeper = {
-        let mut spec = SpawnSpec::new("/bin/sh", ["-c", "sleep 60; echo late"].map(String::from).to_vec(), f.dir.path());
+        let mut spec = SpawnSpec::new("/bin/sh", ["-c", "echo sleeper-ready; sleep 60; echo late"].map(String::from).to_vec(), f.dir.path());
         spec.env_remove = vec!["ENV".into(), "BASH_ENV".into()];
         spec
     };
@@ -825,11 +825,10 @@ fn stop_writes_its_input_in_order_then_kills_only_a_child_still_running() {
         .open_session("session:c", "p", "c", &cwd, (100, 30), sleeper, f.sink.clone(), no_hooks())
         .unwrap();
     let pid = f.manager.get("session:c").unwrap().pid().unwrap();
-    let settle = Instant::now();
-    while settle.elapsed() < Duration::from_millis(1500) {
-        f.answer_cursor_queries();
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    // Interrupt only once the child is running its sleep: on a loaded runner PowerShell can
+    // take well over a second to start, and a Ctrl+C during start-up is lost.
+    f.wait_for("session:c", "the sleeper", |t| t.contains("sleeper-ready"));
+    std::thread::sleep(Duration::from_millis(200));
     let started = Instant::now();
     let interrupt = vec![(Duration::ZERO, vec![3u8]), (Duration::from_millis(300), vec![3u8])];
     f.manager.stop("session:c", interrupt, Duration::from_secs(10)).unwrap();
