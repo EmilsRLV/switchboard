@@ -98,7 +98,7 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 
 `e` and `/` are reserved for later epics and deliberately unbound; so is Delete (removal is a menu action).
 
-The palette lists thirty-two commands: Toggle command palette, Add project folder…, Import from Claude…, Open
+The palette lists thirty-four commands: Toggle command palette, Add project folder…, Import from Claude…, Open
 settings, Reveal settings file (only when the file's location is known), Re-detect binaries (not while one
 runs), Fit view (once the canvas has mounted; the two project commands need it too), Quit, Toggle Elsewhere
 sessions (only while the Elsewhere tray has rows), Go to session that needs you (only while one does),
@@ -112,8 +112,9 @@ terminal is not in its own window yet), Next / Previous terminal tab (only while
 more; see [Tabs and pop-outs](#tabs-and-pop-outs)), and, while a
 project card is selected, the project actions: New session…, Plain terminal…, Open in external editor, Open
 in file manager, Reveal Claude project dir, Re-layout children, Remove from canvas, plus exactly one of Expand
-project / Collapse project (neither for a project without children) and Show all sessions (only for an
-expanded project with more than ten children). The palette sorts by title. The key-only
+project / Collapse project (neither for a project without children), Show all sessions (only for an
+expanded project with more than ten sessions) and, for a git repo, Show branches / Hide branches (see
+[Branches](#branches)); while a branch card is selected, Copy branch name. The palette sorts by title. The key-only
 carriers (the `ctrl+,` toggle, the palette's second binding `ctrl+shift+k`, the five Esc commands, the four
 arrows and Enter) are registered but hidden from
 the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron on a card runs
@@ -184,7 +185,8 @@ inside the window, in a fixed order with a 1-px rule between the groups:
 `↑`/`↓` move, Enter or a click runs, Esc, a click elsewhere or losing focus closes. The same commands are in
 the palette (by title) while a project card is selected. A right-click on a **session card** selects it and
 opens a menu with its enabled entries only: **Attach in terminal** while the session is live, nothing (no
-menu) for a historic or exited one. Branch cards have no menu yet.
+menu) for a historic or exited one. A right-click on a **branch card** opens a menu with **Copy branch name**
+only (see [Branches](#branches)).
 
 An action that cannot run is a **notice**: a muted line laid over the top edge of the canvas (so it never
 moves or resizes the canvas), without the accent (it is information, not attention), gone after 3 s, one at
@@ -213,16 +215,16 @@ A project with children shows a **chevron** on its card: `▸ 3` while collapsed
 `▾` while expanded. Clicking it, or running Expand/Collapse from the menu or palette, toggles the project
 and persists `expanded`. Expanded, the children appear in a **column** under the card: 16 px in from the
 card's left edge, the first 12 px under it (the card is 240 × 80, so the first child's top-left is at
-`(16, 92)` relative to the card), each child 208 × 40 with 8 px gaps, in a stable order (sessions in list
-order, then branches). Children move with their parent. A child **dragged** out of the column keeps that
+`(16, 92)` relative to the card), each child 208 × 40 with 8 px gaps, in a stable order: the sessions in list
+order, then, as a second group, the branches (see [Branches](#branches)). Children move with their parent. A child **dragged** out of the column keeps that
 spot, relative to the parent, across restarts, and leaves its slot empty; **Re-layout children** returns every child of that project
 to its slot.
 
 Children are derived by Rust from the discovered sessions (see [Sessions](#sessions)), `sessions` and
 `branches` and carried on the snapshot as a flat type-independent list (`children: [{ id, projectId, kind:
-session|branch, label, detail, position, session, branchId }]`, `position: null` for a child in its slot,
-`session` the card's facts for a discovered session and `null` otherwise). Until Epic 5 brings branches, the
-layout can also be tried with **stub children**: set `SWITCHBOARD_STUB_CHILDREN=n` (0–50, read once at startup)
+session|branch, label, detail, position, session, branchId, branch }]`, `position: null` for a child in its
+slot, `session` the card's facts for a discovered session and `branch` those of a discovered branch, `null`
+otherwise). The layout can also be tried with **stub children**: set `SWITCHBOARD_STUB_CHILDREN=n` (0–50, read once at startup)
 and every project gets `n` session stubs (`session 1`…`session n`, detail `stub`) after its real sessions. A
 value above 50 is clamped to 50; a blank, non-numeric or negative value means 0. Launch again without the
 variable and the stubs are gone, while a project's persisted `expanded: true` lingers harmlessly (no chevron,
@@ -351,13 +353,53 @@ with one `git status --porcelain=v2 --branch` per project:
 | `git error` | `git` ran but failed (for example a `safe.directory` refusal); hover for its message. A `git status` that times out keeps the card's previous line. |
 | `…` | Not polled yet. |
 
-Git repos also show an inert "branches" affordance (Epic 5); the `N live` badge counts the project's live
+Git repos also show the **branches** chip at the right of the git line: a toggle that lists the repo's local
+branches under the card (see [Branches](#branches)); the `N live` badge counts the project's live
 sessions (see [Live sessions](#live-sessions)) and is hidden at 0. Git status is **live state**: it is never written to disk. A poller
 on Tauri's async runtime refreshes every project every `poll.git_ms` (default 5 s, re-read from settings
 each tick, floor 250 ms) and right after an add, running `git` off the UI thread with a 5 s timeout and
 `GIT_OPTIONAL_LOCKS=0` so it never blocks a `git` you are running yourself. The binary is the one detection
 found (or `git.path` from settings), else `git` on PATH. Only the changes are pushed to the UI
 (`projects://status`).
+
+### Branches
+
+The **branches** chip on a git project's card (or **Show branches** / **Hide branches** in its menu and the
+palette) toggles the project's **branch cards**. The choice is saved per project (`showBranches`, off by
+default); turning it on with the card collapsed also expands it. Plain folders have neither the chip nor the
+command.
+
+With branches on, the project's **local branches** follow its sessions as a second group in the column, each
+group with its own limit of ten and its own `show all (N)` / `show fewer` row, so sessions and branches never
+push each other out. The checked-out branch comes first, then the rest by last commit, newest first, then by
+name. Each card shows:
+
+| Part | Meaning |
+|---|---|
+| `main *` | The branch name; `*` marks the branch checked out in the project's folder. A detached HEAD marks none (the git line already says `detached`). |
+| `↑2 ↓1` | Commits ahead of / behind its upstream, either part left out when 0; nothing for a branch without an upstream. Ahead/behind is against the last-known upstream refs: nothing is ever fetched. |
+| `upstream gone` | The upstream is configured but its ref no longer exists. |
+| `…/.worktrees/feat` | A **linked worktree** has the branch checked out: the folder's last two path segments, full path on hover. `missing` when that folder is gone (git reports the worktree prunable). The project's own checkout gets no chip. |
+
+The lists come from two read-only git calls per project, run from its folder on a background thread with a 5 s
+timeout: `git for-each-ref refs/heads` (name, HEAD mark, upstream, ahead/behind, last commit date) and `git
+worktree list --porcelain`. No ref, worktree or index is touched. They are **live state**, never written to
+the file. A watcher on the repo's common git dir (`git rev-parse --git-common-dir`, so a project that is
+itself a linked worktree works the same) covers `HEAD`, `packed-refs`, `refs/heads/**`, `refs/remotes/**` (so a
+`git fetch` in a terminal updates `↑n ↓m` and `upstream gone`), `worktrees/**` and, in a reftable repository,
+`reftable/**`; a folder of these that does not exist yet is watched once it appears. A burst of changes there
+re-reads that project 300 ms after the last one, so a `git branch x` in a terminal shows within 2 s. A separate
+pass re-reads every project with branches on every 30 s (four at a time, each project on its own, so a slow repo
+never holds up another), which covers a watcher that failed and restarts a watch whose git dir moved. Turning
+branches off or removing the project stops its watch.
+
+When a git call fails, or the folder is gone or no longer a git repository, the last good list stays and the card's path row reads **`branches unavailable`**
+(muted) with git's message on hover (the full path is then on the project name's hover).
+
+Branch cards can be selected, reached with the arrow keys and dragged like session cards; a moved branch is
+written to `branches[]` as `{ id: "<projectId>:<name>", projectId, name, position }` (only then); Re-layout
+removes it again, and so does a read that no longer lists the branch, unless an edge or a session points at it. Enter does nothing on a branch, and its menu holds **Copy branch name** only.
+Creating, checking out or deleting branches and worktrees comes in later stories.
 
 ### The file
 
@@ -373,9 +415,11 @@ The file is written on first launch, when it does not exist (`version: 1`, the h
 collapsed, re-laid-out or removed, at the end of every node drag, and atomically (temp file + rename) at the end of
 every pan or zoom that moved the viewport by more than 0.5 px or 0.001 zoom, so a relaunch opens exactly
 where you left off with the same nodes at the same positions. Loading an existing file never rewrites it.
-Each project is `{ id (UUID v4), path (canonical), label, position, expanded, color, launchDefaults }`;
+Each project is `{ id (UUID v4), path (canonical), label, position, expanded, color, launchDefaults,
+showBranches }`;
 `sessions[]` holds `{ sessionId, projectId, branchId, label, pinned, position }` (a child's `position` is
-relative to its parent card and `null` in its slot), `branches[].position` likewise; `edges` is reserved
+relative to its parent card and `null` in its slot), `branches[].position` likewise (a branch is written
+only once it is moved; see [Branches](#branches)); `edges` is reserved
 for Epic 6. A `sessions[]` entry whose session is no longer a child (a stub from a higher count, a
 hand-edited id) is kept verbatim and never pruned by this story; only Re-layout touches refs, and only
 those of the project it was run on. Rust owns the file: the UI never writes it, it mirrors Rust's snapshot (`workspace_get`, then

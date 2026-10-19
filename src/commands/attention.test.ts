@@ -8,11 +8,11 @@ import { attentionTargets, canGoToAttention, goToNextAttention, revealFailedNoti
 import { clickNode } from "./navigation";
 
 function project(id: string, expanded: boolean): Project {
-  return { id, path: `/p/${id}`, label: id, position: { x: 0, y: 0 }, expanded, color: null, launchDefaults: null };
+  return { id, path: `/p/${id}`, label: id, position: { x: 0, y: 0 }, expanded, color: null, launchDefaults: null, showBranches: false };
 }
 
 function session(id: string, projectId: string): ChildNode {
-  return { id, projectId, kind: "session", label: id, detail: null, position: null, session: null, branchId: null, forkedFrom: null, hasTranscript: false };
+  return { id, projectId, kind: "session", label: id, detail: null, position: null, session: null, branchId: null, forkedFrom: null, hasTranscript: false, branch: null };
 }
 
 function workspace(projects: Project[], children: ChildNode[], revision = 1): WorkspaceSnapshot {
@@ -29,6 +29,7 @@ function workspace(projects: Project[], children: ChildNode[], revision = 1): Wo
     },
     banners: [],
     revision,
+    branchErrors: {},
     children,
   };
 }

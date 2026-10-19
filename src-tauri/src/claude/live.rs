@@ -1118,6 +1118,7 @@ mod tests {
                 expanded: true,
                 color: None,
                 launch_defaults: None,
+                show_branches: false,
             }],
             ..Workspace::default()
         }

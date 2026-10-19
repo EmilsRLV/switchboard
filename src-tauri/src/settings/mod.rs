@@ -371,6 +371,12 @@ pub struct AppState {
     pub hooks: crate::claude::hooks::Hooks,
     /// Which terminal is popped out into which window (`crate::windows`, Story 4.5).
     pub popouts: crate::windows::PopOuts,
+    /// The branch watchers of the projects with branches on (`crate::git::watch`, Story 5.1).
+    pub branch_watches: crate::git::watch::Watches,
+    /// One lock per project for branch-list reads (watcher, 30 s pass, toggle): at most one
+    /// read of a project runs at a time, so an older read never overwrites a newer one, and a
+    /// slow repo never holds up another project's read.
+    pub branch_locks: crate::git::poll::BranchLocks,
 }
 
 impl AppState {

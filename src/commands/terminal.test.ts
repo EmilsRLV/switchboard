@@ -31,7 +31,7 @@ function info(overrides: Partial<TermInfo> = {}): TermInfo {
 }
 
 function project(id: string): Project {
-  return { id, path: `/p/${id}`, label: id, position: { x: 0, y: 0 }, expanded: false, color: null, launchDefaults: null };
+  return { id, path: `/p/${id}`, label: id, position: { x: 0, y: 0 }, expanded: false, color: null, launchDefaults: null, showBranches: false };
 }
 
 function workspace(projects: Project[]): WorkspaceSnapshot {
@@ -48,6 +48,7 @@ function workspace(projects: Project[]): WorkspaceSnapshot {
     },
     banners: [],
     revision: 1,
+    branchErrors: {},
     children: [],
   };
 }

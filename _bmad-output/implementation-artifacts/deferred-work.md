@@ -50,3 +50,8 @@
 - Restrict the commands a `term-*` pop-out window may invoke to `term_*` through an app permission manifest (all commands then need permissions, main included).
 - Remember pop-out window size and position (window-state currently skips `term-*`).
 - A test for `on_run_event` routing of `ExitRequested` / `WindowEvent::Destroyed` (Tauri's event types are non-exhaustive; pull the routing into a pure function first).
+
+## From Story 5.1 (branch children) review
+
+- A test of the git poll loop's scheduling (status pass, 30 s branch fallback, watch re-sync); pull the loop body into a testable tick function first.
+- Render tests for the project card's branches chip and the branch card, once a component test environment exists.

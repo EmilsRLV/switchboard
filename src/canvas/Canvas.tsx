@@ -54,6 +54,7 @@ import "./nodes.css";
 // Stable collections: a fresh `[]` / `{}` per render would make xyflow diff every time.
 const NO_PROJECTS: readonly Project[] = [];
 const NO_CHILDREN: readonly ChildNode[] = [];
+const NO_BRANCH_ERRORS: Readonly<Record<string, string>> = Object.freeze({});
 const NO_STOPPING: readonly string[] = [];
 const NODE_TYPES: NodeTypes = { project: ProjectNode, session: SessionNode, branch: BranchNode, more: MoreNode };
 
@@ -177,11 +178,13 @@ function dropHitsCanvas(client: Position, canvas: CanvasElement | null): boolean
 function Flow({ initialViewport }: { initialViewport: Viewport }) {
   const projects = useWorkspaceStore((s) => s.snapshot?.workspace.projects ?? NO_PROJECTS);
   const children = useWorkspaceStore((s) => s.snapshot?.children ?? NO_CHILDREN);
+  const branchErrors = useWorkspaceStore((s) => s.snapshot?.branchErrors ?? NO_BRANCH_ERRORS);
   const statuses = useStatusStore((s) => s.statuses);
   const live = useLiveStore((s) => s.snapshot.sessions);
   const flashed = useUiStore((s) => s.flashed);
   const selection = useUiStore((s) => s.selection);
   const showAll = useUiStore((s) => s.showAll);
+  const showAllBranches = useUiStore((s) => s.showAllBranches);
   const dragging = useCanvasStore((s) => s.dragging);
   const terminals = useTerminalStore((s) => s.infos);
   // Sessions whose Switchboard terminal is being stopped: their word reads `stopping`.
@@ -193,10 +196,13 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
   // The previous derivation, so unchanged nodes keep their identity (and skip re-rendering).
   const previousRef = useRef<CanvasFlowNode[]>([]);
   const nodes = useMemo(() => {
-    const next = toFlowNodes({ projects, statuses, flashed, children, selection, dragging, showAll, live, stopping }, previousRef.current);
+    const next = toFlowNodes(
+      { projects, statuses, flashed, children, selection, dragging, showAll, showAllBranches, live, stopping, branchErrors },
+      previousRef.current,
+    );
     previousRef.current = next;
     return next;
-  }, [projects, statuses, flashed, children, selection, dragging, showAll, live, stopping]);
+  }, [projects, statuses, flashed, children, selection, dragging, showAll, showAllBranches, live, stopping, branchErrors]);
 
   // The "forked from" lines between drawn cards (Story 4.4); inert.
   const edges = useMemo<Edge[]>(

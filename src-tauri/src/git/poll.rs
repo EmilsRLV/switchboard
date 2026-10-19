@@ -34,18 +34,137 @@ pub const DETECT_POLL: Duration = Duration::from_millis(50);
 /// Start the poller as a task on Tauri's async runtime. Called once from `setup`; it runs
 /// for the life of the app.
 pub fn start<R: Runtime>(app: AppHandle<R>) {
+    let branch_app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let mut waited = Duration::ZERO;
-        while app.state::<AppState>().read().binaries.git.status == BinaryStatus::Pending && waited < DETECT_WAIT {
-            tokio::time::sleep(DETECT_POLL).await;
-            waited += DETECT_POLL;
-        }
+        wait_for_detection(&app).await;
         loop {
             refresh(&app).await;
             let wait = interval(&app.state::<AppState>().read());
             tokio::time::sleep(wait).await;
         }
     });
+    // The branch fallback (Story 5.1) is its own task, off the status loop: every 30 s (and
+    // once at startup) it re-arms the watches and re-reads every list with branches on.
+    tauri::async_runtime::spawn(async move {
+        wait_for_detection(&branch_app).await;
+        loop {
+            branch_pass(&branch_app).await;
+            tokio::time::sleep(BRANCH_FALLBACK).await;
+        }
+    });
+}
+
+/// Wait (at most [`DETECT_WAIT`]) for binary detection to finish.
+async fn wait_for_detection<R: Runtime>(app: &AppHandle<R>) {
+    let mut waited = Duration::ZERO;
+    while app.state::<AppState>().read().binaries.git.status == BinaryStatus::Pending && waited < DETECT_WAIT {
+        tokio::time::sleep(DETECT_POLL).await;
+        waited += DETECT_POLL;
+    }
+}
+
+/// One fallback pass: sync the watches (on a blocking thread: it runs git), then re-read every
+/// branch list.
+pub async fn branch_pass<R: Runtime>(app: &AppHandle<R>) -> usize {
+    let watch_app = app.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || super::watch::sync(&watch_app)).await;
+    refresh_branches(app, None).await
+}
+
+/// How often the branch fallback pass re-reads every branch list (the watcher's fallback).
+pub const BRANCH_FALLBACK: Duration = Duration::from_secs(30);
+
+/// One async lock per project id (`AppState::branch_locks`): at most one branch read of a
+/// project runs at a time, and reads of different projects never wait on each other.
+#[derive(Default)]
+pub struct BranchLocks {
+    inner: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+impl BranchLocks {
+    /// The lock of project `id` (created on first use).
+    pub fn of(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        map.entry(id.to_string()).or_default().clone()
+    }
+
+    /// Forget the lock of a project that left the canvas.
+    pub fn forget(&self, id: &str) {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    }
+}
+
+/// Re-read the branch list of every project with branches on (or of those in `only`), at most
+/// [`MAX_CONCURRENT`] at once, each on a blocking thread under its project's lock
+/// ([`BranchLocks`]), and store each outcome as it arrives (`graph::set_branches`, which emits
+/// `workspace://changed` when anything changed). A folder that is gone, or no longer a git
+/// repository, is a failure (`branches unavailable`), not an empty list. Returns the number of
+/// projects read.
+pub async fn refresh_branches<R: Runtime>(app: &AppHandle<R>, only: Option<&[String]>) -> usize {
+    let state = app.state::<AppState>();
+    let projects: Vec<(String, PathBuf)> = state
+        .read_workspace()
+        .workspace
+        .projects
+        .iter()
+        .filter(|p| p.show_branches && only.is_none_or(|ids| ids.contains(&p.id)))
+        .map(|p| (p.id.clone(), PathBuf::from(&p.path)))
+        .collect();
+    let git = git_binary(&state.read());
+    let permits = Arc::new(Semaphore::new(MAX_CONCURRENT));
+    let count = projects.len();
+    let handles: Vec<_> = projects
+        .into_iter()
+        .map(|(id, path)| {
+            let app = app.clone();
+            let git = git.clone();
+            let permits = permits.clone();
+            tauri::async_runtime::spawn(async move {
+                let lock = app.state::<AppState>().branch_locks.of(&id);
+                let _project = lock.lock().await;
+                // The semaphore is never closed, so acquiring cannot fail.
+                let _permit = permits.acquire_owned().await.ok();
+                let outcome = tauri::async_runtime::spawn_blocking(move || read_branches(&git, &path))
+                    .await
+                    .unwrap_or_else(|_| Err("the branch read failed".to_string()));
+                crate::graph::set_branches(&app, HashMap::from([(id, outcome)]));
+            })
+        })
+        .collect();
+    for handle in handles {
+        let _ = handle.await;
+    }
+    count
+}
+
+/// One project's branch read as `graph::set_branches` takes it.
+pub fn read_branches(git: &Path, path: &Path) -> crate::graph::BranchOutcome {
+    if !path.is_dir() {
+        return Err(FOLDER_MISSING.to_string());
+    }
+    match super::branches::branches_of(git, path) {
+        Ok(Some(list)) => Ok(Some(list)),
+        Ok(None) => Err(NOT_A_REPO.to_string()),
+        Err(err) => Err(branch_error(&err)),
+    }
+}
+
+/// The causes of a branch read that git did not get to answer.
+pub const NOT_A_REPO: &str = "not a git repository";
+pub const FOLDER_MISSING: &str = "folder missing";
+
+/// The cause a failed branch read shows on hover, worded like the status poll's: git's first
+/// stderr line, `git exited with code N` when it printed none, `git unavailable` when it could
+/// not start, else what went wrong (a timeout).
+pub fn branch_error(err: &GitError) -> String {
+    match err {
+        GitError::Spawn(_) => "git unavailable".to_string(),
+        GitError::Failed { stderr, code } if stderr.is_empty() => {
+            format!("git exited with code {}", code.map(|c| c.to_string()).unwrap_or_else(|| "?".into()))
+        }
+        GitError::Failed { stderr, .. } => stderr.lines().next().unwrap_or_default().trim().to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// The time between passes: `poll.git_ms`, never below [`MIN_INTERVAL_MS`].
@@ -234,6 +353,51 @@ mod tests {
             status,
             configured: false,
         };
+    }
+
+    #[test]
+    fn branch_errors_read_like_the_status_poll() {
+        assert_eq!(branch_error(&GitError::Spawn("nope".into())), "git unavailable");
+        assert_eq!(
+            branch_error(&GitError::Failed {
+                code: Some(3),
+                stderr: String::new()
+            }),
+            "git exited with code 3"
+        );
+        assert_eq!(
+            branch_error(&GitError::Failed {
+                code: Some(128),
+                stderr: "fatal: first\nsecond".into()
+            }),
+            "fatal: first"
+        );
+        assert_eq!(branch_error(&GitError::Timeout(Duration::from_millis(5))), "timed out after 5ms");
+    }
+
+    #[test]
+    fn read_branches_of_a_gone_or_non_repo_folder_is_a_failure_not_an_empty_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let no_git = dir.path().join("no-git.exe");
+        assert_eq!(read_branches(&no_git, &dir.path().join("gone")), Err(FOLDER_MISSING.to_string()));
+        assert_eq!(read_branches(&no_git, dir.path()), Err("git unavailable".to_string()));
+        let Some(git) = crate::git::branches::tests::real_git() else { return };
+        if crate::git::status::tests::inside_work_tree(&git, dir.path()) {
+            return; // the temp dir sits inside some repository on this machine
+        }
+        assert_eq!(read_branches(&git, dir.path()), Err(NOT_A_REPO.to_string()));
+    }
+
+    #[test]
+    fn branch_locks_are_per_project() {
+        let locks = BranchLocks::default();
+        let a = locks.of("a");
+        assert!(Arc::ptr_eq(&a, &locks.of("a")));
+        let _held = a.try_lock().unwrap();
+        assert!(locks.of("b").try_lock().is_ok(), "another project never waits");
+        assert!(locks.of("a").try_lock().is_err());
+        locks.forget("a");
+        assert!(!Arc::ptr_eq(&a, &locks.of("a")));
     }
 
     #[test]

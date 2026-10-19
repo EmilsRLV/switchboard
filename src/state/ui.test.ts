@@ -158,12 +158,13 @@ describe("ui store", () => {
 
   it("selectedProject is the selected project from the snapshot, or null for nothing, a child or a gone project", () => {
     expect(selectedProject()).toBeNull();
-    const ide = { id: "ide", path: "/p/ide", label: "ide", position: { x: 0, y: 0 }, expanded: true, color: null, launchDefaults: null };
+    const ide = { id: "ide", path: "/p/ide", label: "ide", position: { x: 0, y: 0 }, expanded: true, color: null, launchDefaults: null, showBranches: false };
     const snapshot: WorkspaceSnapshot = {
       path: null,
       workspace: { version: 1, viewport: { x: 0, y: 0, zoom: 1 }, projects: [ide], branches: [], sessions: [], edges: [], defaults: { model: null, effort: null, permissionMode: null } },
       banners: [],
       revision: 1,
+      branchErrors: {},
       children: [],
     };
     useWorkspaceStore.getState().applySnapshot(snapshot);
@@ -193,6 +194,26 @@ describe("ui store", () => {
 describe("showAll", () => {
   beforeEach(() => {
     useUiStore.setState({ showAll: [] });
+  });
+
+  it("toggleShowAll keeps one list per group: the branch group never touches the sessions' list", () => {
+    useUiStore.setState({ showAll: [], showAllBranches: [] });
+    useUiStore.getState().toggleShowAll("a", "branches");
+    expect(useUiStore.getState().showAllBranches).toEqual(["a"]);
+    expect(useUiStore.getState().showAll).toEqual([]);
+    useUiStore.getState().toggleShowAll("a");
+    expect(useUiStore.getState().showAll).toEqual(["a"]);
+    useUiStore.getState().toggleShowAll("a", "branches");
+    expect(useUiStore.getState().showAllBranches).toEqual([]);
+    expect(useUiStore.getState().showAll).toEqual(["a"]);
+  });
+
+  it("a more row's group is part of its identity and survives selection", () => {
+    useUiStore.getState().select({ kind: "more", id: "a", group: "branches" });
+    expect(useUiStore.getState().selection).toEqual({ kind: "more", id: "a", group: "branches" });
+    expect(sameTarget({ kind: "more", id: "a" }, { kind: "more", id: "a", group: "branches" })).toBe(false);
+    expect(sameTarget({ kind: "more", id: "a" }, { kind: "more", id: "a", group: "sessions" })).toBe(true);
+    useUiStore.getState().clearSelection();
   });
 
   it("toggleShowAll adds and removes a project id, reference-stable for the others, empty after the last", () => {

@@ -10,7 +10,7 @@
 // pane is open, the selection also switches the pane to the node's terminal tab (Story 4.5).
 
 import { create } from "zustand";
-import type { CanvasTarget } from "../canvas/nodes";
+import type { CanvasTarget, ChildGroup } from "../canvas/nodes";
 import { sessionAcknowledge, type Position, type Project } from "../ipc";
 import {
   applyAcknowledgement,
@@ -114,6 +114,8 @@ export type UiState = {
    * only, never persisted; reference-stable while unchanged.
    */
   showAll: readonly string[];
+  /** Project ids whose branch group shows every branch (Story 5.1); like `showAll`. */
+  showAllBranches: readonly string[];
   /** Whether the Elsewhere tray's list is open (it shows only while it has rows). */
   elsewhereOpen: boolean;
   /** The terminal the terminal pane shows: the most recently opened or selected one. */
@@ -149,8 +151,8 @@ export type UiState = {
   /** Show `text` as the notice, replacing any showing. */
   showNotice: (text: string) => void;
   clearNotice: () => void;
-  /** Show all of a project's children, or only the first ten again. */
-  toggleShowAll: (projectId: string) => void;
+  /** Show all of one group of a project's children (its sessions by default), or only the first ten again. */
+  toggleShowAll: (projectId: string, group?: ChildGroup) => void;
   toggleElsewhere: () => void;
   openElsewhere: () => void;
   closeElsewhere: () => void;
@@ -216,6 +218,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   contextMenu: null,
   notice: null,
   showAll: NO_IDS,
+  showAllBranches: NO_IDS,
   elsewhereOpen: false,
   activeTerminal: null,
   openTerminals: NO_IDS,
@@ -242,17 +245,19 @@ export const useUiStore = create<UiState>()((set, get) => ({
     });
   },
   select: (target) =>
-    set((s) => (sameTarget(s.selection, target) ? {} : { selection: { kind: target.kind, id: target.id } })),
+    set((s) => (sameTarget(s.selection, target) ? {} : { selection: copyTarget(target) })),
   clearSelection: () => set((s) => (s.selection === null ? {} : { selection: null })),
   openContextMenu: (at) => set({ contextMenu: { x: at.x, y: at.y } }),
   closeContextMenu: () => set((s) => (s.contextMenu === null ? {} : { contextMenu: null })),
   showNotice: (text) => set({ notice: { text } }),
   clearNotice: () => set((s) => (s.notice === null ? {} : { notice: null })),
-  toggleShowAll: (projectId) =>
+  toggleShowAll: (projectId, group = "sessions") =>
     set((s) => {
-      if (!s.showAll.includes(projectId)) return { showAll: [...s.showAll, projectId] };
-      const next = s.showAll.filter((id) => id !== projectId);
-      return { showAll: next.length === 0 ? NO_IDS : next };
+      const field = group === "sessions" ? "showAll" : "showAllBranches";
+      const list = s[field];
+      if (!list.includes(projectId)) return { [field]: [...list, projectId] };
+      const next = list.filter((id) => id !== projectId);
+      return { [field]: next.length === 0 ? NO_IDS : next };
     }),
   toggleElsewhere: () => set((s) => ({ elsewhereOpen: !s.elsewhereOpen })),
   openElsewhere: () => set((s) => (s.elsewhereOpen ? {} : { elsewhereOpen: true })),
@@ -375,7 +380,20 @@ export function followSelection(target: CanvasTarget | null): void {
 
 /** True when both name the same node (or both are `null`). */
 export function sameTarget(a: CanvasTarget | null, b: CanvasTarget | null): boolean {
-  return a === b || (a !== null && b !== null && a.kind === b.kind && a.id === b.id);
+  return (
+    a === b ||
+    (a !== null &&
+      b !== null &&
+      a.kind === b.kind &&
+      a.id === b.id &&
+      (a.kind !== "more" || b.kind !== "more" || (a.group ?? "sessions") === (b.group ?? "sessions")))
+  );
+}
+
+/** A fresh copy of a target (a `more` row keeps its group). */
+function copyTarget(target: CanvasTarget): CanvasTarget {
+  if (target.kind === "more" && target.group !== undefined) return { kind: "more", id: target.id, group: target.group };
+  return { kind: target.kind, id: target.id } as CanvasTarget;
 }
 
 /** True when a pane is open: with the palette and menu closed, that is the `when` of `pane.close`. */

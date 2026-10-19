@@ -28,7 +28,7 @@ const workspaceAddProjects = vi.mocked(ipc.workspaceAddProjects);
 const claudeProjectsList = vi.mocked(ipc.claudeProjectsList);
 
 function project(id: string, path: string): Project {
-  return { id, path, label: path.split(/[\\/]/).pop() ?? path, position: { x: 0, y: 0 }, expanded: false, color: null, launchDefaults: null };
+  return { id, path, label: path.split(/[\\/]/).pop() ?? path, position: { x: 0, y: 0 }, expanded: false, color: null, launchDefaults: null, showBranches: false };
 }
 
 let revision = 0;
@@ -48,6 +48,7 @@ function snapshot(projects: Project[]): WorkspaceSnapshot {
     },
     banners: [],
     revision,
+    branchErrors: {},
     children: [],
   };
 }

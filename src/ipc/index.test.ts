@@ -33,6 +33,7 @@ import {
   projectOpenFolder,
   projectPickFolder,
   projectRevealClaudeDir,
+  projectSetShowBranches,
   projectsStatusGet,
   workspaceAddProjects,
   workspaceGet,
@@ -93,6 +94,7 @@ describe("workspace command wrappers", () => {
     },
     banners: [],
     revision: 0,
+    branchErrors: {},
     children: [],
   };
 
@@ -107,6 +109,13 @@ describe("workspace command wrappers", () => {
     expect(invoke).toHaveBeenCalledWith("workspace_move_node", { target, position }, undefined);
     await expect(workspaceRelayoutChildren("p1")).resolves.toBe(snapshot);
     expect(invoke).toHaveBeenCalledWith("workspace_relayout_children", { projectId: "p1" }, undefined);
+  });
+
+  it("the 5.1 toggle invokes project_set_show_branches with { projectId, show }", async () => {
+    const invoke = vi.fn().mockResolvedValue(snapshot);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await expect(projectSetShowBranches("p1", true)).resolves.toBe(snapshot);
+    expect(invoke).toHaveBeenCalledWith("project_set_show_branches", { projectId: "p1", show: true }, undefined);
   });
 
   it("the 2.4 wrappers invoke their wire names with { projectId }", async () => {
@@ -144,7 +153,7 @@ describe("workspace command wrappers", () => {
       detail: null,
       position: null,
       session: { startedAt: "2026-10-16T10:00:00.000Z", lastActive: "2026-10-16T11:00:00.000Z", branch: "main", messages: 4 },
-      branchId: null, forkedFrom: null, hasTranscript: false,
+      branchId: null, forkedFrom: null, hasTranscript: false, branch: null,
     };
     const withChild: WorkspaceSnapshot = { ...snapshot, children: [child] };
     const invoke = vi.fn().mockResolvedValue(JSON.parse(JSON.stringify(withChild)));

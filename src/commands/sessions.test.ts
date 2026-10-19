@@ -23,7 +23,7 @@ import {
 } from "./sessions";
 
 function project(expanded: boolean): Project {
-  return { id: "ide", path: "/p/ide", label: "ide", position: { x: 0, y: 0 }, expanded, color: null, launchDefaults: null };
+  return { id: "ide", path: "/p/ide", label: "ide", position: { x: 0, y: 0 }, expanded, color: null, launchDefaults: null, showBranches: false };
 }
 
 function workspace(expanded: boolean): WorkspaceSnapshot {
@@ -40,6 +40,7 @@ function workspace(expanded: boolean): WorkspaceSnapshot {
     },
     banners: [],
     revision: 1,
+    branchErrors: {},
     children: [],
   };
 }
@@ -240,10 +241,10 @@ describe("resume, fork and stop (Story 4.4)", () => {
     session: { startedAt: "2026-10-18T10:00:00.000Z", lastActive: "2026-10-18T10:05:00.000Z", branch: null, messages: 4 },
     branchId: null,
     forkedFrom: null,
-    hasTranscript: true,
+    hasTranscript: true, branch: null,
   };
   const choices = { model: "opus", effort: "default", permission_mode: "plan" };
-  const liveOnly: ChildNode = { ...historic, id: "fresh", hasTranscript: false, session: { startedAt: "", lastActive: "", branch: null, messages: 0 } };
+  const liveOnly: ChildNode = { ...historic, id: "fresh", hasTranscript: false, branch: null, session: { startedAt: "", lastActive: "", branch: null, messages: 0 } };
 
   function live(states: Record<string, SessionState>): void {
     const sessions = Object.fromEntries(

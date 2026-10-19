@@ -16,6 +16,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::claude::SessionSummary;
 use crate::claude::transcript::format_iso_ms;
+use crate::git::{BranchInfo, WorktreeChip};
 use crate::persist::{self, LoadError};
 use crate::settings::{AppState, Banner, paths};
 
@@ -134,9 +135,14 @@ pub struct Project {
     pub expanded: bool,
     pub color: Option<String>,
     pub launch_defaults: Option<LaunchDefaults>,
+    /// The "branches" toggle (Story 5.1): the project's local branches are listed as branch
+    /// children. Off by default and in older files.
+    pub show_branches: bool,
 }
 
-/// A branch node the operator placed under a project (Epic 5).
+/// A branch node the operator placed under a project (Epic 5). Story 5.1 writes one only when
+/// a discovered branch card is moved (its `id` is then `<projectId>:<name>`); it is matched to
+/// the discovered branch by `(projectId, name)`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct BranchNode {
@@ -247,6 +253,29 @@ pub struct ChildNode {
     /// A session discovered from its transcript (Resume and Fork need one, Story 4.4); false
     /// for a live-only session, a stub and a branch.
     pub has_transcript: bool,
+    /// What a discovered branch card shows (Story 5.1); `None` for sessions and stubs.
+    pub branch: Option<BranchMeta>,
+}
+
+/// The facts of a discovered branch a card shows (Story 5.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchMeta {
+    /// Checked out in the project's own checkout (the card's `*`).
+    pub head: bool,
+    /// The configured upstream; `None` for a local-only branch (no counts are shown).
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    /// The upstream is configured but its ref is missing.
+    pub upstream_gone: bool,
+    /// The linked worktree holding the branch (not the project's own checkout).
+    pub worktree: Option<WorktreeChip>,
+}
+
+/// The id of a discovered branch child: `<projectId>:<branch name>`.
+pub fn branch_child_id(project_id: &str, name: &str) -> String {
+    format!("{project_id}:{name}")
 }
 
 /// The facts of a discovered session a card shows (Story 3.1). Times are ISO 8601 UTC.
@@ -310,12 +339,28 @@ pub const NEW_SESSION_LABEL: &str = "new session";
 /// [`SessionMeta`] with `startedAt` = the row's start (empty when it has none), an empty
 /// `lastActive` (no activity known: the card shows no age), no branch, 0 messages;
 /// it is not drawn when its id is discovered under any project (one node per session id).
-/// Branch children carry the worktree path as detail.
+/// No branch children: see [`children_with_branches`].
 pub fn children(
     workspace: &Workspace,
     discovered: &HashMap<String, Vec<SessionSummary>>,
     live: &HashMap<String, Vec<LiveChild>>,
     stubs: usize,
+) -> Vec<ChildNode> {
+    children_with_branches(workspace, discovered, live, stubs, &HashMap::new())
+}
+
+/// [`children`], plus each project's discovered branches (`listed`, by project id, in the
+/// order the git read gave them: current first, then newest commit, then name) after its
+/// sessions and stubs, for a project with `showBranches` on only. A branch child's id is
+/// [`branch_child_id`]; its position comes from the [`BranchNode`] with the same project and
+/// name, when the operator moved it. A stored `BranchNode` whose branch is not listed (gone,
+/// or not read yet) yields nothing.
+pub fn children_with_branches(
+    workspace: &Workspace,
+    discovered: &HashMap<String, Vec<SessionSummary>>,
+    live: &HashMap<String, Vec<LiveChild>>,
+    stubs: usize,
+    listed: &HashMap<String, Vec<BranchInfo>>,
 ) -> Vec<ChildNode> {
     let discovered_ids: HashSet<&str> = discovered.values().flatten().map(|s| s.id.as_str()).collect();
     // Live by session id, under whichever project the row's cwd maps to: a transcript under
@@ -366,6 +411,7 @@ pub fn children(
                     branch_id: worktree_branch.or_else(|| session_ref.and_then(|r| r.branch_id.clone())),
                     forked_from: session_ref.and_then(|r| r.forked_from.clone()),
                     has_transcript: true,
+                    branch: None,
                 }
             })
             .collect();
@@ -395,6 +441,7 @@ pub fn children(
                 branch_id: branch_for_cwd(&row.cwd, &branches).or_else(|| session_ref.and_then(|r| r.branch_id.clone())),
                 forked_from: session_ref.and_then(|r| r.forked_from.clone()),
                 has_transcript: false,
+                branch: None,
             });
         }
         // Live first; then pinned; then started-at, not last activity: two running sessions
@@ -423,20 +470,33 @@ pub fn children(
                 branch_id: None,
                 forked_from: None,
                 has_transcript: false,
+                branch: None,
             });
         }
-        for branch in branches {
+        if !project.show_branches {
+            continue;
+        }
+        for info in listed.get(&project.id).map(Vec::as_slice).unwrap_or_default() {
+            let placed = branches.iter().find(|b| b.name == info.name);
             out.push(ChildNode {
-                id: branch.id.clone(),
+                id: branch_child_id(&project.id, &info.name),
                 project_id: project.id.clone(),
                 kind: ChildKind::Branch,
-                label: branch.name.clone(),
-                detail: branch.worktree_path.clone(),
-                position: branch.position,
+                label: info.name.clone(),
+                detail: None,
+                position: placed.and_then(|b| b.position),
                 session: None,
                 branch_id: None,
                 forked_from: None,
                 has_transcript: false,
+                branch: Some(BranchMeta {
+                    head: info.head,
+                    upstream: info.upstream.clone(),
+                    ahead: info.ahead,
+                    behind: info.behind,
+                    upstream_gone: info.gone,
+                    worktree: info.worktree.clone(),
+                }),
             });
         }
     }
@@ -471,14 +531,15 @@ pub fn project_for_cwd(workspace: &Workspace, cwd: &str) -> Option<String> {
 }
 
 /// The id of the branch whose `worktreePath` holds `cwd` (the folder itself or anything in
-/// it); the deepest one when worktrees nest. `None` when no branch has a matching worktree.
+/// it), in the branch child's form `<projectId>:<name>` ([`branch_child_id`]); the deepest one
+/// when worktrees nest. `None` when no branch has a matching worktree.
 pub fn branch_for_cwd(cwd: &str, branches: &[&BranchNode]) -> Option<String> {
     branches
         .iter()
         .filter_map(|b| b.worktree_path.as_deref().map(|w| (b, w)))
         .filter(|(_, worktree)| path_within(cwd, worktree))
         .max_by_key(|(_, worktree)| worktree.len())
-        .map(|(b, _)| b.id.clone())
+        .map(|(b, _)| branch_child_id(&b.project_id, &b.name))
 }
 
 /// `path` is `root` or lies inside it, compared component by component (so `/a/bc` is not in
@@ -510,6 +571,7 @@ impl SessionRef {
 
 /// Everything the UI needs about the workspace, sent on request and on every change.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkspaceSnapshot {
     /// Absolute path of `workspace.json`; `None` when the config dir could not be determined.
     pub path: Option<String>,
@@ -518,8 +580,12 @@ pub struct WorkspaceSnapshot {
     /// Bumped on every mutation this session, so the UI can drop a reply that arrives after a
     /// newer snapshot (two adds in flight). Not persisted; starts at 0 on load.
     pub revision: u64,
-    /// Every project's children ([`children`]), collapsed ones too; the UI lays them out.
+    /// Every project's children ([`children_with_branches`]), collapsed ones too; the UI lays
+    /// them out.
     pub children: Vec<ChildNode>,
+    /// Why the last branch read of a project failed (Story 5.1), by project id: the card adds
+    /// a muted `branches unavailable` line with this on hover, and the last good list stays.
+    pub branch_errors: HashMap<String, String>,
 }
 
 /// Reply of [`add_projects`]: the snapshot after the call plus which ids it concerns.
@@ -561,6 +627,11 @@ pub struct WorkspaceState {
     /// Sessions the live poll placed under a project, by project id (`crate::claude::live`
     /// via [`set_live_children`]), each list ordered by id. Never persisted.
     pub live_children: HashMap<String, Vec<LiveChild>>,
+    /// The last good branch list of each project with branches on, by project id
+    /// (`crate::git::poll::refresh_branches` via [`set_branches`]). Never persisted.
+    pub branches: HashMap<String, Vec<BranchInfo>>,
+    /// The cause of each project's last failed branch read (cleared by a good one).
+    pub branch_errors: HashMap<String, String>,
 }
 
 impl WorkspaceState {
@@ -576,12 +647,13 @@ impl WorkspaceState {
                 .collect(),
             revision: self.revision,
             children: self.children(),
+            branch_errors: self.branch_errors.clone(),
         }
     }
 
-    /// Every project's children as [`children`] derives them from this state.
+    /// Every project's children as [`children_with_branches`] derives them from this state.
     pub fn children(&self) -> Vec<ChildNode> {
-        children(&self.workspace, &self.discovered, &self.live_children, self.stub_children)
+        children_with_branches(&self.workspace, &self.discovered, &self.live_children, self.stub_children, &self.branches)
     }
 
     /// Replace the workspace with a freshly parsed, validated one.
@@ -726,6 +798,7 @@ pub fn add_projects<R: Runtime>(
                 expanded: false,
                 color: None,
                 launch_defaults: None,
+                show_branches: false,
             };
             added.push(project.id.clone());
             st.workspace.projects.push(project);
@@ -771,12 +844,132 @@ pub fn set_expanded<R: Runtime>(app: &AppHandle<R>, project_id: &str, expanded: 
     Ok(persist_and_emit(app, target, &workspace))
 }
 
+/// The "branches" toggle (`project.toggleBranches`, Story 5.1): store `showBranches`; turning
+/// it on also expands a collapsed card, turning it off forgets the project's branch list and
+/// error (memory only). Written and emitted like any mutation; the same value again (on and
+/// already expanded, or off) changes nothing. An unknown id is an `Err` and nothing changes.
+/// The caller starts or stops the watch and reads the list (`ipc::project_set_show_branches`).
+pub fn set_show_branches<R: Runtime>(app: &AppHandle<R>, project_id: &str, show: bool) -> Result<WorkspaceSnapshot, String> {
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        let project = st
+            .workspace
+            .projects
+            .iter_mut()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| "unknown project".to_string())?;
+        if project.show_branches == show && (!show || project.expanded) {
+            return Ok(st.snapshot());
+        }
+        project.show_branches = show;
+        if show {
+            project.expanded = true;
+        } else {
+            st.branches.remove(project_id);
+            st.branch_errors.remove(project_id);
+        }
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    Ok(persist_and_emit(app, target, &workspace))
+}
+
+/// What one branch read of a project gave: the list (`Ok(Some)`), "not a repository"
+/// (`Ok(None)`: no list, no error), or why it failed.
+pub type BranchOutcome = Result<Option<Vec<BranchInfo>>, String>;
+
+/// Store the outcome of a branch read per project (`crate::git::poll::refresh_branches`): a
+/// list replaces the stored one and clears the error; "not a repository" drops both; a
+/// failure keeps the last good list and records the cause. A good list also prunes the
+/// project's [`BranchNode`]s whose branch it no longer lists, unless an edge or a session's
+/// `branchId` references them; then the file is written too. Projects no longer on the canvas
+/// or with branches off are ignored (a read that raced a toggle). When anything changed the
+/// revision is bumped and `workspace://changed` emitted; the file is not written. Returns the
+/// snapshot, or `None` when nothing changed.
+pub fn set_branches<R: Runtime>(app: &AppHandle<R>, outcomes: HashMap<String, BranchOutcome>) -> Option<WorkspaceSnapshot> {
+    let state = app.state::<AppState>();
+    let (snapshot, write) = {
+        let mut st = state.write_workspace();
+        let mut changed = false;
+        let mut pruned = false;
+        for (id, outcome) in outcomes {
+            if !st.workspace.projects.iter().any(|p| p.id == id && p.show_branches) {
+                continue;
+            }
+            let good = matches!(outcome, Ok(Some(_)));
+            let (list, error) = match outcome {
+                Ok(Some(list)) => (Some(list), None),
+                Ok(None) => (None, None),
+                Err(message) => (st.branches.get(&id).cloned(), Some(message)),
+            };
+            // A good read prunes the project's stored branch refs whose branch is gone, unless
+            // something references them (an edge, a session's `branchId`).
+            if good && let Some(list) = list.as_ref() {
+                let referenced = referenced_branch_ids(&st.workspace);
+                let before = st.workspace.branches.len();
+                st.workspace.branches.retain(|b| {
+                    b.project_id != id || list.iter().any(|info| info.name == b.name) || is_referenced(b, &referenced)
+                });
+                pruned |= st.workspace.branches.len() != before;
+            }
+            if st.branches.get(&id) != list.as_ref() {
+                changed = true;
+                match list {
+                    Some(list) => st.branches.insert(id.clone(), list),
+                    None => st.branches.remove(&id),
+                };
+            }
+            if st.branch_errors.get(&id) != error.as_ref() {
+                changed = true;
+                match error {
+                    Some(error) => st.branch_errors.insert(id, error),
+                    None => st.branch_errors.remove(&id),
+                };
+            }
+        }
+        if !changed && !pruned {
+            return None;
+        }
+        st.revision += 1;
+        let write = pruned.then(|| (st.write_target(), st.workspace.clone()));
+        (st.snapshot(), write)
+    };
+    match write {
+        // Pruned refs live in the file: written (and emitted) like any mutation.
+        Some((target, workspace)) => Some(persist_and_emit(app, target, &workspace)),
+        None => {
+            emit(app, &snapshot);
+            Some(snapshot)
+        }
+    }
+}
+
+/// Every branch id something in the workspace points at: an edge end of type `branch`, or a
+/// session ref's `branchId`.
+fn referenced_branch_ids(workspace: &Workspace) -> HashSet<String> {
+    workspace
+        .edges
+        .iter()
+        .flat_map(|e| [&e.from, &e.to])
+        .filter(|n| n.kind == NodeType::Branch)
+        .map(|n| n.id.clone())
+        .chain(workspace.sessions.iter().filter_map(|s| s.branch_id.clone()))
+        .collect()
+}
+
+/// A stored branch is referenced by its own id or by its child id (`<projectId>:<name>`).
+fn is_referenced(branch: &BranchNode, referenced: &HashSet<String>) -> bool {
+    referenced.contains(&branch.id) || referenced.contains(&branch_child_id(&branch.project_id, &branch.name))
+}
+
 /// Store where a node was dropped. A project's position is absolute; a child's is relative
 /// to its parent card and goes where the schema keeps it: a session child upserts its
 /// [`SessionRef`] (creating one holding just `sessionId`, `projectId`, `position` when the
-/// session has no ref yet), a branch child sets `BranchNode.position`. A non-finite position
-/// or an id that is not a known node (for a session: not a current child) is an `Err` and
-/// nothing changes.
+/// session has no ref yet), a branch child upserts its [`BranchNode`] (matched by project and
+/// name; created holding just `id`, `projectId`, `name` and `position`). A non-finite position
+/// or an id that is not a known node (for a session or a branch: not a current child) is an
+/// `Err` and nothing changes.
 pub fn move_node<R: Runtime>(app: &AppHandle<R>, target: &NodeTarget, position: Position) -> Result<WorkspaceSnapshot, String> {
     if !(position.x.is_finite() && position.y.is_finite()) {
         return Err("position is not finite".to_string());
@@ -819,13 +1012,27 @@ pub fn move_node<R: Runtime>(app: &AppHandle<R>, target: &NodeTarget, position: 
                 }
             }
             NodeKind::Branch => {
-                let branch = st
+                let (project_id, name) = st
+                    .children()
+                    .into_iter()
+                    .find(|c| c.kind == ChildKind::Branch && c.id == target.id)
+                    .map(|c| (c.project_id, c.label))
+                    .ok_or_else(|| "unknown branch".to_string())?;
+                match st
                     .workspace
                     .branches
                     .iter_mut()
-                    .find(|b| b.id == target.id)
-                    .ok_or_else(|| "unknown branch".to_string())?;
-                branch.position = Some(position);
+                    .find(|b| b.project_id == project_id && b.name == name)
+                {
+                    Some(existing) => existing.position = Some(position),
+                    None => st.workspace.branches.push(BranchNode {
+                        id: target.id.clone(),
+                        project_id,
+                        name,
+                        worktree_path: None,
+                        position: Some(position),
+                    }),
+                }
             }
         }
         st.revision += 1;
@@ -972,6 +1179,12 @@ pub fn relayout_children<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Re
         for branch in st.workspace.branches.iter_mut().filter(|b| b.project_id == project_id) {
             branch.position = None;
         }
+        // A branch ref that only held a dragged position (Story 5.1) goes with it, unless an
+        // edge or a session's `branchId` references it.
+        let referenced = referenced_branch_ids(&st.workspace);
+        st.workspace
+            .branches
+            .retain(|b| b.project_id != project_id || b.worktree_path.is_some() || is_referenced(b, &referenced));
         st.revision += 1;
         (st.write_target(), st.workspace.clone())
     };
@@ -1010,17 +1223,28 @@ pub fn remove_project<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Resul
             .iter()
             .filter(|b| b.project_id == project_id)
             .map(|b| b.id.clone())
+            .chain(
+                st.children()
+                    .into_iter()
+                    .filter(|c| c.project_id == project_id && c.kind == ChildKind::Branch)
+                    .map(|c| c.id),
+            )
             .collect();
+        // Branch card ids are `<projectId>:<name>`: an edge to one goes even while the
+        // project's branches are off (no child lists it then).
+        let branch_prefix = format!("{project_id}:");
         let touches = |node: &NodeRef| match node.kind {
             NodeType::Project => node.id == project_id,
             NodeType::Session => session_ids.contains(&node.id),
-            NodeType::Branch => branch_ids.contains(&node.id),
+            NodeType::Branch => branch_ids.contains(&node.id) || node.id.starts_with(&branch_prefix),
             NodeType::Folder => false,
         };
         st.workspace.edges.retain(|e| !touches(&e.from) && !touches(&e.to));
         st.workspace.projects.retain(|p| p.id != project_id);
         st.workspace.sessions.retain(|s| s.project_id != project_id);
         st.workspace.branches.retain(|b| b.project_id != project_id);
+        st.branches.remove(project_id);
+        st.branch_errors.remove(project_id);
         st.revision += 1;
         (st.write_target(), st.workspace.clone())
     };
@@ -1249,6 +1473,8 @@ mod tests {
             stub_children: 0,
             discovered: HashMap::new(),
             live_children: HashMap::new(),
+            branches: HashMap::new(),
+            branch_errors: HashMap::from([("p1".to_string(), "fatal: bad".to_string())]),
         };
         assert_eq!(
             serde_json::to_value(st.snapshot()).unwrap(),
@@ -1256,6 +1482,7 @@ mod tests {
                 "path": "C:/cfg/switchboard/workspace.json",
                 "revision": 3,
                 "children": [],
+                "branchErrors": { "p1": "fatal: bad" },
                 "workspace": {
                     "version": 1,
                     "viewport": { "x": -120.0, "y": 40.0, "zoom": 1.5 },
@@ -1287,6 +1514,7 @@ mod tests {
                     model: Some("opus".into()),
                     ..LaunchDefaults::default()
                 }),
+                show_branches: true,
             }],
             branches: vec![BranchNode {
                 id: "b1".into(),
@@ -1323,6 +1551,7 @@ mod tests {
         let text = store::to_json(&ws);
         for key in [
             "\"launchDefaults\"",
+            "\"showBranches\": true",
             "\"projectId\"",
             "\"worktreePath\"",
             "\"sessionId\"",
@@ -2056,8 +2285,15 @@ mod tests {
     #[test]
     fn children_lists_stub_sessions_then_branches_per_project_in_order() {
         let ws = Workspace {
-            projects: vec![project_with("a"), project_with("b")],
+            projects: vec![
+                Project {
+                    show_branches: true,
+                    ..project_with("a")
+                },
+                project_with("b"),
+            ],
             branches: vec![
+                // `b` has branches off: its stored branch yields nothing.
                 BranchNode {
                     id: "br-b".into(),
                     project_id: "b".into(),
@@ -2065,10 +2301,20 @@ mod tests {
                     worktree_path: Some("/p/b/.worktrees/feature".into()),
                     position: Some(Position { x: 300.0, y: 10.0 }),
                 },
+                // A moved branch of `a`: matched by name, its position kept.
                 BranchNode {
-                    id: "br-a".into(),
+                    id: "a:feat".into(),
                     project_id: "a".into(),
-                    name: "main".into(),
+                    name: "feat".into(),
+                    position: Some(Position { x: 400.0, y: 0.0 }),
+                    ..BranchNode::default()
+                },
+                // A stored branch git no longer lists: nothing.
+                BranchNode {
+                    id: "a:deleted".into(),
+                    project_id: "a".into(),
+                    name: "deleted".into(),
+                    position: Some(Position { x: 1.0, y: 1.0 }),
                     ..BranchNode::default()
                 },
             ],
@@ -2096,7 +2342,11 @@ mod tests {
             ],
             ..Workspace::default()
         };
-        let kids = children(&ws, &HashMap::new(), &HashMap::new(), 2);
+        let listed = HashMap::from([
+            ("a".to_string(), vec![listed_branch("main", true), listed_branch("feat", false)]),
+            ("b".to_string(), vec![listed_branch("feature", true)]),
+        ]);
+        let kids = children_with_branches(&ws, &HashMap::new(), &HashMap::new(), 2, &listed);
         type Row<'a> = (&'a str, &'a str, ChildKind, &'a str, Option<&'a str>, Option<Position>);
         let summary: Vec<Row<'_>> = kids
             .iter()
@@ -2107,21 +2357,53 @@ mod tests {
             [
                 ("stub-1-a", "a", ChildKind::Session, "session 1", Some("stub"), None),
                 ("stub-2-a", "a", ChildKind::Session, "session 2", Some("stub"), Some(Position { x: -40.0, y: 200.0 })),
-                ("br-a", "a", ChildKind::Branch, "main", None, None),
+                ("a:main", "a", ChildKind::Branch, "main", None, None),
+                ("a:feat", "a", ChildKind::Branch, "feat", None, Some(Position { x: 400.0, y: 0.0 })),
                 ("stub-1-b", "b", ChildKind::Session, "session 1", Some("stub"), None),
                 ("stub-2-b", "b", ChildKind::Session, "session 2", Some("stub"), None),
-                (
-                    "br-b",
-                    "b",
-                    ChildKind::Branch,
-                    "feature",
-                    Some("/p/b/.worktrees/feature"),
-                    Some(Position { x: 300.0, y: 10.0 })
-                ),
             ]
         );
-        assert!(children(&ws, &HashMap::new(), &HashMap::new(), 0).iter().all(|c| c.kind == ChildKind::Branch), "no stubs unless asked");
+        let main = &kids[2];
+        assert_eq!(main.session, None);
+        let meta = main.branch.as_ref().expect("branch facts");
+        assert!(meta.head);
+        assert_eq!((meta.ahead, meta.behind, meta.upstream_gone), (2, 1, false));
+        assert_eq!(meta.upstream.as_deref(), Some("origin/main"));
+        assert!(kids.iter().filter(|c| c.kind == ChildKind::Session).all(|c| c.branch.is_none()));
+        assert!(
+            children_with_branches(&ws, &HashMap::new(), &HashMap::new(), 0, &listed)
+                .iter()
+                .all(|c| c.kind == ChildKind::Branch),
+            "no stubs unless asked"
+        );
+        assert!(
+            children(&ws, &HashMap::new(), &HashMap::new(), 0).is_empty(),
+            "no listed branches, no branch children: a stored BranchNode alone shows nothing"
+        );
         assert!(children(&Workspace::default(), &HashMap::new(), &HashMap::new(), 3).is_empty(), "no projects, no children");
+    }
+
+    /// A listed branch: `main`-like ones have an upstream two ahead, one behind.
+    fn listed_branch(name: &str, head: bool) -> BranchInfo {
+        BranchInfo {
+            name: name.into(),
+            head,
+            upstream: head.then(|| format!("origin/{name}")),
+            ahead: if head { 2 } else { 0 },
+            behind: if head { 1 } else { 0 },
+            gone: false,
+            committed_at: 0,
+            worktree: None,
+        }
+    }
+
+    /// `ide` with branches on and `names` listed (the first one current).
+    fn with_listed_branches(app: &tauri::App<MockRuntime>, names: &[&str]) {
+        let state = app.state::<AppState>();
+        let mut st = state.write_workspace();
+        st.workspace.projects.iter_mut().find(|p| p.id == "ide").unwrap().show_branches = true;
+        let list = names.iter().enumerate().map(|(i, n)| listed_branch(n, i == 0)).collect();
+        st.branches.insert("ide".into(), list);
     }
 
     #[test]
@@ -2137,13 +2419,40 @@ mod tests {
             branch_id: None,
             forked_from: None,
             has_transcript: false,
+            branch: None,
         };
         assert_eq!(
             serde_json::to_value(&child).unwrap(),
             serde_json::json!({
                 "id": "stub-1-p", "projectId": "p", "kind": "session",
                 "label": "session 1", "detail": "stub", "position": null,
-                "session": null, "branchId": null, "forkedFrom": null, "hasTranscript": false
+                "session": null, "branchId": null, "forkedFrom": null, "hasTranscript": false,
+                "branch": null
+            })
+        );
+        let branch = ChildNode {
+            id: "p:feat".into(),
+            kind: ChildKind::Branch,
+            label: "feat".into(),
+            detail: None,
+            branch: Some(BranchMeta {
+                head: true,
+                upstream: Some("origin/feat".into()),
+                ahead: 2,
+                behind: 1,
+                upstream_gone: false,
+                worktree: Some(WorktreeChip {
+                    path: "/w/feat".into(),
+                    missing: true,
+                }),
+            }),
+            ..child.clone()
+        };
+        assert_eq!(
+            serde_json::to_value(&branch).unwrap()["branch"],
+            serde_json::json!({
+                "head": true, "upstream": "origin/feat", "ahead": 2, "behind": 1,
+                "upstreamGone": false, "worktree": { "path": "/w/feat", "missing": true }
             })
         );
         let real = ChildNode {
@@ -2315,23 +2624,33 @@ mod tests {
     #[test]
     fn move_node_sets_a_branch_position_and_rejects_unknown_or_non_finite() {
         let (app, _cfg, path) = app_with_ide(1);
-        {
-            let state = app.state::<AppState>();
-            state.write_workspace().workspace.branches.push(BranchNode {
-                id: "br".into(),
-                project_id: "ide".into(),
-                name: "main".into(),
-                ..BranchNode::default()
-            });
-        }
+        with_listed_branches(&app, &["main", "feat"]);
         let branch = NodeTarget {
             kind: NodeKind::Branch,
-            id: "br".into(),
+            id: "ide:feat".into(),
         };
+        // First move: a ref holding just id, project, name and position is written.
         let snapshot = move_node(app.handle(), &branch, Position { x: 5.0, y: 6.0 }).unwrap();
-        assert_eq!(snapshot.workspace.branches[0].position, Some(Position { x: 5.0, y: 6.0 }));
-        assert_eq!(snapshot.children[1].position, Some(Position { x: 5.0, y: 6.0 }));
+        assert_eq!(
+            snapshot.workspace.branches,
+            [BranchNode {
+                id: "ide:feat".into(),
+                project_id: "ide".into(),
+                name: "feat".into(),
+                worktree_path: None,
+                position: Some(Position { x: 5.0, y: 6.0 }),
+            }]
+        );
+        let positions: Vec<(&str, Option<Position>)> = snapshot.children.iter().map(|c| (c.id.as_str(), c.position)).collect();
+        assert_eq!(
+            positions,
+            [("stub-1-ide", None), ("ide:main", None), ("ide:feat", Some(Position { x: 5.0, y: 6.0 }))]
+        );
         assert_eq!(on_disk(&path).branches[0].position, Some(Position { x: 5.0, y: 6.0 }));
+        // Second move: the same ref is updated.
+        let snapshot = move_node(app.handle(), &branch, Position { x: 7.0, y: 8.0 }).unwrap();
+        assert_eq!(snapshot.workspace.branches.len(), 1);
+        assert_eq!(snapshot.workspace.branches[0].position, Some(Position { x: 7.0, y: 8.0 }));
 
         let before = std::fs::read_to_string(&path).unwrap();
         let rx = listen(&app);
@@ -2346,7 +2665,7 @@ mod tests {
             "a stub beyond the configured count is not a child"
         );
         assert_eq!(
-            move_node(app.handle(), &unknown(NodeKind::Branch, "nope"), Position::default()),
+            move_node(app.handle(), &unknown(NodeKind::Branch, "ide:nope"), Position::default()),
             Err("unknown branch".to_string())
         );
         for bad in [
@@ -2360,7 +2679,14 @@ mod tests {
         }
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "no write");
         assert!(rx.try_recv().is_err(), "no event");
-        assert_eq!(app.state::<AppState>().read_workspace().revision, 1);
+        assert_eq!(app.state::<AppState>().read_workspace().revision, 2);
+
+        // Branches off: the branch is no child, so it cannot be moved.
+        app.state::<AppState>().write_workspace().workspace.projects[0].show_branches = false;
+        assert_eq!(
+            move_node(app.handle(), &branch, Position::default()),
+            Err("unknown branch".to_string())
+        );
     }
 
     #[test]
@@ -2370,12 +2696,23 @@ mod tests {
             let state = app.state::<AppState>();
             let mut st = state.write_workspace();
             st.workspace.projects.push(project_with("other"));
+            st.workspace.projects[0].show_branches = true;
+            st.branches.insert("ide".into(), vec![listed_branch("main", true)]);
+            // A moved branch's ref holds only its position: it goes. One with a worktree
+            // path holds more: it stays, its position cleared.
             st.workspace.branches.push(BranchNode {
-                id: "br".into(),
+                id: "ide:main".into(),
                 project_id: "ide".into(),
                 name: "main".into(),
                 position: Some(Position { x: 9.0, y: 9.0 }),
                 ..BranchNode::default()
+            });
+            st.workspace.branches.push(BranchNode {
+                id: "ide:wt".into(),
+                project_id: "ide".into(),
+                name: "wt".into(),
+                worktree_path: Some("/p/ide/.worktrees/wt".into()),
+                position: Some(Position { x: 9.0, y: 9.0 }),
             });
             // A ref that carries more than a position stays, with the position cleared.
             st.workspace.sessions.push(SessionRef {
@@ -2418,12 +2755,183 @@ mod tests {
             ],
             "the bare ref is gone, the labelled one stays, the other project's is untouched"
         );
-        assert_eq!(snapshot.workspace.branches[0].position, None);
+        let branch_refs: Vec<(&str, Option<Position>)> = snapshot.workspace.branches.iter().map(|b| (b.id.as_str(), b.position)).collect();
+        assert_eq!(branch_refs, [("ide:wt", None)], "the bare branch ref is gone");
         assert_eq!(on_disk(&path).sessions.len(), 2);
         assert_eq!(rx.try_recv().expect("one event"), snapshot);
 
         assert_eq!(relayout_children(app.handle(), "nope"), Err("unknown project".to_string()));
         assert!(rx.try_recv().is_err());
+    }
+
+    // -- branches (Story 5.1) -----------------------------------------------------------
+
+    #[test]
+    fn set_show_branches_persists_expands_a_collapsed_card_and_off_forgets_the_list() {
+        let (app, _cfg, path) = app_with_ide(0);
+        let rx = listen(&app);
+
+        let snapshot = set_show_branches(app.handle(), "ide", true).unwrap();
+        let project = &snapshot.workspace.projects[0];
+        assert!(project.show_branches && project.expanded, "on, and the collapsed card expands");
+        assert_eq!(snapshot.revision, 1);
+        let disk = on_disk(&path);
+        assert!(disk.projects[0].show_branches && disk.projects[0].expanded);
+        assert_eq!(rx.try_recv().expect("one event"), snapshot);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("\"showBranches\": true"));
+
+        // On again while expanded: nothing.
+        let same = set_show_branches(app.handle(), "ide", true).unwrap();
+        assert_eq!(same.revision, 1);
+        assert!(rx.try_recv().is_err());
+
+        // A list and an error are in memory; turning off forgets both, the card stays expanded.
+        {
+            let state = app.state::<AppState>();
+            let mut st = state.write_workspace();
+            st.branches.insert("ide".into(), vec![listed_branch("main", true)]);
+            st.branch_errors.insert("ide".into(), "boom".into());
+        }
+        let snapshot = set_show_branches(app.handle(), "ide", false).unwrap();
+        assert!(!snapshot.workspace.projects[0].show_branches);
+        assert!(snapshot.workspace.projects[0].expanded);
+        assert!(snapshot.children.is_empty());
+        assert!(snapshot.branch_errors.is_empty());
+        assert!(app.state::<AppState>().read_workspace().branches.is_empty());
+        assert!(!on_disk(&path).projects[0].show_branches);
+
+        assert_eq!(set_show_branches(app.handle(), "nope", true), Err("unknown project".to_string()));
+    }
+
+    #[test]
+    fn an_older_file_without_show_branches_loads_with_branches_off() {
+        let ws = store::parse(r#"{ "projects": [ { "id": "p", "path": "/p", "label": "p" } ] }"#).unwrap();
+        assert!(!ws.projects[0].show_branches);
+    }
+
+    #[test]
+    fn set_branches_stores_lists_keeps_the_last_good_one_on_failure_and_ignores_projects_with_branches_off() {
+        let (app, _cfg, path) = app_with_ide(0);
+        {
+            let state = app.state::<AppState>();
+            let mut st = state.write_workspace();
+            st.workspace.projects[0].show_branches = true;
+            st.workspace.projects.push(project_with("off"));
+        }
+        let before = std::fs::read_to_string(&path).unwrap();
+        let rx = listen(&app);
+        let list = vec![listed_branch("main", true), listed_branch("feat", false)];
+
+        let snapshot = set_branches(
+            app.handle(),
+            HashMap::from([
+                ("ide".to_string(), Ok(Some(list.clone()))),
+                ("off".to_string(), Ok(Some(list.clone()))),
+            ]),
+        )
+        .expect("changed");
+        let ids: Vec<&str> = snapshot.children.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["ide:main", "ide:feat"], "the project with branches off gets none");
+        assert_eq!(rx.try_recv().expect("emitted"), snapshot);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "never written");
+        assert!(!app.state::<AppState>().read_workspace().branches.contains_key("off"));
+
+        // The same list again: nothing.
+        assert!(set_branches(app.handle(), HashMap::from([("ide".to_string(), Ok(Some(list.clone())))])).is_none());
+        assert!(rx.try_recv().is_err());
+
+        // A failure keeps the last list and records the cause.
+        let snapshot = set_branches(app.handle(), HashMap::from([("ide".to_string(), Err("fatal: x".to_string()))])).expect("changed");
+        assert_eq!(snapshot.children.len(), 2, "last good list kept");
+        assert_eq!(snapshot.branch_errors.get("ide").map(String::as_str), Some("fatal: x"));
+        assert_eq!(serde_json::to_value(&snapshot).unwrap()["branchErrors"]["ide"], "fatal: x");
+
+        // A good read clears the error; "not a repository" drops the list.
+        let snapshot = set_branches(app.handle(), HashMap::from([("ide".to_string(), Ok(Some(list)))])).expect("changed");
+        assert!(snapshot.branch_errors.is_empty());
+        let snapshot = set_branches(app.handle(), HashMap::from([("ide".to_string(), Ok(None))])).expect("changed");
+        assert!(snapshot.children.is_empty());
+    }
+
+    #[test]
+    fn a_good_read_prunes_stored_branches_that_are_gone_unless_referenced_and_writes_the_file() {
+        let (app, _cfg, path) = app_with_ide(0);
+        {
+            let state = app.state::<AppState>();
+            let mut st = state.write_workspace();
+            st.workspace.projects[0].show_branches = true;
+            st.workspace.projects.push(project_with("other"));
+            let stored = |id: &str, project: &str, name: &str| BranchNode {
+                id: id.into(),
+                project_id: project.into(),
+                name: name.into(),
+                position: Some(Position { x: 1.0, y: 1.0 }),
+                ..BranchNode::default()
+            };
+            st.workspace.branches = vec![
+                stored("ide:main", "ide", "main"),
+                stored("ide:gone", "ide", "gone"),
+                stored("ide:edged", "ide", "edged"),
+                stored("old-id", "ide", "sessioned"),
+                stored("other:gone", "other", "gone"),
+            ];
+            st.workspace.edges.push(edge("e", (NodeType::Branch, "ide:edged"), (NodeType::Folder, "/x")));
+            st.workspace.sessions.push(SessionRef {
+                session_id: "s".into(),
+                project_id: "ide".into(),
+                branch_id: Some("ide:sessioned".into()),
+                ..SessionRef::default()
+            });
+        }
+        let ids = |ws: &Workspace| ws.branches.iter().map(|b| b.id.clone()).collect::<Vec<_>>();
+
+        // A failure prunes nothing.
+        set_branches(app.handle(), HashMap::from([("ide".to_string(), Err("x".to_string()))]));
+        assert_eq!(ids(&app.state::<AppState>().read_workspace().workspace).len(), 5);
+
+        let snapshot = set_branches(app.handle(), HashMap::from([("ide".to_string(), Ok(Some(vec![listed_branch("main", true)])))])).unwrap();
+        assert_eq!(
+            ids(&snapshot.workspace),
+            ["ide:main", "ide:edged", "old-id", "other:gone"],
+            "gone and unreferenced: pruned; listed, referenced or another project's: kept"
+        );
+        assert_eq!(ids(&on_disk(&path)), ids(&snapshot.workspace), "written");
+
+        // Re-layout keeps the referenced refs too.
+        let snapshot = relayout_children(app.handle(), "ide").unwrap();
+        assert_eq!(ids(&snapshot.workspace), ["ide:edged", "old-id", "other:gone"]);
+    }
+
+    #[test]
+    fn remove_project_drops_edges_to_its_branch_cards_even_with_branches_off() {
+        let (app, _cfg, _path) = app_with_ide(0);
+        {
+            let state = app.state::<AppState>();
+            let mut st = state.write_workspace();
+            st.workspace.projects.push(project_with("ide2"));
+            st.workspace.edges.push(edge("mine", (NodeType::Branch, "ide:feat"), (NodeType::Folder, "/x")));
+            st.workspace.edges.push(edge("theirs", (NodeType::Branch, "ide2:feat"), (NodeType::Folder, "/x")));
+        }
+        let snapshot = remove_project(app.handle(), "ide").unwrap();
+        let left: Vec<&str> = snapshot.workspace.edges.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(left, ["theirs"]);
+    }
+
+    #[test]
+    fn remove_project_drops_its_branch_list_and_edges_to_its_branch_cards() {
+        let (app, _cfg, _path) = app_with_ide(0);
+        with_listed_branches(&app, &["main"]);
+        {
+            let state = app.state::<AppState>();
+            let mut st = state.write_workspace();
+            st.branch_errors.insert("ide".into(), "x".into());
+            st.workspace.edges.push(edge("e", (NodeType::Branch, "ide:main"), (NodeType::Folder, "/x")));
+        }
+        let snapshot = remove_project(app.handle(), "ide").unwrap();
+        assert!(snapshot.workspace.edges.is_empty());
+        let state = app.state::<AppState>();
+        let st = state.read_workspace();
+        assert!(st.branches.is_empty() && st.branch_errors.is_empty());
     }
 
     // -- launch defaults (Story 4.2) ---------------------------------------------------
@@ -2829,13 +3337,13 @@ mod tests {
             },
         ];
         let refs: Vec<&BranchNode> = branches.iter().collect();
-        assert_eq!(branch_for_cwd(&wt, &refs).as_deref(), Some("br-feature"), "the worktree itself");
-        assert_eq!(branch_for_cwd(&format!("{wt}{sep}src"), &refs).as_deref(), Some("br-feature"), "inside it");
-        assert_eq!(branch_for_cwd(&format!("{nested}{sep}x"), &refs).as_deref(), Some("br-deeper"), "the deepest");
+        assert_eq!(branch_for_cwd(&wt, &refs).as_deref(), Some("a:feature"), "the worktree itself");
+        assert_eq!(branch_for_cwd(&format!("{wt}{sep}src"), &refs).as_deref(), Some("a:feature"), "inside it");
+        assert_eq!(branch_for_cwd(&format!("{nested}{sep}x"), &refs).as_deref(), Some("a:deeper"), "the deepest");
         assert_eq!(branch_for_cwd(&format!("{wt}-other"), &refs), None, "a sibling with the same prefix");
         assert_eq!(branch_for_cwd(&root, &refs), None, "the project root");
         if cfg!(windows) {
-            assert_eq!(branch_for_cwd(&wt.to_uppercase().replace('\\', "/"), &refs).as_deref(), Some("br-feature"));
+            assert_eq!(branch_for_cwd(&wt.to_uppercase().replace('\\', "/"), &refs).as_deref(), Some("a:feature"));
         }
 
         // Through `children`: the session's cwd places it; the node stays under the project.
@@ -2849,7 +3357,7 @@ mod tests {
         let mut outside = summary("s-out", "2026-10-16T09:00:00.000Z");
         outside.cwd = Some(root.clone());
         let kids = children(&ws, &discovered_of("a", vec![inside, outside]), &HashMap::new(), 0);
-        assert_eq!(kids[0].branch_id.as_deref(), Some("br-feature"));
+        assert_eq!(kids[0].branch_id.as_deref(), Some("a:feature"));
         assert_eq!(kids[0].project_id, "a");
         assert_eq!(kids[1].branch_id, None);
     }
@@ -2975,7 +3483,7 @@ mod tests {
             ..at_root
         };
         let snapshot = set_discovered(app.handle(), discovered_of("ide", vec![in_worktree])).expect("changed");
-        assert_eq!(snapshot.children[0].branch_id.as_deref(), Some("br-f"));
+        assert_eq!(snapshot.children[0].branch_id.as_deref(), Some("ide:f"));
         assert_eq!(rx.try_recv().expect("one event"), snapshot);
     }
 
@@ -3120,7 +3628,7 @@ mod tests {
                 ..live("s", None, None, true)
             }],
         )]);
-        assert_eq!(children(&ws, &HashMap::new(), &rows, 0)[0].branch_id.as_deref(), Some("br"));
+        assert_eq!(children(&ws, &HashMap::new(), &rows, 0)[0].branch_id.as_deref(), Some("a:feature"));
     }
 
     #[test]

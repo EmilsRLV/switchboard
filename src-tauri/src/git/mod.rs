@@ -1,13 +1,18 @@
 //! Git facts for project nodes, read through the `git` CLI only (no remote operations, no
 //! other module ever spawns `git`). [`status`] runs one `git status --porcelain=v2 --branch`
 //! per repository and parses it; [`poll`] does that for every project on a timer and keeps
-//! the result in memory as live, never persisted, state.
+//! the result in memory as live, never persisted, state. [`branches`] lists a repository's
+//! local branches and linked worktrees (Story 5.1), [`watch`] refreshes them when the refs
+//! change on disk, and [`poll`] re-reads them every 30 s as a fallback.
 
+pub mod branches;
 pub mod poll;
 pub mod status;
+pub mod watch;
 
 use serde::{Deserialize, Serialize};
 
+pub use branches::{BranchInfo, WorktreeChip};
 pub use status::{GitError, RepoStatus, parse_porcelain_v2, repo_status};
 
 /// What the card shows about a project's folder. Serialised internally tagged, so a repo is

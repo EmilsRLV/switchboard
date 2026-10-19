@@ -20,7 +20,7 @@ import {
   type Direction,
   type NodeRect,
 } from "../canvas/nodes";
-import { projectOpenEditor, projectOpenFolder, projectRevealClaudeDir } from "../ipc";
+import { projectOpenEditor, projectOpenFolder, projectRevealClaudeDir, type ChildNode } from "../ipc";
 import { useCanvasStore, viewportCentre, type CanvasElement } from "../state/canvas";
 import { liveSession } from "../state/live";
 import { acknowledgeIfNeeded, NOTICE_MS, sameTarget, selectedProject, useUiStore, type Size } from "../state/ui";
@@ -63,7 +63,7 @@ export function moveSelection(direction: Direction): boolean {
   const snapshot = useWorkspaceStore.getState().snapshot;
   if (snapshot === null) return false;
   const ui = useUiStore.getState();
-  const rects = nodeRects(snapshot.workspace.projects, snapshot.children, ui.showAll);
+  const rects = nodeRects(snapshot.workspace.projects, snapshot.children, ui.showAll, ui.showAllBranches);
   if (rects.length === 0) return false;
   const from = ui.selection === null ? undefined : rects.find((rect) => sameTarget(rect.target, ui.selection));
   const next = from === undefined ? nearestToPoint(rects, viewportCentre() ?? { x: 0, y: 0 }) : nearestInDirection(from, rects, direction);
@@ -81,7 +81,8 @@ export function moveSelection(direction: Direction): boolean {
 export function revealTarget(target: CanvasTarget): boolean {
   const snapshot = useWorkspaceStore.getState().snapshot;
   if (snapshot === null) return false;
-  const rect = nodeRects(snapshot.workspace.projects, snapshot.children, useUiStore.getState().showAll).find((r) =>
+  const { showAll, showAllBranches } = useUiStore.getState();
+  const rect = nodeRects(snapshot.workspace.projects, snapshot.children, showAll, showAllBranches).find((r) =>
     sameTarget(r.target, target),
   );
   return rect === undefined ? false : revealRect(rect);
@@ -132,10 +133,10 @@ export async function activateSelection(): Promise<boolean> {
   // Only a target that is drawn right now: a `more` row that is gone, or a child hidden past
   // the cut, does nothing.
   if (ui.selection === null || snapshot === null) return false;
-  const drawn = nodeRects(snapshot.workspace.projects, snapshot.children, ui.showAll);
+  const drawn = nodeRects(snapshot.workspace.projects, snapshot.children, ui.showAll, ui.showAllBranches);
   if (!drawn.some((rect) => sameTarget(rect.target, ui.selection))) return false;
   if (ui.selection.kind === "more") {
-    ui.toggleShowAll(ui.selection.id);
+    ui.toggleShowAll(ui.selection.id, ui.selection.group);
     return true;
   }
   const project = selectedProject();
@@ -156,7 +157,7 @@ export function clickNode(flowId: string): void {
   const already = sameTarget(ui.selection, target);
   ui.select(target);
   if (already) acknowledgeIfNeeded(target);
-  if (target.kind === "more") ui.toggleShowAll(target.id);
+  if (target.kind === "more") ui.toggleShowAll(target.id, target.group);
 }
 
 /**
@@ -167,13 +168,14 @@ export function canToggleShowAll(): boolean {
   const project = selectedProject();
   if (project === null || !project.expanded) return false;
   const children = useWorkspaceStore.getState().snapshot?.children ?? [];
+  // The session group's `more` row; the branch group has its own (Story 5.1).
   return visibleChildren(
-    children.filter((child) => child.projectId === project.id),
+    children.filter((child) => child.projectId === project.id && child.kind === "session"),
     false,
   ).more;
 }
 
-/** `project.toggleShowAll`: show all (or fewer) of the selected project's children. */
+/** `project.toggleShowAll`: show all (or fewer) of the selected project's session children. */
 export function toggleShowAllOfSelected(): boolean {
   if (!canToggleShowAll()) return false;
   const project = selectedProject();
@@ -227,4 +229,41 @@ export function openProjectFolder(projectId: string): Promise<boolean> {
 /** `project.revealClaudeDir`: open the project's `~/.claude/projects` directory. */
 export function revealClaudeProjectDir(projectId: string): Promise<boolean> {
   return external(() => projectRevealClaudeDir(projectId));
+}
+
+/** The selected branch card's child (Story 5.1), when a branch is selected and still listed; else `null`. */
+export function selectedBranch(): ChildNode | null {
+  const selection = useUiStore.getState().selection;
+  if (selection === null || selection.kind !== "branch") return null;
+  const children = useWorkspaceStore.getState().snapshot?.children ?? [];
+  return children.find((child) => child.kind === "branch" && child.id === selection.id) ?? null;
+}
+
+/** What `branch.copyName` writes to: the system clipboard (`navigator.clipboard`) in the webview. */
+export type ClipboardWriter = { writeText: (text: string) => Promise<void> };
+
+function systemClipboard(): ClipboardWriter | null {
+  const nav = (globalThis as { navigator?: { clipboard?: ClipboardWriter } }).navigator;
+  return nav?.clipboard ?? null;
+}
+
+/**
+ * `branch.copyName` ("Copy branch name", the branch card's only menu entry in Story 5.1): put
+ * the selected branch's name on the clipboard. A clipboard that is missing or refuses is the
+ * notice. Resolves whether it copied.
+ */
+export async function copySelectedBranchName(clipboard: ClipboardWriter | null = systemClipboard()): Promise<boolean> {
+  const branch = selectedBranch();
+  if (branch === null) return false;
+  if (clipboard === null) {
+    notify("could not copy: no clipboard");
+    return false;
+  }
+  try {
+    await clipboard.writeText(branch.label);
+    return true;
+  } catch (err) {
+    notify(`could not copy: ${describe(err)}`);
+    return false;
+  }
 }

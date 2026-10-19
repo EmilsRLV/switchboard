@@ -85,9 +85,14 @@ export type Project = {
   expanded: boolean;
   color: string | null;
   launchDefaults: LaunchDefaults | null;
+  /** The "branches" toggle (Story 5.1): its local branches are listed as branch children. */
+  showBranches: boolean;
 };
 
-/** Mirrors `graph::BranchNode` (Epic 5). */
+/**
+ * Mirrors `graph::BranchNode` (Epic 5): a branch the operator moved (Story 5.1, id
+ * `<projectId>:<name>`) or created; matched to the discovered branch by project and name.
+ */
 export type BranchNode = {
   id: string;
   projectId: string;
@@ -168,6 +173,30 @@ export type ChildNode = {
   forkedFrom: string | null;
   /** Discovered from its transcript (Resume and Fork need one); false for live-only sessions, stubs, branches. */
   hasTranscript: boolean;
+  /** A discovered branch's facts (Story 5.1); `null` for sessions and stubs. */
+  branch: BranchMeta | null;
+};
+
+/** Mirrors `git::WorktreeChip`: the linked worktree holding a branch. */
+export type WorktreeChip = {
+  /** Canonical when the folder exists; as git printed it otherwise. */
+  path: string;
+  /** The folder is gone (git reports it prunable, or it no longer exists). */
+  missing: boolean;
+};
+
+/** Mirrors `graph::BranchMeta`: what a branch card shows besides its name (Story 5.1). */
+export type BranchMeta = {
+  /** Checked out in the project's own checkout: the card's `*`. */
+  head: boolean;
+  /** The configured upstream; `null` for a local-only branch (no counts). */
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  /** The upstream is configured but its ref is missing. */
+  upstreamGone: boolean;
+  /** The linked worktree holding the branch (never the project's own checkout). */
+  worktree: WorktreeChip | null;
 };
 
 /** Mirrors `graph::NodeKind`: the node types a position can be written for. */
@@ -186,6 +215,8 @@ export type WorkspaceSnapshot = {
   revision: number;
   /** Every project's children, collapsed ones too, in layout order. */
   children: ChildNode[];
+  /** Why a project's last branch read failed (Story 5.1), by project id; the last list is kept. */
+  branchErrors: Record<string, string>;
 };
 
 /** Event name Rust emits with a fresh `WorkspaceSnapshot` on every change. */
@@ -443,6 +474,7 @@ type Commands = {
   project_pick_folder: string | null;
   workspace_add_projects: AddProjectsResult;
   workspace_set_expanded: WorkspaceSnapshot;
+  project_set_show_branches: WorkspaceSnapshot;
   workspace_move_node: WorkspaceSnapshot;
   workspace_relayout_children: WorkspaceSnapshot;
   claude_projects_list: ClaudeProject[];
@@ -560,6 +592,15 @@ export function workspaceAddProjects(paths: string[], position: Position): Promi
  */
 export function workspaceSetExpanded(projectId: string, expanded: boolean): Promise<WorkspaceSnapshot> {
   return call("workspace_set_expanded", { projectId, expanded });
+}
+
+/**
+ * `ipc::project_set_show_branches` -- the "branches" toggle (Story 5.1). Rust persists
+ * `showBranches` (turning it on expands a collapsed card), starts or stops the branch watch and
+ * reads the list; the branch cards follow as `workspace://changed`. Rejects with `"unknown project"`.
+ */
+export function projectSetShowBranches(projectId: string, show: boolean): Promise<WorkspaceSnapshot> {
+  return call("project_set_show_branches", { projectId, show });
 }
 
 /**

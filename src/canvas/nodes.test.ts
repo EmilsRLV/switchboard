@@ -19,7 +19,6 @@ import {
   columnSlot,
   dropTarget,
   flowIdOf,
-  layoutChildren,
   nearestInDirection,
   nearestToPoint,
   nodeRects,
@@ -41,6 +40,16 @@ import {
   moreLabel,
   rightClickAction,
   childAriaLabel,
+  branchAriaLabel,
+  branchCardParts,
+  branchCardTitle,
+  BRANCHES_UNAVAILABLE,
+  groupOf,
+  hasBranchSecondLine,
+  MISSING_WORKTREE,
+  projectColumn,
+  moreTarget,
+  worktreeChipText,
   sessionCardMeta,
   sessionCardTitle,
   sessionHoverText,
@@ -53,7 +62,7 @@ import {
   forkLines,
   forkedFromText,
 } from "./nodes";
-import type { LiveSession, SessionMeta, SessionState } from "../ipc";
+import type { BranchMeta, LiveSession, SessionMeta, SessionState } from "../ipc";
 
 function project(id: string, path: string, x = 0, y = 0, expanded = false): Project {
   return {
@@ -64,11 +73,12 @@ function project(id: string, path: string, x = 0, y = 0, expanded = false): Proj
     expanded,
     color: null,
     launchDefaults: null,
+    showBranches: false,
   };
 }
 
 function stub(index: number, projectId: string, position: ChildNode["position"] = null): ChildNode {
-  return { id: `stub-${index}-${projectId}`, projectId, kind: "session", label: `session ${index}`, detail: "stub", position, session: null, branchId: null, forkedFrom: null, hasTranscript: false };
+  return { id: `stub-${index}-${projectId}`, projectId, kind: "session", label: `session ${index}`, detail: "stub", position, session: null, branchId: null, forkedFrom: null, hasTranscript: false, branch: null };
 }
 
 function inputs(over: Partial<FlowInputs> = {}): FlowInputs {
@@ -153,7 +163,7 @@ describe("toFlowNodes", () => {
 
   it("branch children come as branch nodes with their own flow id", () => {
     const expanded = [project("a", "/p/a", 0, 0, true)];
-    const branch: ChildNode = { id: "br1", projectId: "a", kind: "branch", label: "main", detail: "/p/a/.worktrees/x", position: null, session: null, branchId: null, forkedFrom: null, hasTranscript: false };
+    const branch: ChildNode = { id: "br1", projectId: "a", kind: "branch", label: "main", detail: "/p/a/.worktrees/x", position: null, session: null, branchId: null, forkedFrom: null, hasTranscript: false, branch: null };
     const nodes = toFlowNodes(inputs({ projects: expanded, children: [stub(1, "a"), branch] }));
     expect(nodes[2]?.id).toBe("branch:br1");
     expect(nodes[2]?.type).toBe("branch");
@@ -278,30 +288,31 @@ describe("toFlowNodes", () => {
   });
 });
 
-describe("layoutChildren / columnSlot", () => {
+describe("projectColumn / columnSlot", () => {
   it("places children 16 px in and 40+8 px apart from y 92, keeping a dragged child's own position", () => {
     expect([CHILD_WIDTH, CHILD_HEIGHT, CHILD_GAP, COLUMN_INDENT, COLUMN_TOP]).toEqual([208, 40, 8, 16, 92]);
     expect(columnSlot(0)).toEqual({ x: 16, y: 92 });
     expect(columnSlot(2)).toEqual({ x: 16, y: 188 });
     const dragged = { x: -30, y: 300 };
-    const positions = layoutChildren([stub(1, "p"), stub(2, "p", dragged), stub(3, "p")]);
+    const positions = projectColumn("p", [stub(1, "p"), stub(2, "p", dragged), stub(3, "p")], []).drawn.map((d) => d.position);
     expect(positions).toEqual([
       { x: 16, y: 92 },
       { x: -30, y: 300 },
       { x: 16, y: 188 },
     ]);
     expect(positions[1]).not.toBe(dragged);
-    expect(layoutChildren([])).toEqual([]);
+    expect(projectColumn("p", [], [])).toEqual({ drawn: [], mores: [] });
   });
 });
 
 describe("rightClickAction", () => {
-  it("opens the menu for a project or session card with enabled entries, else only selects", () => {
+  it("opens the menu for a project, session or branch card with enabled entries, else only selects", () => {
     expect(rightClickAction({ kind: "project", id: "a" }, true)).toBe("menu");
     expect(rightClickAction({ kind: "session", id: "s" }, true)).toBe("menu");
     expect(rightClickAction({ kind: "session", id: "historic" }, false)).toBe("select");
     expect(rightClickAction({ kind: "project", id: "a" }, false)).toBe("select");
-    expect(rightClickAction({ kind: "branch", id: "b" }, true)).toBe("select");
+    expect(rightClickAction({ kind: "branch", id: "b" }, true)).toBe("menu");
+    expect(rightClickAction({ kind: "branch", id: "b" }, false)).toBe("select");
     expect(rightClickAction({ kind: "more", id: "a" }, true)).toBe("select");
   });
 });
@@ -579,7 +590,7 @@ describe("nodeRects", () => {
   });
 
   it("leaves out the children of a collapsed project, and a branch child keeps its kind", () => {
-    const branch: ChildNode = { id: "br", projectId: "projects", kind: "branch", label: "main", detail: null, position: null, session: null, branchId: null, forkedFrom: null, hasTranscript: false };
+    const branch: ChildNode = { id: "br", projectId: "projects", kind: "branch", label: "main", detail: null, position: null, session: null, branchId: null, forkedFrom: null, hasTranscript: false, branch: null };
     const rects = nodeRects([ideAt(false), { ...projectsAt, expanded: true }], [...matrixChildren, branch]);
     expect(rects.map((r) => r.target)).toEqual([
       { kind: "project", id: "ide" },
@@ -687,7 +698,7 @@ function session(id: string, projectId: string, lastActive = "2026-10-16T10:00:0
     detail: null,
     position: null,
     session: { startedAt: "2026-10-16T09:00:00.000Z", lastActive, branch: "main", messages: 3, ...meta },
-    branchId: null, forkedFrom: null, hasTranscript: false,
+    branchId: null, forkedFrom: null, hasTranscript: false, branch: null,
   };
 }
 
@@ -719,7 +730,7 @@ describe("show all: the visible-children cut and the more row", () => {
     expect(more.parentId).toBe("ide");
     expect(more.position).toEqual(columnSlot(10));
     expect(more.draggable).toBe(false);
-    expect(more.data).toEqual({ projectId: "ide", total: 15, showingAll: false, selected: false });
+    expect(more.data).toEqual({ projectId: "ide", group: "sessions", total: 15, showingAll: false, selected: false });
     expect(moreLabel(more.data.total, more.data.showingAll)).toBe("show all (15)");
     expect(asProject(nodes[0]).data.childCount).toBe(15);
 
@@ -1058,5 +1069,157 @@ describe("fork lines and the stopping word (Story 4.4)", () => {
     expect(childAriaLabel("session", { ...base, forkedFromTitle: null, stopping: true })).toBe("Session title fork, stopping");
     expect(sessionCardTitle({ ...base, forkedFromTitle: "ide-59cd" }, meta).split("\n")).toContain("forked from ide-59cd");
     expect(sessionCardTitle({ ...base, forkedFromTitle: null }, meta)).not.toContain("forked from");
+  });
+});
+
+// --- Story 5.1: branch children ---------------------------------------------------------------
+
+function branchMeta(over: Partial<BranchMeta> = {}): BranchMeta {
+  return { head: false, upstream: null, ahead: 0, behind: 0, upstreamGone: false, worktree: null, ...over };
+}
+
+function branchChild(name: string, projectId: string, meta: Partial<BranchMeta> = {}, position: ChildNode["position"] = null): ChildNode {
+  return {
+    id: `${projectId}:${name}`,
+    projectId,
+    kind: "branch",
+    label: name,
+    detail: null,
+    position,
+    session: null,
+    branchId: null,
+    forkedFrom: null,
+    hasTranscript: false,
+    branch: branchMeta(meta),
+  };
+}
+
+function branches(count: number, projectId: string): ChildNode[] {
+  return Array.from({ length: count }, (_, i) => branchChild(`b${i + 1}`, projectId, { head: i === 0 }));
+}
+
+describe("branch children (Story 5.1)", () => {
+  const ide = { ...project("ide", "/p/ide", 0, 0, true), showBranches: true };
+
+  it("branches follow the sessions as a second group with their own cut: 3 sessions and 25 branches", () => {
+    const children = [...sessions(3, "ide"), ...branches(25, "ide")];
+    const nodes = toFlowNodes(inputs({ projects: [ide], children }));
+    expect(nodes.map((n) => n.id)).toEqual([
+      "ide",
+      ...children.slice(0, 3).map((c) => `session:${c.id}`),
+      ...children.slice(3, 13).map((c) => `branch:${c.id}`),
+      "more-branches:ide",
+    ]);
+    expect(nodes.find((n) => n.id === "branch:ide:b1")?.position).toEqual(columnSlot(3));
+    const more = nodes.find((n) => n.type === "more");
+    if (more?.type !== "more") throw new Error("no more node");
+    expect(more.position).toEqual(columnSlot(13));
+    expect(more.data).toEqual({ projectId: "ide", group: "branches", total: 25, showingAll: false, selected: false });
+    expect(moreLabel(more.data.total, more.data.showingAll)).toBe("show all (25)");
+
+    // Showing all branches shows all 25; the sessions are untouched.
+    const all = toFlowNodes(inputs({ projects: [ide], children, showAllBranches: ["ide"] }));
+    expect(all.filter((n) => n.type === "branch")).toHaveLength(25);
+    expect(all.find((n) => n.type === "more")?.position).toEqual(columnSlot(3 + 25));
+  });
+
+  it("sessions and branches never push each other out: 15 sessions and 12 branches give two more rows", () => {
+    const children = [...sessions(15, "ide"), ...branches(12, "ide")];
+    const { drawn, mores } = projectColumn("ide", children, []);
+    expect(drawn.filter((d) => d.child.kind === "session")).toHaveLength(10);
+    expect(drawn.filter((d) => d.child.kind === "branch")).toHaveLength(10);
+    expect(mores.map((m) => [m.group, m.position.y])).toEqual([
+      ["sessions", columnSlot(10).y],
+      ["branches", columnSlot(21).y],
+    ]);
+    // The first branch sits right after the session group's more row.
+    expect(drawn.find((d) => d.child.id === "ide:b1")?.position).toEqual(columnSlot(11));
+    // Showing all sessions moves the branch group down, its cut unchanged.
+    const opened = projectColumn("ide", children, ["ide"]);
+    expect(opened.drawn.find((d) => d.child.id === "ide:b1")?.position).toEqual(columnSlot(16));
+    expect(opened.drawn.filter((d) => d.child.kind === "branch")).toHaveLength(10);
+    // The rects the arrow keys search hold both rows, told apart by their group.
+    const rects = nodeRects([ide], children);
+    expect(rects.filter((r) => r.target.kind === "more").map((r) => r.target)).toEqual([
+      { kind: "more", id: "ide" },
+      { kind: "more", id: "ide", group: "branches" },
+    ]);
+    // Only the selected group's row is marked selected.
+    const selected = toFlowNodes(inputs({ projects: [ide], children, selection: moreTarget("ide", "branches") }));
+    expect(selected.filter((n) => n.type === "more").map((n) => n.data.selected)).toEqual([false, true]);
+  });
+
+  it("a dragged branch keeps its position; the rest keep their slots", () => {
+    const children = [branchChild("main", "ide", { head: true }), branchChild("feat", "ide", {}, { x: 300, y: 5 }), branchChild("x", "ide")];
+    const nodes = toFlowNodes(inputs({ projects: [ide], children }));
+    expect(nodes.slice(1).map((n) => n.position)).toEqual([columnSlot(0), { x: 300, y: 5 }, columnSlot(2)]);
+  });
+
+  it("the more row of the branch group has its own flow id and parses back; no project id can collide", () => {
+    expect(moreFlowId("p", "branches")).toBe("more-branches:p");
+    expect(parseFlowId("more-branches:p")).toEqual({ kind: "more", id: "p", group: "branches" });
+    expect(flowIdOf(moreTarget("p", "branches"))).toBe("more-branches:p");
+    expect(flowIdOf(moreTarget("p", "sessions"))).toBe("more:p");
+    // A project whose id looks like a group prefix is still its own sessions row.
+    expect(parseFlowId(moreFlowId("branches:p"))).toEqual({ kind: "more", id: "branches:p" });
+    expect(parseFlowId("branch:p:feature/x")).toEqual({ kind: "branch", id: "p:feature/x" });
+    expect(groupOf({ kind: "branch" })).toBe("branches");
+    expect(groupOf({ kind: "session" })).toBe("sessions");
+  });
+
+  it("the second line: counts with zero parts left out, upstream gone, the worktree chip", () => {
+    expect(branchCardParts(branchMeta({ upstream: "origin/m", ahead: 2, behind: 1 })).counts).toBe("↑2 ↓1");
+    expect(branchCardParts(branchMeta({ upstream: "origin/m", ahead: 2 })).counts).toBe("↑2");
+    expect(branchCardParts(branchMeta({ upstream: "origin/m", behind: 4 })).counts).toBe("↓4");
+    const synced = branchCardParts(branchMeta({ upstream: "origin/m" }));
+    expect(synced.counts).toBeNull();
+    expect(hasBranchSecondLine(synced)).toBe(false);
+    const local = branchCardParts(branchMeta());
+    expect(local).toEqual({ counts: null, gone: false, chip: null });
+    expect(hasBranchSecondLine(local)).toBe(false);
+    const gone = branchCardParts(branchMeta({ upstream: "origin/old", upstreamGone: true }));
+    expect(gone.gone).toBe(true);
+    expect(gone.counts).toBeNull();
+    const wt = branchCardParts(branchMeta({ worktree: { path: "C:\\src\\ide\\.worktrees\\feat", missing: false } }));
+    expect(wt.chip).toEqual({ text: "…/.worktrees/feat", path: "C:\\src\\ide\\.worktrees\\feat", missing: false });
+    expect(hasBranchSecondLine(wt)).toBe(true);
+    const missing = branchCardParts(branchMeta({ worktree: { path: "/tmp/wt", missing: true } }));
+    expect(missing.chip?.text).toBe(MISSING_WORKTREE);
+  });
+
+  it("worktreeChipText keeps the last two segments", () => {
+    expect(worktreeChipText("/home/me/src/wt")).toBe("…/src/wt");
+    expect(worktreeChipText("C:/a/b")).toBe("…/a/b");
+    expect(worktreeChipText("/wt")).toBe("wt");
+    expect(worktreeChipText("a/b")).toBe("a/b");
+  });
+
+  it("the accessible name and tooltip say current, counts, gone and the worktree", () => {
+    const meta = branchMeta({ head: true, upstream: "origin/main", ahead: 2, behind: 1, worktree: { path: "/w/main", missing: false } });
+    expect(branchAriaLabel("main", meta)).toBe("Branch main, current, 2 ahead, 1 behind, worktree /w/main");
+    expect(branchAriaLabel("old", branchMeta({ upstream: "origin/old", upstreamGone: true, worktree: { path: "/w/o", missing: true } }))).toBe(
+      "Branch old, upstream gone, worktree missing /w/o",
+    );
+    expect(childAriaLabel("branch", { child: branchChild("x", "p"), attention: false, detail: null, lastLine: null })).toBe("Branch x");
+    expect(branchCardTitle("main", meta)).toBe("main\nupstream origin/main\nworktree /w/main");
+  });
+
+  it("the project card carries the branch read failure only while branches are on", () => {
+    const off = { ...ide, showBranches: false };
+    const errors = { ide: "fatal: broken" };
+    expect(asProject(toFlowNodes(inputs({ projects: [ide], branchErrors: errors }))[0]).data.branchesError).toBe("fatal: broken");
+    expect(asProject(toFlowNodes(inputs({ projects: [off], branchErrors: errors }))[0]).data.branchesError).toBeNull();
+    expect(asProject(toFlowNodes(inputs({ projects: [ide] }))[0]).data.branchesError).toBeNull();
+    expect(BRANCHES_UNAVAILABLE).toBe("branches unavailable");
+  });
+
+  it("a branch card re-renders when its facts change and keeps its identity otherwise", () => {
+    const before = toFlowNodes(inputs({ projects: [ide], children: [branchChild("main", "ide", { upstream: "o/m", ahead: 1 })] }));
+    const same = toFlowNodes(inputs({ projects: [ide], children: [branchChild("main", "ide", { upstream: "o/m", ahead: 1 })] }), before);
+    expect(same[1]).toBe(before[1]);
+    const changed = toFlowNodes(inputs({ projects: [ide], children: [branchChild("main", "ide", { upstream: "o/m", ahead: 2 })] }), before);
+    expect(changed[1]).not.toBe(before[1]);
+    const toggled = toFlowNodes(inputs({ projects: [{ ...ide, showBranches: false }], children: [] }), before);
+    expect(toggled[0]).not.toBe(before[0]);
   });
 });

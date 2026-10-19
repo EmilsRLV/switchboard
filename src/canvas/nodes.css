@@ -149,6 +149,8 @@
   color: var(--fg-muted);
 }
 
+/* The "branches" toggle (Story 5.1): a button; hover lifts the border to --fg-muted, on reads
+   --fg in text and border (distinct from hover). */
 .project-node-branches {
   margin-left: auto;
   font: inherit;
@@ -158,7 +160,21 @@
   border: var(--line) solid var(--border);
   border-radius: var(--radius-sm);
   padding: 0 0.35rem;
-  cursor: default;
+  cursor: pointer;
+}
+
+.project-node-branches:hover {
+  border-color: var(--fg-muted);
+}
+
+.project-node-branches.is-on {
+  color: var(--fg);
+  border-color: var(--fg);
+}
+
+.project-node-branches:focus-visible {
+  outline: var(--line) solid var(--focus);
+  outline-offset: 1px;
 }
 
 /* --- child cards (sessions, branches): one row of the column under the parent ---------- */
@@ -244,6 +260,43 @@
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg-muted);
+}
+
+/* --- branch cards (Story 5.1): the name (ellipsis) then `*` for the checked-out branch, over a
+   muted meta line: `↑n ↓m`, `upstream gone`, the worktree chip. Tokens only, no accent. --- */
+
+.branch-node-name {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25em;
+  flex: 1;
+  min-width: 0;
+}
+
+.child-node-two-line .branch-node-name {
+  flex: none;
+}
+
+.branch-node-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-node-current {
+  flex: none;
+}
+
+.child-node-meta > .branch-node-worktree {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 0.3rem;
+  line-height: 1.1;
 }
 
 /* --- the `show all (N)` / `show fewer` row after the tenth child: muted, no border --------- */

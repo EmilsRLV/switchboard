@@ -30,6 +30,7 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::project_pick_folder,
             ipc::workspace_add_projects,
             ipc::workspace_set_expanded,
+            ipc::project_set_show_branches,
             ipc::workspace_move_node,
             ipc::workspace_relayout_children,
             ipc::claude_projects_list,
@@ -2069,5 +2070,138 @@ mod tests {
             .expect("mock webview should build");
 
         invoke(&webview, "app_quitt").expect_err("unknown wire names must not resolve");
+    }
+
+    /// Wait (bounded) until `check` holds on the workspace state; panics with `what` after `limit`.
+    fn wait_for_workspace(
+        app: &tauri::App<tauri::test::MockRuntime>,
+        limit: std::time::Duration,
+        what: &str,
+        check: impl Fn(&super::graph::WorkspaceState) -> bool,
+    ) -> std::time::Duration {
+        let started = std::time::Instant::now();
+        loop {
+            if check(&app.state::<super::AppState>().read_workspace()) {
+                return started.elapsed();
+            }
+            assert!(started.elapsed() < limit, "{what} not within {limit:?}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn project_set_show_branches_lists_watches_and_refreshes_a_real_repo_then_stops() {
+        let Some(git) = super::git::branches::tests::real_git() else {
+            eprintln!("git not on PATH; skipping");
+            return;
+        };
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let cfg = tempfile::tempdir().unwrap();
+        super::graph::initialise_at(app.handle(), Some(cfg.path().join("workspace.json")));
+        app.state::<super::AppState>().write().binaries.git.path = Some(git.display().to_string());
+        let repo = super::git::branches::tests::temp_repo(&git);
+        super::git::branches::tests::git_ok(&git, repo.path(), &["branch", "feat"]);
+        let added = super::graph::add_projects(app.handle(), &[repo.path().display().to_string()], Default::default()).unwrap();
+        let id = added.added[0].clone();
+        let has = |name: &str| {
+            let child = format!("{id}:{name}");
+            move |st: &super::graph::WorkspaceState| st.children().iter().any(|c| c.id == child)
+        };
+
+        let args = serde_json::json!({ "projectId": id, "show": true });
+        let body = invoke_with(&webview, "project_set_show_branches", InvokeBody::Json(args))
+            .expect("project_set_show_branches should be registered and succeed");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value["workspace"]["projects"][0]["showBranches"], true);
+        assert_eq!(value["workspace"]["projects"][0]["expanded"], true, "pressing it collapsed expands the card");
+
+        wait_for_workspace(&app, std::time::Duration::from_secs(5), "the branch list", has("feat"));
+        let children = app.state::<super::AppState>().read_workspace().children();
+        let names: Vec<&str> = children.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(names, ["main", "feat"], "checked-out branch first");
+        assert!(children[0].branch.as_ref().unwrap().head);
+        let started = std::time::Instant::now();
+        while app.state::<super::AppState>().branch_watches.ids() != [id.clone()] {
+            assert!(started.elapsed() < std::time::Duration::from_secs(5), "the watch did not start");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        // A branch made in a terminal shows within 2 s (`SEEN_WITHIN`, 3 s, for a loaded runner).
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        super::git::branches::tests::git_ok(&git, repo.path(), &["branch", "fresh"]);
+        let took = wait_for_workspace(&app, super::git::watch::tests::SEEN_WITHIN, "the new branch", has("fresh"));
+        eprintln!("new branch seen after {took:?}");
+
+        // Off: no branch children, the watch stops.
+        let args = serde_json::json!({ "projectId": id, "show": false });
+        invoke_with(&webview, "project_set_show_branches", InvokeBody::Json(args)).expect("off");
+        assert!(app.state::<super::AppState>().read_workspace().children().is_empty());
+        let started = std::time::Instant::now();
+        while !app.state::<super::AppState>().branch_watches.ids().is_empty() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(5), "the watch did not stop");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        // Unknown id and a missing argument are rejected.
+        let err = invoke_with(&webview, "project_set_show_branches", InvokeBody::Json(serde_json::json!({ "projectId": "nope", "show": true })))
+            .expect_err("unknown id");
+        assert_eq!(err, serde_json::json!("unknown project"));
+        invoke_with(&webview, "project_set_show_branches", InvokeBody::Json(serde_json::json!({ "projectId": id })))
+            .expect_err("show is required");
+
+        // On again, then the project is removed: its watch stops.
+        invoke_with(&webview, "project_set_show_branches", InvokeBody::Json(serde_json::json!({ "projectId": id, "show": true }))).expect("on");
+        let started = std::time::Instant::now();
+        while app.state::<super::AppState>().branch_watches.ids().is_empty() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(5), "the watch did not start again");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        invoke_with(&webview, "workspace_remove_project", InvokeBody::Json(serde_json::json!({ "projectId": id }))).expect("removed");
+        assert!(app.state::<super::AppState>().branch_watches.ids().is_empty(), "removing the project stops its watch");
+        app.state::<super::AppState>().branch_watches.clear();
+    }
+
+    #[test]
+    fn a_failing_branch_read_keeps_the_last_list_and_reports_the_cause() {
+        let Some(git) = super::git::branches::tests::real_git() else {
+            eprintln!("git not on PATH; skipping");
+            return;
+        };
+        let app = mock_app();
+        let cfg = tempfile::tempdir().unwrap();
+        super::graph::initialise_at(app.handle(), Some(cfg.path().join("workspace.json")));
+        app.state::<super::AppState>().write().binaries.git.path = Some(git.display().to_string());
+        let repo = super::git::branches::tests::temp_repo(&git);
+        let added = super::graph::add_projects(app.handle(), &[repo.path().display().to_string()], Default::default()).unwrap();
+        let id = added.added[0].clone();
+        super::graph::set_show_branches(app.handle(), &id, true).unwrap();
+        assert_eq!(tauri::async_runtime::block_on(super::git::poll::refresh_branches(app.handle(), None)), 1);
+        assert_eq!(app.state::<super::AppState>().read_workspace().children().len(), 1);
+
+        // A "git" that fails: the list stays, the cause is in the snapshot.
+        let fail = super::process::fixtures::script(
+            cfg.path(),
+            "fail",
+            "@echo fatal: broken refs 1>&2\n@exit /b 128\n",
+            "echo 'fatal: broken refs' >&2\nexit 128\n",
+        );
+        app.state::<super::AppState>().write().binaries.git.path = Some(fail.display().to_string());
+        tauri::async_runtime::block_on(super::git::poll::refresh_branches(app.handle(), Some(std::slice::from_ref(&id))));
+        let snapshot = app.state::<super::AppState>().read_workspace().snapshot();
+        assert_eq!(snapshot.children.len(), 1, "last list kept");
+        assert_eq!(snapshot.branch_errors.get(&id).map(String::as_str), Some("fatal: broken refs"));
+
+        // The folder stops being a repository: `branches unavailable`, not a silent empty group.
+        app.state::<super::AppState>().write().binaries.git.path = Some(git.display().to_string());
+        std::fs::remove_dir_all(repo.path().join(".git")).unwrap();
+        if !super::git::status::tests::inside_work_tree(&git, repo.path()) {
+            tauri::async_runtime::block_on(super::git::poll::refresh_branches(app.handle(), None));
+            let snapshot = app.state::<super::AppState>().read_workspace().snapshot();
+            assert_eq!(snapshot.branch_errors.get(&id).map(String::as_str), Some(super::git::poll::NOT_A_REPO));
+            assert_eq!(snapshot.children.len(), 1, "last list kept");
+        }
     }
 }

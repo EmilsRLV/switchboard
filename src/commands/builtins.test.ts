@@ -13,6 +13,8 @@ import { chevronCommandId } from "../canvas/nodes";
 import { builtinCommands, registerBuiltins } from "./builtins";
 import { handleKeydown, type KeyEventLike } from "./keybindings";
 import { menuGroup, nodeMenuCommands } from "./nodes";
+import { copySelectedBranchName } from "./navigation";
+import { useStatusStore } from "../state/status";
 import { clearCommands, getCommand, listCommands, runCommand } from "./registry";
 
 function key(k: string, mods: Partial<KeyEventLike> = {}): KeyEventLike {
@@ -34,7 +36,7 @@ describe("built-in commands", () => {
     useWorkspaceStore.setState({ snapshot: null, loadError: null });
     usePaletteStore.setState({ isOpen: false, query: "", selected: 0 });
     useSettingsStore.setState({ snapshot: null, loadError: null, actionBusy: false, actionError: null });
-    useUiStore.setState({ pane: null, flashed: [], selection: null, contextMenu: null, notice: null, showAll: [], elsewhereOpen: false, activeTerminal: null, openTerminals: [], poppedOut: {} });
+    useUiStore.setState({ pane: null, flashed: [], selection: null, contextMenu: null, notice: null, showAll: [], showAllBranches: [], elsewhereOpen: false, activeTerminal: null, openTerminals: [], poppedOut: {} });
     useLiveStore.setState({ snapshot: EMPTY_LIVE, received: false, loadError: null });
     useImportStore.getState().reset();
     useCanvasStore.setState({ instance: null, element: null, dragging: {} });
@@ -51,11 +53,12 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the forty-four commands with the spec's keybindings", () => {
+  it("register the forty-six commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
       "binaries.redetect",
+      "branch.copyName",
       "canvas.fitView",
       "contextMenu.close",
       "elsewhere.close",
@@ -75,6 +78,7 @@ describe("built-in commands", () => {
       "project.remove",
       "project.revealClaudeDir",
       "project.terminal",
+      "project.toggleBranches",
       "project.toggleShowAll",
       "selection.activate",
       "selection.clear",
@@ -152,11 +156,12 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the thirty-two actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the thirty-four actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
       "binaries.redetect",
+      "branch.copyName",
       "canvas.fitView",
       "elsewhere.toggle",
       "palette.toggle",
@@ -171,6 +176,7 @@ describe("built-in commands", () => {
       "project.remove",
       "project.revealClaudeDir",
       "project.terminal",
+      "project.toggleBranches",
       "project.toggleShowAll",
       "session.attach",
       "session.fork",
@@ -189,13 +195,14 @@ describe("built-in commands", () => {
     ]);
   });
 
-  it("exactly the ten project commands and the five session commands are tagged for the node menu, and the menu lists none without a selection", () => {
+  it("exactly the eleven project commands, the five session commands and the branch command are tagged for the node menu, and the menu lists none without a selection", () => {
     expect(
       listCommands()
         .filter((c) => c.menu === "node")
         .map((c) => c.id)
         .sort(),
     ).toEqual([
+      "branch.copyName",
       "project.collapse",
       "project.expand",
       "project.newSession",
@@ -205,6 +212,7 @@ describe("built-in commands", () => {
       "project.remove",
       "project.revealClaudeDir",
       "project.terminal",
+      "project.toggleBranches",
       "project.toggleShowAll",
       "session.attach",
       "session.fork",
@@ -217,7 +225,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(44);
+    expect(listCommands()).toHaveLength(46);
   });
 
   const PROJECT_ACTIONS = [
@@ -313,6 +321,35 @@ describe("built-in commands", () => {
     useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(true)], stubs(11)) });
     useUiStore.getState().select({ kind: "session", id: "stub-1-ide" });
     expect(enabled()).not.toContain("project.toggleShowAll");
+  });
+
+  it("Show all sessions counts sessions only and toggles the session group only, with branches present", () => {
+    const enabled = () => listCommands({ enabledOnly: true }).map((c) => c.id);
+    const branchKids = (count: number): ChildNode[] =>
+      Array.from({ length: count }, (_, i) => ({
+        id: `ide:b${i}`,
+        projectId: "ide",
+        kind: "branch" as const,
+        label: `b${i}`,
+        detail: null,
+        position: null,
+        session: null,
+        branchId: null,
+        forkedFrom: null,
+        hasTranscript: false,
+        branch: { head: false, upstream: null, ahead: 0, behind: 0, upstreamGone: false, worktree: null },
+      }));
+    const project = { ...ideProject(true), showBranches: true };
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    // 5 sessions and 10 branches (15 children): neither group passes ten, not offered.
+    useWorkspaceStore.setState({ snapshot: workspaceWith([project], [...stubs(5), ...branchKids(10)]) });
+    expect(enabled()).not.toContain("project.toggleShowAll");
+    // 11 sessions and 12 branches: offered, and it toggles the sessions only.
+    useWorkspaceStore.setState({ snapshot: workspaceWith([project], [...stubs(11), ...branchKids(12)]) });
+    expect(enabled()).toContain("project.toggleShowAll");
+    expect(runCommand("project.toggleShowAll")).toBe(true);
+    expect(useUiStore.getState().showAll).toEqual(["ide"]);
+    expect(useUiStore.getState().showAllBranches).toEqual([]);
   });
 
   it("the menu's fixed order has a separator wherever the tens digit of menuOrder changes", () => {
@@ -918,6 +955,82 @@ describe("built-in commands", () => {
     useLiveStore.getState().applySnapshot(liveSnapshot({}, 0));
     expect(enabledEsc()).toEqual(["selection.clear"]);
   });
+
+  // -- branches (Story 5.1) --------------------------------------------------------------
+
+  it("project.toggleBranches is a node-menu and palette command for a git project only, titled by its state", async () => {
+    const statuses = useStatusStore.getState();
+    useStatusStore.setState({ statuses: { ide: { kind: "not_repo" } } });
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(false)], []) });
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    expect(listCommands({ enabledOnly: true }).map((c) => c.id)).not.toContain("project.toggleBranches");
+    expect(runCommand("project.toggleBranches")).toBe(false);
+
+    useStatusStore.setState({ statuses: { ide: { kind: "repo", branch: "main", detached: false, dirty: 0, ahead: 0, behind: 0 } } });
+    const listed = () => listCommands({ enabledOnly: true, visibleOnly: true }).find((c) => c.id === "project.toggleBranches");
+    expect(listed()?.title).toBe("Show branches");
+    expect(nodeMenuCommands().map((c) => c.id)).toContain("project.toggleBranches");
+    expect(getCommand("project.toggleBranches")?.menuOrder).toBe(33);
+
+    const invoke = vi.fn(async (cmd: string, args: Record<string, unknown>) => {
+      expect(cmd).toBe("project_set_show_branches");
+      const current = useWorkspaceStore.getState().snapshot!;
+      const project = { ...ideProject(true), showBranches: args.show as boolean };
+      return { ...current, revision: current.revision + 1, workspace: { ...current.workspace, projects: [project] } };
+    });
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    expect(runCommand("project.toggleBranches")).toBe(true);
+    await flush();
+    expect(invoke).toHaveBeenCalledWith("project_set_show_branches", { projectId: "ide", show: true }, undefined);
+    expect(useWorkspaceStore.getState().snapshot?.workspace.projects[0]?.showBranches).toBe(true);
+    expect(listed()?.title).toBe("Hide branches");
+
+    // Branches on and the folder no longer a repo: still offered, so it can be turned off.
+    useStatusStore.setState({ statuses: { ide: { kind: "not_repo" } } });
+    expect(listed()?.title).toBe("Hide branches");
+
+    // Off: the branch group's show-all goes; the sessions' stays.
+    useUiStore.getState().toggleShowAll("ide", "branches");
+    useUiStore.getState().toggleShowAll("ide");
+    expect(runCommand("project.toggleBranches")).toBe(true);
+    await flush();
+    expect(invoke).toHaveBeenLastCalledWith("project_set_show_branches", { projectId: "ide", show: false }, undefined);
+    expect(useUiStore.getState().showAllBranches).toEqual([]);
+    expect(useUiStore.getState().showAll).toEqual(["ide"]);
+    // Off and not a repo: no command.
+    expect(listed()).toBeUndefined();
+    vi.unstubAllGlobals();
+    useStatusStore.setState(statuses);
+  });
+
+  it("branch.copyName is the branch card's only menu entry and copies its name", async () => {
+    const branch: ChildNode = {
+      id: "ide:feature/x",
+      projectId: "ide",
+      kind: "branch",
+      label: "feature/x",
+      detail: null,
+      position: null,
+      session: null,
+      branchId: null,
+      forkedFrom: null,
+      hasTranscript: false,
+      branch: { head: false, upstream: null, ahead: 0, behind: 0, upstreamGone: false, worktree: null },
+    };
+    useWorkspaceStore.setState({ snapshot: workspaceWith([{ ...ideProject(true), showBranches: true }], [branch]) });
+    expect(listCommands({ enabledOnly: true }).map((c) => c.id)).not.toContain("branch.copyName");
+    useUiStore.getState().select({ kind: "branch", id: "ide:feature/x" });
+    expect(nodeMenuCommands().map((c) => c.id)).toEqual(["branch.copyName"]);
+
+    const writeText = vi.fn(async () => {});
+    await expect(copySelectedBranchName({ writeText })).resolves.toBe(true);
+    expect(writeText).toHaveBeenCalledWith("feature/x");
+
+    vi.useFakeTimers();
+    await expect(copySelectedBranchName({ writeText: async () => Promise.reject(new Error("denied")) })).resolves.toBe(false);
+    expect(useUiStore.getState().notice?.text).toBe("could not copy: denied");
+    await expect(copySelectedBranchName(null)).resolves.toBe(false);
+  });
 });
 
 async function flush(): Promise<void> {
@@ -925,7 +1038,7 @@ async function flush(): Promise<void> {
 }
 
 function ideProject(expanded: boolean, id = "ide"): Project {
-  return { id, path: `/p/${id}`, label: id, position: { x: 0, y: 0 }, expanded, color: null, launchDefaults: null };
+  return { id, path: `/p/${id}`, label: id, position: { x: 0, y: 0 }, expanded, color: null, launchDefaults: null, showBranches: false };
 }
 
 function stubs(count: number, projectId = "ide"): ChildNode[] {
@@ -937,7 +1050,7 @@ function stubs(count: number, projectId = "ide"): ChildNode[] {
     detail: "stub",
     position: null,
     session: null,
-    branchId: null, forkedFrom: null, hasTranscript: false,
+    branchId: null, forkedFrom: null, hasTranscript: false, branch: null,
   }));
 }
 
@@ -955,6 +1068,7 @@ function workspaceWith(projects: Project[], children: ChildNode[]): WorkspaceSna
     },
     banners: [],
     revision: 1,
+    branchErrors: {},
     children,
   };
 }

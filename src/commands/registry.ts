@@ -13,6 +13,11 @@ export type Command = {
   /** What the palette shows; also what it sorts and filters on (with `id`). */
   title: string;
   /**
+   * A title that follows state (`Show branches` / `Hide branches`, Story 5.1): when present,
+   * {@link listCommands} lists the command under what it returns now instead of `title`.
+   */
+  dynamicTitle?: () => string;
+  /**
    * `"ctrl+shift+k"` form; see `parseKeybinding`. Optional: palette-only commands have none.
    * Matching is on `KeyboardEvent.key`, which is layout-dependent, so `shift`+punctuation
    * bindings (`shift+,` where the key reports `<`) do not match.
@@ -109,7 +114,12 @@ export function listCommands({
   const list = [...commands.values()].filter(
     (command) => (!enabledOnly || isEnabled(command)) && (!visibleOnly || command.hidden !== true),
   );
-  return list.sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+  return list.map(withCurrentTitle).sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+}
+
+/** The command under its current title: its `dynamicTitle` now, when it has one. */
+function withCurrentTitle(command: RegisteredCommand): RegisteredCommand {
+  return command.dynamicTitle === undefined ? command : { ...command, title: command.dynamicTitle() };
 }
 
 /**

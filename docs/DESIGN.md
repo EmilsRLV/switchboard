@@ -177,7 +177,7 @@ drag handle) follows every rule here.
 - **The palette** is centred near the top over a dimmed page (`--bg` at 55%): `--bg-raised`, 1-px border,
   `--radius-md`; rows in `--text-base`, key hints in `--text-sm` `--fg-muted`.
 - **The context menu** is the palette's row look at the pointer: `--bg-raised`, 1-px border,
-  `--radius-md`, items in `--text-md`, groups split by a 1-px `--border` line. Project and session cards
+  `--radius-md`, items in `--text-md`, groups split by a 1-px `--border` line. Project, session and branch cards
   have one; it lists only enabled entries and does not open when there are none.
 - **The Elsewhere tray** (live sessions in folders not on the canvas) sits at the canvas's bottom-left, over
   it and below the notice, panes, palette and menu. A chip `elsewhere N` (mono `--text-xs`, `--fg-muted`,
@@ -200,10 +200,16 @@ drag handle) follows every rule here.
    `--text-xs`, 1-px border, `--radius-sm`); the **label** (folder name, `--text-base` / 500, ellipsis);
    the **live badge** (`N live`, same look as the count badge, `--fg-muted`), shown only above 0: the
    project's sessions in a live state (busy, idle or unrecognised; not exited).
-2. **Path:** mono `--text-xs` `--fg-muted`, middle-elided, full path on hover.
+2. **Path:** mono `--text-xs` `--fg-muted`, middle-elided, full path on hover. While branches are on and
+   the last branch read failed (Story 5.1), the row reads `branches unavailable` instead (same look, git's
+   message on hover; the full path moves to the label's hover): the card's size is fixed, so the line takes
+   the path's row rather than adding one.
 3. **Status line:** mono `--text-sm`: the git line (see [Status colours](#status-colours)), `↑n ↓m` in
-   `--fg-muted` when it differs from the upstream, and, for git repos only, the **branches** affordance at
-   the right (mono `--text-xs`, 1-px border, `--radius-sm`, `--fg-muted`; inert until Epic 5).
+   `--fg-muted` when it differs from the upstream, and, for git repos only (or while branches are on, so they
+   can be turned off), the **branches** chip at the right: a toggle button whose accessible name is always
+   "branches", with `aria-pressed` carrying the state (mono `--text-xs`, 1-px `--border`, `--radius-sm`,
+   `--fg-muted`; border `--fg-muted` on hover; on, `--fg` text and an `--fg` border, so on never looks like
+   hover; the 1-px `--focus` outline on keyboard focus). No accent.
 
 The card size is fixed: `nodes.ts` and the arrow-key geometry depend on 240 × 80.
 
@@ -231,6 +237,18 @@ session and branch children; the size is fixed like the project card's.
 
   A **fork** (Story 4.4) is an ordinary session card; its tooltip and accessible name add `forked from
   <original title>`.
+- **Branch** (a local branch, Story 5.1), one or two lines:
+  1. the **name** in `--text-md`, ellipsis, then `*` (same text, never cut) for the branch checked out in the
+     project's folder;
+  2. the **meta** in mono `--text-xs` `--fg-muted`, left out when it would be empty: `↑n ↓m` against the
+     upstream (either part left out at 0; nothing without an upstream), `upstream gone` when the upstream
+     is configured but missing, then the **worktree chip** (a 1-px `--border` box, `--radius-sm`, the
+     folder's last two segments after `…/`, or `missing` when the folder is gone; it is the part that shrinks
+     with an ellipsis; full path on hover and in its accessible label). Only a linked worktree has a chip,
+     never the project's own checkout.
+
+  The tooltip holds the name, the upstream and the worktree path. Tokens only, no accent: a branch never
+  needs attention.
 - **Branch, stub:** one row: the **label** in `--text-md` (ellipsis) and, at the right, the **detail** in mono
   `--text-xs` `--fg-muted`.
 
@@ -244,8 +262,9 @@ not an edge kind (Epic 6's edges are something else). Its anchors are invisible.
 
 ### The more row
 
-Past ten children, a row follows the tenth in the next column slot: `show all (N)` (N counts every child),
-or `show fewer` while all show. Mono `--text-xs` in `--fg-muted` (`--fg` on hover), no border and no surface,
+A column has two groups (Story 5.1): the sessions, then the branches; each is cut on its own. Past ten in a
+group, a row follows its tenth in the next column slot: `show all (N)` (N counts every child of that group),
+or `show fewer` while all show; the branch group starts in the slot after the session group's row. Mono `--text-xs` in `--fg-muted` (`--fg` on hover), no border and no surface,
 the slot's 208 × 40. It is selectable like a node (same outline), not draggable, and has no menu; a click or
 Enter toggles it.
 

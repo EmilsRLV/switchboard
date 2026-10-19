@@ -59,7 +59,8 @@ export async function revealSession(sessionId: string): Promise<boolean> {
   if (after === null) return fail();
 
   const ui = useUiStore.getState();
-  const kids = (useWorkspaceStore.getState().snapshot?.children ?? []).filter((c) => c.projectId === after.projectId);
+  // The session group only: branches have their own cut (Story 5.1).
+  const kids = (useWorkspaceStore.getState().snapshot?.children ?? []).filter((c) => c.projectId === after.projectId && c.kind === "session");
   const shown = ui.showAll.includes(after.projectId);
   // Only ever turn show-all on: toggling would hide the column's tail when it is already on.
   if (!shown && !visibleChildren(kids, false).visible.some((c) => c.kind === "session" && c.id === sessionId)) {

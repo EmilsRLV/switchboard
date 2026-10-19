@@ -23,15 +23,17 @@ import {
   activateSelection,
   attachStub,
   canToggleShowAll,
+  copySelectedBranchName,
   moveSelection,
   openProjectFolder,
   openProjectInEditor,
   revealClaudeProjectDir,
+  selectedBranch,
   selectedLiveSessionId,
   toggleShowAllOfSelected,
 } from "./navigation";
 import { canGoToAttention, goToNextAttention } from "./attention";
-import { relayoutChildren, removeProject, setExpanded } from "./nodes";
+import { canToggleBranches, relayoutChildren, removeProject, setExpanded, toggleBranches, toggleBranchesTitle } from "./nodes";
 import {
   canForkSession,
   canResumeSession,
@@ -425,6 +427,27 @@ export function builtinCommands(): Command[] {
       when: canToggleShowAll,
       run: () => {
         toggleShowAllOfSelected();
+      },
+    },
+    {
+      // The card's "branches" chip (Story 5.1); git repos only.
+      id: "project.toggleBranches",
+      title: "Show branches",
+      dynamicTitle: toggleBranchesTitle,
+      menu: "node",
+      menuOrder: 33,
+      when: canToggleBranches,
+      run: withSelectedProject(toggleBranches),
+    },
+    {
+      // A branch card's only menu entry in Story 5.1.
+      id: "branch.copyName",
+      title: "Copy branch name",
+      menu: "node",
+      menuOrder: 50,
+      when: () => selectedBranch() !== null,
+      run: async () => {
+        await copySelectedBranchName();
       },
     },
     {

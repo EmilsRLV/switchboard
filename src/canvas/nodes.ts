@@ -5,6 +5,7 @@
 
 import type { Node } from "@xyflow/react";
 import type {
+  BranchMeta,
   ChildKind,
   ChildNode,
   LiveSession,
@@ -41,6 +42,11 @@ export type ProjectNodeData = {
    * or `waiting`: the card glows (Story 3.3).
    */
   attention: boolean;
+  /**
+   * Why the last branch read failed (Story 5.1), while branches are on: the path row reads
+   * `branches unavailable` (muted) with this on hover. `null` otherwise.
+   */
+  branchesError: string | null;
 };
 
 /** What a `SessionNode` / `BranchNode` renders from. */
@@ -64,6 +70,8 @@ export type ChildNodeData = {
 /** What a `MoreNode` (the `show all (N)` / `show fewer` row) renders from. */
 export type MoreNodeData = {
   projectId: string;
+  /** Which of the project's two groups the row cuts (Story 5.1): its sessions or its branches. */
+  group: ChildGroup;
   /** Every child of the project, hidden ones included. */
   total: number;
   /** True while the project shows all its children (the row reads `show fewer`). */
@@ -78,10 +86,35 @@ export type MoreFlowNode = Node<MoreNodeData, "more">;
 export type CanvasFlowNode = ProjectFlowNode | SessionFlowNode | BranchFlowNode | MoreFlowNode;
 
 /**
- * The synthetic `more` row under a project's column, named by the project's id. It is not a
- * Rust node: it is never moved, has no menu and only toggles the project's `showAll`.
+ * The synthetic `more` row of one group of a project's column: `id` is the project's id and
+ * `group` the group it cuts (absent means the sessions, as before Story 5.1). It is not a Rust
+ * node: it is never moved, has no menu and only toggles that group's show-all (the ui store's
+ * `showAll` for sessions, `showAllBranches` for branches: one list of project ids per group,
+ * so no key can collide with a project id).
  */
-export type MoreTarget = { kind: "more"; id: string };
+export type MoreTarget = { kind: "more"; id: string; group?: ChildGroup };
+
+/**
+ * The two groups of a project's column (Story 5.1): its session children (stubs included),
+ * then its branch children. Each group has its own {@link SHOW_LIMIT} and its own `more` row,
+ * so sessions and branches never push each other out.
+ */
+export type ChildGroup = "sessions" | "branches";
+
+/** The group a child belongs to. */
+export function groupOf(child: Pick<ChildNode, "kind">): ChildGroup {
+  return child.kind === "branch" ? "branches" : "sessions";
+}
+
+/** The group a `more` target cuts (absent: the sessions). */
+export function moreGroup(target: MoreTarget): ChildGroup {
+  return target.group ?? "sessions";
+}
+
+/** The `more` target of one group of a project's column. */
+export function moreTarget(projectId: string, group: ChildGroup): MoreTarget {
+  return group === "sessions" ? { kind: "more", id: projectId } : { kind: "more", id: projectId, group };
+}
 
 /** Anything the canvas draws and can select: a node Rust knows, or a `more` row. */
 export type CanvasTarget = NodeTarget | MoreTarget;
@@ -122,29 +155,20 @@ export function columnSlot(index: number): Position {
   return { x: COLUMN_INDENT, y: COLUMN_TOP + index * (CHILD_HEIGHT + CHILD_GAP) };
 }
 
-/**
- * The position of each of one project's children, relative to the parent card: the stored
- * one when the child was dragged, else its column slot. Slots follow the list order, so a
- * dragged child leaves a gap rather than shifting the others ("session 2 snaps back to slot 2").
- */
-export function layoutChildren(children: readonly ChildNode[]): Position[] {
-  return children.map((child, index) => (child.position === null ? columnSlot(index) : { ...child.position }));
-}
-
 /** The flow-node id of a child: `session:<id>` / `branch:<id>`; project ids stay bare. */
 export function childFlowId(child: Pick<ChildNode, "kind" | "id">): string {
   return `${child.kind}:${child.id}`;
 }
 
-/** The flow-node id of a project's `more` row: `more:<projectId>`. */
-export function moreFlowId(projectId: string): string {
-  return `more:${projectId}`;
+/** The flow-node id of a `more` row: `more:<projectId>` (sessions), `more-branches:<projectId>`. */
+export function moreFlowId(projectId: string, group: ChildGroup = "sessions"): string {
+  return group === "sessions" ? `more:${projectId}` : `more-branches:${projectId}`;
 }
 
 /** The flow-node id of any canvas target. */
 export function flowIdOf(target: CanvasTarget): string {
   if (target.kind === "project") return target.id;
-  if (target.kind === "more") return moreFlowId(target.id);
+  if (target.kind === "more") return moreFlowId(target.id, moreGroup(target));
   return childFlowId({ kind: target.kind, id: target.id });
 }
 
@@ -152,6 +176,7 @@ export function flowIdOf(target: CanvasTarget): string {
 export function parseFlowId(flowId: string): CanvasTarget {
   if (flowId.startsWith("session:")) return { kind: "session", id: flowId.slice("session:".length) };
   if (flowId.startsWith("branch:")) return { kind: "branch", id: flowId.slice("branch:".length) };
+  if (flowId.startsWith("more-branches:")) return moreTarget(flowId.slice("more-branches:".length), "branches");
   if (flowId.startsWith("more:")) return { kind: "more", id: flowId.slice("more:".length) };
   return { kind: "project", id: flowId };
 }
@@ -182,9 +207,57 @@ export function visibleChildren<C extends { position: Position | null }>(childre
   return { visible, more, slotted: SHOW_LIMIT, total };
 }
 
+/** One drawn child of a project's column and where it sits (relative to the parent card). */
+export type ColumnEntry<C> = { child: C; position: Position };
+
+/** One `more` row of a project's column. */
+export type ColumnMore = { group: ChildGroup; position: Position; total: number; showingAll: boolean };
+
+/**
+ * A project's column (Story 5.1): its session group, then its branch group right after it
+ * (after the session group's `more` row when it has one). Each group is cut by
+ * {@link visibleChildren} on its own show-all list (`showAll` for sessions, `showAllBranches`
+ * for branches, both project ids); a dragged child keeps its stored position, the others take
+ * their slot. Children keep their list order within each group.
+ */
+export function projectColumn<C extends Pick<ChildNode, "kind" | "position">>(
+  projectId: string,
+  kids: readonly C[],
+  showAll: readonly string[],
+  showAllBranches: readonly string[] = [],
+): { drawn: ColumnEntry<C>[]; mores: ColumnMore[] } {
+  const drawn: ColumnEntry<C>[] = [];
+  const mores: ColumnMore[] = [];
+  let offset = 0;
+  for (const group of ["sessions", "branches"] as const) {
+    const members = kids.filter((child) => groupOf(child) === group);
+    if (members.length === 0) continue;
+    const showingAll = (group === "sessions" ? showAll : showAllBranches).includes(projectId);
+    const { visible, more, slotted, total } = visibleChildren(members, showingAll);
+    for (const child of visible) {
+      const index = members.indexOf(child);
+      drawn.push({ child, position: child.position === null ? columnSlot(offset + index) : { ...child.position } });
+    }
+    if (more) {
+      mores.push({ group, position: columnSlot(offset + slotted), total, showingAll });
+      offset += 1;
+    }
+    offset += slotted;
+  }
+  return { drawn, mores };
+}
+
 /** The `more` row's text: `show all (N)`, or `show fewer` while everything shows. */
 export function moreLabel(total: number, showingAll: boolean): string {
   return showingAll ? "show fewer" : `show all (${total})`;
+}
+
+/**
+ * Whether a project card shows the "branches" chip (and offers `project.toggleBranches`): a
+ * git repo, or branches already on, so they can always be turned off (Story 5.1).
+ */
+export function branchesChipShown(project: Pick<Project, "showBranches">, isRepo: boolean): boolean {
+  return isRepo || project.showBranches;
 }
 
 /** The command the card's chevron runs: the one of the exclusive pair that applies. */
@@ -208,11 +281,11 @@ export function rightClickTarget(press: RightPress | null, release: Position): C
 
 /**
  * What a right-click release on `target` does once it is selected: open the node menu for a
- * project or session card that has enabled entries, else only select (a historic session,
- * a branch, a `more` row).
+ * project, session or branch card that has enabled entries (a branch has "Copy branch name"),
+ * else only select (a card with nothing to offer, a `more` row).
  */
 export function rightClickAction(target: CanvasTarget, hasMenuItems: boolean): "menu" | "select" {
-  return (target.kind === "project" || target.kind === "session") && hasMenuItems ? "menu" : "select";
+  return target.kind !== "more" && hasMenuItems ? "menu" : "select";
 }
 
 /**
@@ -240,12 +313,16 @@ export type FlowInputs = {
   selection: CanvasTarget | null;
   /** Mid-drag positions by flow id; applied last, over everything stored. */
   dragging: DragOverrides;
-  /** Project ids showing all their children (UI-only); absent means none. */
+  /** Project ids showing all their session children (UI-only); absent means none. */
   showAll?: readonly string[];
+  /** Project ids showing all their branch children (UI-only, Story 5.1); absent means none. */
+  showAllBranches?: readonly string[];
   /** Every session the live poll has seen this run, by id (the live store); absent means none. */
   live?: Readonly<Record<string, LiveSession>>;
   /** Session ids whose Switchboard terminal is being stopped (Story 4.4); absent means none. */
   stopping?: readonly string[];
+  /** Why a project's last branch read failed (Story 5.1), by project id; absent means none. */
+  branchErrors?: Readonly<Record<string, string>>;
 };
 
 /**
@@ -267,6 +344,7 @@ export type FlowInputs = {
 export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNode[] = []): CanvasFlowNode[] {
   const { projects, statuses, flashed, children, selection, dragging } = inputs;
   const showAll = inputs.showAll ?? [];
+  const showAllBranches = inputs.showAllBranches ?? [];
   const live = inputs.live ?? NO_LIVE;
   // The card's state by session id, whatever project the live row's cwd maps to.
   const stateOf = (child: ChildNode): SessionState | null =>
@@ -282,6 +360,7 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
     return session?.state.kind === "waiting" ? (session.detail ?? null) : null;
   };
   const stopping = inputs.stopping ?? [];
+  const branchErrors = inputs.branchErrors ?? NO_ERRORS;
   const stoppingOf = (child: ChildNode): boolean => {
     const state = stateOf(child);
     return state !== null && isLiveState(state) && stopping.includes(child.id);
@@ -322,6 +401,7 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
           return state !== null && isLiveState(state);
         }).length,
         attention: kids.some((child) => needsAttention(stateOf(child))),
+        branchesError: project.showBranches && Object.hasOwn(branchErrors, project.id) ? (branchErrors[project.id] ?? null) : null,
       },
       zIndex: layer(projectSelected, projectDrag),
       draggable: true,
@@ -330,10 +410,8 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
     };
     out.push(reuse(before.get(project.id), next));
     if (!project.expanded) continue;
-    const showingAll = showAll.includes(project.id);
-    const { visible, more, slotted, total } = visibleChildren(kids, showingAll);
-    const slots = layoutChildren(visible);
-    visible.forEach((child, index) => {
+    const { drawn, mores } = projectColumn(project.id, kids, showAll, showAllBranches);
+    drawn.forEach(({ child, position }) => {
       const id = childFlowId(child);
       const childDrag = override(dragging, id);
       const childSelected = selection !== null && selection.kind === child.kind && selection.id === child.id;
@@ -341,7 +419,7 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
         id,
         type: child.kind,
         parentId: project.id,
-        position: childDrag ?? slots[index] ?? columnSlot(index),
+        position: childDrag ?? position,
         data: {
           child,
           selected: childSelected,
@@ -359,15 +437,15 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
       };
       out.push(reuse(before.get(id), next));
     });
-    if (more) {
-      const id = moreFlowId(project.id);
-      const moreSelected = selection !== null && selection.kind === "more" && selection.id === project.id;
+    for (const { group, position, total, showingAll } of mores) {
+      const id = moreFlowId(project.id, group);
+      const moreSelected = selection !== null && selection.kind === "more" && selection.id === project.id && moreGroup(selection) === group;
       const next: MoreFlowNode = {
         id,
         type: "more",
         parentId: project.id,
-        position: columnSlot(slotted),
-        data: { projectId: project.id, total, showingAll, selected: moreSelected },
+        position,
+        data: { projectId: project.id, group, total, showingAll, selected: moreSelected },
         zIndex: layer(moreSelected, undefined),
         draggable: false,
         selectable: false,
@@ -380,6 +458,7 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
 }
 
 const NO_LIVE: Readonly<Record<string, LiveSession>> = Object.freeze({});
+const NO_ERRORS: Readonly<Record<string, string>> = Object.freeze({});
 
 /** A node's `zIndex`: {@link ELEVATED_Z} + 1 while dragged, {@link ELEVATED_Z} while selected, else 0. */
 function layer(selected: boolean, drag: Position | undefined): number {
@@ -403,6 +482,7 @@ function sameNode(a: CanvasFlowNode, b: CanvasFlowNode): boolean {
       a.data.childCount === b.data.childCount &&
       a.data.liveCount === b.data.liveCount &&
       a.data.attention === b.data.attention &&
+      a.data.branchesError === b.data.branchesError &&
       sameProject(a.data.project, b.data.project) &&
       sameStatus(a.data.status, b.data.status)
     );
@@ -410,6 +490,7 @@ function sameNode(a: CanvasFlowNode, b: CanvasFlowNode): boolean {
   if (a.type === "more" && b.type === "more") {
     return (
       a.data.projectId === b.data.projectId &&
+      a.data.group === b.data.group &&
       a.data.total === b.data.total &&
       a.data.showingAll === b.data.showingAll &&
       a.data.selected === b.data.selected
@@ -440,7 +521,15 @@ function samePosition(a: Position, b: Position): boolean {
  * `launchDefaults` is not rendered and is deliberately left out.
  */
 function sameProject(a: Project, b: Project): boolean {
-  return a === b || (a.id === b.id && a.path === b.path && a.label === b.label && a.expanded === b.expanded && a.color === b.color);
+  return (
+    a === b ||
+    (a.id === b.id &&
+      a.path === b.path &&
+      a.label === b.label &&
+      a.expanded === b.expanded &&
+      a.color === b.color &&
+      a.showBranches === b.showBranches)
+  );
 }
 
 function sameChild(a: ChildNode, b: ChildNode): boolean {
@@ -454,6 +543,7 @@ function sameChild(a: ChildNode, b: ChildNode): boolean {
       a.branchId === b.branchId &&
       a.forkedFrom === b.forkedFrom &&
       sameSession(a.session, b.session) &&
+      sameBranch(a.branch ?? null, b.branch ?? null) &&
       (a.position === b.position || (a.position !== null && b.position !== null && samePosition(a.position, b.position))))
   );
 }
@@ -468,6 +558,102 @@ function sameSession(a: SessionMeta | null, b: SessionMeta | null): boolean {
       a.branch === b.branch &&
       a.messages === b.messages)
   );
+}
+
+function sameBranch(a: BranchMeta | null, b: BranchMeta | null): boolean {
+  return (
+    a === b ||
+    (a !== null &&
+      b !== null &&
+      a.head === b.head &&
+      a.upstream === b.upstream &&
+      a.ahead === b.ahead &&
+      a.behind === b.behind &&
+      a.upstreamGone === b.upstreamGone &&
+      (a.worktree === b.worktree ||
+        (a.worktree !== null && b.worktree !== null && a.worktree.path === b.worktree.path && a.worktree.missing === b.worktree.missing)))
+  );
+}
+
+// --- branch cards (Story 5.1) ----------------------------------------------------------------
+
+/** What a branch card's second line shows: each part, or `null` when it is left out. */
+export type BranchCardParts = {
+  /** `↑n ↓m` against the upstream, a part left out at 0; `null` without an upstream or when both are 0. */
+  counts: string | null;
+  /** True when the upstream is configured but missing: `upstream gone`. */
+  gone: boolean;
+  /** The worktree chip: its text (`missing`, or the folder's last two segments) and the full path. */
+  chip: { text: string; path: string; missing: boolean } | null;
+};
+
+/** The text of the `missing` worktree chip. */
+export const MISSING_WORKTREE = "missing";
+
+/** The text of the project card's line while a branch read fails. */
+export const BRANCHES_UNAVAILABLE = "branches unavailable";
+
+/**
+ * A branch card's second line: `↑n ↓m` (either part left out when 0; nothing without an
+ * upstream), `upstream gone`, then the worktree chip. All empty: no second line.
+ */
+export function branchCardParts(meta: BranchMeta): BranchCardParts {
+  let counts: string | null = null;
+  if (meta.upstream !== null && !meta.upstreamGone) {
+    const parts = [meta.ahead > 0 ? `↑${meta.ahead}` : null, meta.behind > 0 ? `↓${meta.behind}` : null].filter((p) => p !== null);
+    counts = parts.length === 0 ? null : parts.join(" ");
+  }
+  const chip =
+    meta.worktree === null
+      ? null
+      : {
+          text: meta.worktree.missing ? MISSING_WORKTREE : worktreeChipText(meta.worktree.path),
+          path: meta.worktree.path,
+          missing: meta.worktree.missing,
+        };
+  return { counts, gone: meta.upstream !== null && meta.upstreamGone, chip };
+}
+
+/** True when a branch card has a second line at all. */
+export function hasBranchSecondLine(parts: BranchCardParts): boolean {
+  return parts.counts !== null || parts.gone || parts.chip !== null;
+}
+
+/**
+ * A worktree chip's text: the folder's last two path segments (`.worktrees/feat`), after
+ * `…/` when the path has more; separators shown as `/`.
+ */
+export function worktreeChipText(path: string): string {
+  const parts = path.split(/[\\/]/).filter((p) => p !== "");
+  if (parts.length <= 2) return parts.join("/");
+  return `…/${parts.slice(-2).join("/")}`;
+}
+
+/**
+ * A branch card's accessible name: `Branch <name>`, then `current`, the counts in words,
+ * `upstream gone` and the worktree (`worktree <path>`, `worktree missing <path>`).
+ */
+export function branchAriaLabel(name: string, meta: BranchMeta | null): string {
+  const parts = [`Branch ${name}`];
+  if (meta === null) return parts.join(", ");
+  if (meta.head) parts.push("current");
+  const card = branchCardParts(meta);
+  if (card.counts !== null) {
+    if (meta.ahead > 0) parts.push(`${meta.ahead} ahead`);
+    if (meta.behind > 0) parts.push(`${meta.behind} behind`);
+  }
+  if (card.gone) parts.push("upstream gone");
+  if (card.chip !== null) parts.push(card.chip.missing ? `worktree missing ${card.chip.path}` : `worktree ${card.chip.path}`);
+  return parts.join(", ");
+}
+
+/** A branch card's `title`: the name, then the upstream and the worktree path, each when known. */
+export function branchCardTitle(name: string, meta: BranchMeta | null): string {
+  const lines = [name];
+  if (meta === null) return name;
+  if (meta.upstream !== null) lines.push(meta.upstreamGone ? `upstream ${meta.upstream} (gone)` : `upstream ${meta.upstream}`);
+  if (meta.worktree !== null) lines.push(meta.worktree.missing ? `worktree missing: ${meta.worktree.path}` : `worktree ${meta.worktree.path}`);
+  return lines.join("\n");
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
@@ -574,7 +760,8 @@ export function childAriaLabel(
   kind: ChildKind,
   data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine"> & Partial<Pick<ChildNodeData, "stopping" | "forkedFromTitle">>,
 ): string {
-  const parts = [`${kind === "session" ? "Session" : "Branch"} ${data.child.label}`];
+  if (kind === "branch") return branchAriaLabel(data.child.label, data.child.branch ?? null);
+  const parts = [`Session ${data.child.label}`];
   if (data.forkedFromTitle !== null && data.forkedFromTitle !== undefined) parts.push(forkedFromText(data.forkedFromTitle));
   if (data.stopping === true) parts.push(STOPPING_WORD);
   if (data.detail !== null && data.detail !== "") parts.push(`waiting: ${data.detail}`);
@@ -748,7 +935,12 @@ const PERPENDICULAR_WEIGHT = 2;
  * and children hidden past {@link SHOW_LIMIT}, are not drawn, so they are not candidates. The list order (projects in workspace order, each with its children) is
  * the tie-breaker of the searches.
  */
-export function nodeRects(projects: readonly Project[], children: readonly ChildNode[], showAll: readonly string[] = []): NodeRect[] {
+export function nodeRects(
+  projects: readonly Project[],
+  children: readonly ChildNode[],
+  showAll: readonly string[] = [],
+  showAllBranches: readonly string[] = [],
+): NodeRect[] {
   const out: NodeRect[] = [];
   for (const project of projects) {
     out.push({
@@ -760,24 +952,21 @@ export function nodeRects(projects: readonly Project[], children: readonly Child
     });
     if (!project.expanded) continue;
     const kids = children.filter((child) => child.projectId === project.id);
-    const { visible, more, slotted } = visibleChildren(kids, showAll.includes(project.id));
-    const slots = layoutChildren(visible);
-    visible.forEach((child, index) => {
-      const slot = slots[index] ?? columnSlot(index);
+    const { drawn, mores } = projectColumn(project.id, kids, showAll, showAllBranches);
+    for (const { child, position } of drawn) {
       out.push({
         target: { kind: child.kind, id: child.id },
-        x: project.position.x + slot.x,
-        y: project.position.y + slot.y,
+        x: project.position.x + position.x,
+        y: project.position.y + position.y,
         width: CHILD_WIDTH,
         height: CHILD_HEIGHT,
       });
-    });
-    if (more) {
-      const slot = columnSlot(slotted);
+    }
+    for (const { group, position } of mores) {
       out.push({
-        target: { kind: "more", id: project.id },
-        x: project.position.x + slot.x,
-        y: project.position.y + slot.y,
+        target: moreTarget(project.id, group),
+        x: project.position.x + position.x,
+        y: project.position.y + position.y,
         width: CHILD_WIDTH,
         height: CHILD_HEIGHT,
       });
@@ -791,7 +980,7 @@ function centreOf(rect: NodeRect): Position {
 }
 
 function sameNodeTarget(a: CanvasTarget, b: CanvasTarget): boolean {
-  return a.kind === b.kind && a.id === b.id;
+  return a.kind === b.kind && a.id === b.id && (a.kind !== "more" || b.kind !== "more" || moreGroup(a) === moreGroup(b));
 }
 
 /**

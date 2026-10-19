@@ -32,11 +32,11 @@ const {
 } = await import("./navigation");
 
 function project(id: string, x: number, y: number, expanded = false): Project {
-  return { id, path: `/p/${id}`, label: id, position: { x, y }, expanded, color: null, launchDefaults: null };
+  return { id, path: `/p/${id}`, label: id, position: { x, y }, expanded, color: null, launchDefaults: null, showBranches: false };
 }
 
 function stub(index: number, projectId: string, position: Position | null = null): ChildNode {
-  return { id: `stub-${index}-${projectId}`, projectId, kind: "session", label: `session ${index}`, detail: "stub", position, session: null, branchId: null, forkedFrom: null, hasTranscript: false };
+  return { id: `stub-${index}-${projectId}`, projectId, kind: "session", label: `session ${index}`, detail: "stub", position, session: null, branchId: null, forkedFrom: null, hasTranscript: false, branch: null };
 }
 
 function snapshot(projects: Project[], children: ChildNode[], revision = 1): WorkspaceSnapshot {
@@ -45,6 +45,7 @@ function snapshot(projects: Project[], children: ChildNode[], revision = 1): Wor
     workspace: { version: 1, viewport: { x: 0, y: 0, zoom: 1 }, projects, branches: [], sessions: [], edges: [], defaults: { model: null, effort: null, permissionMode: null } },
     banners: [],
     revision,
+    branchErrors: {},
     children,
   };
 }

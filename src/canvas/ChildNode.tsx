@@ -2,7 +2,10 @@ import { memo, useSyncExternalStore } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { ChildKind } from "../ipc";
 import {
+  branchCardParts,
+  branchCardTitle,
   childAriaLabel,
+  hasBranchSecondLine,
   moreLabel,
   sessionCardMeta,
   sessionCardTitle,
@@ -24,7 +27,10 @@ import {
  * full title and exact times are on hover. Stubs and branches show the label and a muted
  * detail on one row. A live session whose Switchboard terminal is being stopped reads `stopping`
  * (muted, Story 4.4), and a fork's tooltip and label say what it was forked from; a session card
- * also carries the invisible anchors of the "forked from" line. `SessionNode` and `BranchNode` are thin wrappers so xyflow has a type per
+ * also carries the invisible anchors of the "forked from" line. A discovered branch (Story 5.1)
+ * shows its name with `*` when checked out, over a muted line: `↑n ↓m` against its upstream,
+ * `upstream gone`, then the worktree chip (the folder's last two segments, or `missing`; the
+ * full path on hover). `SessionNode` and `BranchNode` are thin wrappers so xyflow has a type per
  * child kind. A right-click opens the node menu (only its enabled entries: Attach for a live
  * session); selection is an outline in `--fg`, never the accent.
  */
@@ -35,6 +41,9 @@ function ChildCard({ data, kind }: { data: ChildNodeData; kind: ChildKind }) {
   const ariaLabel = childAriaLabel(kind, data);
   if (child.session !== null) {
     return <SessionCard className={className + " child-node-two-line"} ariaLabel={ariaLabel} data={data} />;
+  }
+  if (child.branch !== null && child.branch !== undefined) {
+    return <BranchCard className={className} ariaLabel={ariaLabel} data={data} />;
   }
   return (
     <div className={className} role="group" aria-label={ariaLabel} title={attention ? `${child.label}\nneeds you` : undefined}>
@@ -82,6 +91,46 @@ function SessionCard({ className, ariaLabel, data }: { className: string; ariaLa
           </>
         )}
       </span>
+    </div>
+  );
+}
+
+function BranchCard({ className, ariaLabel, data }: { className: string; ariaLabel: string; data: ChildNodeData }) {
+  const { child } = data;
+  const meta = child.branch ?? null;
+  if (meta === null) return null;
+  const parts = branchCardParts(meta);
+  const twoLine = hasBranchSecondLine(parts);
+  return (
+    <div
+      className={className + (twoLine ? " child-node-two-line" : "")}
+      role="group"
+      aria-label={ariaLabel}
+      title={branchCardTitle(child.label, meta)}
+    >
+      <span className="branch-node-name">
+        <span className="branch-node-label">{child.label}</span>
+        {meta.head && (
+          <span className="branch-node-current" aria-hidden="true">
+            *
+          </span>
+        )}
+      </span>
+      {twoLine && (
+        <span className="child-node-meta">
+          {parts.counts !== null && <span>{parts.counts}</span>}
+          {parts.gone && <span>upstream gone</span>}
+          {parts.chip !== null && (
+            <span
+              className="branch-node-worktree"
+              title={parts.chip.path}
+              aria-label={parts.chip.missing ? `worktree missing: ${parts.chip.path}` : `worktree ${parts.chip.path}`}
+            >
+              {parts.chip.text}
+            </span>
+          )}
+        </span>
+      )}
     </div>
   );
 }

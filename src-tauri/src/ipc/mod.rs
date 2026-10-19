@@ -165,6 +165,24 @@ pub async fn workspace_set_expanded<R: Runtime>(
     graph::set_expanded(&app, &project_id, expanded)
 }
 
+/// The "branches" toggle (`project.toggleBranches`, Story 5.1): store `showBranches` (turning
+/// it on expands a collapsed card), then start or stop the project's branch watch and, when
+/// on, read its branch list now (the branch cards follow as a `workspace://changed`). Replies
+/// with the snapshot, or `Err("unknown project")` with nothing changed.
+#[tauri::command]
+pub async fn project_set_show_branches<R: Runtime>(app: AppHandle<R>, project_id: String, show: bool) -> Result<WorkspaceSnapshot, String> {
+    let snapshot = graph::set_show_branches(&app, &project_id, show)?;
+    let watch_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let sync_app = watch_app.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || git::watch::sync(&sync_app)).await;
+        if show {
+            git::poll::refresh_branches(&watch_app, Some(std::slice::from_ref(&project_id))).await;
+        }
+    });
+    Ok(snapshot)
+}
+
 /// Store where a node was dropped (end of a drag). A project's position is absolute, a
 /// child's relative to its parent card. Replies with the snapshot, or an `Err` for a
 /// non-finite position or an unknown node.
@@ -193,6 +211,10 @@ pub async fn workspace_relayout_children<R: Runtime>(app: AppHandle<R>, project_
 pub async fn workspace_remove_project<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<WorkspaceSnapshot, String> {
     let snapshot = graph::remove_project(&app, &project_id)?;
     git::poll::forget(&app, &project_id).await;
+    // Its branch watch stops and its branch lock goes (Story 5.1).
+    let watch_app = app.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || git::watch::sync(&watch_app)).await;
+    app.state::<AppState>().branch_locks.forget(&project_id);
     // Its terminals go too: their children are killed and the terminals forgotten.
     let terms_app = app.clone();
     let forget_id = project_id.clone();
