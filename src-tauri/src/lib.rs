@@ -1775,7 +1775,9 @@ mod tests {
         #[cfg(windows)]
         {
             let script = dir.join("stubborn.ps1");
-            std::fs::write(&script, "[Console]::TreatControlCAsInput = $true\r\nStart-Sleep -Seconds 60\r\n").unwrap();
+            // The marker is printed only once Ctrl+C is ignored; the test waits for it (on a
+            // loaded runner PowerShell can take well over a second to get this far).
+            std::fs::write(&script, "[Console]::TreatControlCAsInput = $true\r\nWrite-Output 'stubborn-ready'\r\nStart-Sleep -Seconds 60\r\n").unwrap();
             (
                 std::path::PathBuf::from("powershell.exe"),
                 ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]
@@ -1790,7 +1792,7 @@ mod tests {
             let _ = dir;
             (
                 std::path::PathBuf::from("/bin/sh"),
-                ["-c", "trap '' INT; sleep 60", "sh"].map(String::from).to_vec(),
+                ["-c", "trap '' INT; echo stubborn-ready; sleep 60", "sh"].map(String::from).to_vec(),
             )
         }
     }
@@ -2023,11 +2025,15 @@ mod tests {
             state.write_sessions_live().sessions.get_mut(id).unwrap().state = SessionState::Busy;
         };
 
+        // Ready means the fixture ignores Ctrl+C now: its marker is in the terminal's output.
+        let ready = || {
+            state.terms.buffer(&term_id).map(|b| b.data.contains("stubborn-ready")).unwrap_or(false)
+        };
+
         call("session_resume", json!({ "projectId": "ide", "sessionId": id })).expect("session_resume");
         let pid = state.terms.get(&term_id).unwrap().pid().expect("runs");
-        // Let it start (and answer ConPTY's cursor query) before interrupting it.
-        let started = std::time::Instant::now();
-        wait_until(&app, &term_id, "start-up", || started.elapsed() > std::time::Duration::from_millis(1500));
+        // Let it start (and answer ConPTY's cursor query) and ignore Ctrl+C before interrupting it.
+        wait_until(&app, &term_id, "start-up", ready);
         busy();
         let stopped_at = std::time::Instant::now();
         let stop = call("session_stop", json!({ "sessionId": id })).expect("session_stop");
@@ -2044,8 +2050,7 @@ mod tests {
         // Again, and Stop twice: the second kills at once.
         call("session_resume", json!({ "projectId": "ide", "sessionId": id })).expect("resume again");
         let pid = state.terms.get(&term_id).unwrap().pid().expect("runs");
-        let started = std::time::Instant::now();
-        wait_until(&app, &term_id, "start-up", || started.elapsed() > std::time::Duration::from_millis(1500));
+        wait_until(&app, &term_id, "start-up", ready);
         busy();
         let stopped_at = std::time::Instant::now();
         call("session_stop", json!({ "sessionId": id })).expect("first stop");
