@@ -3,12 +3,14 @@
 //! per repository and parses it; [`poll`] does that for every project on a timer and keeps
 //! the result in memory as live, never persisted, state. [`branches`] lists a repository's
 //! local branches and linked worktrees (Story 5.1), [`watch`] refreshes them when the refs
-//! change on disk, and [`poll`] re-reads them every 30 s as a fallback.
+//! change on disk, and [`poll`] re-reads them every 30 s as a fallback. [`worktree`] makes the
+//! one write, `git worktree add`, on the operator's submit of the "New worktree" sheet (Story 5.2).
 
 pub mod branches;
 pub mod poll;
 pub mod status;
 pub mod watch;
+pub mod worktree;
 
 use serde::{Deserialize, Serialize};
 

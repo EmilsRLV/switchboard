@@ -1,10 +1,11 @@
-// Opening and closing the right-hand panes (settings, import, terminal, launch) with their
+// Opening and closing the right-hand panes (settings, import, terminal, launch, worktree) with their
 // side effects: the import pane loads its list when opened, the settings pane drops a stale
-// action error when closed, the import pane forgets its selection, the launch sheet its form. Commands call these; components never
+// action error when closed, the import pane forgets its selection, the launch and worktree sheets their forms. Commands call these; components never
 // touch the ui store's pane directly.
 
 import { useImportStore } from "../state/import";
 import { useLaunchStore } from "../state/launch";
+import { useWorktreeStore } from "../state/worktree";
 import { useSettingsStore } from "../state/settings";
 import { useUiStore, type Pane } from "../state/ui";
 import { loadImportList } from "./projects";
@@ -35,4 +36,5 @@ function leave(pane: Pane): void {
   if (pane === "settings") useSettingsStore.getState().setActionError(null);
   if (pane === "import") useImportStore.getState().reset();
   if (pane === "launch") useLaunchStore.getState().reset();
+  if (pane === "worktree") useWorktreeStore.getState().reset();
 }

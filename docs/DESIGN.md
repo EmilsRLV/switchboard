@@ -174,6 +174,15 @@ drag handle) follows every rule here.
   are a bordered list, one row per folder (mono `--text-xs` path with ellipsis and a Remove button), split by
   1-px `--border` lines; a missing folder's row adds `.pane-error` text. A field hint (blank name) is
   `--text-xs` `--fg-muted`, as is the reason beside a disabled Start; a refused start is `.pane-error` text under Start (`role="alert"`, like a row's error). No new motion.
+- **The worktree sheet** ("New worktree…" on a git project or a branch card, Story 5.2) is a pane at the launch
+  sheet's width with its field look (label, inputs and selects; the name in `--font-mono`): the title `New
+  worktree`, a muted line, then the mode toggle: two ordinary buttons, **New branch** and **Existing branch**,
+  side by side, the pressed one (`aria-pressed`) in `--fg` text with an `--fg` border, like the branches chip
+  when on. Then the fields of the mode (name and base, or the branch). Under a `Runs` section heading, the
+  **command preview**: a read-only block on `--bg` with a 1-px `--border` and `--radius-sm`, mono `--text-xs`
+  `--fg-muted`, wrapping anywhere, `—` while there is nothing to run. Then **Create**, the reason beside it
+  while disabled (`--text-xs` `--fg-muted`), and a refusal or git's error under it as `.pane-error` text
+  (`role="alert"`). Tokens only; the accent appears only through `.pane-error`. No new motion.
 - **The palette** is centred near the top over a dimmed page (`--bg` at 55%): `--bg-raised`, 1-px border,
   `--radius-md`; rows in `--text-base`, key hints in `--text-sm` `--fg-muted`.
 - **The context menu** is the palette's row look at the pointer: `--bg-raised`, 1-px border,
@@ -313,7 +322,7 @@ Only six motions exist; every one is instant (or static) under `prefers-reduced-
 | Attention pulse (the accent dot before `finished` / `waiting`: the busy pulse) | 1.2 s |
 | Project glow (the accent outline around a project needing you: opacity 1 → 0.4, ease-in-out, alternating, looping; opacity only) | 1.2 s |
 
-Panes (the terminal pane and the launch sheet too), terminal tabs and pop-out windows, banners, the notice, the menu and the Elsewhere tray appear without animation.
+Panes (the terminal pane and the launch and worktree sheets too), terminal tabs and pop-out windows, banners, the notice, the menu and the Elsewhere tray appear without animation.
 
 ## Icons
 

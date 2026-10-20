@@ -175,14 +175,14 @@ pub fn attach_worktrees(branches: &mut [BranchInfo], worktrees: &[WorktreeEntry]
 }
 
 /// `raw` canonicalised (`dunce`, no `\\?\`) when it exists, else as given.
-fn canonical_or_raw(raw: &str) -> String {
+pub(crate) fn canonical_or_raw(raw: &str) -> String {
     dunce::canonicalize(raw)
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| raw.to_string())
 }
 
 /// A git command in `dir`, prompt-less, lock-free and in English.
-fn git(git_bin: &Path, dir: &Path, args: &[&str]) -> Command {
+pub(crate) fn git(git_bin: &Path, dir: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new(git_bin);
     cmd.args(args)
         .current_dir(dir)
@@ -219,6 +219,36 @@ pub fn branches_with_timeout(git_bin: &Path, path: &Path, timeout: Duration) -> 
     attach_worktrees(&mut branches, &parse_worktrees(&worktrees.stdout), &own);
     sort_branches(&mut branches);
     Ok(Some(branches))
+}
+
+/// The worktrees of `entries` whose folder exists and lies strictly inside `top` (the
+/// repository's top level, canonical), as paths relative to it with `/` separators: what the
+/// dirty count leaves out (Story 5.2). Bare records and the checkout at `top` itself are skipped.
+pub fn inside_of(entries: &[WorktreeEntry], top: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in entries.iter().filter(|w| !w.bare) {
+        let Ok(path) = dunce::canonicalize(&entry.path) else { continue };
+        if !path.is_dir() || crate::graph::same_path(&path.display().to_string(), &top.display().to_string()) {
+            continue;
+        }
+        let Ok(rel) = path.strip_prefix(top) else { continue };
+        let parts: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+        if !parts.is_empty() {
+            out.push(parts.join("/"));
+        }
+    }
+    out
+}
+
+/// [`inside_of`] the top level (`git rev-parse --show-toplevel`) of the checkout holding
+/// `project`, from `git worktree list --porcelain`: relative to that top level, so a project in
+/// a subfolder of its repository leaves out `<top>/.worktrees/…` too.
+pub fn worktrees_inside(git_bin: &Path, project: &Path) -> Result<Vec<String>, GitError> {
+    let top = crate::process::run(git(git_bin, project, &["rev-parse", "--show-toplevel"]), BRANCHES_TIMEOUT)?.success()?;
+    let top = Some(top.stdout.trim()).filter(|t| !t.is_empty()).map(PathBuf::from).unwrap_or_else(|| project.to_path_buf());
+    let top = dunce::canonicalize(&top).unwrap_or(top);
+    let done = crate::process::run(git(git_bin, project, &["worktree", "list", "--porcelain"]), BRANCHES_TIMEOUT)?.success()?;
+    Ok(inside_of(&parse_worktrees(&done.stdout), &top))
 }
 
 /// The repository's common git dir (`git rev-parse --git-common-dir`, resolved against `path`

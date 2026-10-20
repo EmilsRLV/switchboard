@@ -183,6 +183,97 @@ pub async fn project_set_show_branches<R: Runtime>(app: AppHandle<R>, project_id
     Ok(snapshot)
 }
 
+/// The "New worktree" sheet's preview (Story 5.2), read-only: the project's local branches,
+/// the ones free for a worktree, the default base, and the exact `git worktree add` command and
+/// folder [`git::worktree::plan_add`] resolves for `request` -- or why nothing would run. The
+/// submit goes through the same plan, so the preview is what runs. `Err` for an unknown
+/// project, a folder that is not a repository, or a git that cannot run.
+#[tauri::command]
+pub async fn worktree_preview<R: Runtime>(
+    app: AppHandle<R>,
+    project_id: String,
+    request: git::worktree::WorktreeRequest,
+) -> Result<git::worktree::WorktreePreview, String> {
+    let state = app.state::<AppState>();
+    let path = project_path(&state, &project_id)?;
+    let (git_bin, root) = {
+        let settings = state.read();
+        (git::poll::git_binary(&settings), settings.settings.worktrees_root.clone())
+    };
+    blocking(move || git::worktree::preview(&git_bin, Path::new(&path), root.as_deref(), &request)).await?
+}
+
+/// What `worktree_add` replies: the snapshot once the branches were re-read, and the new
+/// branch card's id (`<projectId>:<name>`) for the UI to select.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeAdded {
+    pub snapshot: WorkspaceSnapshot,
+    pub branch_id: String,
+}
+
+/// Create a worktree (Story 5.2) on the sheet's explicit submit: under the project's branch
+/// lock, plan (read-only checks; any refusal is the `Err` and nothing runs) and run
+/// `git worktree add [-b <new>] <path> <base|branch>` from the project folder (30 s timeout;
+/// git's first stderr line is the `Err`). Then the branch is recorded with its worktree path
+/// (`graph::upsert_created_branch`), the project's branches are turned on when they were off
+/// (which expands the card and starts the watch), and the list is re-read, so the reply's
+/// snapshot already holds the new card and its chip. The status is re-polled too, so the dirty
+/// count leaves the new worktree out at once.
+#[tauri::command]
+pub async fn worktree_add<R: Runtime>(
+    app: AppHandle<R>,
+    project_id: String,
+    request: git::worktree::WorktreeRequest,
+) -> Result<WorktreeAdded, String> {
+    let state = app.state::<AppState>();
+    let path = project_path(&state, &project_id)?;
+    let (git_bin, root) = {
+        let settings = state.read();
+        (git::poll::git_binary(&settings), settings.settings.worktrees_root.clone())
+    };
+    let (name, worktree) = {
+        let lock = state.branch_locks.of(&project_id);
+        let _project = lock.lock().await;
+        blocking(move || {
+            let folder = Path::new(&path);
+            let plan = git::worktree::plan_add(&git_bin, folder, root.as_deref(), &request)?;
+            let made = git::worktree::add(&git_bin, folder, &plan)?;
+            Ok::<_, String>((plan.branch, made))
+        })
+        .await??
+    };
+    // The worktree exists now: what follows is bookkeeping, and a failure there (the project
+    // removed meanwhile) is logged, not reported as a refusal.
+    if let Err(err) = graph::upsert_created_branch(&app, &project_id, &name, &worktree) {
+        eprintln!("worktree: created {worktree} but could not record branch {name}: {err}");
+    }
+    let branches_on = state
+        .read_workspace()
+        .workspace
+        .projects
+        .iter()
+        .any(|p| p.id == project_id && p.show_branches);
+    // On (and expanded, so the new card shows); a no-op when both already are.
+    if let Err(err) = graph::set_show_branches(&app, &project_id, true) {
+        eprintln!("worktree: created {worktree} but could not turn branches on: {err}");
+    }
+    if !branches_on {
+        let watch_app = app.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || git::watch::sync(&watch_app)).await;
+    }
+    git::poll::refresh_branches(&app, Some(std::slice::from_ref(&project_id))).await;
+    let status_app = app.clone();
+    let status_id = project_id.clone();
+    tauri::async_runtime::spawn(async move {
+        git::poll::refresh_ids(&status_app, &[status_id]).await;
+    });
+    Ok(WorktreeAdded {
+        snapshot: state.read_workspace().snapshot(),
+        branch_id: graph::branch_child_id(&project_id, &name),
+    })
+}
+
 /// Store where a node was dropped (end of a drag). A project's position is absolute, a
 /// child's relative to its parent card. Replies with the snapshot, or an `Err` for a
 /// non-finite position or an unknown node.

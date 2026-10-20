@@ -31,6 +31,8 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::workspace_add_projects,
             ipc::workspace_set_expanded,
             ipc::project_set_show_branches,
+            ipc::worktree_preview,
+            ipc::worktree_add,
             ipc::workspace_move_node,
             ipc::workspace_relayout_children,
             ipc::claude_projects_list,
@@ -2166,6 +2168,91 @@ mod tests {
         }
         invoke_with(&webview, "workspace_remove_project", InvokeBody::Json(serde_json::json!({ "projectId": id }))).expect("removed");
         assert!(app.state::<super::AppState>().branch_watches.ids().is_empty(), "removing the project stops its watch");
+        app.state::<super::AppState>().branch_watches.clear();
+    }
+
+    #[test]
+    fn worktree_preview_and_add_create_a_selected_branch_card_on_a_temp_repo() {
+        let Some(git) = super::git::branches::tests::real_git() else {
+            eprintln!("git not on PATH; skipping");
+            return;
+        };
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let cfg = tempfile::tempdir().unwrap();
+        let ws_path = cfg.path().join("workspace.json");
+        super::graph::initialise_at(app.handle(), Some(ws_path.clone()));
+        app.state::<super::AppState>().write().binaries.git.path = Some(git.display().to_string());
+        let repo = super::git::branches::tests::temp_repo(&git);
+        let top = dunce::canonicalize(repo.path()).unwrap();
+        let added = super::graph::add_projects(app.handle(), &[repo.path().display().to_string()], Default::default()).unwrap();
+        let id = added.added[0].clone();
+        let expected = top.join(".worktrees").join("auth-refresh");
+
+        // The preview: options and the exact command.
+        let request = serde_json::json!({ "mode": "new", "branch": "auth-refresh", "base": "main" });
+        let body = invoke_with(&webview, "worktree_preview", InvokeBody::Json(serde_json::json!({ "projectId": id, "request": request })))
+            .expect("worktree_preview should be registered and succeed");
+        let preview: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(preview["branches"], serde_json::json!(["main"]));
+        assert_eq!(preview["available"], serde_json::json!([]), "main is checked out");
+        assert_eq!(preview["defaultBase"], "main");
+        assert_eq!(preview["command"], format!("git worktree add -b auth-refresh {} main", expected.display()));
+        assert_eq!(preview["path"], expected.display().to_string());
+        assert_eq!(preview["error"], serde_json::Value::Null);
+        assert!(!expected.exists(), "a preview runs nothing");
+
+        // A refusal: nothing runs, the reason is the error.
+        let taken = serde_json::json!({ "projectId": id, "request": { "mode": "new", "branch": "main" } });
+        let err = invoke_with(&webview, "worktree_add", InvokeBody::Json(taken)).expect_err("main exists");
+        assert_eq!(err, serde_json::json!("branch already exists: main"));
+
+        // Branches off: the add turns them on, expands the card and lists the new branch with
+        // its chip; the branch is stored with its worktree path.
+        let args = serde_json::json!({ "projectId": id, "request": request });
+        let body = invoke_with(&webview, "worktree_add", InvokeBody::Json(args)).expect("worktree_add should succeed");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        let branch_id = format!("{id}:auth-refresh");
+        assert_eq!(value["branchId"], branch_id);
+        assert_eq!(value["snapshot"]["workspace"]["projects"][0]["showBranches"], true);
+        assert_eq!(value["snapshot"]["workspace"]["projects"][0]["expanded"], true);
+        let children = value["snapshot"]["children"].as_array().unwrap();
+        let card = children.iter().find(|c| c["id"] == branch_id).expect("the new branch card");
+        assert_eq!(card["branch"]["worktree"]["path"], expected.display().to_string());
+        assert_eq!(card["branch"]["worktree"]["missing"], false);
+        let stored = &value["snapshot"]["workspace"]["branches"][0];
+        assert_eq!(stored["id"], branch_id);
+        assert_eq!(stored["worktreePath"], expected.display().to_string());
+        let on_disk: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&ws_path).unwrap()).unwrap();
+        assert_eq!(on_disk["branches"][0]["worktreePath"], expected.display().to_string());
+        assert!(expected.join("a.txt").is_file());
+
+        // The dirty count leaves the worktree out.
+        let map = tauri::async_runtime::block_on(super::git::poll::refresh_ids(app.handle(), std::slice::from_ref(&id)));
+        match &map[&id] {
+            super::git::ProjectStatus::Repo(status) => assert_eq!(status.dirty, 0),
+            other => panic!("expected a repo, got {other:?}"),
+        }
+
+        // Branches already on, card collapsed: the add expands it and lists the new card.
+        super::graph::set_expanded(app.handle(), &id, false).unwrap();
+        let second = serde_json::json!({ "projectId": id, "request": { "mode": "new", "branch": "second", "base": "main" } });
+        let body = invoke_with(&webview, "worktree_add", InvokeBody::Json(second)).expect("second worktree_add");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value["branchId"], format!("{id}:second"));
+        assert_eq!(value["snapshot"]["workspace"]["projects"][0]["showBranches"], true);
+        assert_eq!(value["snapshot"]["workspace"]["projects"][0]["expanded"], true, "a collapsed card is expanded");
+        let card = value["snapshot"]["children"].as_array().unwrap().iter().find(|c| c["id"] == format!("{id}:second")).cloned();
+        assert_eq!(card.expect("the second card")["branch"]["worktree"]["path"], top.join(".worktrees").join("second").display().to_string());
+
+        // The same again: the folder (and the branch) now exist.
+        let again = serde_json::json!({ "projectId": id, "request": { "mode": "existing", "branch": "auth-refresh" } });
+        let err = invoke_with(&webview, "worktree_add", InvokeBody::Json(again)).expect_err("checked out already");
+        assert!(err.as_str().unwrap().contains("already checked out"), "{err}");
+        let unknown = serde_json::json!({ "projectId": "nope", "request": request });
+        assert_eq!(invoke_with(&webview, "worktree_preview", InvokeBody::Json(unknown)).unwrap_err(), serde_json::json!("unknown project"));
         app.state::<super::AppState>().branch_watches.clear();
     }
 

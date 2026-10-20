@@ -1041,6 +1041,39 @@ pub fn move_node<R: Runtime>(app: &AppHandle<R>, target: &NodeTarget, position: 
     Ok(persist_and_emit(app, write_target, &workspace))
 }
 
+/// Record a branch the operator just gave a worktree (Story 5.2, after `git worktree add`):
+/// upsert its [`BranchNode`] (matched by project and name; created as `id`
+/// `<projectId>:<name>`, `projectId`, `name`, no position) with `worktreePath` set and any
+/// stored position kept; written and emitted like any mutation. The card itself, and its chip,
+/// still come from the next branch read. An unknown project is an `Err` and nothing changes.
+pub fn upsert_created_branch<R: Runtime>(app: &AppHandle<R>, project_id: &str, name: &str, worktree_path: &str) -> Result<WorkspaceSnapshot, String> {
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        if !st.workspace.projects.iter().any(|p| p.id == project_id) {
+            return Err("unknown project".to_string());
+        }
+        match st
+            .workspace
+            .branches
+            .iter_mut()
+            .find(|b| b.project_id == project_id && b.name == name)
+        {
+            Some(existing) => existing.worktree_path = Some(worktree_path.to_string()),
+            None => st.workspace.branches.push(BranchNode {
+                id: branch_child_id(project_id, name),
+                project_id: project_id.to_string(),
+                name: name.to_string(),
+                worktree_path: Some(worktree_path.to_string()),
+                position: None,
+            }),
+        }
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    Ok(persist_and_emit(app, target, &workspace))
+}
+
 /// Remember the launch sheet's last choices for a project (`Project.launchDefaults`, Story
 /// 4.2): stored, the file written and `workspace://changed` emitted, through the same path as
 /// every mutation. The same choices again change nothing (no revision, write or emit). An
@@ -2619,6 +2652,43 @@ mod tests {
         assert_eq!(snapshot.workspace.sessions[1].position, Some(Position { x: 7.0, y: 8.0 }));
         assert_eq!(snapshot.workspace.sessions[0].position, Some(Position { x: 999.0, y: 999.0 }));
         assert_eq!(on_disk(&path).sessions.len(), 2);
+    }
+
+    #[test]
+    fn upsert_created_branch_stores_the_worktree_and_keeps_a_position() {
+        let (app, _cfg, path) = app_with_ide(0);
+        with_listed_branches(&app, &["main", "feat"]);
+        // A new branch: created with the id the card uses, no position.
+        let snapshot = upsert_created_branch(app.handle(), "ide", "auth", "/r/.worktrees/auth").unwrap();
+        assert_eq!(
+            snapshot.workspace.branches,
+            [BranchNode {
+                id: "ide:auth".into(),
+                project_id: "ide".into(),
+                name: "auth".into(),
+                worktree_path: Some("/r/.worktrees/auth".into()),
+                position: None,
+            }]
+        );
+        assert_eq!(on_disk(&path).branches, snapshot.workspace.branches);
+        // A moved branch: its ref keeps the position and gains the path.
+        let branch = NodeTarget {
+            kind: NodeKind::Branch,
+            id: "ide:feat".into(),
+        };
+        move_node(app.handle(), &branch, Position { x: 5.0, y: 6.0 }).unwrap();
+        let snapshot = upsert_created_branch(app.handle(), "ide", "feat", "/r/.worktrees/feat").unwrap();
+        let feat = snapshot.workspace.branches.iter().find(|b| b.name == "feat").unwrap();
+        assert_eq!(feat.position, Some(Position { x: 5.0, y: 6.0 }));
+        assert_eq!(feat.worktree_path.as_deref(), Some("/r/.worktrees/feat"));
+        assert_eq!(snapshot.workspace.branches.len(), 2, "upserted, not duplicated");
+        // A re-layout keeps refs with a worktree (they are not only positions).
+        let snapshot = relayout_children(app.handle(), "ide").unwrap();
+        assert_eq!(snapshot.workspace.branches.len(), 2);
+        let feat = snapshot.workspace.branches.iter().find(|b| b.name == "feat").unwrap();
+        assert_eq!(feat.worktree_path.as_deref(), Some("/r/.worktrees/feat"), "the worktree path stays");
+        assert_eq!(feat.position, None, "the position is reset");
+        assert_eq!(upsert_created_branch(app.handle(), "nope", "x", "/x"), Err("unknown project".to_string()));
     }
 
     #[test]

@@ -53,12 +53,13 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the forty-six commands with the spec's keybindings", () => {
+  it("register the forty-eight commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
       "binaries.redetect",
       "branch.copyName",
+      "branch.newWorktree",
       "canvas.fitView",
       "contextMenu.close",
       "elsewhere.close",
@@ -72,6 +73,7 @@ describe("built-in commands", () => {
       "project.expand",
       "project.import",
       "project.newSession",
+      "project.newWorktree",
       "project.openEditor",
       "project.openFolder",
       "project.relayout",
@@ -120,6 +122,8 @@ describe("built-in commands", () => {
       "session.resume",
       "session.fork",
       "session.stop",
+      "project.newWorktree",
+      "branch.newWorktree",
     ]) {
       expect(getCommand(id)?.keybinding, id).toBeUndefined();
     }
@@ -156,12 +160,13 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the thirty-four actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the thirty-six actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
       "binaries.redetect",
       "branch.copyName",
+      "branch.newWorktree",
       "canvas.fitView",
       "elsewhere.toggle",
       "palette.toggle",
@@ -170,6 +175,7 @@ describe("built-in commands", () => {
       "project.expand",
       "project.import",
       "project.newSession",
+      "project.newWorktree",
       "project.openEditor",
       "project.openFolder",
       "project.relayout",
@@ -195,7 +201,7 @@ describe("built-in commands", () => {
     ]);
   });
 
-  it("exactly the eleven project commands, the five session commands and the branch command are tagged for the node menu, and the menu lists none without a selection", () => {
+  it("exactly the twelve project commands, the five session commands and the two branch commands are tagged for the node menu, and the menu lists none without a selection", () => {
     expect(
       listCommands()
         .filter((c) => c.menu === "node")
@@ -203,9 +209,11 @@ describe("built-in commands", () => {
         .sort(),
     ).toEqual([
       "branch.copyName",
+      "branch.newWorktree",
       "project.collapse",
       "project.expand",
       "project.newSession",
+      "project.newWorktree",
       "project.openEditor",
       "project.openFolder",
       "project.relayout",
@@ -225,7 +233,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(46);
+    expect(listCommands()).toHaveLength(48);
   });
 
   const PROJECT_ACTIONS = [
@@ -1003,7 +1011,22 @@ describe("built-in commands", () => {
     useStatusStore.setState(statuses);
   });
 
-  it("branch.copyName is the branch card's only menu entry and copies its name", async () => {
+  it("project.newWorktree is a node-menu and palette command for a git project (order 12), with no key", () => {
+    const statuses = useStatusStore.getState();
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(false)], []) });
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    useStatusStore.setState({ statuses: { ide: { kind: "not_repo" } } });
+    expect(nodeMenuCommands().map((c) => c.id)).not.toContain("project.newWorktree");
+    useStatusStore.setState({ statuses: { ide: { kind: "repo", branch: "main", detached: false, dirty: 0, ahead: 0, behind: 0 } } });
+    expect(nodeMenuCommands().map((c) => [c.title, c.menuOrder])).toContainEqual(["New worktree…", 12]);
+    expect(listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.id)).toContain("project.newWorktree");
+    expect(getCommand("project.newWorktree")?.keybinding).toBeUndefined();
+    expect(getCommand("branch.newWorktree")?.menuOrder).toBe(51);
+    expect(getCommand("branch.newWorktree")?.title).toBe("New worktree…");
+    useStatusStore.setState(statuses);
+  });
+
+  it("branch.copyName is the branch card's first menu entry and copies its name", async () => {
     const branch: ChildNode = {
       id: "ide:feature/x",
       projectId: "ide",
@@ -1020,7 +1043,7 @@ describe("built-in commands", () => {
     useWorkspaceStore.setState({ snapshot: workspaceWith([{ ...ideProject(true), showBranches: true }], [branch]) });
     expect(listCommands({ enabledOnly: true }).map((c) => c.id)).not.toContain("branch.copyName");
     useUiStore.getState().select({ kind: "branch", id: "ide:feature/x" });
-    expect(nodeMenuCommands().map((c) => c.id)).toEqual(["branch.copyName"]);
+    expect(nodeMenuCommands().map((c) => c.id)).toEqual(["branch.copyName", "branch.newWorktree"]);
 
     const writeText = vi.fn(async () => {});
     await expect(copySelectedBranchName({ writeText })).resolves.toBe(true);

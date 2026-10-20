@@ -25,8 +25,8 @@ import {
 import { plainTerminalId, sessionTerminalId, terminalInfo } from "./terminals";
 import { useWorkspaceStore } from "./workspace";
 
-/** The right-hand panes; `launch` is the new-session sheet (Story 4.2). */
-export type Pane = "settings" | "import" | "terminal" | "launch";
+/** The right-hand panes; `launch` is the new-session sheet (Story 4.2), `worktree` the new-worktree sheet (Story 5.2). */
+export type Pane = "settings" | "import" | "terminal" | "launch" | "worktree";
 
 /** The terminal pane's narrowest width, in CSS pixels. */
 export const TERMINAL_MIN_WIDTH = 360;

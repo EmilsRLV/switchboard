@@ -463,6 +463,40 @@ export type LaunchChoices = { model: string; effort: string; permission_mode: st
 /** Mirrors `ipc::LaunchResult`: the new session, the terminal it runs in and the choices it used. */
 export type LaunchResult = { session_id: string; term: TermInfo; choices: LaunchChoices };
 
+// --- worktrees (`src-tauri/src/git/worktree.rs`, Story 5.2) ---------------------------------
+
+/** Mirrors `worktree::WorktreeMode`: a new branch from a base, or an existing local branch. */
+export type WorktreeMode = "new" | "existing";
+
+/** Mirrors `worktree::WorktreeRequest`: what the "New worktree" sheet asks for. */
+export type WorktreeRequest = {
+  mode: WorktreeMode;
+  /** The new branch's name (`new`) or the existing branch (`existing`). */
+  branch: string;
+  /** The base of a new branch; `null` means the default base. Ignored for `existing`. */
+  base: string | null;
+};
+
+/**
+ * Mirrors `worktree::WorktreePreview`: the sheet's choices and, for the request, the exact
+ * command and folder Rust would run -- or why nothing would run. Both `null` and no error for a
+ * blank new-branch name.
+ */
+export type WorktreePreview = {
+  /** Every local branch (the base select), in card order. */
+  branches: string[];
+  /** Local branches with no worktree and not checked out anywhere (the existing select). */
+  available: string[];
+  /** The checked-out branch, else the repo's default branch; `null` with no branches. */
+  defaultBase: string | null;
+  command: string | null;
+  path: string | null;
+  error: string | null;
+};
+
+/** Mirrors `ipc::WorktreeAdded`: the snapshot once the branches were re-read, and the new card's id. */
+export type WorktreeAdded = { snapshot: WorkspaceSnapshot; branchId: string };
+
 /** Return type of every command, keyed by command name. */
 type Commands = {
   app_info: AppInfo;
@@ -475,6 +509,8 @@ type Commands = {
   workspace_add_projects: AddProjectsResult;
   workspace_set_expanded: WorkspaceSnapshot;
   project_set_show_branches: WorkspaceSnapshot;
+  worktree_preview: WorktreePreview;
+  worktree_add: WorktreeAdded;
   workspace_move_node: WorkspaceSnapshot;
   workspace_relayout_children: WorkspaceSnapshot;
   claude_projects_list: ClaudeProject[];
@@ -601,6 +637,24 @@ export function workspaceSetExpanded(projectId: string, expanded: boolean): Prom
  */
 export function projectSetShowBranches(projectId: string, show: boolean): Promise<WorkspaceSnapshot> {
   return call("project_set_show_branches", { projectId, show });
+}
+
+/**
+ * `ipc::worktree_preview` (Story 5.2) -- read-only: the sheet's options and the exact
+ * `git worktree add` command and folder for `request`, or why nothing would run. Rejects for an
+ * unknown project or a folder that is not a repository.
+ */
+export function worktreePreview(projectId: string, request: WorktreeRequest): Promise<WorktreePreview> {
+  return call("worktree_preview", { projectId, request });
+}
+
+/**
+ * `ipc::worktree_add` (Story 5.2) -- the sheet's submit: Rust re-plans, runs `git worktree add`,
+ * stores the branch with its worktree, turns the project's branches on and re-reads them.
+ * Rejects with the validation message or git's first stderr line; nothing runs then.
+ */
+export function worktreeAdd(projectId: string, request: WorktreeRequest): Promise<WorktreeAdded> {
+  return call("worktree_add", { projectId, request });
 }
 
 /**

@@ -103,15 +103,30 @@ fn says_not_a_repo(stderr: &str) -> bool {
 /// tell us (missing binary, timeout, any other failure). Never takes optional locks, so a
 /// poll cannot stall a `git` the operator is running in that repo.
 pub fn repo_status(git_bin: &Path, path: &Path) -> Result<Option<RepoStatus>, GitError> {
-    repo_status_with_timeout(git_bin, path, STATUS_TIMEOUT)
+    repo_status_with_timeout(git_bin, path, STATUS_TIMEOUT, &[])
 }
 
-pub fn repo_status_with_timeout(git_bin: &Path, path: &Path, timeout: Duration) -> Result<Option<RepoStatus>, GitError> {
+/// The pathspec that leaves the folder `rel` (relative to the repository's top level,
+/// `/`-separated) out of the count: `:(top,exclude,literal)<rel>`; `top` so it holds from a
+/// project in a subfolder, literal so a folder name with glob characters matches only itself.
+pub fn exclude_pathspec(rel: &str) -> String {
+    format!(":(top,exclude,literal){rel}")
+}
+
+/// [`repo_status`] with a timeout and `excludes`: folders (relative to the repository's top
+/// level) left out of the dirty count, one `:(top,exclude,literal)` pathspec each (Story 5.2:
+/// the linked worktrees inside the top level, which would otherwise show as untracked). A
+/// stray file beside them still counts.
+pub fn repo_status_with_timeout(git_bin: &Path, path: &Path, timeout: Duration, excludes: &[String]) -> Result<Option<RepoStatus>, GitError> {
     let mut cmd = Command::new(git_bin);
     // `--untracked-files=normal` overrides a repo's `status.showUntrackedFiles=no`, so an
     // untracked file always counts as a change.
-    cmd.args(["status", "--porcelain=v2", "--branch", "--untracked-files=normal"])
-        .current_dir(path)
+    cmd.args(["status", "--porcelain=v2", "--branch", "--untracked-files=normal"]);
+    if !excludes.is_empty() {
+        // Only negative pathspecs: everything else is still included.
+        cmd.arg("--").args(excludes.iter().map(|rel| exclude_pathspec(rel)));
+    }
+    cmd.current_dir(path)
         .env("GIT_OPTIONAL_LOCKS", "0")
         // A status prompt-less and English, whatever the operator's git is configured with.
         .env("GIT_TERMINAL_PROMPT", "0")

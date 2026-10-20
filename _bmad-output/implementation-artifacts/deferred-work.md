@@ -55,3 +55,7 @@
 
 - A test of the git poll loop's scheduling (status pass, 30 s branch fallback, watch re-sync); pull the loop body into a testable tick function first.
 - Render tests for the project card's branches chip and the branch card, once a component test environment exists.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-2-create-worktree-node.md`
+  summary: A stored BranchNode `worktreePath` whose worktree was removed or pruned outside the app is never cleared, and Re-layout keeps such refs.
+  evidence: Review round 1 of Story 5.2 (blind hunter); removal and sessions-follow-worktrees are Story 5.4.

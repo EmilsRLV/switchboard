@@ -94,11 +94,11 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | `ctrl+j` | Go to session that needs you: the session that has been `finished` (or `waiting`) longest is revealed and selected, its project expanded first when collapsed (see [Needs you](#needs-you)). Enabled only while a session on a canvas project needs you; press again for the next one. |
 | `←` `→` `↑` `↓` | Move the selection to the nearest node in that direction (see [Keyboard navigation](#keyboard-navigation)); with nothing selected, select the node nearest the middle of the view. Only while no palette, pane, menu or Elsewhere list is open: those keep their own arrow handling. |
 | Enter | The selected node's default action: a project with children expands or collapses (persisted); a `show all (N)` / `show fewer` row toggles the column (see [Sessions](#sessions)); a childless project or a child card does nothing (Resume, Fork and Stop are menu and palette commands; see [Resume, fork, stop](#resume-fork-stop)). Same condition as the arrows. |
-| Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings, import, terminal or the launch sheet), else clears the selected node. With all of them open, five presses. With focus in a terminal Esc is the terminal's (see [Terminal](#terminal)). |
+| Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings, import, terminal, the launch sheet or the worktree sheet), else clears the selected node. With all of them open, five presses. With focus in a terminal Esc is the terminal's (see [Terminal](#terminal)). |
 
 `e` and `/` are reserved for later epics and deliberately unbound; so is Delete (removal is a menu action).
 
-The palette lists thirty-four commands: Toggle command palette, Add project folder…, Import from Claude…, Open
+The palette lists thirty-six commands: Toggle command palette, Add project folder…, Import from Claude…, Open
 settings, Reveal settings file (only when the file's location is known), Re-detect binaries (not while one
 runs), Fit view (once the canvas has mounted; the two project commands need it too), Quit, Toggle Elsewhere
 sessions (only while the Elsewhere tray has rows), Go to session that needs you (only while one does),
@@ -110,11 +110,13 @@ is selected; see [Live sessions](#live-sessions)), Toggle terminal (only while t
 exited), Close terminal (only once a session terminal has exited), Pop out terminal (only while the pane's
 terminal is not in its own window yet), Next / Previous terminal tab (only while the pane shows two tabs or
 more; see [Tabs and pop-outs](#tabs-and-pop-outs)), and, while a
-project card is selected, the project actions: New session…, Plain terminal…, Open in external editor, Open
+project card is selected, the project actions: New session…, Plain terminal…, New worktree… (git repos only; see
+[Worktrees](#worktrees)), Open in external editor, Open
 in file manager, Reveal Claude project dir, Re-layout children, Remove from canvas, plus exactly one of Expand
 project / Collapse project (neither for a project without children), Show all sessions (only for an
 expanded project with more than ten sessions) and, for a git repo, Show branches / Hide branches (see
-[Branches](#branches)); while a branch card is selected, Copy branch name. The palette sorts by title. The key-only
+[Branches](#branches)); while a branch card is selected, Copy branch name and, for a branch with no worktree
+that is not checked out in the project's folder, New worktree…. The palette sorts by title. The key-only
 carriers (the `ctrl+,` toggle, the palette's second binding `ctrl+shift+k`, the five Esc commands, the four
 arrows and Enter) are registered but hidden from
 the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron on a card runs
@@ -398,8 +400,43 @@ When a git call fails, or the folder is gone or no longer a git repository, the 
 
 Branch cards can be selected, reached with the arrow keys and dragged like session cards; a moved branch is
 written to `branches[]` as `{ id: "<projectId>:<name>", projectId, name, position }` (only then); Re-layout
-removes it again, and so does a read that no longer lists the branch, unless an edge or a session points at it. Enter does nothing on a branch, and its menu holds **Copy branch name** only.
-Creating, checking out or deleting branches and worktrees comes in later stories.
+removes it again (unless it holds a worktree the app created), and so does a read that no longer lists the branch, unless an edge or a session points at it. Enter does nothing on a branch; its menu holds **Copy branch name** and, for a branch with no worktree chip that is not checked out in the project's folder, **New worktree…** (see [Worktrees](#worktrees)).
+Checking out or deleting branches and removing worktrees come in later stories.
+
+### Worktrees
+
+**New worktree…** in a git project's menu or the palette (enabled while the status poll says the folder is a
+repo; no key) opens the **worktree sheet**, a pane on the right like the launch sheet. **New branch** (the
+default) takes a name and a base (the local branches; the checked-out branch by default, or the repo's
+default branch when HEAD is detached: `origin/HEAD`'s branch, else `main`, else `master`, else the first).
+**Existing branch** picks one of the local branches that have no worktree and are not checked out anywhere;
+**New worktree…** on such a branch card opens the sheet with it preselected. Under the fields the sheet shows
+the exact command Rust will run, updated as you type, for example:
+
+```
+git worktree add -b auth-refresh B:\r\.worktrees\auth-refresh main
+```
+
+Enter (or `ctrl+Enter`) or **Create** runs it: the submit is the consent, there is no second confirmation; Esc
+closes the sheet. Before anything runs Rust checks, read-only, that a new name passes `git check-ref-format
+--branch` (and, on Windows, has no `< > " |`), that it is not taken, that the base is a local branch and that
+the target folder does not exist yet; any refusal, and git's own error when the add fails, shows in the sheet,
+which stays open. The command runs from the project folder with the configured git and a 30 s timeout, under
+the project's branch lock. On success the branch is written to `branches[]` with its `worktreePath`
+(canonical; a stored position is kept), the project's branches are turned on (expanding the card) when they
+were off, the list is re-read, and the new branch card, with its worktree chip, is selected.
+
+**Where it goes.** With `worktrees_root` null (the default), `<repo>/.worktrees/<branch>`, `<repo>` being the
+project's top level (`git rev-parse --show-toplevel`). With `worktrees_root` set to an absolute path,
+`<root>/<repo folder name>/<branch>`, so one root serves many projects; a relative root is refused in the sheet.
+A `/` in a branch name becomes nested folders (`feat/x` → `.worktrees/feat/x`). Changing `worktrees_root`
+affects only worktrees created afterwards; existing ones are never moved. There is no settings UI for it.
+
+**The dirty count.** Every linked worktree inside the repository's top level (any of them, from `git worktree
+list`, not only the app's) is left out of the card's `N changed` with one `:(top,exclude,literal)<folder>`
+pathspec per worktree (the folder relative to the top level), so a clean repo with worktrees in `.worktrees/`
+still reads clean, also for a project that is a subfolder of its repository. A stray file next to them (say
+`.worktrees/notes.txt`) still counts. Nothing is written to `.gitignore` or `.git/info/exclude`.
 
 ### The file
 
@@ -419,7 +456,8 @@ Each project is `{ id (UUID v4), path (canonical), label, position, expanded, co
 showBranches }`;
 `sessions[]` holds `{ sessionId, projectId, branchId, label, pinned, position }` (a child's `position` is
 relative to its parent card and `null` in its slot), `branches[].position` likewise (a branch is written
-only once it is moved; see [Branches](#branches)); `edges` is reserved
+only once it is moved, or given a worktree from the sheet, which also sets its `worktreePath`; see
+[Branches](#branches) and [Worktrees](#worktrees)); `edges` is reserved
 for Epic 6. A `sessions[]` entry whose session is no longer a child (a stub from a higher count, a
 hand-edited id) is kept verbatim and never pruned by this story; only Re-layout touches refs, and only
 those of the project it was run on. Rust owns the file: the UI never writes it, it mirrors Rust's snapshot (`workspace_get`, then
@@ -708,7 +746,7 @@ The location is `dirs::config_dir()/switchboard`, so it also resolves on macOS
 | `defaults.model` | `null` | Launch-sheet default model (`null` leaves it to `claude`). |
 | `defaults.effort` | `null` | Launch-sheet default effort. |
 | `defaults.permission_mode` | `"default"` | Launch-sheet default permission mode. |
-| `worktrees_root` | `null` | Root for app-managed worktrees; `null` means `<repo>/.worktrees/`. |
+| `worktrees_root` | `null` | Root for app-made worktrees; `null` means `<repo>/.worktrees/<branch>`, an absolute path `<root>/<repo folder>/<branch>` (see [Worktrees](#worktrees)). Affects only worktrees created afterwards. |
 | `external_editor` | `"code -g {file}:{line}"` when `code` is on PATH, else `null` | Command template for "open in editor". The `{file}`/`{line}` form is for Epic 7's file opens; "Open in external editor" on a project card runs only the **first token** with the project folder as its single argument. A path with spaces must be quoted (`"C:\Program Files\…\code.cmd" -g {file}:{line}`). A bare name is resolved like binary detection (PATH, with `PATHEXT` on Windows, so `code` finds `code.cmd`); a path (or `~/…`) is used as given. A `.cmd`/`.bat` runs through `cmd.exe` without a console window; the child is detached, never waited on. `null` makes the action a notice. |
 | `shell` | Windows: `"pwsh"` if present, else `"powershell"`; Linux: `$SHELL` (`null` when unset) | Shell for plain terminals. |
 | `theme` | `"dark"` | UI theme. Reserved; not applied yet (the UI is dark-only). |

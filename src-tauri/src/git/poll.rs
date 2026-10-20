@@ -1,5 +1,5 @@
 //! The git status poller: every `settings.poll.git_ms` (re-read each tick, so an edit to
-//! `settings.json` applies at the next tick) it runs [`repo_status`] for every project on the
+//! `settings.json` applies at the next tick) it runs [`super::repo_status`] for every project on the
 //! canvas, off the main thread, stores the results in [`LiveState`] and emits
 //! `projects://status` when anything changed. [`refresh_ids`] does the same for the projects
 //! just added, so a new card fills in without waiting for the timer or re-polling the rest.
@@ -12,7 +12,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::Semaphore;
 
-use super::{GitError, ProjectStatus, repo_status};
+use super::{GitError, ProjectStatus};
 use crate::settings::{AppState, BinaryStatus, SettingsState};
 
 /// Event name carrying the whole `project id → status` map whenever it changes.
@@ -283,11 +283,16 @@ fn store_and_emit<R: Runtime>(
 /// what `git status` says. A git that cannot start is `GitUnavailable`; a run that timed out
 /// keeps `previous` (a slow pass is not news) or, with nothing to keep, is a `GitError`;
 /// any other failure is a `GitError` with git's first stderr line.
+///
+/// The linked worktrees inside the repository's top level (`git worktree list`, any worktree,
+/// not only the app's) are left out of the dirty count (Story 5.2); when that listing fails the status runs
+/// without excludes and reports git's own answer.
 pub fn status_of(git: &Path, path: &Path, previous: Option<&ProjectStatus>) -> ProjectStatus {
     if !path.is_dir() {
         return ProjectStatus::Missing;
     }
-    match repo_status(git, path) {
+    let excludes = super::branches::worktrees_inside(git, path).unwrap_or_default();
+    match super::status::repo_status_with_timeout(git, path, super::status::STATUS_TIMEOUT, &excludes) {
         Ok(Some(status)) => ProjectStatus::Repo(status),
         Ok(None) => ProjectStatus::NotRepo,
         Err(GitError::Spawn(_)) => ProjectStatus::GitUnavailable,
@@ -443,7 +448,7 @@ mod tests {
         });
         // A "git" that hangs: with a previous status it is kept, without one it is an error.
         let hang = crate::process::fixtures::script(dir.path(), "hang", "@ping -n 60 127.0.0.1 >nul\n", "exec sleep 60\n");
-        let timed_out = super::super::status::repo_status_with_timeout(&hang, dir.path(), Duration::from_millis(100)).unwrap_err();
+        let timed_out = super::super::status::repo_status_with_timeout(&hang, dir.path(), Duration::from_millis(100), &[]).unwrap_err();
         assert!(matches!(timed_out, GitError::Timeout(_)));
         assert_eq!(status_from(timed_out.clone(), Some(&previous)), previous);
         assert_eq!(
@@ -472,6 +477,54 @@ mod tests {
                 message: "git exited with code 3".into()
             }
         );
+    }
+
+    #[test]
+    fn linked_worktrees_inside_the_project_do_not_count_as_dirty_but_stray_files_do() {
+        let Some(git) = crate::git::branches::tests::real_git() else {
+            eprintln!("git not on PATH; skipping");
+            return;
+        };
+        let dir = crate::git::branches::tests::temp_repo(&git);
+        let repo = dir.path();
+        let git_ok = crate::git::branches::tests::git_ok;
+        let dirty = |path: &Path| match status_of(&git, path, None) {
+            ProjectStatus::Repo(status) => status.dirty,
+            other => panic!("expected a repo, got {other:?}"),
+        };
+        git_ok(&git, repo, &["worktree", "add", "-q", "-b", "one", ".worktrees/one", "main"]);
+        git_ok(&git, repo, &["worktree", "add", "-q", "-b", "two/x", ".worktrees/two/x", "main"]);
+        // Without the excludes git sees them as untracked.
+        assert_eq!(super::super::repo_status(&git, repo).unwrap().unwrap().dirty, 1, "`? .worktrees/` without excludes");
+        let canonical = dunce::canonicalize(repo).unwrap();
+        let mut inside = crate::git::branches::worktrees_inside(&git, repo).unwrap();
+        inside.sort();
+        assert_eq!(inside, [".worktrees/one", ".worktrees/two/x"]);
+        assert_eq!(dirty(repo), 0, "a clean repo with two worktrees in .worktrees/");
+        assert_eq!(dirty(&canonical), 0);
+        // A worktree outside the project changes nothing and is not excluded.
+        let outside = tempfile::tempdir().unwrap();
+        git_ok(&git, repo, &["worktree", "add", "-q", "-b", "out", &outside.path().join("o").display().to_string(), "main"]);
+        assert_eq!(crate::git::branches::worktrees_inside(&git, repo).unwrap().len(), 2);
+        assert_eq!(dirty(repo), 0);
+        // A stray file beside the worktrees still counts.
+        std::fs::write(repo.join(".worktrees").join("a.txt"), "x").unwrap();
+        assert_eq!(dirty(repo), 1, "stray .worktrees/a.txt");
+        // From inside a linked worktree: the main checkout is not inside it, nothing is excluded.
+        assert!(crate::git::branches::worktrees_inside(&git, &repo.join(".worktrees").join("one")).unwrap().is_empty());
+
+        // A project in a subfolder of its repository: the worktrees at the top level's
+        // `.worktrees/` are left out too (`? ../.worktrees/` otherwise); a stray file counts.
+        std::fs::remove_file(repo.join(".worktrees").join("a.txt")).unwrap();
+        let sub = repo.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("t.txt"), "t").unwrap();
+        git_ok(&git, repo, &["add", "sub/t.txt"]);
+        git_ok(&git, repo, &["commit", "-q", "-m", "sub"]);
+        git_ok(&git, repo, &["worktree", "add", "-q", "-b", "x", ".worktrees/x", "main"]);
+        assert_eq!(dirty(&sub), 0, "status_of(repo/sub) with worktrees at repo/.worktrees/");
+        std::fs::write(repo.join(".worktrees").join("stray.txt"), "x").unwrap();
+        assert_eq!(dirty(&sub), 1, "a stray file still counts");
     }
 
     /// `status_of`'s error mapping, fed a ready-made error (the timeout case is slow to

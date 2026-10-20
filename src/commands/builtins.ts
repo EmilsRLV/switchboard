@@ -46,6 +46,7 @@ import {
   stopSelectedSession,
 } from "./sessions";
 import { closeOpenPane, openPane, togglePane } from "./panes";
+import { canNewWorktree, canNewWorktreeOnBranch, openWorktreeSheet, openWorktreeSheetForBranch } from "./worktree";
 import { addProjectFromPicker, isPickerIdle } from "./projects";
 import { registerCommands, type Command } from "./registry";
 import { hasSettingsPath, redetectBinaries, revealSettingsFile } from "./settings";
@@ -305,6 +306,16 @@ export function builtinCommands(): Command[] {
       run: withSelectedProject(openProjectTerminal),
     },
     {
+      // Story 5.2: the "New worktree" sheet, a new branch from a base by default. Git repos only
+      // (by the status poll); no keybinding.
+      id: "project.newWorktree",
+      title: "New worktree…",
+      menu: "node",
+      menuOrder: 12,
+      when: canNewWorktree,
+      run: withSelectedProject(openWorktreeSheet),
+    },
+    {
       id: "terminal.toggle",
       title: "Toggle terminal",
       keybinding: TERMINAL_TOGGLE_KEY,
@@ -440,7 +451,7 @@ export function builtinCommands(): Command[] {
       run: withSelectedProject(toggleBranches),
     },
     {
-      // A branch card's only menu entry in Story 5.1.
+      // A branch card's first menu entry (Story 5.1).
       id: "branch.copyName",
       title: "Copy branch name",
       menu: "node",
@@ -448,6 +459,18 @@ export function builtinCommands(): Command[] {
       when: () => selectedBranch() !== null,
       run: async () => {
         await copySelectedBranchName();
+      },
+    },
+    {
+      // The sheet with this branch preselected; a card with a worktree chip (or the checked-out
+      // branch) has none.
+      id: "branch.newWorktree",
+      title: "New worktree…",
+      menu: "node",
+      menuOrder: 51,
+      when: canNewWorktreeOnBranch,
+      run: async () => {
+        await openWorktreeSheetForBranch();
       },
     },
     {
