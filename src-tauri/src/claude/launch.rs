@@ -89,6 +89,16 @@ pub struct LaunchRequest {
     pub prompt: Option<String>,
     /// Start in background: the frontend's concern (the pane stays shut); Rust ignores it.
     pub background: bool,
+    /// Story 5.3: the branch card the sheet was opened on. Rust resolves the folder from its
+    /// own latest branch list ([`resolve_branch`]); no path from the UI is ever used.
+    pub branch: Option<String>,
+    /// Story 5.3, a branch without a worktree: the sheet's single Start also creates the
+    /// worktree (`git worktree add <repo>/.worktrees/<branch> <branch>`, as Story 5.2 plans it)
+    /// before `claude` starts in it. A branch that has a worktree by then simply uses it.
+    pub create_worktree: bool,
+    /// Story 5.3, the project's sheet only: `claude --worktree <name>` from the repo's top
+    /// level (Claude makes the branch `worktree-<name>` and its folder itself).
+    pub worktree_name: Option<String>,
 }
 
 /// What `launch_defaults` returns: the sheet's prefill for a project.
@@ -103,6 +113,115 @@ pub struct LaunchPrefill {
     pub model: String,
     pub effort: String,
     pub permission_mode: String,
+    /// Story 5.3: the branch the sheet starts on (`None` on the project's sheet).
+    pub branch: Option<String>,
+    /// The folder the session will run in: the branch's worktree, the project folder for the
+    /// checked-out branch (and the project's sheet), or the planned folder of a worktree the
+    /// Start will create; `None` while that plan is refused (the section says why).
+    pub target_path: Option<String>,
+    /// A branch without a worktree: the exact `git worktree add` the Start runs first.
+    pub worktree_plan: Option<WorktreePlanPreview>,
+    /// The project's sheet of a git project: its top level, where `--worktree` runs (the
+    /// sheet states `<top>/.claude/worktrees/<name>`). `None` elsewhere: no `--worktree` offer.
+    pub repo_top: Option<String>,
+}
+
+/// The "Worktree" section of a branch sheet whose branch has no worktree: the command and
+/// folder Story 5.2's plan resolves, or why nothing would run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreePlanPreview {
+    pub command: Option<String>,
+    pub path: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Why a branch launch is refused: the branch is not in the latest list of the project.
+pub const BRANCH_NOT_FOUND: &str = "branch not found";
+
+/// Why a branch launch is refused: its linked worktree's folder is gone.
+pub const WORKTREE_MISSING: &str = "worktree folder missing";
+
+/// Why a branch launch is refused: the branch has no worktree and the sheet did not ask for one.
+pub const NO_WORKTREE: &str = "branch has no worktree";
+
+/// Why a launch with both a branch and `--worktree` is refused (`--worktree` always makes its
+/// own new branch, so it is offered on the project's sheet only).
+pub const WORKTREE_FLAG_ON_BRANCH: &str = "--worktree is offered on the project's sheet only";
+
+/// The prefix of the branch `claude --worktree <name>` creates.
+pub const CLAUDE_WORKTREE_BRANCH_PREFIX: &str = "worktree-";
+
+/// Where `claude --worktree <name>` puts the worktree, under the repo's top level.
+pub const CLAUDE_WORKTREES_DIR: [&str; 2] = [".claude", "worktrees"];
+
+/// Where a branch session runs, as [`resolve_branch`] decides it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchTarget {
+    /// The branch's linked worktree (canonical path); the folder exists.
+    Worktree(String),
+    /// The branch checked out in the project's own folder.
+    ProjectFolder,
+    /// A branch with no worktree, not checked out here: a worktree must be created first.
+    NeedsWorktree,
+}
+
+/// Look `branch` up in the project's latest branch list (`WorkspaceState.branches`): a linked
+/// worktree whose folder exists, the project folder for the checked-out branch, or a branch
+/// that needs a worktree. Not listed is [`BRANCH_NOT_FOUND`]; a chip marked missing (or a
+/// folder gone since the read) is [`WORKTREE_MISSING`].
+pub fn resolve_branch(list: Option<&[crate::git::BranchInfo]>, branch: &str) -> Result<BranchTarget, String> {
+    let info = list
+        .unwrap_or_default()
+        .iter()
+        .find(|b| b.name == branch)
+        .ok_or_else(|| BRANCH_NOT_FOUND.to_string())?;
+    match &info.worktree {
+        Some(chip) if chip.missing || !Path::new(&chip.path).is_dir() => Err(WORKTREE_MISSING.to_string()),
+        Some(chip) => Ok(BranchTarget::Worktree(
+            dunce::canonicalize(&chip.path)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| chip.path.clone()),
+        )),
+        None if info.head => Ok(BranchTarget::ProjectFolder),
+        None => Ok(BranchTarget::NeedsWorktree),
+    }
+}
+
+/// The `--worktree` name: trimmed, not blank, not starting with `-`, no whitespace or control
+/// characters. `git check-ref-format --branch worktree-<name>` is checked by the caller.
+pub fn validate_worktree_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("worktree name must not be blank".to_string());
+    }
+    if name.starts_with('-') {
+        return Err("worktree name must not start with -".to_string());
+    }
+    if name.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("worktree name must not contain spaces or control characters".to_string());
+    }
+    Ok(name.to_string())
+}
+
+/// `<top>/.claude/worktrees/<name>`: where `claude --worktree <name>` makes its worktree.
+pub fn claude_worktree_path(top: &Path, name: &str) -> PathBuf {
+    let mut path = top.to_path_buf();
+    for part in CLAUDE_WORKTREES_DIR {
+        path.push(part);
+    }
+    for part in name.split('/').filter(|p| !p.is_empty()) {
+        path.push(part);
+    }
+    path
+}
+
+/// `args` with `--worktree <name>` before `--settings` (so a prompt stays last); appended when
+/// there is no `--settings`.
+pub fn with_worktree_flag(mut args: Vec<String>, name: &str) -> Vec<String> {
+    let at = args.iter().position(|a| a == "--settings").unwrap_or(args.len());
+    args.splice(at..at, ["--worktree".to_string(), name.to_string()]);
+    args
 }
 
 /// A trimmed, non-blank choice other than `default`: the value a flag carries.
@@ -191,9 +310,10 @@ pub fn refuse_batch(program: &Path, windows: bool) -> Result<(), String> {
 }
 
 /// The add-dirs as `--add-dir` gets them: each trimmed and canonicalised; blanks, duplicates
-/// and the project's own folder dropped. Paths that are not existing folders are an `Err`
-/// naming all of them: [`ADD_DIR_MISSING`] + the paths as given, one per line.
-pub fn normalise_add_dirs(dirs: &[String], project_path: &str) -> Result<Vec<String>, String> {
+/// and the folder the session runs in (`target`: the project folder, or a branch's worktree,
+/// Story 5.3) dropped. Paths that are not existing folders are an `Err` naming all of them:
+/// [`ADD_DIR_MISSING`] + the paths as given, one per line.
+pub fn normalise_add_dirs(dirs: &[String], target: &str) -> Result<Vec<String>, String> {
     let mut out: Vec<String> = Vec::new();
     let mut missing: Vec<&str> = Vec::new();
     for raw in dirs {
@@ -209,7 +329,7 @@ pub fn normalise_add_dirs(dirs: &[String], project_path: &str) -> Result<Vec<Str
             missing.push(trimmed);
             continue;
         };
-        if graph::same_path(&canonical, project_path) || out.iter().any(|known| graph::same_path(known, &canonical)) {
+        if graph::same_path(&canonical, target) || out.iter().any(|known| graph::same_path(known, &canonical)) {
             continue;
         }
         out.push(canonical);
@@ -428,6 +548,10 @@ pub fn prefill(project: Option<&graph::LaunchDefaults>, settings: &settings::Lau
             pick(project.map(|p| &p.permission_mode), &settings.permission_mode),
             &PERMISSION_MODES,
         ),
+        branch: None,
+        target_path: None,
+        worktree_plan: None,
+        repo_top: None,
     }
 }
 
@@ -1026,6 +1150,10 @@ mod tests {
                 model: "sonnet".into(),
                 effort: "default".into(),
                 permission_mode: "default".into(),
+                branch: None,
+                target_path: None,
+                worktree_plan: None,
+                repo_top: None,
             }
         );
         let project = graph::LaunchDefaults {
@@ -1194,6 +1322,74 @@ mod tests {
         drop(guard);
         assert!(launcher.pending_forks().is_empty());
         assert!(launcher.begin_fork("orig", "new-4").is_ok());
+    }
+
+    fn branch(name: &str, head: bool, worktree: Option<(&str, bool)>) -> crate::git::BranchInfo {
+        crate::git::BranchInfo {
+            name: name.into(),
+            head,
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            gone: false,
+            committed_at: 0,
+            worktree: worktree.map(|(path, missing)| crate::git::WorktreeChip { path: path.into(), missing }),
+        }
+    }
+
+    #[test]
+    fn a_branch_resolves_to_its_worktree_the_project_folder_or_a_worktree_to_make() {
+        let wt = tempfile::tempdir().unwrap();
+        let wt_path = wt.path().display().to_string();
+        let canonical = dunce::canonicalize(wt.path()).unwrap().display().to_string();
+        let gone = wt.path().join("gone").display().to_string();
+        let list = vec![
+            branch("main", true, None),
+            branch("feat", false, Some((&wt_path, false))),
+            branch("free", false, None),
+            branch("lost", false, Some((&gone, true))),
+            branch("raced", false, Some((&gone, false))),
+        ];
+        assert_eq!(resolve_branch(Some(&list), "feat"), Ok(BranchTarget::Worktree(canonical)));
+        assert_eq!(resolve_branch(Some(&list), "main"), Ok(BranchTarget::ProjectFolder));
+        assert_eq!(resolve_branch(Some(&list), "free"), Ok(BranchTarget::NeedsWorktree));
+        assert_eq!(resolve_branch(Some(&list), "lost"), Err(WORKTREE_MISSING.to_string()));
+        assert_eq!(resolve_branch(Some(&list), "raced"), Err(WORKTREE_MISSING.to_string()), "a folder gone since the read");
+        assert_eq!(resolve_branch(Some(&list), "nope"), Err(BRANCH_NOT_FOUND.to_string()));
+        assert_eq!(resolve_branch(None, "main"), Err(BRANCH_NOT_FOUND.to_string()), "no list read: not found");
+    }
+
+    #[test]
+    fn the_worktree_flag_goes_before_settings_and_its_name_is_checked() {
+        let req = LaunchRequest { prompt: Some("hi".into()), ..request() };
+        let args = build_args(&LaunchKind::New, &req, ID, Path::new("s.json"), "ctx").unwrap();
+        let args = with_worktree_flag(args, "spike");
+        assert_eq!(
+            args,
+            ["--session-id", ID, "--name", "ide-3f2a", "--worktree", "spike", "--settings", "s.json", "--append-system-prompt", "ctx", "hi"]
+        );
+        assert_eq!(with_worktree_flag(vec!["a".into()], "x"), ["a", "--worktree", "x"]);
+        assert_eq!(validate_worktree_name(" spike "), Ok("spike".to_string()));
+        assert!(validate_worktree_name("  ").is_err());
+        assert!(validate_worktree_name("-x").is_err());
+        assert!(validate_worktree_name("a b").is_err());
+        assert!(validate_worktree_name("a\nb").is_err());
+        let top = Path::new("/repo");
+        assert_eq!(claude_worktree_path(top, "spike"), top.join(".claude").join("worktrees").join("spike"));
+        assert_eq!(claude_worktree_path(top, "a/b"), top.join(".claude").join("worktrees").join("a").join("b"));
+    }
+
+    #[test]
+    fn the_request_carries_the_branch_and_worktree_choices() {
+        let req: LaunchRequest = serde_json::from_value(serde_json::json!({
+            "projectId": "ide", "sessionId": ID, "name": "n", "branch": "feat", "createWorktree": true, "worktreeName": "spike"
+        }))
+        .unwrap();
+        assert_eq!(req.branch.as_deref(), Some("feat"));
+        assert!(req.create_worktree);
+        assert_eq!(req.worktree_name.as_deref(), Some("spike"));
+        let plain: LaunchRequest = serde_json::from_value(serde_json::json!({ "projectId": "ide" })).unwrap();
+        assert_eq!((plain.branch, plain.create_worktree, plain.worktree_name), (None, false, None));
     }
 
     #[test]

@@ -53,12 +53,13 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the forty-eight commands with the spec's keybindings", () => {
+  it("register the forty-nine commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
       "binaries.redetect",
       "branch.copyName",
+      "branch.newSession",
       "branch.newWorktree",
       "canvas.fitView",
       "contextMenu.close",
@@ -129,6 +130,8 @@ describe("built-in commands", () => {
     }
     // `n` opens the launch sheet (Story 4.2); `e`, `/` and Delete stay unbound.
     expect(getCommand("project.newSession")?.keybinding).toBe("n");
+    // `n` on a branch card too (Story 5.3): the two `when`s never both hold.
+    expect(getCommand("branch.newSession")?.keybinding).toBe("n");
     expect(listCommands().map((c) => c.keybinding)).not.toContain("e");
     expect(listCommands().map((c) => c.keybinding)).not.toContain("/");
     expect(listCommands().map((c) => c.keybinding)).not.toContain("delete");
@@ -160,12 +163,13 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the thirty-six actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the thirty-seven actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
       "binaries.redetect",
       "branch.copyName",
+      "branch.newSession",
       "branch.newWorktree",
       "canvas.fitView",
       "elsewhere.toggle",
@@ -201,7 +205,7 @@ describe("built-in commands", () => {
     ]);
   });
 
-  it("exactly the twelve project commands, the five session commands and the two branch commands are tagged for the node menu, and the menu lists none without a selection", () => {
+  it("exactly the twelve project commands, the five session commands and the three branch commands are tagged for the node menu, and the menu lists none without a selection", () => {
     expect(
       listCommands()
         .filter((c) => c.menu === "node")
@@ -209,6 +213,7 @@ describe("built-in commands", () => {
         .sort(),
     ).toEqual([
       "branch.copyName",
+      "branch.newSession",
       "branch.newWorktree",
       "project.collapse",
       "project.expand",
@@ -233,7 +238,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(48);
+    expect(listCommands()).toHaveLength(49);
   });
 
   const PROJECT_ACTIONS = [
@@ -1043,7 +1048,7 @@ describe("built-in commands", () => {
     useWorkspaceStore.setState({ snapshot: workspaceWith([{ ...ideProject(true), showBranches: true }], [branch]) });
     expect(listCommands({ enabledOnly: true }).map((c) => c.id)).not.toContain("branch.copyName");
     useUiStore.getState().select({ kind: "branch", id: "ide:feature/x" });
-    expect(nodeMenuCommands().map((c) => c.id)).toEqual(["branch.copyName", "branch.newWorktree"]);
+    expect(nodeMenuCommands().map((c) => c.id)).toEqual(["branch.copyName", "branch.newWorktree", "branch.newSession"]);
 
     const writeText = vi.fn(async () => {});
     await expect(copySelectedBranchName({ writeText })).resolves.toBe(true);
@@ -1053,6 +1058,59 @@ describe("built-in commands", () => {
     await expect(copySelectedBranchName({ writeText: async () => Promise.reject(new Error("denied")) })).resolves.toBe(false);
     expect(useUiStore.getState().notice?.text).toBe("could not copy: denied");
     await expect(copySelectedBranchName(null)).resolves.toBe(false);
+  });
+
+  it("branch.newSession is `n` on a branch card unless its worktree is missing, and opens the sheet aimed at it", async () => {
+    const card = (name: string, head: boolean, worktree: { path: string; missing: boolean } | null): ChildNode => ({
+      id: `ide:${name}`,
+      projectId: "ide",
+      kind: "branch",
+      label: name,
+      detail: null,
+      position: null,
+      session: null,
+      branchId: null,
+      forkedFrom: null,
+      hasTranscript: false,
+      branch: { head, upstream: null, ahead: 0, behind: 0, upstreamGone: false, worktree },
+    });
+    const cards = [
+      card("main", true, null),
+      card("feat", false, { path: "/p/ide/.worktrees/feat", missing: false }),
+      card("free", false, null),
+      card("lost", false, { path: "/p/ide/.worktrees/lost", missing: true }),
+    ];
+    useWorkspaceStore.setState({ snapshot: workspaceWith([{ ...ideProject(true), showBranches: true }], cards) });
+    const enabled = () => listCommands({ enabledOnly: true }).map((c) => c.id);
+    for (const [name, on] of [["main", true], ["feat", true], ["free", true], ["lost", false]] as const) {
+      useUiStore.getState().select({ kind: "branch", id: `ide:${name}` });
+      expect(enabled().includes("branch.newSession"), name).toBe(on);
+      expect(enabled(), name).not.toContain("project.newSession");
+    }
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    expect(enabled()).not.toContain("branch.newSession");
+
+    const invoke = vi.fn().mockResolvedValue({
+      sessionId: "3f2a-id",
+      name: "ide-3f2a",
+      model: "default",
+      effort: "default",
+      permissionMode: "default",
+      branch: "feat",
+      targetPath: "/p/ide/.worktrees/feat",
+      worktreePlan: null,
+      repoTop: null,
+    });
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    useUiStore.getState().select({ kind: "branch", id: "ide:feat" });
+    expect(handleKeydown(key("n"))).toBe(true);
+    await flush();
+    expect(invoke).toHaveBeenCalledWith("launch_defaults", { projectId: "ide", branch: "feat" }, undefined);
+    expect(useUiStore.getState().pane).toBe("launch");
+    expect(useLaunchStore.getState()).toMatchObject({ projectId: "ide", branch: "feat", targetPath: "/p/ide/.worktrees/feat", worktreePlan: null });
+    // Open: `n` typed in the sheet does not reset it.
+    expect(enabled()).not.toContain("branch.newSession");
+    vi.unstubAllGlobals();
   });
 });
 

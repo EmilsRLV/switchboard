@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   ADD_DIR_MISSING,
   canStart,
+  claudeWorktreeFolder,
+  editedForm,
   chosenModel,
   EFFORT_CHOICES,
   formErrors,
@@ -16,6 +18,8 @@ import {
   startBlockedReason,
   withAddDir,
   withoutAddDir,
+  worktreeNameError,
+  worktreeSlug,
   type LaunchForm,
   type LaunchKeyEvent,
 } from "./launch";
@@ -37,6 +41,9 @@ describe("the prefill", () => {
       addDirs: [],
       prompt: "",
       background: false,
+      useWorktree: false,
+      worktreeName: "ide-3f2a",
+      worktreeNameEdited: false,
     });
   });
 
@@ -62,7 +69,7 @@ describe("the prefill", () => {
 
 describe("validation and the request", () => {
   it("needs a name that is not blank and a custom model that is not blank", () => {
-    expect(formErrors(form())).toEqual({ name: null, model: null });
+    expect(formErrors(form())).toEqual({ name: null, model: null, worktree: null });
     expect(formErrors(form({ name: "   " })).name).toBe("name must not be blank");
     expect(formErrors(form({ name: "-x" })).name).toBe("name must not start with -");
     expect(formErrors(form({ model: "custom", customModel: " " })).model).toBe("custom model must not be blank");
@@ -98,9 +105,76 @@ describe("validation and the request", () => {
       addDirs: ["/a"],
       prompt: "hi\nthere",
       background: true,
+      branch: null,
+      createWorktree: false,
+      worktreeName: null,
     });
     expect(launchRequest("p1", "sid", form({ prompt: "  \n " })).prompt).toBeNull();
     expect(launchRequest("p1", "sid", form()).model).toBe("default");
+  });
+});
+
+describe("a session on a branch, and --worktree (Story 5.3)", () => {
+  it("names the branch on a branch sheet and never sends --worktree there", () => {
+    const f = form({ useWorktree: true, worktreeName: "spike" });
+    expect(launchRequest("p1", "sid", f, { branch: "feat", createWorktree: false })).toMatchObject({ branch: "feat", createWorktree: false, worktreeName: null });
+    expect(launchRequest("p1", "sid", f, { branch: "free", createWorktree: true })).toMatchObject({ branch: "free", createWorktree: true, worktreeName: null });
+    // The project's sheet: the trimmed name while the option is on.
+    expect(launchRequest("p1", "sid", form({ useWorktree: true, worktreeName: " spike " }))).toMatchObject({ branch: null, createWorktree: false, worktreeName: "spike" });
+    expect(launchRequest("p1", "sid", form({ worktreeName: "spike" })).worktreeName).toBeNull();
+  });
+
+  it("prefills the worktree name from the session name until it is edited", () => {
+    expect(worktreeSlug("ide-3f2a")).toBe("ide-3f2a");
+    expect(worktreeSlug("My Feature: Login!")).toBe("my-feature-login");
+    expect(worktreeSlug("..a..b--")).toBe("a.b");
+    expect(worktreeSlug("  ")).toBe("session");
+    expect(worktreeSlug("my.lock")).toBe("my-lock");
+    expect(worktreeNameError(worktreeSlug("x.LOCK"))).toBeNull();
+    let f = editedForm(form(), { name: "Spike One" });
+    expect(f.worktreeName).toBe("spike-one");
+    f = editedForm(f, { worktreeName: "mine" });
+    expect([f.worktreeName, f.worktreeNameEdited]).toEqual(["mine", true]);
+    expect(editedForm(f, { name: "other" }).worktreeName).toBe("mine");
+  });
+
+  it("checks the worktree name as git check-ref-format would, only while the option is on", () => {
+    expect(worktreeNameError("spike")).toBeNull();
+    expect(worktreeNameError("team/spike")).toBeNull();
+    // Checked as the branch `worktree-<name>`: a leading `.` is fine there, a later part's is not.
+    expect(worktreeNameError(".a")).toBeNull();
+    // `< > " |` only when the repo is on Windows.
+    for (const c of ["<", ">", '"', "|"]) {
+      expect(worktreeNameError(`a${c}b`), c).toBeNull();
+      expect(worktreeNameError(`a${c}b`, true), c).not.toBeNull();
+    }
+    expect(formErrors(form({ useWorktree: true, worktreeName: "a|b" }), "B:\\r\\ide").worktree).not.toBeNull();
+    expect(formErrors(form({ useWorktree: true, worktreeName: "a|b" }), "/r/ide").worktree).toBeNull();
+    for (const bad of ["", "-x", "a b", "a..b", "a~b", "a:b", "a?b", "a*b", "a[b", "a\\b", "a@{b", "a//b", "a/", "a.", "a/.b", "a.lock", "a/b.lock"]) {
+      expect(worktreeNameError(bad), bad).not.toBeNull();
+    }
+    expect(formErrors(form({ worktreeName: "a..b" })).worktree).toBeNull();
+    expect(formErrors(form({ useWorktree: true, worktreeName: "a..b" })).worktree).not.toBeNull();
+    expect(startBlockedReason(form({ useWorktree: true, worktreeName: " " }), [], false)).toBe(
+      "Start needs a valid worktree name: worktree name must not be blank",
+    );
+  });
+
+  it("blocks Start while Rust would not create the branch's worktree", () => {
+    const plan = { command: "git worktree add /r/.worktrees/free free", path: "/r/.worktrees/free", error: null };
+    expect(startBlockedReason(form(), [], false, plan)).toBeNull();
+    expect(canStart(form(), [], { command: null, path: null, error: "folder already exists: /r/.worktrees/free" })).toBe(false);
+    expect(startBlockedReason(form(), [], false, { command: null, path: null, error: "x" })).toBe("No worktree would be created: see above");
+  });
+
+  it("states Claude's worktree folder in the repo's separator style", () => {
+    expect(claudeWorktreeFolder("/r/ide", "spike")).toBe("/r/ide/.claude/worktrees/spike");
+    expect(claudeWorktreeFolder("B:\\projects\\ide\\", "a/b")).toBe("B:\\projects\\ide\\.claude\\worktrees\\a\\b");
+  });
+
+  it("drops an add-dir equal to the folder the session runs in", () => {
+    expect(withAddDir([], "/r/.worktrees/feat/", "/r/.worktrees/feat")).toEqual([]);
+    expect(withAddDir([], "/r", "/r/.worktrees/feat")).toEqual(["/r"]);
   });
 });
 

@@ -1,5 +1,7 @@
 import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
+  claudeWorktreeFolder,
+  CLAUDE_WORKTREE_BRANCH_PREFIX,
   CUSTOM_MODEL,
   EFFORT_CHOICES,
   formErrors,
@@ -21,9 +23,17 @@ import { usePaletteStore } from "../state/palette";
  * "start in background", prefilled from the project's last choices, then settings. Enter in a
  * single-line field or select starts, Enter in the prompt adds a newline, ctrl+Enter starts
  * from anywhere. A refusal stays here, under Start; a missing add-dir is marked on its row.
+ *
+ * On a branch card (Story 5.3) the subtitle names the branch and the folder Rust resolved; a
+ * branch without a worktree adds a "Worktree" section with the exact `git worktree add` the
+ * Start runs first. The project sheet of a git project offers `claude --worktree <name>`.
  */
 export function LaunchPane() {
   const projectLabel = useLaunchStore((s) => s.projectLabel);
+  const branch = useLaunchStore((s) => s.branch);
+  const targetPath = useLaunchStore((s) => s.targetPath);
+  const worktreePlan = useLaunchStore((s) => s.worktreePlan);
+  const repoTop = useLaunchStore((s) => s.repoTop);
   const form = useLaunchStore((s) => s.form);
   const starting = useLaunchStore((s) => s.starting);
   const error = useLaunchStore((s) => s.error);
@@ -42,8 +52,9 @@ export function LaunchPane() {
   }, []);
 
   if (form === null) return null;
-  const errors = formErrors(form);
-  const blocked = startBlockedReason(form, missingDirs, starting);
+  const errors = formErrors(form, repoTop);
+  const blocked = startBlockedReason(form, missingDirs, starting, worktreePlan, repoTop);
+  const worktreeFolder = repoTop === null ? null : claudeWorktreeFolder(repoTop, form.worktreeName.trim() || "<name>");
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (launchKeyAction(event.nativeEvent, launchKeyTarget(event.target)) !== "start") return;
@@ -62,8 +73,37 @@ export function LaunchPane() {
 
       <section className="pane-section">
         <p className="muted">
-          Starts <code className="path">claude</code> in {projectLabel} in a terminal. Enter starts; ctrl+Enter starts from the prompt.
+          {branch === null ? (
+            <>
+              Starts <code className="path">claude</code> in {projectLabel} in a terminal.
+            </>
+          ) : (
+            <>
+              Starts <code className="path">claude</code> on {branch} in{" "}
+              <span className="path" title={targetPath ?? undefined}>
+                {targetPath === null ? "a new worktree" : shortenPath(targetPath, 44)}
+              </span>
+              .
+            </>
+          )}{" "}
+          Enter starts; ctrl+Enter starts from the prompt.
         </p>
+        {worktreePlan !== null && branch !== null && (
+          <div className="launch-worktree" role="group" aria-label="Worktree">
+            <h3 className="pane-heading">Worktree</h3>
+            <p className="muted">
+              Creates a worktree for <code className="path">{branch}</code>, then starts the session in it.
+            </p>
+            <code className="worktree-command" aria-live="polite">
+              {worktreePlan.command ?? "—"}
+            </code>
+            {worktreePlan.error !== null && (
+              <p className="pane-error launch-error" role="alert">
+                {worktreePlan.error}
+              </p>
+            )}
+          </div>
+        )}
         <label className="launch-field">
           <span className="launch-label">Name</span>
           <input
@@ -133,10 +173,45 @@ export function LaunchPane() {
         </label>
       </section>
 
+      {branch === null && repoTop !== null && worktreeFolder !== null && (
+        <section className="pane-section" aria-label="Claude worktree">
+          <label className="launch-check">
+            <input type="checkbox" checked={form.useWorktree} disabled={starting} onChange={(e) => edit({ useWorktree: e.target.checked })} />
+            <span>
+              Let Claude make a worktree (<code className="path">--worktree</code>)
+            </span>
+          </label>
+          {form.useWorktree && (
+            <label className="launch-field">
+              <span className="launch-label">Worktree name</span>
+              <input
+                className="launch-input worktree-name"
+                type="text"
+                value={form.worktreeName}
+                spellCheck={false}
+                autoComplete="off"
+                aria-invalid={errors.worktree !== null}
+                aria-describedby="launch-worktree-hint"
+                onChange={(e) => edit({ worktreeName: e.target.value })}
+              />
+              <span id="launch-worktree-hint" className="launch-hint">
+                {errors.worktree ?? (
+                  <>
+                    Claude creates the new branch {CLAUDE_WORKTREE_BRANCH_PREFIX}
+                    {form.worktreeName.trim()} from the repo&apos;s default branch in{" "}
+                    <span title={worktreeFolder}>{shortenPath(worktreeFolder, 44)}</span>.
+                  </>
+                )}
+              </span>
+            </label>
+          )}
+        </section>
+      )}
+
       <section className="pane-section" aria-label="Extra folders">
         <h3 className="pane-heading">Add-dirs</h3>
         {form.addDirs.length === 0 ? (
-          <p className="muted">None: the session sees the project folder only.</p>
+          <p className="muted">None: the session sees the folder it starts in only.</p>
         ) : (
           <ul className="launch-dirs">
             {form.addDirs.map((dir, index) => {

@@ -1145,6 +1145,96 @@ pub fn set_forked_from<R: Runtime>(app: &AppHandle<R>, project_id: &str, session
     Ok(snapshot)
 }
 
+/// Record the branch a session was started on (Story 5.3): its [`SessionRef`] (created when it
+/// has none) gets `branchId` (`<projectId>:<name>`, [`branch_child_id`]), so the card is drawn
+/// under that branch card, and a [`BranchNode`] it names is not pruned while git does not list
+/// the branch yet (`claude --worktree`). Written before the spawn, as [`set_forked_from`] is: a
+/// write that fails takes the ref back and is the `Err`. The same branch again changes nothing.
+/// An unknown project is an `Err` and nothing changes.
+pub fn set_session_branch<R: Runtime>(app: &AppHandle<R>, session_id: &str, project_id: &str, branch_id: &str) -> Result<WorkspaceSnapshot, String> {
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        if !st.workspace.projects.iter().any(|p| p.id == project_id) {
+            return Err("unknown project".to_string());
+        }
+        match st
+            .workspace
+            .sessions
+            .iter_mut()
+            .find(|s| s.session_id == session_id && s.project_id == project_id)
+        {
+            Some(existing) if existing.branch_id.as_deref() == Some(branch_id) => return Ok(st.snapshot()),
+            Some(existing) => existing.branch_id = Some(branch_id.to_string()),
+            None => st.workspace.sessions.push(SessionRef {
+                session_id: session_id.to_string(),
+                project_id: project_id.to_string(),
+                branch_id: Some(branch_id.to_string()),
+                ..SessionRef::default()
+            }),
+        }
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    let outcome = target.map(|path| store::write(&path, &workspace));
+    if let Some(Err(err)) = outcome {
+        state.write_workspace().file_banner = Some(write_banner(&err));
+        clear_session_branch(app, project_id, session_id);
+        return Err(format!("could not save the session's branch: {err}"));
+    }
+    let snapshot = {
+        let mut st = state.write_workspace();
+        if outcome.is_some() {
+            st.file_banner = None;
+        }
+        st.snapshot()
+    };
+    emit(app, &snapshot);
+    Ok(snapshot)
+}
+
+/// Take back a [`BranchNode`] a launch recorded before a spawn that failed (Story 5.3): the
+/// project's stored branch `name` goes; written and emitted. Nothing stored changes nothing.
+pub fn remove_branch_node<R: Runtime>(app: &AppHandle<R>, project_id: &str, name: &str) {
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        let before = st.workspace.branches.len();
+        st.workspace.branches.retain(|b| !(b.project_id == project_id && b.name == name));
+        if st.workspace.branches.len() == before {
+            return;
+        }
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    persist_and_emit(app, target, &workspace);
+}
+
+/// Take back a session's `branchId` (a launch that did not start, Story 5.3): the ref loses
+/// it, and goes when nothing else is left in it; written and emitted. Nothing to take back
+/// changes nothing.
+pub fn clear_session_branch<R: Runtime>(app: &AppHandle<R>, project_id: &str, session_id: &str) {
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        let Some(existing) = st
+            .workspace
+            .sessions
+            .iter_mut()
+            .find(|s| s.session_id == session_id && s.project_id == project_id && s.branch_id.is_some())
+        else {
+            return;
+        };
+        existing.branch_id = None;
+        st.workspace
+            .sessions
+            .retain(|s| !(s.session_id == session_id && s.project_id == project_id && s.is_bare()));
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    persist_and_emit(app, target, &workspace);
+}
+
 /// Take back a fork link (a fork that did not start, Story 4.4): the session's ref loses its
 /// `forkedFrom`, and goes when nothing else is left in it; written and emitted. Nothing to
 /// take back changes nothing.
@@ -3054,6 +3144,50 @@ mod tests {
         // A relayout keeps the ref: it is not bare.
         let snapshot = relayout_children(app.handle(), "ide").unwrap();
         assert_eq!(snapshot.workspace.sessions.len(), 1);
+    }
+
+    // -- session on a branch (Story 5.3) ----------------------------------------------
+
+    #[test]
+    fn set_session_branch_is_persisted_puts_the_live_child_under_its_branch_and_keeps_the_branch_node() {
+        let (app, _cfg, path) = app_with_ide(0);
+        let rx = listen(&app);
+        let snapshot = set_session_branch(app.handle(), "s1", "ide", "ide:worktree-spike").unwrap();
+        assert_eq!(snapshot.revision, 1);
+        assert_eq!(snapshot.workspace.sessions[0].branch_id.as_deref(), Some("ide:worktree-spike"));
+        assert_eq!(rx.try_recv().expect("workspace://changed"), snapshot);
+        assert_eq!(on_disk(&path).sessions[0].branch_id.as_deref(), Some("ide:worktree-spike"));
+        // The same again: nothing; an unknown project: an error.
+        assert_eq!(set_session_branch(app.handle(), "s1", "ide", "ide:worktree-spike").unwrap().revision, 1);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(set_session_branch(app.handle(), "s1", "nope", "x"), Err("unknown project".to_string()));
+
+        // A live-only child takes the ref's branch when its cwd is in no stored worktree.
+        let live = HashMap::from([(
+            "ide".to_string(),
+            vec![LiveChild {
+                id: "s1".into(),
+                name: Some("ide-ab12".into()),
+                started_at_ms: Some(1),
+                cwd: "/p/ide".into(),
+                live: true,
+            }],
+        )]);
+        set_live_children(app.handle(), live);
+        let children = app.state::<AppState>().read_workspace().children();
+        assert_eq!(children[0].branch_id.as_deref(), Some("ide:worktree-spike"));
+
+        // The ref keeps a stored branch git does not list yet from being pruned.
+        upsert_created_branch(app.handle(), "ide", "worktree-spike", "/p/ide/.claude/worktrees/spike").unwrap();
+        set_show_branches(app.handle(), "ide", true).unwrap();
+        set_branches(app.handle(), HashMap::from([("ide".to_string(), Ok(Some(Vec::new())))]));
+        assert_eq!(app.state::<AppState>().read_workspace().workspace.branches.len(), 1, "referenced: kept");
+
+        // Taken back: the ref goes when nothing else is in it.
+        clear_session_branch(app.handle(), "ide", "s1");
+        assert!(app.state::<AppState>().read_workspace().workspace.sessions.is_empty());
+        assert!(on_disk(&path).sessions.is_empty());
+        clear_session_branch(app.handle(), "ide", "s1");
     }
 
     #[test]

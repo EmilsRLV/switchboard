@@ -303,6 +303,8 @@ describe("session launch wrappers", () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
     await expect(launchDefaults("p1")).resolves.toBe(prefill);
     expect(invoke).toHaveBeenCalledWith("launch_defaults", { projectId: "p1" }, undefined);
+    await launchDefaults("p1", "feat");
+    expect(invoke).toHaveBeenLastCalledWith("launch_defaults", { projectId: "p1", branch: "feat" }, undefined);
   });
 
   it("sessionLaunch invokes session_launch with { request, cols, rows }", async () => {
@@ -316,6 +318,9 @@ describe("session launch wrappers", () => {
       addDirs: ["/work/a"],
       prompt: "hi",
       background: false,
+      branch: "feat",
+      createWorktree: true,
+      worktreeName: null,
     };
     const term = { id: "session:s1", kind: "session" as const, project_id: "p1", title: "ide-3f2a", cwd: "/p/ide", exited: null, error: null, cols: 120, rows: 30 };
     const invoke = vi.fn().mockResolvedValue({ session_id: "s1", term });

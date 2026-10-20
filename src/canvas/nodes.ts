@@ -214,13 +214,42 @@ export type ColumnEntry<C> = { child: C; position: Position };
 export type ColumnMore = { group: ChildGroup; position: Position; total: number; showingAll: boolean };
 
 /**
+ * Where a session nested under a branch card (Story 5.3) sits in column slot `index`: one
+ * {@link COLUMN_INDENT} further right than the branch cards.
+ */
+export function nestedSlot(index: number): Position {
+  return { x: COLUMN_INDENT * 2, y: COLUMN_TOP + index * (CHILD_HEIGHT + CHILD_GAP) };
+}
+
+/** What {@link projectColumn} reads of a child: its kind and stored position, and for nesting its id and branch. */
+export type ColumnChild = Pick<ChildNode, "kind" | "position"> & Partial<Pick<ChildNode, "id" | "branchId">>;
+
+/**
+ * True when a session child is drawn under its branch card (Story 5.3): its `branchId` names a
+ * branch card that is drawn (`branchIds`: listed, so the project's branches are shown and the
+ * branch exists, and not cut by the branch group's limit unless it was dragged).
+ */
+export function isNestedSession(child: ColumnChild, branchIds: ReadonlySet<string>): boolean {
+  return child.kind === "session" && child.branchId !== null && child.branchId !== undefined && branchIds.has(child.branchId);
+}
+
+/**
  * A project's column (Story 5.1): its session group, then its branch group right after it
  * (after the session group's `more` row when it has one). Each group is cut by
  * {@link visibleChildren} on its own show-all list (`showAll` for sessions, `showAllBranches`
  * for branches, both project ids); a dragged child keeps its stored position, the others take
  * their slot. Children keep their list order within each group.
+ *
+ * Story 5.3: a session whose `branchId` names a drawn branch card ({@link isNestedSession}) is
+ * not in the session group: it is drawn directly under that card's drawn position, one
+ * {@link COLUMN_INDENT} in, stacked after the earlier sessions there -- in the column slots
+ * after the card's own when the card sits in its slot (so the branch group makes room), under
+ * the dragged card otherwise. It counts toward neither group's limit nor `show all (N)`. While
+ * its branch card is not drawn (cut by the limit and not dragged) it falls back to the session
+ * group, as with branches off. A dragged session keeps its stored position. The drawn order --
+ * the arrow keys' tie-break order -- is the column's: each branch card, then its sessions.
  */
-export function projectColumn<C extends Pick<ChildNode, "kind" | "position">>(
+export function projectColumn<C extends ColumnChild>(
   projectId: string,
   kids: readonly C[],
   showAll: readonly string[],
@@ -228,24 +257,57 @@ export function projectColumn<C extends Pick<ChildNode, "kind" | "position">>(
 ): { drawn: ColumnEntry<C>[]; mores: ColumnMore[] } {
   const drawn: ColumnEntry<C>[] = [];
   const mores: ColumnMore[] = [];
+  const branchCards = kids.filter((child) => child.kind === "branch");
+  const branchCut = visibleChildren(branchCards, showAllBranches.includes(projectId));
+  const drawnBranchIds = new Set<string>();
+  branchCards.forEach((child, index) => {
+    if (child.id !== undefined && (index < branchCut.slotted || child.position !== null)) drawnBranchIds.add(child.id);
+  });
+  const nested = new Map<string, C[]>();
+  for (const child of kids) {
+    if (!isNestedSession(child, drawnBranchIds)) continue;
+    const key = child.branchId as string;
+    const list = nested.get(key);
+    if (list === undefined) nested.set(key, [child]);
+    else list.push(child);
+  }
+  const step = CHILD_HEIGHT + CHILD_GAP;
   let offset = 0;
   for (const group of ["sessions", "branches"] as const) {
-    const members = kids.filter((child) => groupOf(child) === group);
+    const members = kids.filter((child) => groupOf(child) === group && !isNestedSession(child, drawnBranchIds));
     if (members.length === 0) continue;
     const showingAll = (group === "sessions" ? showAll : showAllBranches).includes(projectId);
-    const { visible, more, slotted, total } = visibleChildren(members, showingAll);
-    for (const child of visible) {
-      const index = members.indexOf(child);
-      drawn.push({ child, position: child.position === null ? columnSlot(offset + index) : { ...child.position } });
-    }
+    const { more, slotted, total } = visibleChildren(members, showingAll);
+    let row = offset;
+    members.forEach((child, index) => {
+      const inSlot = index < slotted;
+      let at: Position | null = null;
+      if (inSlot) {
+        at = child.position === null ? columnSlot(row) : { ...child.position };
+        row += 1;
+      } else if (child.position !== null) {
+        at = { ...child.position };
+      }
+      if (at === null) return;
+      drawn.push({ child, position: at });
+      // Its sessions take the slots after it only while it sits in its own.
+      const reserves = inSlot && child.position === null;
+      const under = child.id === undefined ? undefined : nested.get(child.id);
+      (under ?? []).forEach((session, k) => {
+        const below = { x: at.x + COLUMN_INDENT, y: at.y + (k + 1) * step };
+        drawn.push({ child: session, position: session.position === null ? below : { ...session.position } });
+        if (reserves) row += 1;
+      });
+    });
     if (more) {
-      mores.push({ group, position: columnSlot(offset + slotted), total, showingAll });
-      offset += 1;
+      mores.push({ group, position: columnSlot(row), total, showingAll });
+      row += 1;
     }
-    offset += slotted;
+    offset = row;
   }
   return { drawn, mores };
 }
+
 
 /** The `more` row's text: `show all (N)`, or `show fewer` while everything shows. */
 export function moreLabel(total: number, showingAll: boolean): string {

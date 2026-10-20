@@ -36,11 +36,13 @@ import { canGoToAttention, goToNextAttention } from "./attention";
 import { canToggleBranches, relayoutChildren, removeProject, setExpanded, toggleBranches, toggleBranchesTitle } from "./nodes";
 import {
   canForkSession,
+  canNewSessionOnBranch,
   canResumeSession,
   canShowSessionTerminal,
   canStopSession,
   forkSelectedSession,
   openLaunchSheet,
+  openLaunchSheetForBranch,
   resumeSelectedSession,
   showSelectedSessionTerminal,
   stopSelectedSession,
@@ -287,7 +289,8 @@ export function builtinCommands(): Command[] {
       },
     },
     {
-      // `n` on a project; on a session or branch it does nothing. Not while the sheet is open,
+      // `n` on a project (on a branch card `n` is `branch.newSession`); on a session it does
+      // nothing. Not while the sheet is open,
       // so `n` typed on one of its selects never resets the form.
       id: "project.newSession",
       title: "New session…",
@@ -471,6 +474,20 @@ export function builtinCommands(): Command[] {
       when: canNewWorktreeOnBranch,
       run: async () => {
         await openWorktreeSheetForBranch();
+      },
+    },
+    {
+      // Story 5.3: `n` on a branch card opens the launch sheet aimed at that branch (its
+      // worktree, the project folder for `*`, or a worktree the Start creates). Disabled on a
+      // `missing` chip and while the sheet is open.
+      id: "branch.newSession",
+      title: "New session…",
+      keybinding: "n",
+      menu: "node",
+      menuOrder: 52,
+      when: canNewSessionOnBranch,
+      run: async () => {
+        await openLaunchSheetForBranch();
       },
     },
     {

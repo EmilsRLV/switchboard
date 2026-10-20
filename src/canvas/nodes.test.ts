@@ -48,6 +48,7 @@ import {
   hasBranchSecondLine,
   MISSING_WORKTREE,
   projectColumn,
+  nestedSlot,
   moreTarget,
   worktreeChipText,
   sessionCardMeta,
@@ -1221,5 +1222,113 @@ describe("branch children (Story 5.1)", () => {
     expect(changed[1]).not.toBe(before[1]);
     const toggled = toFlowNodes(inputs({ projects: [{ ...ide, showBranches: false }], children: [] }), before);
     expect(toggled[0]).not.toBe(before[0]);
+  });
+});
+
+describe("sessions on a branch (Story 5.3)", () => {
+  const ide = { ...project("ide", "/p/ide", 0, 0, true), showBranches: true };
+  const onBranch = (id: string, branch: string, position: ChildNode["position"] = null): ChildNode => ({
+    ...session(id, "ide"),
+    branchId: `ide:${branch}`,
+    position,
+  });
+
+  it("a session whose branch card is listed is drawn right under it, indented, in the branch group", () => {
+    const children = [session("plain", "ide"), onBranch("w1", "feat"), onBranch("w2", "feat"), onBranch("m1", "main"), branchChild("main", "ide", { head: true }), branchChild("feat", "ide")];
+    const nodes = toFlowNodes(inputs({ projects: [ide], children }));
+    expect(nodes.map((n) => n.id)).toEqual(["ide", "session:plain", "branch:ide:main", "session:m1", "branch:ide:feat", "session:w1", "session:w2"]);
+    const at = (id: string) => nodes.find((n) => n.id === id)?.position;
+    expect(at("session:plain")).toEqual(columnSlot(0));
+    expect(at("branch:ide:main")).toEqual(columnSlot(1));
+    expect(at("session:m1")).toEqual(nestedSlot(2));
+    expect(nestedSlot(2)).toEqual({ x: columnSlot(2).x + COLUMN_INDENT, y: columnSlot(2).y });
+    expect(at("branch:ide:feat")).toEqual(columnSlot(3));
+    expect(at("session:w1")).toEqual(nestedSlot(4));
+    expect(at("session:w2")).toEqual(nestedSlot(5));
+    // Moving and selecting work as for any session card.
+    const moved = toFlowNodes(inputs({ projects: [ide], children: children.map((c) => (c.id === "w1" ? { ...c, position: { x: 400, y: 7 } } : c)) }));
+    expect(moved.find((n) => n.id === "session:w1")?.position).toEqual({ x: 400, y: 7 });
+    expect(moved.find((n) => n.id === "session:w2")?.position).toEqual(nestedSlot(5)); // its slot stays reserved
+    const selected = toFlowNodes(inputs({ projects: [ide], children, selection: { kind: "session", id: "w2" } }));
+    expect(selected.find((n) => n.id === "session:w2")?.data).toMatchObject({ selected: true });
+    expect(selected.find((n) => n.id === "session:w2")?.parentId).toBe("ide");
+  });
+
+  it("stays in the session group when its branch is not listed (branches off, or the branch gone)", () => {
+    const children = [onBranch("w1", "feat"), session("plain", "ide"), branchChild("main", "ide", { head: true })];
+    const { drawn } = projectColumn("ide", children, []);
+    expect(drawn.map((d) => [d.child.id, d.position])).toEqual([
+      ["w1", columnSlot(0)],
+      ["plain", columnSlot(1)],
+      ["ide:main", columnSlot(2)],
+    ]);
+    // Branches off: Rust lists no branch cards.
+    const off = projectColumn("ide", [onBranch("w1", "feat"), session("plain", "ide")], []);
+    expect(off.drawn.map((d) => d.position)).toEqual([columnSlot(0), columnSlot(1)]);
+  });
+
+  it("counts toward neither group's limit", () => {
+    const children = [...sessions(10, "ide"), onBranch("w1", "b1"), ...branches(12, "ide")];
+    const { drawn, mores } = projectColumn("ide", children, []);
+    // Ten sessions show and no session more row: the nested one is not in that group.
+    expect(drawn.filter((d) => d.child.kind === "session" && d.child.branchId === null)).toHaveLength(10);
+    expect(mores.map((m) => [m.group, m.total])).toEqual([["branches", 12]]);
+    // b1 then its session, the other branches after them; the more row after the tenth branch.
+    expect(drawn.find((d) => d.child.id === "ide:b1")?.position).toEqual(columnSlot(10));
+    expect(drawn.find((d) => d.child.id === "w1")?.position).toEqual(nestedSlot(11));
+    expect(drawn.find((d) => d.child.id === "ide:b2")?.position).toEqual(columnSlot(12));
+    expect(mores[0]?.position).toEqual(columnSlot(10 + 10 + 1));
+    // The project's count still holds every child.
+    const nodes = toFlowNodes(inputs({ projects: [ide], children }));
+    expect(asProject(nodes[0]).data.childCount).toBe(children.length);
+  });
+
+  it("follows its branch card when the card is dragged, in its slot or past the limit", () => {
+    const step = CHILD_HEIGHT + CHILD_GAP;
+    const dragged = { x: 400, y: 30 };
+    const children = [onBranch("w1", "feat"), onBranch("w2", "feat"), branchChild("main", "ide", { head: true }), branchChild("feat", "ide", {}, dragged), branchChild("x", "ide")];
+    const { drawn } = projectColumn("ide", children, []);
+    expect(drawn.map((d) => [d.child.id, d.position])).toEqual([
+      ["ide:main", columnSlot(0)],
+      ["ide:feat", dragged],
+      ["w1", { x: dragged.x + COLUMN_INDENT, y: dragged.y + step }],
+      ["w2", { x: dragged.x + COLUMN_INDENT, y: dragged.y + 2 * step }],
+      // The dragged card keeps its slot; its sessions take none.
+      ["ide:x", columnSlot(2)],
+    ]);
+    // Past the limit: a dragged b12 is drawn, and its undragged session under it.
+    const past = [...branches(12, "ide").map((b) => (b.id === "ide:b12" ? { ...b, position: dragged } : b)), onBranch("w12", "b12")];
+    const cut = projectColumn("ide", past, []);
+    expect(cut.drawn.find((d) => d.child.id === "ide:b12")?.position).toEqual(dragged);
+    expect(cut.drawn.find((d) => d.child.id === "w12")?.position).toEqual({ x: dragged.x + COLUMN_INDENT, y: dragged.y + step });
+    expect(cut.mores.map((m) => m.group)).toEqual(["branches"]);
+  });
+
+  it("falls back to the session group while its branch card is cut by the limit", () => {
+    const children = [session("plain", "ide"), onBranch("w12", "b12"), ...branches(12, "ide")];
+    const { drawn } = projectColumn("ide", children, []);
+    expect(drawn.slice(0, 2).map((d) => [d.child.id, d.position])).toEqual([
+      ["plain", columnSlot(0)],
+      ["w12", columnSlot(1)],
+    ]);
+    expect(drawn.find((d) => d.child.id === "ide:b1")?.position).toEqual(columnSlot(2));
+    // Showing all branches draws b12, with its session under it.
+    const all = projectColumn("ide", children, [], ["ide"]);
+    const b12 = all.drawn.findIndex((d) => d.child.id === "ide:b12");
+    expect(all.drawn[b12 + 1]?.child.id).toBe("w12");
+    expect(all.drawn[b12 + 1]?.position).toEqual(nestedSlot(1 + 12));
+    // A live session there is still drawn, so it can glow and be reached.
+    const nodes = toFlowNodes(inputs({ projects: [ide], children }));
+    expect(nodes.some((n) => n.id === "session:w12")).toBe(true);
+  });
+
+  it("the arrow keys follow the drawn order: down from a branch card reaches its session first", () => {
+    const children = [onBranch("w1", "feat"), branchChild("main", "ide", { head: true }), branchChild("feat", "ide"), branchChild("x", "ide")];
+    const rects = nodeRects([ide], children);
+    expect(rects.map((r) => r.target.id)).toEqual(["ide", "ide:main", "ide:feat", "w1", "ide:x"]);
+    const down = nearestInDirection(rectOf(rects, "branch", "ide:feat"), rects, "down");
+    expect(down?.target).toEqual({ kind: "session", id: "w1" });
+    expect(nearestInDirection(rectOf(rects, "session", "w1"), rects, "down")?.target).toEqual({ kind: "branch", id: "ide:x" });
+    expect(nearestInDirection(rectOf(rects, "session", "w1"), rects, "up")?.target).toEqual({ kind: "branch", id: "ide:feat" });
   });
 });

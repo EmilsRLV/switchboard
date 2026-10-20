@@ -14,7 +14,7 @@ import { disposeView, restore } from "../terminal/registry";
 import { isPoppedOut, useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 import { canStart, formFromPrefill, launchRequest, missingAddDirs, withAddDir, withoutAddDir } from "./launch";
-import { notify } from "./navigation";
+import { notify, selectedBranch } from "./navigation";
 import { setExpanded } from "./nodes";
 import { closeOpenPane, openPane } from "./panes";
 import { returnToPane, showTerminal } from "./terminal";
@@ -31,17 +31,51 @@ function describe(err: unknown): string {
  * by Rust (its last choices, else settings, else `default`; the name `<label>-<4 hex>` of the
  * session id it proposes). Resolves whether the sheet opened; a failure is the notice.
  */
-export async function openLaunchSheet(projectId: string): Promise<boolean> {
+export async function openLaunchSheet(projectId: string, branch?: string): Promise<boolean> {
   const project = useWorkspaceStore.getState().snapshot?.workspace.projects.find((p) => p.id === projectId);
   if (project === undefined) return false;
   try {
-    const prefill = await launchDefaults(projectId);
-    useLaunchStore.getState().open({ id: project.id, path: project.path, label: project.label }, prefill.sessionId, formFromPrefill(prefill));
+    const prefill = await launchDefaults(projectId, branch ?? null);
+    // On a branch (Story 5.3) the folder is Rust's: its worktree, the project folder for the
+    // checked-out branch, or the worktree the Start will create (`worktreePlan`).
+    const target =
+      branch === undefined
+        ? { repoTop: prefill.repoTop ?? null }
+        : { branch, targetPath: prefill.targetPath ?? null, worktreePlan: prefill.worktreePlan ?? null };
+    useLaunchStore.getState().open({ id: project.id, path: project.path, label: project.label }, prefill.sessionId, formFromPrefill(prefill), target);
     openPane("launch");
     return true;
   } catch (err) {
     notify(describe(err));
     return false;
+  }
+}
+
+/**
+ * The `when` of `branch.newSession` (Story 5.3): a branch card is selected whose worktree chip
+ * is not `missing` -- it has a worktree, is the checked-out branch, or has none (the sheet then
+ * creates one) -- and the sheet is not open already (so `n` typed in it never resets the form).
+ */
+export function canNewSessionOnBranch(): boolean {
+  const branch = selectedBranch();
+  return branch !== null && branch.branch !== null && branch.branch.worktree?.missing !== true && useUiStore.getState().pane !== "launch";
+}
+
+/** `branch.newSession` ("New session…", `n` on a branch card): the launch sheet aimed at that branch. */
+export function openLaunchSheetForBranch(): Promise<boolean> {
+  const branch = selectedBranch();
+  if (branch === null) return Promise.resolve(false);
+  return openLaunchSheet(branch.projectId, branch.label);
+}
+
+/** Re-read the branch sheet `token` names from Rust and take its target and session id; a failure changes nothing. */
+async function retarget(token: NonNullable<ReturnType<typeof sheetToken>>, projectId: string, branch: string): Promise<void> {
+  try {
+    const prefill = await launchDefaults(projectId, branch);
+    if (!isSheetOpen(token)) return;
+    useLaunchStore.getState().retarget(prefill.sessionId, { targetPath: prefill.targetPath ?? null, worktreePlan: prefill.worktreePlan ?? null });
+  } catch {
+    // The error from the start already shows; the sheet keeps what it had.
   }
 }
 
@@ -65,9 +99,9 @@ export async function startLaunch(): Promise<boolean> {
   const sheet = useLaunchStore.getState();
   const token = sheetToken();
   const { projectId, form, sessionId } = sheet;
-  if (token === null || projectId === null || form === null || sheet.starting || !canStart(form, sheet.missingDirs)) return false;
+  if (token === null || projectId === null || form === null || sheet.starting || !canStart(form, sheet.missingDirs, sheet.worktreePlan, sheet.repoTop)) return false;
   sheet.setStarting(true);
-  const request = launchRequest(projectId, sessionId, form);
+  const request = launchRequest(projectId, sessionId, form, { branch: sheet.branch, createWorktree: sheet.worktreePlan !== null });
   let started;
   try {
     started = await sessionLaunch(request, null, null);
@@ -75,6 +109,9 @@ export async function startLaunch(): Promise<boolean> {
     const message = describe(err);
     if (isSheetOpen(token)) useLaunchStore.getState().fail(message, missingAddDirs(message, form.addDirs));
     else notify(message);
+    // A worktree may have been made before the start failed (Story 5.3): the sheet re-reads its
+    // branch so it shows the new folder and no plan; the form and the error stay.
+    if (sheet.worktreePlan !== null && sheet.branch !== null && isSheetOpen(token)) await retarget(token, projectId, sheet.branch);
     return false;
   }
   useTerminalStore.getState().upsert(started.term);
@@ -106,7 +143,7 @@ export async function pickAddDir(): Promise<boolean> {
   if (picked === null || !isSheetOpen(token)) return false;
   const sheet = useLaunchStore.getState();
   if (sheet.form === null) return false;
-  sheet.edit({ addDirs: withAddDir(sheet.form.addDirs, picked, sheet.projectPath) });
+  sheet.edit({ addDirs: withAddDir(sheet.form.addDirs, picked, sheet.targetPath ?? sheet.projectPath) });
   return true;
 }
 

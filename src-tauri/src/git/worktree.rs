@@ -168,7 +168,7 @@ pub fn worktree_path(top: &Path, root: Option<&str>, branch: &str) -> Result<Pat
 
 /// Read-only checks of a new branch name: not blank, not starting with `-`, no `<>"|` on
 /// Windows, then `git check-ref-format --branch` (its message when it refuses).
-fn check_new_name(git_bin: &Path, dir: &Path, name: &str) -> Result<(), String> {
+pub(crate) fn check_new_name(git_bin: &Path, dir: &Path, name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err(NAME_REQUIRED.to_string());
     }
@@ -198,7 +198,7 @@ fn branch_exists(git_bin: &Path, dir: &Path, name: &str) -> Result<bool, String>
 }
 
 /// The project's top level, canonical (`git rev-parse --show-toplevel`).
-fn top_level(git_bin: &Path, dir: &Path) -> Result<PathBuf, String> {
+pub(crate) fn top_level(git_bin: &Path, dir: &Path) -> Result<PathBuf, String> {
     let done = crate::process::run(git(git_bin, dir, &["rev-parse", "--show-toplevel"]), BRANCHES_TIMEOUT)
         .map_err(|e| branch_error(&e))?
         .success()

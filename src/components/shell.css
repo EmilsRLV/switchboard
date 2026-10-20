@@ -472,6 +472,14 @@
   user-select: text;
 }
 
+/* The launch sheet's "Worktree" section on a branch without one (Story 5.3): the heading, a
+   muted line and the worktree sheet's command preview, stacked like a pane section. */
+.launch-worktree {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
 /* --- palette ------------------------------------------------------------------------- */
 
 .palette-backdrop {

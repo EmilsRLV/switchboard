@@ -226,6 +226,17 @@ pub async fn worktree_add<R: Runtime>(
     project_id: String,
     request: git::worktree::WorktreeRequest,
 ) -> Result<WorktreeAdded, String> {
+    add_worktree(&app, &project_id, &request).await.map(|(added, _)| added)
+}
+
+/// The work of [`worktree_add`], shared with a branch launch's "Create worktree here" (Story
+/// 5.3): the reply and the new worktree's canonical path.
+async fn add_worktree<R: Runtime>(
+    app: &AppHandle<R>,
+    project_id: &str,
+    request: &git::worktree::WorktreeRequest,
+) -> Result<(WorktreeAdded, String), String> {
+    let (app, project_id, request) = (app.clone(), project_id.to_string(), request.clone());
     let state = app.state::<AppState>();
     let path = project_path(&state, &project_id)?;
     let (git_bin, root) = {
@@ -268,10 +279,11 @@ pub async fn worktree_add<R: Runtime>(
     tauri::async_runtime::spawn(async move {
         git::poll::refresh_ids(&status_app, &[status_id]).await;
     });
-    Ok(WorktreeAdded {
+    let added = WorktreeAdded {
         snapshot: state.read_workspace().snapshot(),
         branch_id: graph::branch_child_id(&project_id, &name),
-    })
+    };
+    Ok((added, worktree))
 }
 
 /// Store where a node was dropped (end of a drag). A project's position is absolute, a
@@ -773,10 +785,16 @@ impl LaunchChoices {
 
 /// The launch sheet's prefill for a project: its last choices, else `settings.defaults`, else
 /// `default`, and the default name `<label>-<4 hex>` of the fresh session id the next launch
-/// from this project will use.
+/// from this project will use. With `branch` (Story 5.3, `n` on a branch card) Rust resolves
+/// where the session would run from its latest branch list: the branch's worktree, the project
+/// folder for the checked-out branch, or -- a branch without a worktree -- the exact
+/// `git worktree add` the Start runs first (Story 5.2's plan for `{ existing, branch }`, read-only;
+/// a refusal is the section's error). An unknown branch or a missing worktree folder is the `Err`.
+/// On the project's sheet of a git project the reply carries its top level, for `--worktree`.
 #[tauri::command]
-pub fn launch_defaults(state: State<'_, AppState>, project_id: String) -> Result<LaunchPrefill, String> {
-    let (label, project_defaults) = {
+pub async fn launch_defaults<R: Runtime>(app: AppHandle<R>, project_id: String, branch: Option<String>) -> Result<LaunchPrefill, String> {
+    let state = app.state::<AppState>();
+    let (label, path, project_defaults, list) = {
         let ws = state.read_workspace();
         let project = ws
             .workspace
@@ -784,20 +802,94 @@ pub fn launch_defaults(state: State<'_, AppState>, project_id: String) -> Result
             .iter()
             .find(|p| p.id == project_id)
             .ok_or_else(|| "unknown project".to_string())?;
-        (project.label.clone(), project.launch_defaults.clone())
+        (
+            project.label.clone(),
+            project.path.clone(),
+            project.launch_defaults.clone(),
+            ws.branches.get(&project_id).cloned(),
+        )
+    };
+    let branch = branch.map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
+    let (git_bin, root) = {
+        let settings = state.read();
+        (git::poll::git_binary(&settings), settings.settings.worktrees_root.clone())
+    };
+    let (target_path, worktree_plan, repo_top) = match &branch {
+        Some(name) => match launch::resolve_branch(list.as_deref(), name)? {
+            launch::BranchTarget::Worktree(worktree) => (Some(worktree), None, None),
+            launch::BranchTarget::ProjectFolder => (Some(path.clone()), None, None),
+            launch::BranchTarget::NeedsWorktree => {
+                let request = existing_branch(name);
+                let folder = path.clone();
+                let plan = blocking(move || git::worktree::plan_add(&git_bin, Path::new(&folder), root.as_deref(), &request)).await?;
+                match plan {
+                    Ok(plan) => {
+                        let planned = plan.path.display().to_string();
+                        let preview = launch::WorktreePlanPreview {
+                            command: Some(plan.command_line()),
+                            path: Some(planned.clone()),
+                            error: None,
+                        };
+                        (Some(planned), Some(preview), None)
+                    }
+                    Err(error) => (
+                        None,
+                        Some(launch::WorktreePlanPreview {
+                            command: None,
+                            path: None,
+                            error: Some(error),
+                        }),
+                        None,
+                    ),
+                }
+            }
+        },
+        None => {
+            let repo = matches!(state.read_live().statuses.get(&project_id), Some(git::ProjectStatus::Repo(_)));
+            let folder = path.clone();
+            let top = if repo {
+                blocking(move || git::worktree::top_level(&git_bin, Path::new(&folder)).ok())
+                    .await?
+                    .map(|top| top.display().to_string())
+            } else {
+                None
+            };
+            (Some(path.clone()), None, top)
+        }
     };
     let settings = state.read().settings.defaults.clone();
     let session_id = state.launcher.propose(&project_id);
     let name = launch::default_name(&label, &session_id);
-    Ok(launch::prefill(project_defaults.as_ref(), &settings, session_id, name))
+    Ok(LaunchPrefill {
+        branch,
+        target_path,
+        worktree_plan,
+        repo_top,
+        ..launch::prefill(project_defaults.as_ref(), &settings, session_id, name)
+    })
+}
+
+/// The Story 5.2 request for a worktree of the existing local branch `name`.
+fn existing_branch(name: &str) -> git::worktree::WorktreeRequest {
+    git::worktree::WorktreeRequest {
+        mode: git::worktree::WorktreeMode::Existing,
+        branch: name.to_string(),
+        base: None,
+    }
 }
 
 /// Start a Claude session from the launch sheet: Rust assigns the id, writes the settings
 /// file, builds the argv and runs `claude` in a session terminal (`session:<id>`, titled with
-/// the name, in the project folder) at `cols` × `rows` (else 120 × 30). The session is a
-/// `starting` live child at once and turns `idle` on its first output; its exit turns it
-/// `exited` and deletes the settings file. The project remembers the choices. Every refusal is
-/// an `Err` the sheet shows, with nothing started.
+/// the name) at `cols` × `rows` (else 120 × 30). It runs in the project folder; on a branch
+/// (Story 5.3) in the folder Rust resolves for it ([`new_launch`]), and with `--worktree` from
+/// the repo's top level. The session is a `starting` live child at once and turns `idle` on
+/// its first output; its exit turns it `exited` and deletes the settings file. The project
+/// remembers the choices. Every refusal is an `Err` the sheet shows, with nothing started.
+///
+/// A branch without a worktree, with `createWorktree`: after every side-effect-free check and
+/// the id's claim, the worktree is created exactly as `worktree_add` does (branch lock, path
+/// stored, branches on, re-read); a refusal or git error there starts nothing and gives the id
+/// back. Once the worktree exists it stays, whatever the start does next.
 #[tauri::command]
 pub async fn session_launch<R: Runtime>(
     app: AppHandle<R>,
@@ -806,7 +898,53 @@ pub async fn session_launch<R: Runtime>(
     rows: Option<u16>,
 ) -> Result<LaunchResult, String> {
     let size = (cols.unwrap_or(pty::DEFAULT_COLS), rows.unwrap_or(pty::DEFAULT_ROWS));
-    blocking(move || launch_session(&app, request, size)).await?
+    let check_app = app.clone();
+    let (mut launch, create) = blocking(move || -> Result<(Launch, Option<String>), String> {
+        let state = check_app.state::<AppState>();
+        let (launch, create) = new_launch(&state, request)?;
+        // The program, the session dir and the flags, before anything is written.
+        prepare_launch(&state, &launch)?;
+        // The id the sheet showed, once: a stale sheet or a second start is refused here.
+        state.launcher.claim(&launch.project_id, &launch.session_id)?;
+        Ok((launch, create))
+    })
+    .await??;
+    if let Some(branch) = create {
+        let added = add_worktree(&app, &launch.project_id, &existing_branch(&branch)).await;
+        match added {
+            Ok((_, worktree)) => {
+                launch.cwd = worktree.clone();
+                launch.worktree = Some((branch, worktree));
+            }
+            Err(message) => {
+                app.state::<AppState>().launcher.unclaim(&launch.project_id, &launch.session_id);
+                return Err(message);
+            }
+        }
+    }
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let (project_id, session_id) = (launch.project_id.clone(), launch.session_id.clone());
+        let give_back = || state.launcher.unclaim(&project_id, &session_id);
+        // A created worktree is the folder now: an add-dir equal to it goes.
+        let add_dirs = match launch::normalise_add_dirs(&launch.request.add_dirs, &launch.cwd) {
+            Ok(dirs) => dirs,
+            Err(message) => {
+                give_back();
+                return Err(message);
+            }
+        };
+        launch.request.add_dirs = add_dirs;
+        let (program, args) = match prepare_launch(&state, &launch) {
+            Ok(prepared) => prepared,
+            Err(message) => {
+                give_back();
+                return Err(message);
+            }
+        };
+        start_claimed(&app, launch, program, args, size)
+    })
+    .await?
 }
 
 /// The program a launch runs and its leading arguments: `claude` as detection found it (only
@@ -845,14 +983,33 @@ struct Launch {
     name: String,
     /// The flags (model, effort, permission mode; add-dirs and prompt for New only).
     request: LaunchRequest,
+    /// The system prompt's branch (Story 5.3): the branch the session starts on; `None` takes
+    /// the project's checked-out branch from the status poll.
+    branch: Option<String>,
+    /// The branch card the session is drawn under (`<projectId>:<name>`), written to its
+    /// session ref before the spawn.
+    branch_id: Option<String>,
+    /// A branch and the worktree folder to record for it before the spawn (`BranchNode.
+    /// worktreePath`), so the live session's cwd maps to that branch.
+    worktree: Option<(String, String)>,
+    /// `claude --worktree <name>` (the project's sheet only).
+    worktree_flag: Option<String>,
 }
 
-/// The work of [`session_launch`], on a blocking thread. Everything that can be checked
-/// without side effects is checked first; then the sheet's session id is claimed (atomically,
-/// once), and a failure after that undoes only what this call created and gives the id back.
-pub fn launch_session<R: Runtime>(app: &AppHandle<R>, request: LaunchRequest, size: (u16, u16)) -> Result<LaunchResult, String> {
-    let state = app.state::<AppState>();
-    let (path, label) = {
+/// The side-effect-free half of a sheet launch: the project, the name, where the session runs
+/// and the add-dirs (normalised against that folder). Where it runs (Story 5.3):
+/// - no branch: the project folder;
+/// - a branch: what [`launch::resolve_branch`] finds in the latest branch list -- its linked
+///   worktree (recorded as the branch's `worktreePath`), the project folder for the checked-out
+///   branch, or, for a branch without a worktree and `createWorktree`, a worktree to create
+///   first (the second value; the caller creates it and sets the folder). Never a path sent by
+///   the UI. Not listed: [`launch::BRANCH_NOT_FOUND`]; a missing folder:
+///   [`launch::WORKTREE_MISSING`]; no worktree and none asked for: [`launch::NO_WORKTREE`];
+/// - `worktreeName` (not with a branch): the repo's top level, with `--worktree <name>`; the
+///   name must pass `git check-ref-format --branch worktree-<name>`, and the branch
+///   `worktree-<name>` is recorded with `<top>/.claude/worktrees/<name>`.
+fn new_launch(state: &AppState, request: LaunchRequest) -> Result<(Launch, Option<String>), String> {
+    let (path, label, list) = {
         let ws = state.read_workspace();
         let project = ws
             .workspace
@@ -860,26 +1017,72 @@ pub fn launch_session<R: Runtime>(app: &AppHandle<R>, request: LaunchRequest, si
             .iter()
             .find(|p| p.id == request.project_id)
             .ok_or_else(|| "unknown project".to_string())?;
-        (project.path.clone(), project.label.clone())
+        (project.path.clone(), project.label.clone(), ws.branches.get(&project.id).cloned())
     };
     let name = launch::validate_name(&request.name)?;
-    let request = LaunchRequest {
-        add_dirs: launch::normalise_add_dirs(&request.add_dirs, &path)?,
-        ..request
+    let branch = request.branch.as_deref().map(str::trim).filter(|b| !b.is_empty()).map(str::to_string);
+    let worktree_name = request.worktree_name.as_deref().map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
+    let project_id = request.project_id.clone();
+    let mut create = None;
+    let mut worktree = None;
+    let mut worktree_flag = None;
+    let (cwd, branch) = match (branch, worktree_name) {
+        (Some(_), Some(_)) => return Err(launch::WORKTREE_FLAG_ON_BRANCH.to_string()),
+        (None, None) => (path.clone(), None),
+        (Some(branch), None) => match launch::resolve_branch(list.as_deref(), &branch)? {
+            launch::BranchTarget::Worktree(folder) => {
+                worktree = Some((branch.clone(), folder.clone()));
+                (folder, Some(branch))
+            }
+            launch::BranchTarget::ProjectFolder => (path.clone(), Some(branch)),
+            launch::BranchTarget::NeedsWorktree if request.create_worktree => {
+                create = Some(branch.clone());
+                // Set once the worktree exists.
+                (String::new(), Some(branch))
+            }
+            launch::BranchTarget::NeedsWorktree => return Err(launch::NO_WORKTREE.to_string()),
+        },
+        (None, Some(raw)) => {
+            let flag = launch::validate_worktree_name(&raw)?;
+            let git_bin = git::poll::git_binary(&state.read());
+            let folder = Path::new(&path);
+            let claude_branch = format!("{}{flag}", launch::CLAUDE_WORKTREE_BRANCH_PREFIX);
+            git::worktree::check_new_name(&git_bin, folder, &claude_branch)?;
+            let top = git::worktree::top_level(&git_bin, folder)?;
+            worktree = Some((claude_branch.clone(), launch::claude_worktree_path(&top, &flag).display().to_string()));
+            worktree_flag = Some(flag);
+            (top.display().to_string(), Some(claude_branch))
+        }
     };
+    let add_dirs = if create.is_some() {
+        // The folder does not exist yet: checked now, compared with it once it does.
+        launch::normalise_add_dirs(&request.add_dirs, &path)?;
+        request.add_dirs.clone()
+    } else {
+        launch::normalise_add_dirs(&request.add_dirs, &cwd)?
+    };
+    let branch_id = branch.as_deref().map(|b| graph::branch_child_id(&project_id, b));
     let launch = Launch {
         kind: launch::LaunchKind::New,
-        project_id: request.project_id.clone(),
-        project_path: path.clone(),
+        project_id,
+        project_path: path,
         label,
-        cwd: path,
+        cwd,
         session_id: request.session_id.clone(),
         name,
-        request,
+        request: LaunchRequest { add_dirs, ..request },
+        branch,
+        branch_id,
+        worktree,
+        worktree_flag,
     };
-    let (program, args) = prepare_launch(&state, &launch)?;
-    // The id the sheet showed, once: a stale sheet or a second start is refused here.
-    state.launcher.claim(&launch.project_id, &launch.session_id)?;
+    Ok((launch, create))
+}
+
+/// Run a sheet launch whose id is claimed: a failure gives the id back; a start remembers the
+/// project's choices.
+fn start_claimed<R: Runtime>(app: &AppHandle<R>, launch: Launch, program: PathBuf, args: Vec<String>, size: (u16, u16)) -> Result<LaunchResult, String> {
+    let state = app.state::<AppState>();
     let (project_id, session_id) = (launch.project_id.clone(), launch.session_id.clone());
     let give_back = || state.launcher.unclaim(&project_id, &session_id);
     let remembered = launch::remembered(&launch.request);
@@ -1008,6 +1211,22 @@ fn sheetless_request(state: &AppState, project: &graph::Project, session_id: &st
     }
 }
 
+/// The branch a session was started on (Story 5.3): its session ref's `branchId`
+/// (`<projectId>:<name>`) without the project prefix; `None` without one.
+fn ref_branch(state: &AppState, project_id: &str, session_id: &str) -> Option<String> {
+    let prefix = format!("{project_id}:");
+    state
+        .read_workspace()
+        .workspace
+        .sessions
+        .iter()
+        .find(|s| s.session_id == session_id && s.project_id == project_id)
+        .and_then(|s| s.branch_id.as_deref())
+        .and_then(|id| id.strip_prefix(&prefix))
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+}
+
 /// The work of [`session_resume`].
 pub fn resume_session<R: Runtime>(app: &AppHandle<R>, project_id: &str, session_id: &str, size: (u16, u16)) -> Result<LaunchResult, String> {
     let state = app.state::<AppState>();
@@ -1022,6 +1241,10 @@ pub fn resume_session<R: Runtime>(app: &AppHandle<R>, project_id: &str, session_
         cwd,
         session_id: session_id.to_string(),
         name: source.name,
+        branch: ref_branch(&state, project_id, session_id),
+        branch_id: None,
+        worktree: None,
+        worktree_flag: None,
     };
     let (program, args) = prepare_launch(&state, &launch)?;
     run_launch(app, launch, program, args, size, &|| {})
@@ -1046,6 +1269,10 @@ pub fn fork_session<R: Runtime>(app: &AppHandle<R>, project_id: &str, from: &str
         cwd,
         session_id: new_id.clone(),
         name,
+        branch: ref_branch(&state, project_id, from),
+        branch_id: None,
+        worktree: None,
+        worktree_flag: None,
     };
     let (program, args) = prepare_launch(&state, &launch)?;
     run_launch(app, launch, program, args, size, &|| {})
@@ -1058,19 +1285,25 @@ fn prepare_launch(state: &AppState, launch: &Launch) -> Result<(PathBuf, Vec<Str
     let extensions = if cfg!(windows) { settings::detect::platform_extensions() } else { Vec::new() };
     launch::refuse_batch(&launch::pathext_target(&program, &extensions), cfg!(windows))?;
     let dir = state.launcher.dir().ok_or_else(|| "no folder for session settings files".to_string())?;
-    let branch = match state.read_live().statuses.get(&launch.project_id) {
-        Some(git::ProjectStatus::Repo(repo)) if !repo.detached => Some(repo.branch.clone()),
+    // The branch the session starts on (Story 5.3), else the one checked out in the project.
+    let branch = match (&launch.branch, state.read_live().statuses.get(&launch.project_id)) {
+        (Some(branch), _) => Some(branch.clone()),
+        (None, Some(git::ProjectStatus::Repo(repo))) if !repo.detached => Some(repo.branch.clone()),
         _ => None,
     };
     let context = launch::system_prompt(&launch.label, &launch.project_path, branch.as_deref(), &launch.name, &launch.session_id);
-    let mut args = leading;
-    args.extend(launch::build_args(
+    let mut built = launch::build_args(
         &launch.kind,
         &launch.request,
         &launch.session_id,
         &launch::settings_path(&dir, &launch.session_id),
         &context,
-    )?);
+    )?;
+    if let Some(name) = &launch.worktree_flag {
+        built = launch::with_worktree_flag(built, name);
+    }
+    let mut args = leading;
+    args.extend(built);
     Ok((program, args))
 }
 
@@ -1158,6 +1391,52 @@ fn run_launch<R: Runtime>(
         give_back();
         return Err(message);
     }
+    // Story 5.3, before the spawn: the branch's worktree folder is recorded (a worktree made
+    // outside the app maps too), then the session's branch, so the live row's cwd resolves to
+    // the project and branch and the node is drawn under its branch card from the start.
+    // A branch node this launch created goes again when the start fails; one stored before stays.
+    let mut created_node: Option<String> = None;
+    let undo_mapping = |created_node: &Option<String>| {
+        if launch.branch_id.is_some() {
+            graph::clear_session_branch(app, &launch.project_id, &session_id);
+        }
+        if let Some(name) = created_node {
+            graph::remove_branch_node(app, &launch.project_id, name);
+        }
+    };
+    let fail_before_spawn = |message: String, created_node: &Option<String>| {
+        forget();
+        state.launcher.remove_settings(&session_id);
+        if fork_of.is_some() {
+            graph::clear_forked_from(app, &launch.project_id, &session_id);
+        }
+        undo_mapping(created_node);
+        give_back();
+        Err(message)
+    };
+    if let Some((name, folder)) = &launch.worktree {
+        let (existed, known) = {
+            let ws = state.read_workspace();
+            let stored = ws.workspace.branches.iter().find(|b| b.project_id == launch.project_id && b.name == *name);
+            (
+                stored.is_some(),
+                stored.is_some_and(|b| b.worktree_path.as_deref().is_some_and(|w| graph::same_path(w, folder))),
+            )
+        };
+        if !known {
+            if let Err(err) = graph::upsert_created_branch(app, &launch.project_id, name, folder) {
+                return fail_before_spawn(format!("could not record the worktree of branch {name}: {err}"), &created_node);
+            }
+            if !existed {
+                created_node = Some(name.clone());
+            }
+        }
+    }
+    if let Some(branch_id) = &launch.branch_id
+        && let Err(message) = graph::set_session_branch(app, &session_id, &launch.project_id, branch_id)
+    {
+        return fail_before_spawn(message, &created_node);
+    }
     let mut spec = SpawnSpec::new(program, args, &launch.cwd);
     spec.env.push((launch::NODE_ENV.to_string(), session_id.clone()));
     if let Some(port) = port {
@@ -1191,6 +1470,7 @@ fn run_launch<R: Runtime>(
             if fork_of.is_some() {
                 graph::clear_forked_from(app, &launch.project_id, &session_id);
             }
+            undo_mapping(&created_node);
             give_back();
             return Err(message);
         }

@@ -111,7 +111,20 @@ describe("the launch sheet commands", () => {
     await expect(startLaunch()).resolves.toBe(true);
     await flush();
     expect(sent).toEqual({
-      request: { projectId: "ide", sessionId: "3f2a-id", name: "ide-3f2a", model: "opus", effort: "default", permissionMode: "default", addDirs: [], prompt: "hi", background: false },
+      request: {
+        projectId: "ide",
+        sessionId: "3f2a-id",
+        name: "ide-3f2a",
+        model: "opus",
+        effort: "default",
+        permissionMode: "default",
+        addDirs: [],
+        prompt: "hi",
+        background: false,
+        branch: null,
+        createWorktree: false,
+        worktreeName: null,
+      },
       cols: null,
       rows: null,
     });
@@ -175,6 +188,95 @@ describe("the launch sheet commands", () => {
     removeAddDir(1);
     expect(useLaunchStore.getState().form?.addDirs).toEqual(["/work/a"]);
     expect(useLaunchStore.getState().missingDirs).toEqual([]);
+  });
+
+  it("on a branch card the sheet targets Rust's folder, drops an add-dir equal to it and sends the branch", async () => {
+    const plan = { command: "git worktree add /p/ide/.worktrees/free free", path: "/p/ide/.worktrees/free", error: null };
+    let asked: Record<string, unknown> | null = null;
+    runtime({
+      launch_defaults: (args) => {
+        asked = args;
+        return { sessionId: "3f2a-id", name: "ide-3f2a", model: "default", effort: "default", permissionMode: "default", branch: "free", targetPath: plan.path, worktreePlan: plan, repoTop: null };
+      },
+    });
+    await expect(openLaunchSheet("ide", "free")).resolves.toBe(true);
+    expect(asked).toEqual({ projectId: "ide", branch: "free" });
+    expect(useLaunchStore.getState()).toMatchObject({ branch: "free", targetPath: plan.path, worktreePlan: plan, repoTop: null });
+    let sent: { request: LaunchRequest } | null = null;
+    const picks = [plan.path, "/p/ide"];
+    runtime({
+      project_pick_folder: () => picks.shift() ?? null,
+      session_launch: (args) => {
+        sent = args as { request: LaunchRequest };
+        return { session_id: "s1", term };
+      },
+      workspace_set_expanded: () => workspace(true),
+    });
+    await pickAddDir();
+    await pickAddDir();
+    // The worktree is the folder now; the project folder is an ordinary extra folder.
+    expect(useLaunchStore.getState().form?.addDirs).toEqual(["/p/ide"]);
+    await expect(startLaunch()).resolves.toBe(true);
+    expect(sent!.request).toMatchObject({ branch: "free", createWorktree: true, worktreeName: null, addDirs: ["/p/ide"] });
+
+    // A plan Rust refused blocks Start.
+    runtime({
+      launch_defaults: () => ({
+        sessionId: "4b5c-id",
+        name: "ide-4b5c",
+        model: "default",
+        effort: "default",
+        permissionMode: "default",
+        branch: "free",
+        targetPath: null,
+        worktreePlan: { command: null, path: null, error: "folder already exists: /p/ide/.worktrees/free" },
+        repoTop: null,
+      }),
+    });
+    await expect(openLaunchSheet("ide", "free")).resolves.toBe(true);
+    await expect(startLaunch()).resolves.toBe(false);
+
+    // The project's sheet keeps the project folder and gets the repo's top level.
+    runtime({ launch_defaults: () => ({ sessionId: "5c6d-id", name: "ide-5c6d", model: "default", effort: "default", permissionMode: "default", repoTop: "/p/ide" }) });
+    await expect(openLaunchSheet("ide")).resolves.toBe(true);
+    expect(useLaunchStore.getState()).toMatchObject({ branch: null, targetPath: "/p/ide", worktreePlan: null, repoTop: "/p/ide" });
+  });
+
+  it("a failed start whose worktree was made re-reads the branch: the new folder, no plan, the form and error kept", async () => {
+    const plan = { command: "git worktree add /p/ide/.worktrees/free free", path: "/p/ide/.worktrees/free", error: null };
+    runtime({
+      launch_defaults: () => ({ sessionId: "3f2a-id", name: "ide-3f2a", model: "default", effort: "default", permissionMode: "default", branch: "free", targetPath: plan.path, worktreePlan: plan, repoTop: null }),
+    });
+    await openLaunchSheet("ide", "free");
+    useLaunchStore.getState().edit({ prompt: "hi" });
+    const invoke = runtime({
+      session_launch: () => {
+        throw "could not start no-claude.exe";
+      },
+      launch_defaults: () => ({ sessionId: "4b5c-id", name: "ide-4b5c", model: "default", effort: "default", permissionMode: "default", branch: "free", targetPath: plan.path, worktreePlan: null, repoTop: null }),
+    });
+    await expect(startLaunch()).resolves.toBe(false);
+    expect(invoke).toHaveBeenCalledWith("launch_defaults", { projectId: "ide", branch: "free" }, undefined);
+    expect(useLaunchStore.getState()).toMatchObject({
+      branch: "free",
+      targetPath: plan.path,
+      worktreePlan: null,
+      sessionId: "4b5c-id",
+      error: "could not start no-claude.exe",
+      starting: false,
+    });
+    expect(useLaunchStore.getState().form).toMatchObject({ name: "ide-3f2a", prompt: "hi" });
+    // A retry no longer asks for a worktree, under the new id.
+    let sent: { request: LaunchRequest } | null = null;
+    runtime({
+      session_launch: (args) => {
+        sent = args as { request: LaunchRequest };
+        return { session_id: "4b5c-id", term };
+      },
+      workspace_set_expanded: () => workspace(true),
+    });
+    await expect(startLaunch()).resolves.toBe(true);
+    expect(sent!.request).toMatchObject({ sessionId: "4b5c-id", branch: "free", createWorktree: false });
   });
 
   it("a reply for a sheet that closed or reopened meanwhile touches only the sheet it was for", async () => {

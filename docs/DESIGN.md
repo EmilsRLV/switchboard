@@ -174,6 +174,14 @@ drag handle) follows every rule here.
   are a bordered list, one row per folder (mono `--text-xs` path with ellipsis and a Remove button), split by
   1-px `--border` lines; a missing folder's row adds `.pane-error` text. A field hint (blank name) is
   `--text-xs` `--fg-muted`, as is the reason beside a disabled Start; a refused start is `.pane-error` text under Start (`role="alert"`, like a row's error). No new motion.
+  On a branch card (Story 5.3) the same sheet: its muted subtitle reads `Starts claude on <branch> in
+  <folder>` (the folder mono, middle-elided, full path on hover). A branch without a worktree adds a
+  **Worktree** group under the subtitle, above the fields: the `Worktree` section heading, a muted line
+  `Creates a worktree for <branch>` and the worktree sheet's command preview block; a refused plan is
+  `.pane-error` text under it. The project's sheet of a git project adds, after the fields, the checkbox **Let
+  Claude make a worktree (`--worktree`)** in the background checkbox's look and, while it is on, a **Worktree
+  name** field (mono, like the worktree sheet's name) whose `--text-xs` `--fg-muted` hint states the branch and
+  folder Claude creates (or why the name is refused). Tokens only; no accent beyond `.pane-error`.
 - **The worktree sheet** ("New worktree…" on a git project or a branch card, Story 5.2) is a pane at the launch
   sheet's width with its field look (label, inputs and selects; the name in `--font-mono`): the title `New
   worktree`, a muted line, then the mode toggle: two ordinary buttons, **New branch** and **Existing branch**,
@@ -271,7 +279,12 @@ not an edge kind (Epic 6's edges are something else). Its anchors are invisible.
 
 ### The more row
 
-A column has two groups (Story 5.1): the sessions, then the branches; each is cut on its own. Past ten in a
+A column has two groups (Story 5.1): the sessions, then the branches; each is cut on its own. A session
+started on a branch (Story 5.3) whose branch card is drawn sits right under that card (after
+the sessions already there), one more `COLUMN_INDENT` (16 px) in, so the branch group reads branch, its
+sessions, the next branch; under a dragged branch card they follow it. The card itself is an ordinary session card. Such sessions count toward neither
+group's ten nor its N, and fall back to the
+session group when branches are off, the branch is gone or its card is cut by the limit. Past ten in a
 group, a row follows its tenth in the next column slot: `show all (N)` (N counts every child of that group),
 or `show fewer` while all show; the branch group starts in the slot after the session group's row. Mono `--text-xs` in `--fg-muted` (`--fg` on hover), no border and no surface,
 the slot's 208 × 40. It is selectable like a node (same outline), not draggable, and has no menu; a click or

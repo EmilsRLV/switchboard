@@ -87,7 +87,7 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | `ctrl+,` | Open (toggle) the settings pane. |
 | `ctrl+0` | Fit view: fit every node into the canvas; with no nodes, back to the home viewport (`x 0, y 0, zoom 1`). |
 | `ctrl+q` | Quit. |
-| `n` | New session…: with a project selected, open the launch sheet (see [Starting sessions](#starting-sessions)); on a session or branch it does nothing. Not while focus is in a text field or a select, nor while the context menu is open. |
+| `n` | New session…: with a project selected, open the launch sheet (see [Starting sessions](#starting-sessions)); with a branch card selected, the sheet aimed at that branch (see [Sessions on a branch](#sessions-on-a-branch)); on a session it does nothing. Not while focus is in a text field or a select, nor while the context menu is open. |
 | ``ctrl+` `` | Toggle terminal: hide the terminal pane, or show it again with the last terminal focused. Works with focus in the terminal too. |
 | `ctrl+shift+k` | The palette's second binding: the same toggle as `ctrl+k`, and the one that still works with focus in a terminal (where `ctrl+k` is the shell's). |
 | `ctrl+pageup` / `ctrl+pagedown` | Previous / next terminal tab, wrapping around (see [Tabs and pop-outs](#tabs-and-pop-outs)). Only while the terminal pane shows two tabs or more; works with focus in the terminal too. |
@@ -116,7 +116,7 @@ in file manager, Reveal Claude project dir, Re-layout children, Remove from canv
 project / Collapse project (neither for a project without children), Show all sessions (only for an
 expanded project with more than ten sessions) and, for a git repo, Show branches / Hide branches (see
 [Branches](#branches)); while a branch card is selected, Copy branch name and, for a branch with no worktree
-that is not checked out in the project's folder, New worktree…. The palette sorts by title. The key-only
+that is not checked out in the project's folder, New worktree…, and New session… (unless its worktree is `missing`). The palette sorts by title. The key-only
 carriers (the `ctrl+,` toggle, the palette's second binding `ctrl+shift+k`, the five Esc commands, the four
 arrows and Enter) are registered but hidden from
 the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron on a card runs
@@ -400,7 +400,7 @@ When a git call fails, or the folder is gone or no longer a git repository, the 
 
 Branch cards can be selected, reached with the arrow keys and dragged like session cards; a moved branch is
 written to `branches[]` as `{ id: "<projectId>:<name>", projectId, name, position }` (only then); Re-layout
-removes it again (unless it holds a worktree the app created), and so does a read that no longer lists the branch, unless an edge or a session points at it. Enter does nothing on a branch; its menu holds **Copy branch name** and, for a branch with no worktree chip that is not checked out in the project's folder, **New worktree…** (see [Worktrees](#worktrees)).
+removes it again (unless it has a stored worktree path: one the app created, or a worktree a session was started in), and so does a read that no longer lists the branch, unless an edge or a session points at it. Enter does nothing on a branch; its menu holds **Copy branch name**, for a branch with no worktree chip that is not checked out in the project's folder **New worktree…** (see [Worktrees](#worktrees)), and **New session…** (`n`; see [Sessions on a branch](#sessions-on-a-branch)). While branches are shown, a session started on a branch is drawn right under its branch card, one step further in.
 Checking out or deleting branches and removing worktrees come in later stories.
 
 ### Worktrees
@@ -456,8 +456,9 @@ Each project is `{ id (UUID v4), path (canonical), label, position, expanded, co
 showBranches }`;
 `sessions[]` holds `{ sessionId, projectId, branchId, label, pinned, position }` (a child's `position` is
 relative to its parent card and `null` in its slot), `branches[].position` likewise (a branch is written
-only once it is moved, or given a worktree from the sheet, which also sets its `worktreePath`; see
-[Branches](#branches) and [Worktrees](#worktrees)); `edges` is reserved
+only once it is moved, or given a worktree from the sheet, which also sets its `worktreePath`, or a session is
+started in its worktree; see [Branches](#branches), [Worktrees](#worktrees) and
+[Sessions on a branch](#sessions-on-a-branch)); a session started on a branch has its `branchId`; `edges` is reserved
 for Epic 6. A `sessions[]` entry whose session is no longer a child (a stub from a higher count, a
 hand-edited id) is kept verbatim and never pruned by this story; only Re-layout touches refs, and only
 those of the project it was run on. Rust owns the file: the UI never writes it, it mirrors Rust's snapshot (`workspace_get`, then
@@ -623,6 +624,47 @@ has **Kill** but no **Restart**: an exited session is resumed instead (see
 [Resume, fork, stop](#resume-fork-stop)). Once it has exited, **Close** (`terminal.close`) forgets the terminal
 and its output. **Show terminal** (the session card's menu, or the palette, with the session selected) opens
 the pane on it again. Quitting the app kills the session like any terminal.
+
+### Sessions on a branch
+
+`n` on a selected **branch card** (or **New session…** in its menu or the palette; disabled while its worktree
+chip reads `missing`) opens the same launch sheet aimed at that branch. Every field, default and key is as
+above; the subtitle reads `Starts claude on <branch> in <folder>`, and an add-dir equal to that folder is
+left out. Rust resolves the folder from its own latest branch list, never from a path the UI sends:
+
+| Branch | Where the session runs |
+|---|---|
+| Has a worktree chip | The worktree's folder (also one made in a terminal, not by the app). |
+| Checked out here (`*`) | The project folder. |
+| No worktree | A worktree Start creates first: the sheet shows a **Worktree** section, `Creates a worktree for <branch>`, with the exact command [Worktrees](#worktrees) would run, e.g. `git worktree add <repo>/.worktrees/feat feat`. |
+
+The one Start is the consent to both: it creates the worktree exactly as **New worktree…** does (branch card
+with its chip, branches on, list re-read) and then starts `claude` in it. If the worktree cannot be made (the
+folder exists, git refuses), the reason shows in the sheet and nothing starts; if it was made but the session
+fails to start, the worktree stays and the start's reason shows. A start races a changed list cleanly:
+`branch not found` or `worktree folder missing` in the sheet. The system prompt's branch is that branch.
+
+Before the spawn Rust records the branch's `worktreePath` in `branches[]` (so a worktree made outside the app
+maps too) and writes the session's `{ sessionId, projectId, branchId: "<projectId>:<branch>" }` to
+`sessions[]`. The live session's working folder then resolves to that project and branch, and while the
+project's branches are shown the session card is drawn **directly under its branch card**, one step further
+in, in the branch group. It counts toward neither group's ten and follows its branch card, dragged or not;
+it moves and selects like any session card, and the arrow keys follow the
+column as drawn. With branches off, once the branch is gone, or while its branch card is cut by the ten, the card is in the session group.
+
+**`claude --worktree`.** The project's own sheet (in a git project) offers **Let Claude make a worktree
+(`--worktree`)** with a **Worktree name**, prefilled from the session name (lower case, dashes) until you edit
+it. Claude then creates the new branch `worktree-<name>` from the repo's default branch in
+`<repo>/.claude/worktrees/<name>`; the field says so. `--worktree <name>` goes into the argv and `claude` runs
+from the repo's top level. The name must pass `git check-ref-format --branch worktree-<name>` (checked as you
+type, and again by Rust at Start). Rust stores `{ name: "worktree-<name>", worktreePath:
+"<repo>/.claude/worktrees/<name>" }` and the session's `branchId` before the spawn; the ref keeps that branch
+entry until git lists the branch, and the session's live folder then maps to it. A Claude configured to put its
+worktrees elsewhere lands in the Elsewhere tray for now. Not offered on a branch sheet: `--worktree` always
+makes its own branch.
+
+Until sessions follow worktrees (a later story), a session started in a worktree shows while it runs, but its
+transcript is not listed after a restart.
 
 ## Resume, fork, stop
 

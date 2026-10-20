@@ -2256,6 +2256,222 @@ mod tests {
         app.state::<super::AppState>().branch_watches.clear();
     }
 
+    /// Story 5.3: `n` on a branch card. A temp repo is the `ide` project with branches on; the
+    /// launcher runs the echo fixture (never `claude`), which prints its working folder and argv.
+    #[test]
+    fn a_session_on_a_branch_runs_in_its_folder_and_is_drawn_under_it() {
+        use super::claude::launch;
+        use serde_json::json;
+        let Some(git) = super::git::branches::tests::real_git() else {
+            eprintln!("git not on PATH; skipping");
+            return;
+        };
+        let (app, webview, _dir, _folder, _sessions) = launch_fixture();
+        let state = app.state::<super::AppState>();
+        *state.launcher.program.lock().unwrap() = Some(echo_program());
+        state.write().binaries.git.path = Some(git.display().to_string());
+        let repo = super::git::branches::tests::temp_repo(&git);
+        let top = dunce::canonicalize(repo.path()).unwrap();
+        let top_s = top.display().to_string();
+        state.write_workspace().workspace.projects[0].path = top_s.clone();
+        let git_ok = |args: &[&str]| super::git::branches::tests::git_ok(&git, repo.path(), args);
+        // A worktree made in a terminal, not by the app, and two free branches.
+        let outside = tempfile::tempdir().unwrap();
+        let feat_dir = dunce::canonicalize(outside.path()).unwrap().join("feat-wt");
+        git_ok(&["worktree", "add", "-q", "-b", "feat", &feat_dir.display().to_string(), "main"]);
+        git_ok(&["branch", "free"]);
+        git_ok(&["branch", "busy"]);
+        super::graph::set_show_branches(app.handle(), "ide", true).unwrap();
+        tauri::async_runtime::block_on(super::git::poll::refresh_branches(app.handle(), None));
+        tauri::async_runtime::block_on(super::git::poll::refresh_ids(app.handle(), &["ide".to_string()]));
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        let output = |id: &str| super::pty::tests::strip_escapes(&state.terms.buffer(id).unwrap().data);
+        // Open the sheet on `branch` (or the project), start it with `extra`, let the fixture
+        // print and exit; returns the reply and what it printed.
+        let start = |branch: Option<&str>, extra: serde_json::Value| -> Result<(serde_json::Value, serde_json::Value, String), serde_json::Value> {
+            let prefill = call("launch_defaults", json!({ "projectId": "ide", "branch": branch }))?;
+            let mut request = json!({ "projectId": "ide", "sessionId": prefill["sessionId"], "name": prefill["name"], "branch": branch });
+            for (k, v) in extra.as_object().unwrap() {
+                request[k] = v.clone();
+            }
+            let reply = call("session_launch", json!({ "request": request, "cols": 1000, "rows": 40 }))?;
+            let id = reply["session_id"].as_str().unwrap().to_string();
+            let term_id = format!("session:{id}");
+            state.terms.write(&term_id, b"go\r").unwrap();
+            wait_until(&app, &term_id, "the fixture's exit", || {
+                state.read_sessions_live().sessions[&id].state == super::claude::live::SessionState::Exited
+            });
+            Ok((prefill, reply, output(&term_id)))
+        };
+        let flat = |text: &str| text.replace(['\r', '\n'], "");
+
+        // A worktree branch (pre-existing): the sheet targets the worktree, the session runs in
+        // it, the branch gains its worktreePath and the session ref its branchId.
+        let (prefill, reply, text) = start(Some("feat"), json!({})).expect("feat");
+        let feat = feat_dir.display().to_string();
+        assert_eq!(prefill["branch"], "feat");
+        assert_eq!(prefill["targetPath"], feat.as_str());
+        assert_eq!(prefill["worktreePlan"], serde_json::Value::Null);
+        assert_eq!(reply["term"]["cwd"], feat.as_str());
+        assert!(text.contains(&feat), "runs in the worktree: {text}");
+        if !cfg!(windows) {
+            assert!(text.contains("Branch: feat"), "the system prompt names the branch: {text}");
+        }
+        let id = reply["session_id"].as_str().unwrap().to_string();
+        {
+            let ws = state.read_workspace();
+            let stored = ws.workspace.branches.iter().find(|b| b.name == "feat").expect("feat recorded");
+            assert_eq!(stored.worktree_path.as_deref(), Some(feat.as_str()));
+            let session_ref = ws.workspace.sessions.iter().find(|s| s.session_id == id).expect("a ref");
+            assert_eq!(session_ref.branch_id.as_deref(), Some("ide:feat"));
+            let child = ws.children().into_iter().find(|c| c.id == id).expect("the session card");
+            assert_eq!(child.branch_id.as_deref(), Some("ide:feat"), "drawn under feat");
+        }
+        assert_eq!(super::graph::project_for_cwd(&state.read_workspace().workspace, &feat).as_deref(), Some("ide"), "the live cwd maps to the project");
+
+        // The checked-out branch: the project folder, under `main`.
+        let (prefill, reply, _) = start(Some("main"), json!({})).expect("main");
+        assert_eq!(prefill["targetPath"], top_s.as_str());
+        assert_eq!(reply["term"]["cwd"], top_s.as_str());
+        let id = reply["session_id"].as_str().unwrap().to_string();
+        let child = state.read_workspace().children().into_iter().find(|c| c.id == id).unwrap();
+        assert_eq!(child.branch_id.as_deref(), Some("ide:main"));
+
+        // Refusals: nothing starts.
+        let terms = state.terms.list().len();
+        assert_eq!(call("launch_defaults", json!({ "projectId": "ide", "branch": "nope" })), Err(json!(launch::BRANCH_NOT_FOUND)));
+        let prefill = call("launch_defaults", json!({ "projectId": "ide", "branch": "free" })).unwrap();
+        let free_dir = top.join(".worktrees").join("free");
+        assert_eq!(prefill["worktreePlan"]["command"], format!("git worktree add {} free", free_dir.display()));
+        assert_eq!(prefill["targetPath"], free_dir.display().to_string());
+        let base = json!({ "projectId": "ide", "sessionId": prefill["sessionId"], "name": prefill["name"] });
+        let with = |extra: serde_json::Value| {
+            let mut r = base.clone();
+            for (k, v) in extra.as_object().unwrap() {
+                r[k] = v.clone();
+            }
+            json!({ "request": r })
+        };
+        assert_eq!(call("session_launch", with(json!({ "branch": "free" }))), Err(json!(launch::NO_WORKTREE)));
+        assert_eq!(call("session_launch", with(json!({ "branch": "gone-branch" }))), Err(json!(launch::BRANCH_NOT_FOUND)));
+        assert_eq!(
+            call("session_launch", with(json!({ "branch": "main", "worktreeName": "x" }))),
+            Err(json!(launch::WORKTREE_FLAG_ON_BRANCH))
+        );
+        // The add refused (its folder is taken): nothing starts, the id is given back.
+        std::fs::create_dir_all(&free_dir).unwrap();
+        let err = call("session_launch", with(json!({ "branch": "free", "createWorktree": true }))).expect_err("folder taken");
+        assert!(err.as_str().unwrap().starts_with(super::git::worktree::FOLDER_EXISTS), "{err}");
+        std::fs::remove_dir(&free_dir).unwrap();
+        assert_eq!(state.terms.list().len(), terms, "nothing started");
+        assert!(!state.read_workspace().workspace.branches.iter().any(|b| b.name == "free"));
+
+        // Create worktree here, and the start then fails: the worktree stays with its chip and
+        // its stored path, no session ref is left, and the same id can be retried.
+        let no_claude = (_folder.path().join("no-claude.exe"), Vec::new());
+        *state.launcher.program.lock().unwrap() = Some(no_claude.clone());
+        call("session_launch", with(json!({ "branch": "free", "createWorktree": true }))).expect_err("the start fails");
+        let free = free_dir.display().to_string();
+        assert!(free_dir.join("a.txt").is_file(), "the worktree stays");
+        {
+            let ws = state.read_workspace();
+            let card = ws.children().into_iter().find(|c| c.id == "ide:free").expect("the branch card");
+            assert_eq!(card.branch.unwrap().worktree.unwrap().path, free, "the card has its chip");
+            let stored = ws.workspace.branches.iter().find(|b| b.name == "free").expect("free recorded");
+            assert_eq!(stored.worktree_path.as_deref(), Some(free.as_str()));
+            assert!(!ws.workspace.sessions.iter().any(|s| s.session_id == prefill["sessionId"]), "no ref");
+        }
+        *state.launcher.program.lock().unwrap() = Some(echo_program());
+
+        // The retry (same id): the worktree is there now, so it simply starts in it.
+        let mut created = with(json!({ "branch": "free", "createWorktree": true }));
+        created["cols"] = json!(1000);
+        let reply = call("session_launch", created).expect("created and started");
+        assert_eq!(reply["session_id"], prefill["sessionId"], "the same id");
+        assert_eq!(reply["term"]["cwd"], free.as_str());
+        assert!(free_dir.join("a.txt").is_file(), "checked out");
+        let id = reply["session_id"].as_str().unwrap().to_string();
+        let term_id = format!("session:{id}");
+        state.terms.write(&term_id, b"go\r").unwrap();
+        wait_until(&app, &term_id, "the created worktree's session", || output(&term_id).contains(&free));
+        {
+            let ws = state.read_workspace();
+            let card = ws.children().into_iter().find(|c| c.id == "ide:free").expect("the branch card");
+            assert_eq!(card.branch.unwrap().worktree.unwrap().path, free, "the card has its chip");
+            assert_eq!(ws.children().into_iter().find(|c| c.id == id).unwrap().branch_id.as_deref(), Some("ide:free"));
+        }
+
+        // A missing worktree folder (raced: the card still had its chip).
+        let gone = top.join(".worktrees").join("busy");
+        git_ok(&["worktree", "add", "-q", &gone.display().to_string(), "busy"]);
+        tauri::async_runtime::block_on(super::git::poll::refresh_branches(app.handle(), None));
+        let prefill = call("launch_defaults", json!({ "projectId": "ide", "branch": "busy" })).unwrap();
+        std::fs::remove_dir_all(&gone).unwrap();
+        let request = json!({ "projectId": "ide", "sessionId": prefill["sessionId"], "name": prefill["name"], "branch": "busy" });
+        assert_eq!(call("session_launch", json!({ "request": request })), Err(json!(launch::WORKTREE_MISSING)));
+        tauri::async_runtime::block_on(super::git::poll::refresh_branches(app.handle(), None));
+        assert_eq!(call("launch_defaults", json!({ "projectId": "ide", "branch": "busy" })), Err(json!(launch::WORKTREE_MISSING)));
+
+        // `--worktree` from the project's sheet: the repo's top level, `--worktree spike` in the
+        // argv, `worktree-spike` recorded with Claude's folder, the session ref pointing at it.
+        let (prefill, reply, text) = start(None, json!({ "worktreeName": "spike" })).expect("--worktree");
+        assert_eq!(prefill["repoTop"], top_s.as_str());
+        assert_eq!(prefill["targetPath"], top_s.as_str());
+        assert_eq!(reply["term"]["cwd"], top_s.as_str());
+        assert!(flat(&text).contains("--worktree spike --settings") || text.contains("[--worktree]\r\n[spike]\r\n[--settings]"), "{text}");
+        let id = reply["session_id"].as_str().unwrap().to_string();
+        {
+            let ws = state.read_workspace();
+            let stored = ws.workspace.branches.iter().find(|b| b.name == "worktree-spike").expect("recorded");
+            let claude_dir = top.join(".claude").join("worktrees").join("spike").display().to_string();
+            assert_eq!(stored.worktree_path.as_deref(), Some(claude_dir.as_str()));
+            let session_ref = ws.workspace.sessions.iter().find(|s| s.session_id == id).unwrap();
+            assert_eq!(session_ref.branch_id.as_deref(), Some("ide:worktree-spike"));
+            assert_eq!(super::graph::project_for_cwd(&ws.workspace, &claude_dir).as_deref(), Some("ide"));
+        }
+        // Git does not list the branch (the fixture made none): the ref keeps the node.
+        tauri::async_runtime::block_on(super::git::poll::refresh_branches(app.handle(), None));
+        assert!(state.read_workspace().workspace.branches.iter().any(|b| b.name == "worktree-spike"));
+        // A bad name: refused before anything starts.
+        let prefill = call("launch_defaults", json!({ "projectId": "ide" })).unwrap();
+        let request = json!({ "projectId": "ide", "sessionId": prefill["sessionId"], "name": prefill["name"], "worktreeName": "a..b" });
+        let err = call("session_launch", json!({ "request": request })).expect_err("bad name");
+        assert!(err.as_str().unwrap().contains("a..b"), "{err}");
+        let request = json!({ "projectId": "ide", "sessionId": prefill["sessionId"], "name": prefill["name"], "worktreeName": "-x" });
+        assert!(call("session_launch", json!({ "request": request })).is_err());
+
+        // A start that fails after the mapping (on `main`, and with `--worktree`) leaves no
+        // session ref and no new branch node, and the same id can be retried.
+        for extra in [json!({ "branch": "main" }), json!({ "worktreeName": "spike2" })] {
+            let prefill = call("launch_defaults", json!({ "projectId": "ide" })).unwrap();
+            let id = prefill["sessionId"].as_str().unwrap().to_string();
+            let mut request = json!({ "projectId": "ide", "sessionId": id, "name": prefill["name"] });
+            for (k, v) in extra.as_object().unwrap() {
+                request[k] = v.clone();
+            }
+            let branches_before = state.read_workspace().workspace.branches.clone();
+            *state.launcher.program.lock().unwrap() = Some(no_claude.clone());
+            call("session_launch", json!({ "request": request })).expect_err("the spawn fails");
+            {
+                let ws = state.read_workspace();
+                assert!(!ws.workspace.sessions.iter().any(|s| s.session_id == id), "no ref: {extra}");
+                assert_eq!(ws.workspace.branches, branches_before, "no new branch node: {extra}");
+            }
+            *state.launcher.program.lock().unwrap() = Some(echo_program());
+            let reply = call("session_launch", json!({ "request": request, "cols": 1000, "rows": 40 })).expect("the retry starts");
+            assert_eq!(reply["session_id"], id.as_str());
+            let term_id = format!("session:{id}");
+            state.terms.write(&term_id, b"go\r").unwrap();
+            wait_until(&app, &term_id, "the retried session's exit", || {
+                state.read_sessions_live().sessions[&id].state == super::claude::live::SessionState::Exited
+            });
+        }
+        assert!(state.read_workspace().workspace.branches.iter().any(|b| b.name == "worktree-spike2"), "kept once started");
+        state.branch_watches.clear();
+    }
+
     #[test]
     fn a_failing_branch_read_keeps_the_last_list_and_reports_the_cause() {
         let Some(git) = super::git::branches::tests::real_git() else {

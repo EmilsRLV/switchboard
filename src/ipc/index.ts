@@ -443,7 +443,16 @@ export type LaunchRequest = {
   /** The first prompt; `null` (or blank) for none. */
   prompt: string | null;
   background: boolean;
+  /** Story 5.3: the branch card the sheet was opened on; Rust resolves its folder. `null` on the project's sheet. */
+  branch: string | null;
+  /** A branch without a worktree: the Start creates it first (Story 5.2's plan), then starts in it. */
+  createWorktree: boolean;
+  /** The project's sheet only: `claude --worktree <name>` from the repo's top level; `null` for none. */
+  worktreeName: string | null;
 };
+
+/** Mirrors `launch::WorktreePlanPreview`: the `git worktree add` a branch sheet's Start runs first, or why it would not. */
+export type WorktreePlanPreview = { command: string | null; path: string | null; error: string | null };
 
 /** Mirrors `launch::LaunchPrefill`: the sheet's prefill for a project. */
 export type LaunchPrefill = {
@@ -455,6 +464,14 @@ export type LaunchPrefill = {
   model: string;
   effort: string;
   permissionMode: string;
+  /** Story 5.3: the branch the sheet starts on; `null` (or absent) on the project's sheet. */
+  branch?: string | null;
+  /** The folder the session would run in, as Rust resolved it; `null` while a worktree plan is refused. */
+  targetPath?: string | null;
+  /** A branch without a worktree: the command its Start runs first. */
+  worktreePlan?: WorktreePlanPreview | null;
+  /** The project's sheet of a git project: its top level (`--worktree` runs there); `null` otherwise. */
+  repoTop?: string | null;
 };
 
 /** Mirrors `ipc::LaunchChoices`: the model, effort and permission mode a launch used (`default`: no flag). */
@@ -806,9 +823,12 @@ export function termList(): Promise<TermInfo[]> {
 /**
  * `ipc::launch_defaults` -- the launch sheet's prefill for a project (its last choices, else
  * `settings.defaults`, else `default`) and the default name of the session it would start.
+ * With `branch` (Story 5.3, `n` on a branch card) Rust also resolves where the session runs:
+ * the branch's worktree, the project folder for the checked-out branch, or the worktree a Start
+ * would create (`worktreePlan`). Rejects with `branch not found` / `worktree folder missing`.
  */
-export function launchDefaults(projectId: string): Promise<LaunchPrefill> {
-  return call("launch_defaults", { projectId });
+export function launchDefaults(projectId: string, branch: string | null = null): Promise<LaunchPrefill> {
+  return branch === null ? call("launch_defaults", { projectId }) : call("launch_defaults", { projectId, branch });
 }
 
 /**
