@@ -33,6 +33,8 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::project_set_show_branches,
             ipc::worktree_preview,
             ipc::worktree_add,
+            ipc::worktree_remove_preview,
+            ipc::worktree_remove,
             ipc::workspace_move_node,
             ipc::workspace_relayout_children,
             ipc::claude_projects_list,
@@ -2253,6 +2255,215 @@ mod tests {
         assert!(err.as_str().unwrap().contains("already checked out"), "{err}");
         let unknown = serde_json::json!({ "projectId": "nope", "request": request });
         assert_eq!(invoke_with(&webview, "worktree_preview", InvokeBody::Json(unknown)).unwrap_err(), serde_json::json!("unknown project"));
+        app.state::<super::AppState>().branch_watches.clear();
+    }
+
+    /// Story 5.4: sessions in worktrees (the app's and Claude's own) are discovered under their
+    /// branch, keep their place after the worktree is removed and after a restart; the remove
+    /// sheet's checks and commands; force; "Also delete branch". Temp repo, temp Claude home.
+    #[test]
+    fn sessions_follow_worktrees_and_remove_worktree_runs_from_the_sheet() {
+        use serde_json::json;
+        let Some(git) = super::git::branches::tests::real_git() else {
+            eprintln!("git not on PATH; skipping");
+            return;
+        };
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let cfg = tempfile::tempdir().unwrap();
+        let ws_path = cfg.path().join("workspace.json");
+        super::graph::initialise_at(app.handle(), Some(ws_path.clone()));
+        let state = app.state::<super::AppState>();
+        state.write().binaries.git.path = Some(git.display().to_string());
+        let home = tempfile::tempdir().unwrap();
+        state.claude_home.set(home.path().to_path_buf()).unwrap();
+        let repo = super::git::branches::tests::temp_repo(&git);
+        let top = dunce::canonicalize(repo.path()).unwrap();
+        let git_ok = |args: &[&str]| super::git::branches::tests::git_ok(&git, repo.path(), args);
+        let added = super::graph::add_projects(app.handle(), &[top.display().to_string()], Default::default()).unwrap();
+        let id = added.added[0].clone();
+        // Worktrees made outside the app: one in `.worktrees/`, one where `claude --worktree` puts it.
+        let feat = top.join(".worktrees").join("feat");
+        let keep = top.join(".worktrees").join("keep");
+        let claude_wt = top.join(".claude").join("worktrees").join("x");
+        git_ok(&["worktree", "add", "-q", "-b", "feat", &feat.display().to_string(), "main"]);
+        git_ok(&["worktree", "add", "-q", "-b", "keep", &keep.display().to_string(), "main"]);
+        git_ok(&["worktree", "add", "-q", "-b", "worktree-x", &claude_wt.display().to_string(), "main"]);
+        let plant = |dir: &str, session: &str, cwd: &std::path::Path| {
+            let folder = home.path().join("projects").join(dir);
+            std::fs::create_dir_all(&folder).unwrap();
+            let line = json!({ "type": "user", "cwd": cwd.display().to_string(), "timestamp": "2026-10-16T10:00:00.000Z", "message": { "content": format!("prompt {session}") } });
+            std::fs::write(folder.join(format!("{session}.jsonl")), format!("{line}\n")).unwrap();
+        };
+        plant("feat", "s-feat-1", &feat);
+        plant("feat", "s-feat-2", &feat);
+        plant("keep", "s-keep-1", &keep);
+        plant("keep", "s-keep-2", &keep);
+        plant("claude", "s-x", &claude_wt);
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        let pass = || {
+            tauri::async_runtime::block_on(super::git::poll::refresh_ids(app.handle(), std::slice::from_ref(&id)));
+            tauri::async_runtime::block_on(super::claude::sessions::refresh(app.handle()));
+        };
+        let branch_of = |session: &str| {
+            let ws = state.read_workspace();
+            let child = ws.children().into_iter().find(|c| c.id == session);
+            child.map(|c| (c.project_id, c.branch_id))
+        };
+        let under = |name: &str| Some((id.clone(), Some(format!("{id}:{name}"))));
+
+        // The full status pass stores the repo's linked worktrees for the project.
+        tauri::async_runtime::block_on(super::git::poll::refresh(app.handle()));
+        {
+            let ws = state.read_workspace();
+            let known = ws.worktrees.get(&id).expect("listed by the status pass");
+            assert!(known.iter().any(|w| w.path == feat.display().to_string() && w.branch.as_deref() == Some("feat")), "{known:?}");
+        }
+        // Branches off: the status poll alone knows the worktrees; each session sits under its
+        // branch (the canvas shows them in the session group while branches are off).
+        pass();
+        assert_eq!(branch_of("s-feat-1"), under("feat"));
+        assert_eq!(branch_of("s-feat-2"), under("feat"));
+        assert_eq!(branch_of("s-x"), under("worktree-x"), "Claude's own worktree");
+        // The production live path: a row in a worktree only git lists is the project's.
+        let rows = super::claude::live::parse_rows(
+            &json!([{ "sessionId": "live-x", "cwd": claude_wt.display().to_string(), "status": "busy", "name": "x" }]).to_string(),
+        );
+        let live = super::claude::live::apply_and_emit(app.handle(), rows);
+        assert_eq!(live.sessions["live-x"].project_id.as_deref(), Some(id.as_str()));
+        assert!(live.elsewhere.is_empty(), "not Elsewhere");
+        state.write_sessions_live().sessions.remove("live-x");
+        super::graph::set_show_branches(app.handle(), &id, true).unwrap();
+        tauri::async_runtime::block_on(super::git::poll::refresh_branches(app.handle(), None));
+
+        // The sheet's preview: clean, the exact commands.
+        let feat_s = feat.display().to_string();
+        let preview = call("worktree_remove_preview", json!({ "projectId": id, "branch": "feat" })).expect("worktree_remove_preview is registered");
+        assert_eq!(preview["path"], feat_s.as_str());
+        assert_eq!(preview["dirty"], 0);
+        assert_eq!(preview["command"], format!("git worktree remove {feat_s}"));
+        assert_eq!(preview["forceCommand"], serde_json::Value::Null);
+        assert_eq!(preview["deleteCommand"], "git branch -d feat");
+        assert_eq!(preview["refusal"], serde_json::Value::Null);
+        assert_eq!(call("worktree_remove_preview", json!({ "projectId": id, "branch": "main" })), Err(json!(super::git::worktree::NO_WORKTREE)));
+        assert_eq!(call("worktree_remove_preview", json!({ "projectId": "nope", "branch": "feat" })), Err(json!("unknown project")));
+
+        // A live session in it: refused, named.
+        state.write_sessions_live().launched("live-1", Some(id.clone()), &feat.join("src").display().to_string(), "spike", 1);
+        let preview = call("worktree_remove_preview", json!({ "projectId": id, "branch": "feat" })).unwrap();
+        assert_eq!(preview["refusal"], "a session is running in this worktree: spike");
+        assert_eq!(call("worktree_remove", json!({ "projectId": id, "branch": "feat", "force": true })), Err(json!("a session is running in this worktree: spike")));
+        state.write_sessions_live().sessions.remove("live-1");
+
+        // Dirty: the count, Remove refused, the force command.
+        std::fs::write(feat.join("new.txt"), "x").unwrap();
+        let preview = call("worktree_remove_preview", json!({ "projectId": id, "branch": "feat" })).unwrap();
+        assert_eq!(preview["dirty"], 1);
+        assert_eq!(preview["forceCommand"], format!("git worktree remove --force {feat_s}"));
+        assert_eq!(call("worktree_remove", json!({ "projectId": id, "branch": "feat", "force": false })), Err(json!(super::git::worktree::dirty_line(1))));
+        // A force confirmed for another count than the one there now: refused, nothing runs.
+        assert_eq!(
+            call("worktree_remove", json!({ "projectId": id, "branch": "feat", "force": true, "dirty": 2 })),
+            Err(json!(super::git::worktree::dirty_line(1)))
+        );
+        assert_eq!(call("worktree_remove", json!({ "projectId": id, "branch": "feat", "force": true })), Err(json!(super::git::worktree::dirty_line(1))));
+        assert!(feat.join("new.txt").is_file(), "nothing ran");
+
+        // Force and "Also delete branch" (merged): the worktree and the branch go; the stored
+        // node keeps the path, so the sessions stay discovered, now in the session group.
+        let reply = call("worktree_remove", json!({ "projectId": id, "branch": "feat", "force": true, "dirty": 1, "deleteBranch": true })).expect("removed");
+        assert_eq!(reply["branchDeleted"], true);
+        assert_eq!(reply["deleteError"], serde_json::Value::Null);
+        assert!(!feat.exists());
+        let children = reply["snapshot"]["children"].as_array().unwrap();
+        assert!(!children.iter().any(|c| c["id"] == format!("{id}:feat")), "the card went with the branch");
+        let stored = reply["snapshot"]["workspace"]["branches"].as_array().unwrap();
+        assert!(stored.iter().any(|b| b["name"] == "feat" && b["worktreePath"] == feat_s.as_str()), "{stored:?}");
+        pass();
+        assert_eq!(branch_of("s-feat-1"), under("feat"), "no card: the canvas puts it in the session group");
+
+        // An app terminal started in the worktree: refused, named; nothing runs.
+        let keep_s = keep.display().to_string();
+        let shell = if cfg!(windows) { ("cmd.exe", vec!["/d".to_string()]) } else { ("/bin/sh", Vec::new()) };
+        let (shell_bin, shell_args) = shell.clone();
+        let spec_cwd = keep_s.clone();
+        let info = state.terms.open(
+            "plain-wt",
+            &id,
+            "wt-shell",
+            &keep_s,
+            (80, 24),
+            move || Ok(super::pty::SpawnSpec::new(shell_bin, shell_args, spec_cwd)),
+            std::sync::Arc::new(super::pty::EventSink(app.handle().clone())),
+        );
+        assert_eq!(info.exited, None, "{info:?}");
+        let preview = call("worktree_remove_preview", json!({ "projectId": id, "branch": "keep" })).unwrap();
+        assert_eq!(preview["refusal"], "a session is running in this worktree: wt-shell");
+        assert_eq!(call("worktree_remove", json!({ "projectId": id, "branch": "keep", "force": false })), Err(json!("a session is running in this worktree: wt-shell")));
+        state.terms.kill("plain-wt").unwrap();
+        let started = std::time::Instant::now();
+        while state.terms.list().iter().any(|t| t.id == "plain-wt" && t.exited.is_none()) {
+            assert!(started.elapsed() < std::time::Duration::from_secs(10), "the shell did not exit");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(keep.is_dir());
+
+        // git fails the remove: its message is the error and nothing is stored.
+        let real_git = git.display().to_string();
+        let failing = super::process::fixtures::script(
+            cfg.path(),
+            "failing-git",
+            &format!("@if not \"%~1\"==\"worktree\" goto run
+@if \"%~2\"==\"remove\" (echo fatal: simulated failure 1>&2 & exit /b 1)
+:run
+@\"{real_git}\" %*
+"),
+            &format!("if [ \"$1 $2\" = \"worktree remove\" ]; then echo 'fatal: simulated failure' >&2; exit 1; fi
+exec '{real_git}' \"$@\"
+"),
+        );
+        state.write().binaries.git.path = Some(failing.display().to_string());
+        let stored_before = state.read_workspace().workspace.branches.clone();
+        assert_eq!(call("worktree_remove", json!({ "projectId": id, "branch": "keep", "force": false })), Err(json!("fatal: simulated failure")));
+        assert_eq!(state.read_workspace().workspace.branches, stored_before, "no history path for a failed remove");
+        assert!(keep.is_dir());
+        state.write().binaries.git.path = Some(real_git.clone());
+
+        // Clean remove, branch kept: the card stays without its chip; a branch -d refusal shows.
+        std::fs::write(keep.join("b.txt"), "b").unwrap();
+        super::git::branches::tests::git_ok(&git, &keep, &["add", "b.txt"]);
+        super::git::branches::tests::git_ok(&git, &keep, &["commit", "-q", "-m", "unmerged"]);
+        let reply = call("worktree_remove", json!({ "projectId": id, "branch": "keep", "force": false, "deleteBranch": true })).expect("removed");
+        assert_eq!(reply["branchDeleted"], false);
+        assert!(reply["deleteError"].as_str().unwrap().contains("not fully merged"), "{reply}");
+        assert!(!keep.exists(), "the worktree stays removed");
+        let card = reply["snapshot"]["children"].as_array().unwrap().iter().find(|c| c["id"] == format!("{id}:keep")).cloned().expect("the card stays");
+        assert_eq!(card["branch"]["worktree"], serde_json::Value::Null, "chip gone");
+        pass();
+        assert_eq!(branch_of("s-keep-1"), under("keep"));
+        assert_eq!(branch_of("s-keep-2"), under("keep"));
+
+        // After a restart: the stored paths still place both sessions; the removed worktree
+        // is not a known worktree any more.
+        super::graph::initialise_at(app.handle(), Some(ws_path.clone()));
+        pass();
+        assert_eq!(branch_of("s-keep-1"), under("keep"));
+        assert_eq!(branch_of("s-feat-2"), under("feat"));
+        assert_eq!(branch_of("s-x"), under("worktree-x"));
+        let known = state.read_workspace().worktrees.get(&id).cloned().unwrap_or_default();
+        assert!(!known.iter().any(|w| w.path == keep_s), "{known:?}");
+
+        // A missing folder: `git worktree remove <path>` clears that record.
+        std::fs::remove_dir_all(&claude_wt).unwrap();
+        let preview = call("worktree_remove_preview", json!({ "projectId": id, "branch": "worktree-x" })).unwrap();
+        assert_eq!(preview["missing"], true);
+        assert_eq!(preview["command"], format!("git worktree remove {}", preview["path"].as_str().unwrap()));
+        call("worktree_remove", json!({ "projectId": id, "branch": "worktree-x", "force": false })).expect("cleared");
+        assert!(!git_ok(&["worktree", "list", "--porcelain"]).contains("worktrees/x"));
         app.state::<super::AppState>().branch_watches.clear();
     }
 

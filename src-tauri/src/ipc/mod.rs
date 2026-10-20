@@ -286,6 +286,101 @@ async fn add_worktree<R: Runtime>(
     Ok((added, worktree))
 }
 
+/// `(cwd, name)` of what may hold a worktree open (Story 5.4): every live session the poll or the
+/// app knows (its name, else its id) and the folder each app terminal still running started in
+/// (its title). A terminal that later changed folder, or another program, is not seen.
+fn running_cwds(state: &AppState) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = state
+        .read_sessions_live()
+        .sessions
+        .iter()
+        .filter(|(_, s)| s.state.is_live())
+        .map(|(id, s)| (s.cwd.clone(), s.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| id.clone())))
+        .collect();
+    out.extend(state.terms.list().into_iter().filter(|t| t.exited.is_none()).map(|t| (t.cwd, t.title)));
+    out
+}
+
+/// The "Remove worktree" sheet's checks (Story 5.4), read-only: the worktree of `branch` that
+/// git lists for the project, whether it is missing, locked, dirty (the count from `git status`
+/// inside it) or held by a live session or a running terminal, and the exact commands Remove,
+/// the force confirm and "Also delete branch" run ([`git::worktree::remove_check`]). `Err` for an
+/// unknown project, a folder that is not a repository, or a branch without a linked worktree.
+#[tauri::command]
+pub async fn worktree_remove_preview<R: Runtime>(app: AppHandle<R>, project_id: String, branch: String) -> Result<git::worktree::RemoveCheck, String> {
+    let state = app.state::<AppState>();
+    let path = project_path(&state, &project_id)?;
+    let git_bin = git::poll::git_binary(&state.read());
+    let running = running_cwds(&state);
+    blocking(move || git::worktree::remove_check(&git_bin, Path::new(&path), &branch, &running)).await?
+}
+
+/// What `worktree_remove` replies: the snapshot once the branches and status were re-read, and
+/// how "Also delete branch" went (`deleteError` is git's refusal; the worktree stays removed).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeRemoved {
+    pub snapshot: WorkspaceSnapshot,
+    pub branch_deleted: bool,
+    pub delete_error: Option<String>,
+}
+
+/// Remove `branch`'s worktree on the sheet's explicit click (Story 5.4): under the project's
+/// branch lock, the checks run again (a refusal -- locked, a live session -- is the `Err` and
+/// nothing runs; so is a dirty worktree unless `force` comes with `dirty`, the count the second
+/// confirm stated, and that is still the count); then `git worktree remove [--force] <path>` (a
+/// missing folder too) runs from the project folder with a 30 s timeout (git's first stderr line
+/// is the `Err`). Only once it succeeded is the worktree's path stored on its
+/// [`graph::BranchNode`], so its past sessions keep their place. With `deleteBranch`,
+/// `git branch -d <branch>` follows (never `-D`). The branches and status are re-read before
+/// the reply.
+#[tauri::command]
+pub async fn worktree_remove<R: Runtime>(
+    app: AppHandle<R>,
+    project_id: String,
+    branch: String,
+    force: bool,
+    dirty: Option<u32>,
+    delete_branch: Option<bool>,
+) -> Result<WorktreeRemoved, String> {
+    let state = app.state::<AppState>();
+    let path = project_path(&state, &project_id)?;
+    let git_bin = git::poll::git_binary(&state.read());
+    let delete = delete_branch.unwrap_or(false);
+    let delete_error = {
+        let lock = state.branch_locks.of(&project_id);
+        let _project = lock.lock().await;
+        let running = running_cwds(&state);
+        let (check_git, check_path, check_branch) = (git_bin.clone(), path.clone(), branch.clone());
+        let check = blocking(move || git::worktree::remove_check(&check_git, Path::new(&check_path), &check_branch, &running)).await??;
+        if let Some(refusal) = &check.refusal {
+            return Err(refusal.clone());
+        }
+        let confirmed = if force { dirty } else { None };
+        let removed_path = check.path.clone();
+        let (run_git, run_path) = (git_bin.clone(), path.clone());
+        blocking(move || git::worktree::run_remove(&run_git, Path::new(&run_path), &check, confirmed, git::worktree::REMOVE_TIMEOUT)).await??;
+        // Removed: the path stays on the branch node as history, so the sessions stay listed
+        // under it. The worktree is gone whatever this bookkeeping does.
+        if let Err(err) = graph::upsert_created_branch(&app, &project_id, &branch, &removed_path) {
+            eprintln!("worktree: removed {removed_path} but could not record it on branch {branch}: {err}");
+        }
+        if delete {
+            let (run_git, run_path, run_branch) = (git_bin.clone(), path.clone(), branch.clone());
+            blocking(move || git::worktree::delete_branch(&run_git, Path::new(&run_path), &run_branch).err()).await?
+        } else {
+            None
+        }
+    };
+    git::poll::refresh_branches(&app, Some(std::slice::from_ref(&project_id))).await;
+    git::poll::refresh_ids(&app, std::slice::from_ref(&project_id)).await;
+    Ok(WorktreeRemoved {
+        snapshot: state.read_workspace().snapshot(),
+        branch_deleted: delete && delete_error.is_none(),
+        delete_error,
+    })
+}
+
 /// Store where a node was dropped (end of a drag). A project's position is absolute, a
 /// child's relative to its parent card. Replies with the snapshot, or an `Err` for a
 /// non-finite position or an unknown node.

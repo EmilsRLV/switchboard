@@ -66,6 +66,10 @@ pub struct WorktreeEntry {
     pub bare: bool,
     pub detached: bool,
     pub prunable: bool,
+    /// `git worktree lock`ed (Story 5.4: the remove sheet refuses it).
+    pub locked: bool,
+    /// The reason given to `git worktree lock --reason`, when one was.
+    pub lock_reason: Option<String>,
 }
 
 /// Parse the branch listing (fields split by NUL, one branch per line). Tolerant: a line with
@@ -113,7 +117,7 @@ fn parse_track(track: &str) -> (u32, u32, bool) {
 }
 
 /// Parse `git worktree list --porcelain`: records separated by blank lines, the first being
-/// the main worktree. Unknown lines (`locked`, `HEAD <oid>`, …) are skipped.
+/// the main worktree. Unknown lines (`HEAD <oid>`, …) are skipped.
 pub fn parse_worktrees(porcelain: &str) -> Vec<WorktreeEntry> {
     let mut out = Vec::new();
     let mut current: Option<WorktreeEntry> = None;
@@ -138,6 +142,10 @@ pub fn parse_worktrees(porcelain: &str) -> Vec<WorktreeEntry> {
             "bare" => entry.bare = true,
             "detached" => entry.detached = true,
             "prunable" => entry.prunable = true,
+            "locked" => {
+                entry.locked = true;
+                entry.lock_reason = Some(value.trim()).filter(|r| !r.is_empty()).map(str::to_string);
+            }
             _ => {}
         }
     }
@@ -193,7 +201,7 @@ pub(crate) fn git(git_bin: &Path, dir: &Path, args: &[&str]) -> Command {
 }
 
 /// True when git's stderr says the folder is not inside a repository.
-fn says_not_a_repo(stderr: &str) -> bool {
+pub(crate) fn says_not_a_repo(stderr: &str) -> bool {
     stderr.to_ascii_lowercase().contains("not a git repository")
 }
 
@@ -244,11 +252,41 @@ pub fn inside_of(entries: &[WorktreeEntry], top: &Path) -> Vec<String> {
 /// `project`, from `git worktree list --porcelain`: relative to that top level, so a project in
 /// a subfolder of its repository leaves out `<top>/.worktrees/…` too.
 pub fn worktrees_inside(git_bin: &Path, project: &Path) -> Result<Vec<String>, GitError> {
+    let (top, entries) = worktree_listing(git_bin, project)?;
+    Ok(inside_of(&entries, &top))
+}
+
+/// The top level of the checkout holding `project` (canonical) and every record of
+/// `git worktree list --porcelain`: the two read-only calls the status poll makes for the dirty
+/// count's excludes, whose list also gives the project's known worktrees (Story 5.4).
+pub fn worktree_listing(git_bin: &Path, project: &Path) -> Result<(PathBuf, Vec<WorktreeEntry>), GitError> {
     let top = crate::process::run(git(git_bin, project, &["rev-parse", "--show-toplevel"]), BRANCHES_TIMEOUT)?.success()?;
     let top = Some(top.stdout.trim()).filter(|t| !t.is_empty()).map(PathBuf::from).unwrap_or_else(|| project.to_path_buf());
     let top = dunce::canonicalize(&top).unwrap_or(top);
     let done = crate::process::run(git(git_bin, project, &["worktree", "list", "--porcelain"]), BRANCHES_TIMEOUT)?.success()?;
-    Ok(inside_of(&parse_worktrees(&done.stdout), &top))
+    Ok((top, parse_worktrees(&done.stdout)))
+}
+
+/// The project's known worktrees from git (Story 5.4): every linked worktree of `entries` (the
+/// first record, the main checkout, never counts: a project that is itself a linked worktree
+/// must not claim the main repository) that is not bare, not the checkout at `top` (the
+/// project's own) and not missing (`prunable`, or its folder gone), with its canonical path and
+/// branch (`None` when detached). Sessions whose `cwd` is one of them belong to the project, and
+/// to that branch.
+pub fn known_of(entries: &[WorktreeEntry], top: &Path) -> Vec<crate::graph::KnownWorktree> {
+    let own = top.display().to_string();
+    entries
+        .iter()
+        .skip(1)
+        .filter(|w| !w.bare && !w.prunable)
+        .filter_map(|w| {
+            let path = dunce::canonicalize(&w.path).ok().filter(|p| p.is_dir())?.display().to_string();
+            (!crate::graph::same_path(&path, &own)).then(|| crate::graph::KnownWorktree {
+                path,
+                branch: w.branch.clone(),
+            })
+        })
+        .collect()
 }
 
 /// The repository's common git dir (`git rev-parse --git-common-dir`, resolved against `path`
@@ -351,6 +389,7 @@ pub(crate) mod tests {
                 WorktreeEntry {
                     path: "C:/wt".into(),
                     branch: Some("feat".into()),
+                    locked: true,
                     ..WorktreeEntry::default()
                 },
                 WorktreeEntry {
@@ -370,6 +409,37 @@ pub(crate) mod tests {
         assert_eq!(bare.len(), 1, "no trailing blank line still ends the record");
         assert!(bare[0].bare);
         assert!(parse_worktrees("").is_empty());
+    }
+
+    #[test]
+    fn a_lock_keeps_its_reason_and_the_main_checkout_is_never_a_known_worktree() {
+        let parsed = parse_worktrees("worktree /a\nbranch refs/heads/main\n\nworktree /b\nbranch refs/heads/b\nlocked moving disks\n");
+        assert!(parsed[1].locked);
+        assert_eq!(parsed[1].lock_reason.as_deref(), Some("moving disks"));
+        assert_eq!(parse_worktrees(WORKTREES)[1].lock_reason, None, "locked without a reason");
+
+        // A project that is itself a linked worktree: the main checkout is not one of its
+        // known worktrees, nor is its own checkout; the other linked one is.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        for name in ["main", "wt", "other"] {
+            std::fs::create_dir(root.join(name)).unwrap();
+        }
+        let entry = |name: &str, branch: &str| WorktreeEntry {
+            path: root.join(name).display().to_string(),
+            branch: Some(branch.into()),
+            ..WorktreeEntry::default()
+        };
+        let entries = [entry("main", "main"), entry("wt", "feat"), entry("other", "o")];
+        let known = known_of(&entries, &root.join("wt"));
+        assert_eq!(
+            known,
+            [crate::graph::KnownWorktree {
+                path: root.join("other").display().to_string(),
+                branch: Some("o".into()),
+            }]
+        );
+        assert_eq!(known_of(&entries, &root.join("main")).len(), 2, "from the main checkout: both linked ones");
     }
 
     fn info(name: &str, head: bool, committed_at: i64) -> BranchInfo {

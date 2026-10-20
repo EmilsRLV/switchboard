@@ -94,7 +94,7 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | `ctrl+j` | Go to session that needs you: the session that has been `finished` (or `waiting`) longest is revealed and selected, its project expanded first when collapsed (see [Needs you](#needs-you)). Enabled only while a session on a canvas project needs you; press again for the next one. |
 | `←` `→` `↑` `↓` | Move the selection to the nearest node in that direction (see [Keyboard navigation](#keyboard-navigation)); with nothing selected, select the node nearest the middle of the view. Only while no palette, pane, menu or Elsewhere list is open: those keep their own arrow handling. |
 | Enter | The selected node's default action: a project with children expands or collapses (persisted); a `show all (N)` / `show fewer` row toggles the column (see [Sessions](#sessions)); a childless project or a child card does nothing (Resume, Fork and Stop are menu and palette commands; see [Resume, fork, stop](#resume-fork-stop)). Same condition as the arrows. |
-| Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings, import, terminal, the launch sheet or the worktree sheet), else clears the selected node. With all of them open, five presses. With focus in a terminal Esc is the terminal's (see [Terminal](#terminal)). |
+| Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings, import, terminal, the launch sheet, the worktree sheet or the remove-worktree sheet), else clears the selected node. With all of them open, five presses. With focus in a terminal Esc is the terminal's (see [Terminal](#terminal)). |
 
 `e` and `/` are reserved for later epics and deliberately unbound; so is Delete (removal is a menu action).
 
@@ -116,7 +116,8 @@ in file manager, Reveal Claude project dir, Re-layout children, Remove from canv
 project / Collapse project (neither for a project without children), Show all sessions (only for an
 expanded project with more than ten sessions) and, for a git repo, Show branches / Hide branches (see
 [Branches](#branches)); while a branch card is selected, Copy branch name and, for a branch with no worktree
-that is not checked out in the project's folder, New worktree…, and New session… (unless its worktree is `missing`). The palette sorts by title. The key-only
+that is not checked out in the project's folder, New worktree…, New session… (unless its worktree is `missing`), and, for a
+branch with a worktree chip (a `missing` one too), Remove worktree… (see [Removing a worktree](#removing-a-worktree)). The palette sorts by title. The key-only
 carriers (the `ctrl+,` toggle, the palette's second binding `ctrl+shift+k`, the five Esc commands, the four
 arrows and Enter) are registered but hidden from
 the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron on a card runs
@@ -238,9 +239,18 @@ again when nothing else is in it.
 
 An expanded project lists the **Claude Code sessions already run in its folder**, one child card each. They come
 from Claude's own transcripts: every `~/.claude/projects/<dir>` whose working directory (read from its newest
-transcript, as the import pane does) is the project folder contributes its top-level `*.jsonl` files, one per
+transcript, as the import pane does) is the project folder, or one of the project's **known worktrees**,
+contributes its top-level `*.jsonl` files, one per
 session, keyed by the session id (the file name); per-session folders (`subagents/`, `tool-results/`,
-`memory/`) are not sessions. Several dirs naming the same folder are merged. Each card shows the **title** (the
+`memory/`) are not sessions. Several dirs naming the same folder are merged. A project's known worktrees are
+the `worktreePath`s stored in `branches[]` plus every linked worktree `git worktree list` reports for its repo
+that is neither bare nor missing, the main checkout aside (the 5 s status poll already lists them for the
+dirty count, so this costs no extra git call; it holds whatever the branches toggle, and a listing that fails
+keeps the last list). A session whose folder is a worktree belongs under that
+worktree's branch (the deepest worktree holding its folder): under its branch card while branches are shown, in
+the session group otherwise. A folder that is a project's own folder always belongs to that project. Otherwise, when several projects on
+the canvas know it as a worktree (two projects of one repository), the deepest matching worktree wins and, on
+an equal depth, the first project in canvas order; the live poll uses the same rule. Each card shows the **title** (the
 `/rename` title, else Claude's own `ai-title`, else the first prompt cut to 60 characters, else `(untitled)`)
 and a muted meta line, `branch · N msgs · 3h`: the latest git branch the transcript names (left out when
 none), prompts plus assistant replies, and the time since the last record (`now`, `5m`, `3h`, `2d`, then
@@ -265,7 +275,7 @@ Every `poll.agents_ms` (default 2 s, re-read each tick, floor 500 ms) Rust runs 
 `claude agents --json --all` on a background thread with a 5 s timeout, and keeps the rows in memory, keyed by
 session id. Nothing is persisted and nothing under `~/.claude` is touched; the poll does not run while
 `claude` is not found (badges stay at 0, no tray). A row whose `cwd` is a project folder (or lies in one of its
-branch worktrees) belongs to that project:
+known worktrees, see [Sessions](#sessions); Claude's own `.claude/worktrees/<name>` too) belongs to that project:
 
 - its **session card** shows the state as the first word of the meta line, `busy · master · 12 msgs · now`:
   `busy` in full text colour after a small pulsing dot (static under reduced motion), `idle` muted, `finished`
@@ -400,8 +410,9 @@ When a git call fails, or the folder is gone or no longer a git repository, the 
 
 Branch cards can be selected, reached with the arrow keys and dragged like session cards; a moved branch is
 written to `branches[]` as `{ id: "<projectId>:<name>", projectId, name, position }` (only then); Re-layout
-removes it again (unless it has a stored worktree path: one the app created, or a worktree a session was started in), and so does a read that no longer lists the branch, unless an edge or a session points at it. Enter does nothing on a branch; its menu holds **Copy branch name**, for a branch with no worktree chip that is not checked out in the project's folder **New worktree…** (see [Worktrees](#worktrees)), and **New session…** (`n`; see [Sessions on a branch](#sessions-on-a-branch)). While branches are shown, a session started on a branch is drawn right under its branch card, one step further in.
-Checking out or deleting branches and removing worktrees come in later stories.
+removes it again (unless it has a stored worktree path: one the app created, or a worktree a session was started in), and so does a read that no longer lists the branch, unless an edge or a session points at it. A stored branch with a `worktreePath` is never removed by a read, even once its branch is deleted: the path is
+kept as history so its past sessions stay listed. Enter does nothing on a branch; its menu holds **Copy branch name**, for a branch with no worktree chip that is not checked out in the project's folder **New worktree…** (see [Worktrees](#worktrees)), **New session…** (`n`; see [Sessions on a branch](#sessions-on-a-branch)), and, with a worktree chip, **Remove worktree…** (see [Removing a worktree](#removing-a-worktree)). While branches are shown, a session started on a branch is drawn right under its branch card, one step further in.
+Checking out branches comes in a later story.
 
 ### Worktrees
 
@@ -437,6 +448,31 @@ list`, not only the app's) is left out of the card's `N changed` with one `:(top
 pathspec per worktree (the folder relative to the top level), so a clean repo with worktrees in `.worktrees/`
 still reads clean, also for a project that is a subfolder of its repository. A stray file next to them (say
 `.worktrees/notes.txt`) still counts. Nothing is written to `.gitignore` or `.git/info/exclude`.
+
+### Removing a worktree
+
+**Remove worktree…** in a branch card's menu or the palette (a card with a worktree chip, a `missing` one
+too; no key) opens the **remove-worktree sheet**, the app's first confirmation. It names the branch and the
+worktree's full path, and Rust checks first, read-only:
+
+| Check | The sheet |
+|---|---|
+| Clean | One **Remove** button: the click is the confirmation. Enter does not remove. |
+| Dirty | `N changed files (modified or untracked)`, counted by `git status` inside the worktree. **Remove** becomes **Force remove…**, which reveals a second button below it, `Discard N changed files and remove` (not focused, and disabled for 0.6 s so a double-click cannot confirm); only that second click runs `git worktree remove --force <path>`, and only while the worktree still has exactly those N changed files (otherwise Rust refuses and the sheet re-reads the checks). |
+| Locked | `locked` (`locked: <reason>` when the lock has one): refused (unlock it in git first); there is no force. |
+| A session in it | A live session with its folder inside the worktree, or an app terminal that was started there: `a session is running in this worktree: <name>`. Stop it first. A terminal that later changed into the folder, or any other program, is not seen (on Windows git then fails to delete and its message shows). |
+| Folder missing | **Remove** runs `git worktree remove <path>`, which clears that one stale record and leaves any other alone. |
+
+Under **Runs** the sheet shows the exact command Rust will run, e.g. `git worktree remove <path>`. **Also
+delete branch <name>** (off by default; a line says the branch is kept) adds `git branch -d <name>`, run after a
+successful remove; never `-D`. A refusal (not fully merged, checked out elsewhere) shows git's message in the
+sheet and the worktree stays removed. The commands run from the project folder under the project's branch lock
+with a 30 s timeout; git's first error line (on Windows, for example, a process holding a file) stays in the
+sheet; after any refusal the sheet re-reads the checks. Once the remove succeeded, Rust stores the worktree's
+path on the branch's `branches[]` entry (even for a worktree only `git worktree list` knew; a failed remove
+stores nothing), so the sessions run there keep their place under the branch card, after a restart too; then the branches and the status are re-read, so the chip goes and the card stays
+(the branch still exists). Resume of such a session falls back to the project folder. A launch on the branch
+still resolves from git's live list, so a removed path is never used as a working folder.
 
 ### The file
 
@@ -660,11 +696,12 @@ from the repo's top level. The name must pass `git check-ref-format --branch wor
 type, and again by Rust at Start). Rust stores `{ name: "worktree-<name>", worktreePath:
 "<repo>/.claude/worktrees/<name>" }` and the session's `branchId` before the spawn; the ref keeps that branch
 entry until git lists the branch, and the session's live folder then maps to it. A Claude configured to put its
-worktrees elsewhere lands in the Elsewhere tray for now. Not offered on a branch sheet: `--worktree` always
+worktrees elsewhere maps too, once the status poll sees the worktree in `git worktree list`. Not offered on a branch sheet: `--worktree` always
 makes its own branch.
 
-Until sessions follow worktrees (a later story), a session started in a worktree shows while it runs, but its
-transcript is not listed after a restart.
+Sessions run in a worktree (the app's, Claude's `--worktree` ones, or one made in a terminal) are found again
+after a restart: discovery and the live poll accept every known worktree of the project (see
+[Sessions](#sessions)).
 
 ## Resume, fork, stop
 

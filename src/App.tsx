@@ -28,6 +28,7 @@ import { ElsewhereTray } from "./components/ElsewhereTray";
 import { ImportPane } from "./components/ImportPane";
 import { LaunchPane } from "./components/LaunchPane";
 import { WorktreePane } from "./components/WorktreePane";
+import { RemoveWorktreePane } from "./components/RemoveWorktreePane";
 import { Notice } from "./components/Notice";
 import { Palette } from "./components/Palette";
 import { SettingsPane } from "./components/SettingsPane";
@@ -40,7 +41,7 @@ registerBuiltins();
 
 /**
  * The shell: banner strip on top, the canvas filling the rest with the transient notice laid
- * over its top edge and the Elsewhere tray at its bottom-left, one pane (settings, import, terminal, the launch sheet or the worktree sheet) on the right when open,
+ * over its top edge and the Elsewhere tray at its bottom-left, one pane (settings, import, terminal, the launch sheet, the worktree sheet or the remove-worktree sheet) on the right when open,
  * the hidden holder that keeps every terminal's view alive while the terminal pane is not showing it, the command
  * palette over everything when open, the node context menu at the pointer when open. Every
  * key goes through the command registry's dispatcher (`useKeybindings`).
@@ -140,6 +141,7 @@ export default function App() {
         {pane === "import" && <ImportPane />}
         {pane === "launch" && <LaunchPane />}
         {pane === "worktree" && <WorktreePane />}
+        {pane === "removeWorktree" && <RemoveWorktreePane />}
         {pane === "terminal" && <TerminalPane />}
         <TerminalHolder />
         <Palette />

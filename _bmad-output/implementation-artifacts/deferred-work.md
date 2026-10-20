@@ -59,3 +59,13 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-2-create-worktree-node.md`
   summary: A stored BranchNode `worktreePath` whose worktree was removed or pruned outside the app is never cleared, and Re-layout keeps such refs.
   evidence: Review round 1 of Story 5.2 (blind hunter); removal and sessions-follow-worktrees are Story 5.4.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-4-sessions-follow-worktrees-remove-worktree.md`
+  summary: A branch's worktree history keeps one path; a later worktree at a different path overwrites it and sessions from the older removed worktree lose their placement (needs a list of past paths).
+  evidence: Story 5.4 review round 1 (blind hunter, edge-case hunter).
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-4-sessions-follow-worktrees-remove-worktree.md`
+  summary: Test that a timed-out worktree listing in the status poll keeps the last known list (pull the error-to-update mapping into a testable helper).
+  evidence: Story 5.4 review round 1 (verification gap).
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-4-sessions-follow-worktrees-remove-worktree.md`
+  summary: Component tests for the remove-worktree sheet's safeguards (Enter swallowed on removing buttons, focus on Close, Discard not reusing the Force button).
+  evidence: Story 5.4 review round 1; no DOM test environment yet.

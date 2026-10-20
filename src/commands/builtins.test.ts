@@ -53,7 +53,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the forty-nine commands with the spec's keybindings", () => {
+  it("register the fifty commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
@@ -61,6 +61,7 @@ describe("built-in commands", () => {
       "branch.copyName",
       "branch.newSession",
       "branch.newWorktree",
+      "branch.removeWorktree",
       "canvas.fitView",
       "contextMenu.close",
       "elsewhere.close",
@@ -125,6 +126,7 @@ describe("built-in commands", () => {
       "session.stop",
       "project.newWorktree",
       "branch.newWorktree",
+      "branch.removeWorktree",
     ]) {
       expect(getCommand(id)?.keybinding, id).toBeUndefined();
     }
@@ -163,7 +165,7 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the thirty-seven actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the thirty-eight actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
@@ -171,6 +173,7 @@ describe("built-in commands", () => {
       "branch.copyName",
       "branch.newSession",
       "branch.newWorktree",
+      "branch.removeWorktree",
       "canvas.fitView",
       "elsewhere.toggle",
       "palette.toggle",
@@ -205,7 +208,7 @@ describe("built-in commands", () => {
     ]);
   });
 
-  it("exactly the twelve project commands, the five session commands and the three branch commands are tagged for the node menu, and the menu lists none without a selection", () => {
+  it("exactly the twelve project commands, the five session commands and the four branch commands are tagged for the node menu, and the menu lists none without a selection", () => {
     expect(
       listCommands()
         .filter((c) => c.menu === "node")
@@ -215,6 +218,7 @@ describe("built-in commands", () => {
       "branch.copyName",
       "branch.newSession",
       "branch.newWorktree",
+      "branch.removeWorktree",
       "project.collapse",
       "project.expand",
       "project.newSession",
@@ -238,7 +242,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(49);
+    expect(listCommands()).toHaveLength(50);
   });
 
   const PROJECT_ACTIONS = [

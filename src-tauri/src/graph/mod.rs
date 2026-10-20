@@ -328,6 +328,60 @@ pub struct LiveChild {
 /// The label of a live-only child that has no `name`.
 pub const NEW_SESSION_LABEL: &str = "new session";
 
+/// A linked worktree of a project's repository as the status poll last listed it (Story 5.4;
+/// `git::branches::known_of`): not bare, not missing, not the project's own checkout. Memory
+/// only, never persisted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownWorktree {
+    /// Canonical.
+    pub path: String,
+    /// The branch checked out there; `None` when detached.
+    pub branch: Option<String>,
+}
+
+/// The known worktrees by project id.
+pub type KnownWorktrees = HashMap<String, Vec<KnownWorktree>>;
+
+/// What maps a `cwd` to a branch of `project_id` (Story 5.4): its stored [`BranchNode`]s (a
+/// `worktreePath` kept as history once its worktree is removed), then a node per worktree git
+/// lists with a branch (`known`). [`branch_for_cwd`] takes the deepest; on a tie git's list wins.
+fn branch_mapping(workspace: &Workspace, known: &KnownWorktrees, project_id: &str) -> Vec<BranchNode> {
+    workspace
+        .branches
+        .iter()
+        .filter(|b| b.project_id == project_id)
+        .cloned()
+        .chain(known.get(project_id).into_iter().flatten().filter_map(|w| {
+            w.branch.as_ref().map(|name| BranchNode {
+                id: branch_child_id(project_id, name),
+                project_id: project_id.to_string(),
+                name: name.clone(),
+                worktree_path: Some(w.path.clone()),
+                position: None,
+            })
+        }))
+        .collect()
+}
+
+/// Every worktree path known for `project_id` (Story 5.4): the stored `worktreePath`s, then the
+/// worktrees git lists (detached ones too), each once. A transcript whose `cwd` is one of them
+/// is discovered under the project.
+pub fn known_worktree_paths(workspace: &Workspace, known: &KnownWorktrees, project_id: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let stored = workspace
+        .branches
+        .iter()
+        .filter(|b| b.project_id == project_id)
+        .filter_map(|b| b.worktree_path.clone());
+    let listed = known.get(project_id).into_iter().flatten().map(|w| w.path.clone());
+    for path in stored.chain(listed) {
+        if !path.trim().is_empty() && !out.iter().any(|p| same_path(p, &path)) {
+            out.push(path);
+        }
+    }
+    out
+}
+
 /// Every child of every project, collapsed ones included, in layout order: the project's
 /// sessions -- discovered (`discovered`, by project id) and live-only (`live`, by project id:
 /// a live row with no discovered transcript yet) -- ordered live first, then pinned, then
@@ -362,6 +416,20 @@ pub fn children_with_branches(
     stubs: usize,
     listed: &HashMap<String, Vec<BranchInfo>>,
 ) -> Vec<ChildNode> {
+    children_with_worktrees(workspace, discovered, live, stubs, listed, &HashMap::new())
+}
+
+/// [`children_with_branches`], with a session's branch also found through the worktrees git
+/// lists for its project (`known`, Story 5.4): the worktree holding its `cwd`, deepest first,
+/// stored or listed.
+pub fn children_with_worktrees(
+    workspace: &Workspace,
+    discovered: &HashMap<String, Vec<SessionSummary>>,
+    live: &HashMap<String, Vec<LiveChild>>,
+    stubs: usize,
+    listed: &HashMap<String, Vec<BranchInfo>>,
+    known: &KnownWorktrees,
+) -> Vec<ChildNode> {
     let discovered_ids: HashSet<&str> = discovered.values().flatten().map(|s| s.id.as_str()).collect();
     // Live by session id, under whichever project the row's cwd maps to: a transcript under
     // one project and a live row under another still sort that card first.
@@ -375,6 +443,8 @@ pub fn children_with_branches(
                 .find(|s| s.session_id == id && s.project_id == project.id)
         };
         let branches: Vec<&BranchNode> = workspace.branches.iter().filter(|b| b.project_id == project.id).collect();
+        let mapping_nodes = branch_mapping(workspace, known, &project.id);
+        let mapping: Vec<&BranchNode> = mapping_nodes.iter().collect();
         let live_here: &[LiveChild] = live.get(&project.id).map(Vec::as_slice).unwrap_or_default();
         let is_live = |id: &str| live_ids.contains(id);
 
@@ -392,7 +462,7 @@ pub fn children_with_branches(
             .into_iter()
             .map(|summary| {
                 let session_ref = session_ref(&summary.id);
-                let worktree_branch = summary.cwd.as_deref().and_then(|cwd| branch_for_cwd(cwd, &branches));
+                let worktree_branch = summary.cwd.as_deref().and_then(|cwd| branch_for_cwd(cwd, &mapping));
                 ChildNode {
                     id: summary.id.clone(),
                     project_id: project.id.clone(),
@@ -438,7 +508,7 @@ pub fn children_with_branches(
                     branch: None,
                     messages: 0,
                 }),
-                branch_id: branch_for_cwd(&row.cwd, &branches).or_else(|| session_ref.and_then(|r| r.branch_id.clone())),
+                branch_id: branch_for_cwd(&row.cwd, &mapping).or_else(|| session_ref.and_then(|r| r.branch_id.clone())),
                 forked_from: session_ref.and_then(|r| r.forked_from.clone()),
                 has_transcript: false,
                 branch: None,
@@ -508,11 +578,22 @@ pub fn children_with_branches(
 /// (Story 3.1's worktree rule; the deepest worktree wins). `None` puts the row in the
 /// Elsewhere tray.
 pub fn project_for_cwd(workspace: &Workspace, cwd: &str) -> Option<String> {
+    project_for_cwd_in(workspace, &HashMap::new(), cwd)
+}
+
+/// [`project_for_cwd`], with the worktrees git lists for each project (`known`, Story 5.4)
+/// counted like stored ones: a live session in a worktree the app never stored (Claude's own
+/// `.claude/worktrees/<name>`) maps to its project, not the Elsewhere tray. One rule, shared
+/// with discovery (`claude::sessions::scan`): a cwd that is exactly a project's own folder is
+/// that project's, whatever worktree lists claim it; otherwise the deepest worktree holding it
+/// wins, and on an equal depth the first project in workspace order.
+pub fn project_for_cwd_in(workspace: &Workspace, known: &KnownWorktrees, cwd: &str) -> Option<String> {
     // Project paths are canonical (`canonical_dir`); a row's cwd may differ in separators, a
     // trailing separator or a symlink. The raw cwd stands when it cannot be canonicalised.
     let canonical = dunce::canonicalize(cwd.trim())
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| cwd.to_string());
+    // A project's own folder is matched exactly (a subfolder is elsewhere) and always wins.
     if let Some(project) = workspace
         .projects
         .iter()
@@ -520,14 +601,27 @@ pub fn project_for_cwd(workspace: &Workspace, cwd: &str) -> Option<String> {
     {
         return Some(project.id.clone());
     }
-    workspace
-        .branches
-        .iter()
-        .filter(|b| workspace.projects.iter().any(|p| p.id == b.project_id))
-        .filter_map(|b| b.worktree_path.as_deref().map(|w| (b, w)))
-        .filter(|(_, worktree)| path_within(&canonical, worktree) || path_within(cwd, worktree))
-        .max_by_key(|(_, worktree)| worktree.len())
-        .map(|(b, _)| b.project_id.clone())
+    let mut best: Option<(&str, usize)> = None;
+    for project in &workspace.projects {
+        let stored = workspace
+            .branches
+            .iter()
+            .filter(|b| b.project_id == project.id)
+            .filter_map(|b| b.worktree_path.as_deref());
+        let listed = known.get(&project.id).into_iter().flatten().map(|w| w.path.as_str());
+        for path in stored.chain(listed) {
+            let depth = path_depth(path);
+            if (path_within(&canonical, path) || path_within(cwd, path)) && best.is_none_or(|(_, d)| depth > d) {
+                best = Some((project.id.as_str(), depth));
+            }
+        }
+    }
+    best.map(|(id, _)| id.to_string())
+}
+
+/// How deep a folder is: its path's component count (a trailing separator does not count).
+pub(crate) fn path_depth(path: &str) -> usize {
+    Path::new(path.trim()).components().count()
 }
 
 /// The id of the branch whose `worktreePath` holds `cwd` (the folder itself or anything in
@@ -632,6 +726,9 @@ pub struct WorkspaceState {
     pub branches: HashMap<String, Vec<BranchInfo>>,
     /// The cause of each project's last failed branch read (cleared by a good one).
     pub branch_errors: HashMap<String, String>,
+    /// Each project's linked worktrees as the status poll last listed them (Story 5.4,
+    /// `crate::git::poll` via [`set_worktrees`]), whatever the branches toggle. Never persisted.
+    pub worktrees: KnownWorktrees,
 }
 
 impl WorkspaceState {
@@ -653,7 +750,7 @@ impl WorkspaceState {
 
     /// Every project's children as [`children_with_branches`] derives them from this state.
     pub fn children(&self) -> Vec<ChildNode> {
-        children_with_branches(&self.workspace, &self.discovered, &self.live_children, self.stub_children, &self.branches)
+        children_with_worktrees(&self.workspace, &self.discovered, &self.live_children, self.stub_children, &self.branches, &self.worktrees)
     }
 
     /// Replace the workspace with a freshly parsed, validated one.
@@ -883,7 +980,8 @@ pub type BranchOutcome = Result<Option<Vec<BranchInfo>>, String>;
 /// list replaces the stored one and clears the error; "not a repository" drops both; a
 /// failure keeps the last good list and records the cause. A good list also prunes the
 /// project's [`BranchNode`]s whose branch it no longer lists, unless an edge or a session's
-/// `branchId` references them; then the file is written too. Projects no longer on the canvas
+/// `branchId` references them or they hold a `worktreePath` (Story 5.4); then the file is
+/// written too. Projects no longer on the canvas
 /// or with branches off are ignored (a read that raced a toggle). When anything changed the
 /// revision is bumped and `workspace://changed` emitted; the file is not written. Returns the
 /// snapshot, or `None` when nothing changed.
@@ -908,8 +1006,13 @@ pub fn set_branches<R: Runtime>(app: &AppHandle<R>, outcomes: HashMap<String, Br
             if good && let Some(list) = list.as_ref() {
                 let referenced = referenced_branch_ids(&st.workspace);
                 let before = st.workspace.branches.len();
+                // A stored worktree path is history (Story 5.4): its sessions stay discovered,
+                // so such a node is never pruned, even once its branch is deleted.
                 st.workspace.branches.retain(|b| {
-                    b.project_id != id || list.iter().any(|info| info.name == b.name) || is_referenced(b, &referenced)
+                    b.project_id != id
+                        || b.worktree_path.is_some()
+                        || list.iter().any(|info| info.name == b.name)
+                        || is_referenced(b, &referenced)
                 });
                 pruned |= st.workspace.branches.len() != before;
             }
@@ -1368,10 +1471,47 @@ pub fn remove_project<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Resul
         st.workspace.branches.retain(|b| b.project_id != project_id);
         st.branches.remove(project_id);
         st.branch_errors.remove(project_id);
+        st.worktrees.remove(project_id);
         st.revision += 1;
         (st.write_target(), st.workspace.clone())
     };
     Ok(persist_and_emit(app, target, &workspace))
+}
+
+/// Store what a status pass listed of each project's linked worktrees (Story 5.4,
+/// `crate::git::poll`): `Some(list)` replaces the project's known list (an empty one drops it),
+/// `None` keeps it. Ids not on the canvas are ignored. When anything changed the revision is
+/// bumped and `workspace://changed` emitted (a session may now sit under another branch); the
+/// file is not written. Returns the snapshot, or `None` when nothing changed.
+pub fn set_worktrees<R: Runtime>(app: &AppHandle<R>, updates: HashMap<String, Option<Vec<KnownWorktree>>>) -> Option<WorkspaceSnapshot> {
+    let state = app.state::<AppState>();
+    let snapshot = {
+        let mut st = state.write_workspace();
+        let mut changed = false;
+        for (id, list) in updates {
+            let Some(list) = list else { continue };
+            if !st.workspace.projects.iter().any(|p| p.id == id) {
+                continue;
+            }
+            let before = st.worktrees.get(&id).map(Vec::as_slice).unwrap_or_default();
+            if before == list.as_slice() {
+                continue;
+            }
+            changed = true;
+            if list.is_empty() {
+                st.worktrees.remove(&id);
+            } else {
+                st.worktrees.insert(id, list);
+            }
+        }
+        if !changed {
+            return None;
+        }
+        st.revision += 1;
+        st.snapshot()
+    };
+    emit(app, &snapshot);
+    Some(snapshot)
 }
 
 /// Store what the latest discovery pass found (project id → its sessions). When it differs
@@ -1598,6 +1738,7 @@ mod tests {
             live_children: HashMap::new(),
             branches: HashMap::new(),
             branch_errors: HashMap::from([("p1".to_string(), "fatal: bad".to_string())]),
+            worktrees: HashMap::new(),
         };
         assert_eq!(
             serde_json::to_value(st.snapshot()).unwrap(),
@@ -3833,6 +3974,244 @@ mod tests {
             }],
         )]);
         assert_eq!(children(&ws, &HashMap::new(), &rows, 0)[0].branch_id.as_deref(), Some("a:feature"));
+    }
+
+    fn known_of(project: &str, list: &[(&str, Option<&str>)]) -> KnownWorktrees {
+        HashMap::from([(
+            project.to_string(),
+            list.iter()
+                .map(|(path, branch)| KnownWorktree {
+                    path: path.to_string(),
+                    branch: branch.map(str::to_string),
+                })
+                .collect(),
+        )])
+    }
+
+    #[test]
+    fn worktrees_git_lists_map_sessions_and_live_rows_like_stored_ones() {
+        let sep = std::path::MAIN_SEPARATOR;
+        let root = if cfg!(windows) { r"C:\p\a".to_string() } else { "/p/a".to_string() };
+        let claude_wt = format!("{root}{sep}.claude{sep}worktrees{sep}x");
+        let detached = format!("{root}{sep}.worktrees{sep}det");
+        let stored_wt = format!("{root}{sep}.worktrees{sep}feat");
+        let ws = Workspace {
+            projects: vec![Project {
+                path: root.clone(),
+                ..project_with("a")
+            }],
+            // A path kept as history after its worktree was removed.
+            branches: vec![BranchNode {
+                id: "a:feat".into(),
+                project_id: "a".into(),
+                name: "feat".into(),
+                worktree_path: Some(stored_wt.clone()),
+                position: None,
+            }],
+            ..Workspace::default()
+        };
+        let known = known_of("a", &[(&claude_wt, Some("worktree-x")), (&detached, None)]);
+
+        // Live rows: Claude's own worktree (never stored) maps to the project, not Elsewhere.
+        assert_eq!(project_for_cwd(&ws, &claude_wt), None, "without the list: Elsewhere");
+        assert_eq!(project_for_cwd_in(&ws, &known, &claude_wt).as_deref(), Some("a"));
+        assert_eq!(project_for_cwd_in(&ws, &known, &format!("{detached}{sep}src")).as_deref(), Some("a"), "detached too");
+        assert_eq!(project_for_cwd_in(&ws, &known, &stored_wt).as_deref(), Some("a"), "a stored path still maps");
+        assert_eq!(project_for_cwd_in(&ws, &known_of("gone", &[(&claude_wt, None)]), &claude_wt), None, "not on the canvas");
+
+        // Discovery's paths: stored, then listed, once each.
+        let paths = known_worktree_paths(&ws, &known, "a");
+        assert_eq!(paths, [stored_wt.clone(), claude_wt.clone(), detached.clone()]);
+        let twice = known_of("a", &[(&stored_wt, Some("feat"))]);
+        assert_eq!(known_worktree_paths(&ws, &twice, "a"), std::slice::from_ref(&stored_wt));
+
+        // Branch mapping: by branch name; a detached worktree gives none; the stored path counts.
+        let mut in_claude = summary("s-claude", "2026-10-16T12:00:00.000Z");
+        in_claude.cwd = Some(claude_wt.clone());
+        let mut in_detached = summary("s-det", "2026-10-16T11:00:00.000Z");
+        in_detached.cwd = Some(detached.clone());
+        let mut in_removed = summary("s-feat", "2026-10-16T10:00:00.000Z");
+        in_removed.cwd = Some(stored_wt.clone());
+        let rows = HashMap::from([(
+            "a".to_string(),
+            vec![LiveChild {
+                cwd: format!("{claude_wt}{sep}src"),
+                ..live("live-x", None, None, true)
+            }],
+        )]);
+        let kids = children_with_worktrees(
+            &ws,
+            &discovered_of("a", vec![in_claude, in_detached, in_removed]),
+            &rows,
+            0,
+            &HashMap::new(),
+            &known,
+        );
+        let branch = |id: &str| kids.iter().find(|c| c.id == id).unwrap().branch_id.clone();
+        assert_eq!(branch("s-claude").as_deref(), Some("a:worktree-x"));
+        assert_eq!(branch("live-x").as_deref(), Some("a:worktree-x"));
+        assert_eq!(branch("s-det"), None);
+        assert_eq!(branch("s-feat").as_deref(), Some("a:feat"));
+        // Without the list only the stored path maps.
+        let plain = children(&ws, &discovered_of("a", vec![summary("s", "x")]), &HashMap::new(), 0);
+        assert_eq!(plain[0].branch_id, None);
+    }
+
+    #[test]
+    fn two_projects_on_one_repo_share_one_rule_deepest_then_workspace_order() {
+        let sep = std::path::MAIN_SEPARATOR;
+        let root = if cfg!(windows) { r"C:\p\r".to_string() } else { "/p/r".to_string() };
+        let sub = format!("{root}{sep}sub");
+        let wt = format!("{root}{sep}.worktrees{sep}feat");
+        let nested = format!("{wt}{sep}inner");
+        let ws = Workspace {
+            projects: vec![
+                Project {
+                    path: sub.clone(),
+                    ..project_with("sub")
+                },
+                Project {
+                    path: root.clone(),
+                    ..project_with("top")
+                },
+            ],
+            ..Workspace::default()
+        };
+        // Both projects list the same worktree: an equal depth, the first project wins (as
+        // discovery's `scan` gives it), whatever the order of the map.
+        let mut known = known_of("sub", &[(&wt, Some("feat"))]);
+        known.extend(known_of("top", &[(&wt, Some("feat"))]));
+        assert_eq!(project_for_cwd_in(&ws, &known, &format!("{wt}{sep}src")).as_deref(), Some("sub"));
+        // A deeper worktree known only to the second project wins inside it.
+        known.get_mut("top").unwrap().push(KnownWorktree {
+            path: nested.clone(),
+            branch: Some("inner".into()),
+        });
+        assert_eq!(project_for_cwd_in(&ws, &known, &nested).as_deref(), Some("top"));
+        // A project's own folder is still matched exactly.
+        assert_eq!(project_for_cwd_in(&ws, &known, &root).as_deref(), Some("top"));
+        assert_eq!(project_for_cwd_in(&ws, &known, &sub).as_deref(), Some("sub"));
+    }
+
+    #[test]
+    fn a_project_on_another_projects_worktree_keeps_its_own_sessions_in_discovery_and_live() {
+        let sep = std::path::MAIN_SEPARATOR;
+        let repo = if cfg!(windows) { r"C:\p\r".to_string() } else { "/p/r".to_string() };
+        let wt = format!("{repo}{sep}.worktrees{sep}feat");
+        // A = the repo (knows the worktree), B = that worktree's folder; A first on the canvas.
+        let ws = Workspace {
+            projects: vec![
+                Project {
+                    path: repo.clone(),
+                    ..project_with("a")
+                },
+                Project {
+                    path: wt.clone(),
+                    ..project_with("b")
+                },
+            ],
+            ..Workspace::default()
+        };
+        let known = known_of("a", &[(&wt, Some("feat"))]);
+        // Live mapping: B's own folder is B's; inside it, A's worktree is the only match.
+        assert_eq!(project_for_cwd_in(&ws, &known, &wt).as_deref(), Some("b"));
+        assert_eq!(project_for_cwd_in(&ws, &known, &format!("{wt}{sep}src")).as_deref(), Some("a"));
+        // Discovery, with the paths `sessions::refresh` builds: B's session is B's.
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join(crate::claude::discover::PROJECTS_DIR).join("b");
+        std::fs::create_dir_all(&dir).unwrap();
+        let line = serde_json::json!({ "type": "user", "cwd": wt, "timestamp": "2026-10-16T10:00:00.000Z", "message": { "content": "x" } });
+        std::fs::write(dir.join("s-b.jsonl"), format!("{line}\n")).unwrap();
+        let projects: Vec<(String, Vec<String>)> = ws
+            .projects
+            .iter()
+            .map(|p| {
+                let mut paths = vec![p.path.clone()];
+                paths.extend(known_worktree_paths(&ws, &known, &p.id));
+                (p.id.clone(), paths)
+            })
+            .collect();
+        let cache = std::sync::Mutex::new(crate::claude::sessions::SessionCache::default());
+        let found = crate::claude::sessions::scan(home.path(), &projects, &cache).unwrap();
+        assert!(!found.contains_key("a"));
+        assert_eq!(found["b"].iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["s-b"]);
+    }
+
+    #[test]
+    fn a_listed_worktree_on_a_stored_path_gives_the_branch_git_lists() {
+        let sep = std::path::MAIN_SEPARATOR;
+        let root = if cfg!(windows) { r"C:\p\a".to_string() } else { "/p/a".to_string() };
+        let wt = format!("{root}{sep}.worktrees{sep}one");
+        let ws = Workspace {
+            projects: vec![Project {
+                path: root.clone(),
+                ..project_with("a")
+            }],
+            branches: vec![BranchNode {
+                id: "a:old".into(),
+                project_id: "a".into(),
+                name: "old".into(),
+                worktree_path: Some(wt.clone()),
+                position: None,
+            }],
+            ..Workspace::default()
+        };
+        let mut session = summary("s", "2026-10-16T10:00:00.000Z");
+        session.cwd = Some(wt.clone());
+        let known = known_of("a", &[(&wt, Some("new"))]);
+        let kids = children_with_worktrees(&ws, &discovered_of("a", vec![session]), &HashMap::new(), 0, &HashMap::new(), &known);
+        assert_eq!(kids[0].branch_id.as_deref(), Some("a:new"));
+    }
+
+    #[test]
+    fn set_worktrees_stores_replaces_keeps_on_none_and_emits_only_on_change() {
+        let (app, _cfg, path) = app_with_ide(0);
+        let rx = listen(&app);
+        let before = std::fs::read_to_string(&path).unwrap();
+        let list = vec![KnownWorktree {
+            path: "/p/ide/.worktrees/a".into(),
+            branch: Some("a".into()),
+        }];
+        let snapshot = set_worktrees(app.handle(), HashMap::from([("ide".to_string(), Some(list.clone())), ("nope".to_string(), Some(list.clone()))])).unwrap();
+        assert_eq!(rx.try_recv().unwrap().revision, snapshot.revision);
+        {
+            let state = app.state::<AppState>();
+            let st = state.read_workspace();
+            assert_eq!(st.worktrees.get("ide"), Some(&list));
+            assert!(!st.worktrees.contains_key("nope"), "not on the canvas");
+        }
+        assert_eq!(set_worktrees(app.handle(), HashMap::from([("ide".to_string(), Some(list.clone()))])), None, "unchanged");
+        assert_eq!(set_worktrees(app.handle(), HashMap::from([("ide".to_string(), None)])), None, "a timed-out listing keeps it");
+        assert!(rx.try_recv().is_err());
+        assert!(set_worktrees(app.handle(), HashMap::from([("ide".to_string(), Some(Vec::new()))])).is_some());
+        assert!(!app.state::<AppState>().read_workspace().worktrees.contains_key("ide"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "never written");
+
+        // Removing the project forgets its list.
+        set_worktrees(app.handle(), HashMap::from([("ide".to_string(), Some(list))]));
+        remove_project(app.handle(), "ide").unwrap();
+        assert!(app.state::<AppState>().read_workspace().worktrees.is_empty());
+    }
+
+    #[test]
+    fn a_stored_branch_with_a_worktree_path_is_never_pruned() {
+        let (app, _cfg, _path) = app_with_ide(0);
+        {
+            let state = app.state::<AppState>();
+            let mut st = state.write_workspace();
+            st.workspace.projects[0].show_branches = true;
+            st.workspace.branches = vec![BranchNode {
+                id: "ide:feat".into(),
+                project_id: "ide".into(),
+                name: "feat".into(),
+                worktree_path: Some("/p/ide/.worktrees/feat".into()),
+                position: None,
+            }];
+        }
+        // The branch is deleted: git no longer lists it, the node (and its path) stays.
+        let snapshot = set_branches(app.handle(), HashMap::from([("ide".to_string(), Ok(Some(vec![listed_branch("main", true)])))])).unwrap();
+        assert_eq!(snapshot.workspace.branches.len(), 1);
+        assert!(!snapshot.children.iter().any(|c| c.id == "ide:feat"), "no card for a deleted branch");
     }
 
     #[test]

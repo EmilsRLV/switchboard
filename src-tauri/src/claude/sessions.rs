@@ -60,26 +60,39 @@ struct DirScan {
 /// The sessions of one project folder: every transcript of every project dir whose `cwd` is
 /// `project_path`, unordered (the graph orders them). Empty when nothing can be listed.
 pub fn sessions_for(claude_home: &Path, project_path: &str, cache: &Mutex<SessionCache>) -> Vec<SessionSummary> {
-    let projects = [("p".to_string(), project_path.to_string())];
+    let projects = [("p".to_string(), vec![project_path.to_string()])];
     scan(claude_home, &projects, cache)
         .and_then(|mut found| found.remove("p"))
         .unwrap_or_default()
 }
 
-/// One pass: `(project id, project path)` → that project's sessions. A project with no
-/// sessions has no entry. Cache entries for transcripts and dirs no longer seen are dropped.
-/// `None` when `projects/` exists but cannot be listed: the caller keeps what it had.
+/// One pass: `(project id, paths)` → that project's sessions. `paths` is the project folder
+/// first, then its known worktree paths (Story 5.4): a project dir whose `cwd` is any of them
+/// is the project's. One rule with the live mapping (`graph::project_for_cwd_in`): a `cwd` that
+/// is a project's own folder is that project's; otherwise the deepest worktree wins, on an equal
+/// depth the first project in workspace order -- here every worktree match is the `cwd` itself,
+/// so the first project naming it. One transcript is one node. A
+/// project with no sessions has no entry. Cache entries for transcripts and dirs no longer seen
+/// are dropped. `None` when `projects/` exists but cannot be listed: the caller keeps what it had.
 pub fn scan(
     claude_home: &Path,
-    projects: &[(String, String)],
+    projects: &[(String, Vec<String>)],
     cache: &Mutex<SessionCache>,
 ) -> Option<HashMap<String, Vec<SessionSummary>>> {
     let dirs = scan_dirs(claude_home, cache)?;
+    let owner = |cwd: &str| -> Option<&str> {
+        projects
+            .iter()
+            .find(|(_, paths)| paths.first().is_some_and(|p| same_path(cwd, p)))
+            .or_else(|| projects.iter().find(|(_, paths)| paths.iter().skip(1).any(|p| same_path(cwd, p))))
+            .map(|(id, _)| id.as_str())
+    };
+    let owners: Vec<Option<&str>> = dirs.iter().map(|d| owner(&d.cwd)).collect();
     let mut out: HashMap<String, Vec<SessionSummary>> = HashMap::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
-    for (id, path) in projects {
+    for (id, _) in projects {
         let mut sessions: Vec<SessionSummary> = Vec::new();
-        for dir in dirs.iter().filter(|d| same_path(&d.cwd, path)) {
+        for (dir, _) in dirs.iter().zip(&owners).filter(|(_, o)| **o == Some(id.as_str())) {
             for (transcript, stamp) in &dir.transcripts {
                 seen.insert(transcript.clone());
                 if let Some(summary) = summary_of(transcript, *stamp, cache) {
@@ -215,13 +228,19 @@ pub async fn refresh<R: Runtime>(app: &AppHandle<R>) {
         return;
     };
     let _pass = state.sessions_lock.lock().await;
-    let projects: Vec<(String, String)> = state
-        .read_workspace()
-        .workspace
-        .projects
-        .iter()
-        .map(|p| (p.id.clone(), p.path.clone()))
-        .collect();
+    // The project folder, then every worktree path known for it (Story 5.4).
+    let projects: Vec<(String, Vec<String>)> = {
+        let st = state.read_workspace();
+        st.workspace
+            .projects
+            .iter()
+            .map(|p| {
+                let mut paths = vec![p.path.clone()];
+                paths.extend(graph::known_worktree_paths(&st.workspace, &st.worktrees, &p.id));
+                (p.id.clone(), paths)
+            })
+            .collect()
+    };
     let handle = app.clone();
     let found = tauri::async_runtime::spawn_blocking(move || scan(&home, &projects, &handle.state::<AppState>().sessions)).await;
     // A panicked pass, or one that could not list `projects/`, keeps the last list; the next
@@ -313,7 +332,7 @@ mod tests {
         let s1 = write(&dir, "s1", "/w", "2026-10-16T10:00:00.000Z", "first");
         write(&dir, "s2", "/w", "2026-10-16T10:00:00.000Z", "second");
         let cache = Mutex::new(SessionCache::default());
-        let projects = [("p".to_string(), "/w".to_string())];
+        let projects = [("p".to_string(), vec!["/w".to_string()])];
 
         let first = scan(home.path(), &projects, &cache).unwrap();
         assert_eq!(first["p"].len(), 2);
@@ -352,7 +371,7 @@ mod tests {
         let before = tree(home.path());
 
         let cache = Mutex::new(SessionCache::default());
-        let found = scan(home.path(), &[("p".into(), "/w".into()), ("q".into(), "/other".into())], &cache).unwrap();
+        let found = scan(home.path(), &[("p".into(), vec!["/w".into()]), ("q".into(), vec!["/other".into()])], &cache).unwrap();
         assert_eq!(found["p"].len(), 2);
         assert_eq!(found["p"].iter().find(|s| s.id == "s1").unwrap().title, "Named");
         assert_eq!(tree(home.path()), before, "nothing under the Claude home changed");
@@ -394,7 +413,7 @@ mod tests {
         let dir = home.path().join(PROJECTS_DIR).join("d");
         let s1 = write(&dir, "s1", "/w", "2026-10-16T10:00:00.000Z", "first");
         let cache = Mutex::new(SessionCache::default());
-        let projects = [("p".to_string(), "/w".to_string())];
+        let projects = [("p".to_string(), vec!["/w".to_string()])];
         scan(home.path(), &projects, &cache).unwrap();
         let after_first = cache.lock().unwrap().bytes_read;
         assert_eq!(after_first, fs::metadata(&s1).unwrap().len());
@@ -431,10 +450,52 @@ mod tests {
         // `projects` exists but is not a listable directory.
         fs::write(home.path().join(PROJECTS_DIR), "not a dir").unwrap();
         let cache = Mutex::new(SessionCache::default());
-        assert_eq!(scan(home.path(), &[("p".into(), "/w".into())], &cache), None);
+        assert_eq!(scan(home.path(), &[("p".into(), vec!["/w".into()])], &cache), None);
         // Missing altogether (Claude never run) is an empty result, not a failure.
         let empty = tempfile::tempdir().unwrap();
-        assert_eq!(scan(empty.path(), &[("p".into(), "/w".into())], &cache), Some(HashMap::new()));
+        assert_eq!(scan(empty.path(), &[("p".into(), vec!["/w".into()])], &cache), Some(HashMap::new()));
+    }
+
+    #[test]
+    fn a_transcript_in_a_known_worktree_is_its_projects_and_a_projects_own_folder_wins() {
+        let home = tempfile::tempdir().unwrap();
+        let projects = home.path().join(PROJECTS_DIR);
+        let (repo, wt, other) = if cfg!(windows) {
+            ("B:\\r", "B:\\r\\.worktrees\\feat", "B:\\o")
+        } else {
+            ("/r", "/r/.worktrees/feat", "/o")
+        };
+        write(&projects.join("root"), "s-root", repo, "2026-10-16T10:00:00.000Z", "root");
+        write(&projects.join("feat"), "s-feat", wt, "2026-10-16T11:00:00.000Z", "feat");
+        write(&projects.join("sub"), "s-sub", &format!("{wt}{}src", std::path::MAIN_SEPARATOR), "2026-10-16T11:00:00.000Z", "sub");
+        let cache = Mutex::new(SessionCache::default());
+        let ids = |found: &HashMap<String, Vec<SessionSummary>>, id: &str| -> Vec<String> {
+            let mut ids: Vec<String> = found.get(id).into_iter().flatten().map(|s| s.id.clone()).collect();
+            ids.sort();
+            ids
+        };
+
+        // Without the worktree path only the project folder's transcript.
+        let found = scan(home.path(), &[("r".into(), vec![repo.into()])], &cache).unwrap();
+        assert_eq!(ids(&found, "r"), ["s-root"]);
+        // With it (another spelling on Windows): the worktree's too; a subfolder is not it.
+        let spelled = if cfg!(windows) { wt.to_uppercase() } else { wt.to_string() };
+        let found = scan(home.path(), &[("r".into(), vec![repo.into(), spelled])], &cache).unwrap();
+        assert_eq!(ids(&found, "r"), ["s-feat", "s-root"]);
+        // Another project knows the same worktree too: the first one keeps it, once.
+        let both = [("r".to_string(), vec![repo.to_string(), wt.to_string()]), ("o".to_string(), vec![other.to_string(), wt.to_string()])];
+        let found = scan(home.path(), &both, &cache).unwrap();
+        assert_eq!(ids(&found, "r"), ["s-feat", "s-root"]);
+        assert!(ids(&found, "o").is_empty());
+        // The worktree is itself a project on the canvas: its own folder wins, in either order.
+        for own in [
+            [("r".to_string(), vec![repo.to_string(), wt.to_string()]), ("w".to_string(), vec![wt.to_string()])],
+            [("w".to_string(), vec![wt.to_string()]), ("r".to_string(), vec![repo.to_string(), wt.to_string()])],
+        ] {
+            let found = scan(home.path(), &own, &cache).unwrap();
+            assert_eq!(ids(&found, "r"), ["s-root"]);
+            assert_eq!(ids(&found, "w"), ["s-feat"]);
+        }
     }
 
     #[test]

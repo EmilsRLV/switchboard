@@ -49,6 +49,7 @@ import {
 } from "./sessions";
 import { closeOpenPane, openPane, togglePane } from "./panes";
 import { canNewWorktree, canNewWorktreeOnBranch, openWorktreeSheet, openWorktreeSheetForBranch } from "./worktree";
+import { canRemoveWorktree, openRemoveWorktreeSheet } from "./removeWorktree";
 import { addProjectFromPicker, isPickerIdle } from "./projects";
 import { registerCommands, type Command } from "./registry";
 import { hasSettingsPath, redetectBinaries, revealSettingsFile } from "./settings";
@@ -488,6 +489,18 @@ export function builtinCommands(): Command[] {
       when: canNewSessionOnBranch,
       run: async () => {
         await openLaunchSheetForBranch();
+      },
+    },
+    {
+      // Story 5.4: the app's first confirmation sheet. A card with a worktree chip, a `missing`
+      // one too (Remove then clears that stale record). No key.
+      id: "branch.removeWorktree",
+      title: "Remove worktree…",
+      menu: "node",
+      menuOrder: 53,
+      when: canRemoveWorktree,
+      run: async () => {
+        await openRemoveWorktreeSheet();
       },
     },
     {

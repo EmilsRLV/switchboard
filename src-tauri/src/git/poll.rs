@@ -179,7 +179,8 @@ pub async fn refresh<R: Runtime>(app: &AppHandle<R>) -> HashMap<String, ProjectS
     let state = app.state::<AppState>();
     let _pass = state.refresh_lock.lock().await;
     let projects = projects_of(&state, None);
-    let next = poll_all(&state, projects).await;
+    let (next, worktrees) = poll_all(&state, projects).await;
+    crate::graph::set_worktrees(app, worktrees);
     store_and_emit(app, &state, next)
 }
 
@@ -190,7 +191,8 @@ pub async fn refresh_ids<R: Runtime>(app: &AppHandle<R>, ids: &[String]) -> Hash
     let state = app.state::<AppState>();
     let _pass = state.refresh_lock.lock().await;
     let projects = projects_of(&state, Some(ids));
-    let polled = poll_all(&state, projects).await;
+    let (polled, worktrees) = poll_all(&state, projects).await;
+    crate::graph::set_worktrees(app, worktrees);
     let mut next = state.read_live().statuses.clone();
     next.extend(polled);
     store_and_emit(app, &state, next)
@@ -221,11 +223,15 @@ fn projects_of(state: &AppState, only: Option<&[String]>) -> Vec<(String, PathBu
         .collect()
 }
 
-/// Run [`status_of`] for every project, at most [`MAX_CONCURRENT`] at a time.
+/// What one pass learnt about each project's linked worktrees (Story 5.4), by project id:
+/// `Some(list)` replaces the known list, `None` (the listing timed out) keeps it.
+pub type WorktreeUpdates = HashMap<String, Option<Vec<crate::graph::KnownWorktree>>>;
+
+/// Run [`status_and_worktrees`] for every project, at most [`MAX_CONCURRENT`] at a time.
 async fn poll_all(
     state: &AppState,
     projects: Vec<(String, PathBuf, Option<ProjectStatus>)>,
-) -> HashMap<String, ProjectStatus> {
+) -> (HashMap<String, ProjectStatus>, WorktreeUpdates) {
     let git = git_binary(&state.read());
     let permits = Arc::new(Semaphore::new(MAX_CONCURRENT));
     let handles: Vec<_> = projects
@@ -236,14 +242,15 @@ async fn poll_all(
             (id, async move {
                 // The semaphore is never closed, so acquiring cannot fail.
                 let _permit = permits.acquire_owned().await.ok();
-                tauri::async_runtime::spawn_blocking(move || status_of(&git, &path, previous.as_ref()))
+                tauri::async_runtime::spawn_blocking(move || status_and_worktrees(&git, &path, previous.as_ref()))
                     .await
                     // A panicked status thread is "could not run git", not a reason to stop polling.
-                    .unwrap_or(ProjectStatus::GitUnavailable)
+                    .unwrap_or((ProjectStatus::GitUnavailable, None))
             })
         })
         .collect();
     let mut next = HashMap::with_capacity(handles.len());
+    let mut worktrees = HashMap::with_capacity(handles.len());
     // Awaiting in order is fine: the semaphore, not this loop, bounds the parallelism, and
     // every future was created above (they start running as they are awaited).
     let futures: Vec<_> = handles
@@ -251,11 +258,12 @@ async fn poll_all(
         .map(|(id, fut)| tauri::async_runtime::spawn(async move { (id, fut.await) }))
         .collect();
     for handle in futures {
-        if let Ok((id, status)) = handle.await {
-            next.insert(id, status);
+        if let Ok((id, (status, known))) = handle.await {
+            next.insert(id.clone(), status);
+            worktrees.insert(id, known);
         }
     }
-    next
+    (next, worktrees)
 }
 
 /// Store `next` as the live map, emit it when it differs from what was there, return it.
@@ -288,11 +296,34 @@ fn store_and_emit<R: Runtime>(
 /// not only the app's) are left out of the dirty count (Story 5.2); when that listing fails the status runs
 /// without excludes and reports git's own answer.
 pub fn status_of(git: &Path, path: &Path, previous: Option<&ProjectStatus>) -> ProjectStatus {
+    status_and_worktrees(git, path, previous).0
+}
+
+/// [`status_of`], plus the project's known linked worktrees from the same
+/// `git worktree list` (Story 5.4, [`super::branches::known_of`]): what discovery, the live
+/// rows and the branch mapping accept besides the project folder, whatever the branches
+/// toggle. No extra git call. An empty list for a missing folder or a folder that is not a
+/// repository; `None` (the last list stands) when the listing failed any other way.
+pub fn status_and_worktrees(
+    git: &Path,
+    path: &Path,
+    previous: Option<&ProjectStatus>,
+) -> (ProjectStatus, Option<Vec<crate::graph::KnownWorktree>>) {
     if !path.is_dir() {
-        return ProjectStatus::Missing;
+        return (ProjectStatus::Missing, Some(Vec::new()));
     }
-    let excludes = super::branches::worktrees_inside(git, path).unwrap_or_default();
-    match super::status::repo_status_with_timeout(git, path, super::status::STATUS_TIMEOUT, &excludes) {
+    let (excludes, known) = match super::branches::worktree_listing(git, path) {
+        Ok((top, entries)) => (super::branches::inside_of(&entries, &top), Some(super::branches::known_of(&entries, &top))),
+        // Not a repository: nothing is known. Any other failure (a timeout, a git that cannot
+        // run, a refusal) keeps the last list rather than wiping it for one pass.
+        Err(GitError::Failed { stderr, .. }) if super::branches::says_not_a_repo(&stderr) => (Vec::new(), Some(Vec::new())),
+        Err(_) => (Vec::new(), None),
+    };
+    (status_with_excludes(git, path, previous, &excludes), known)
+}
+
+fn status_with_excludes(git: &Path, path: &Path, previous: Option<&ProjectStatus>, excludes: &[String]) -> ProjectStatus {
+    match super::status::repo_status_with_timeout(git, path, super::status::STATUS_TIMEOUT, excludes) {
         Ok(Some(status)) => ProjectStatus::Repo(status),
         Ok(None) => ProjectStatus::NotRepo,
         Err(GitError::Spawn(_)) => ProjectStatus::GitUnavailable,
@@ -525,6 +556,67 @@ mod tests {
         assert_eq!(dirty(&sub), 0, "status_of(repo/sub) with worktrees at repo/.worktrees/");
         std::fs::write(repo.join(".worktrees").join("stray.txt"), "x").unwrap();
         assert_eq!(dirty(&sub), 1, "a stray file still counts");
+    }
+
+    #[test]
+    fn the_status_pass_also_lists_the_known_worktrees_whatever_the_toggle() {
+        let Some(git) = crate::git::branches::tests::real_git() else {
+            eprintln!("git not on PATH; skipping");
+            return;
+        };
+        let dir = crate::git::branches::tests::temp_repo(&git);
+        let repo = dir.path();
+        let top = dunce::canonicalize(repo).unwrap();
+        let git_ok = crate::git::branches::tests::git_ok;
+        let claude = top.join(".claude").join("worktrees").join("x");
+        git_ok(&git, repo, &["worktree", "add", "-q", "-b", "worktree-x", &claude.display().to_string(), "main"]);
+        let detached = top.join(".worktrees").join("det");
+        git_ok(&git, repo, &["worktree", "add", "-q", "--detach", &detached.display().to_string(), "main"]);
+        let gone = top.join(".worktrees").join("gone");
+        git_ok(&git, repo, &["worktree", "add", "-q", "-b", "gone", &gone.display().to_string(), "main"]);
+        std::fs::remove_dir_all(&gone).unwrap();
+
+        let (status, known) = status_and_worktrees(&git, repo, None);
+        match status {
+            ProjectStatus::Repo(status) => assert_eq!(status.dirty, 0, "the worktrees are left out"),
+            other => panic!("expected a repo, got {other:?}"),
+        }
+        let mut known = known.expect("listed");
+        known.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(
+            known,
+            [
+                crate::graph::KnownWorktree {
+                    path: claude.display().to_string(),
+                    branch: Some("worktree-x".into()),
+                },
+                crate::graph::KnownWorktree {
+                    path: detached.display().to_string(),
+                    branch: None,
+                },
+            ],
+            "not the own checkout, not the missing one"
+        );
+        // A gone folder: an empty list. A git that cannot run, or fails: the last list stands.
+        assert_eq!(status_and_worktrees(&git, &top.join("nope"), None), (ProjectStatus::Missing, Some(Vec::new())));
+        let (_, none) = status_and_worktrees(&repo.join("no-git.exe"), repo, None);
+        assert_eq!(none, None);
+        let fail = crate::process::fixtures::script(
+            dir.path(),
+            "fail",
+            "@echo fatal: detected dubious ownership 1>&2
+@exit /b 128
+",
+            "echo 'fatal: detected dubious ownership' >&2
+exit 128
+",
+        );
+        assert_eq!(status_and_worktrees(&fail, repo, None).1, None);
+        // A plain folder: nothing known.
+        let plain = tempfile::tempdir().unwrap();
+        if !crate::git::status::tests::inside_work_tree(&git, plain.path()) {
+            assert_eq!(status_and_worktrees(&git, plain.path(), None).1, Some(Vec::new()));
+        }
     }
 
     /// `status_of`'s error mapping, fed a ready-made error (the timeout case is slow to

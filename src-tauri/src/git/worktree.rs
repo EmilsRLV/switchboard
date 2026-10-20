@@ -84,11 +84,16 @@ impl Plan {
     /// The command as the sheet previews it: `git` and the argv, an argument with a space (or
     /// empty) in double quotes.
     pub fn command_line(&self) -> String {
-        std::iter::once("git".to_string())
-            .chain(self.argv.iter().map(|a| quote(a)))
-            .collect::<Vec<_>>()
-            .join(" ")
+        command_line(&self.argv)
     }
+}
+
+/// `git` and `argv` as a sheet shows them: an argument with a space (or empty) in double quotes.
+pub fn command_line(argv: &[String]) -> String {
+    std::iter::once("git".to_string())
+        .chain(argv.iter().map(|a| quote(a)))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn quote(arg: &str) -> String {
@@ -329,6 +334,167 @@ pub fn add_with_timeout(git_bin: &Path, project: &Path, plan: &Plan, timeout: Du
     Ok(canonical_or_raw(&plan.path.display().to_string()))
 }
 
+// --- removing a worktree (Story 5.4) ------------------------------------------------------
+
+/// How long `git worktree remove` or `git branch -d` may take before it is killed.
+pub const REMOVE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Why the remove sheet refuses.
+pub const LOCKED: &str = "locked";
+pub const LIVE_IN_WORKTREE: &str = "a session is running in this worktree: ";
+pub const NO_WORKTREE: &str = "this branch has no worktree";
+pub const MAIN_CHECKOUT: &str = "the main checkout cannot be removed";
+
+/// What the "Remove worktree" sheet shows, read-only (Rust owns the checks and the command text):
+/// the worktree, what it holds, the exact commands, and why nothing may run (`refusal`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveCheck {
+    pub branch: String,
+    /// The worktree folder (canonical when it exists, else as git printed it).
+    pub path: String,
+    /// Its folder is gone (or git calls it `prunable`): Remove clears that one stale record
+    /// (`git worktree remove <path>` exits 0 for a missing folder and leaves other records alone).
+    pub missing: bool,
+    pub locked: bool,
+    /// Modified and untracked files inside it (`git status` run there); 0 when missing or locked.
+    pub dirty: u32,
+    /// What **Remove** runs: `git worktree remove <path>` (a missing folder too).
+    pub command: String,
+    /// What the second, explicit confirm runs while dirty: `git worktree remove --force <path>`.
+    pub force_command: Option<String>,
+    /// What runs after a successful remove when "Also delete branch" is ticked.
+    pub delete_command: String,
+    /// Why nothing may run: `locked` (`locked: <reason>` when git has one), a session running
+    /// in it, a status git could not read.
+    pub refusal: Option<String>,
+}
+
+/// The sheet's line for a dirty worktree.
+pub fn dirty_line(count: u32) -> String {
+    let files = if count == 1 { "file" } else { "files" };
+    format!("{count} changed {files} (modified or untracked)")
+}
+
+/// `running` is `(cwd, name)` of every live session and of the folder each running app terminal
+/// started in: the first whose cwd lies inside `path` names who holds the worktree. A terminal
+/// that later changed folder, or another program, is not seen.
+pub fn running_in(path: &str, running: &[(String, String)]) -> Option<String> {
+    let canonical = canonical_or_raw(path);
+    running
+        .iter()
+        .find(|(cwd, _)| {
+            let cwd_canonical = canonical_or_raw(cwd.trim());
+            crate::graph::path_within(&cwd_canonical, &canonical) || crate::graph::path_within(cwd, path)
+        })
+        .map(|(_, name)| name.clone())
+}
+
+/// The argv of the remove (a missing folder too: git then drops just that record), `--force`
+/// only when asked and dirty.
+fn remove_argv(check: &RemoveCheck, force: bool) -> Vec<String> {
+    let mut argv: Vec<String> = vec!["worktree".into(), "remove".into()];
+    if force && check.dirty > 0 {
+        argv.push("--force".into());
+    }
+    argv.push(check.path.clone());
+    argv
+}
+
+fn delete_argv(branch: &str) -> Vec<String> {
+    vec!["branch".into(), "-d".into(), branch.to_string()]
+}
+
+/// Check, read-only, what removing `branch`'s linked worktree would do, from `git worktree list`
+/// run in `project`: locked or missing, the dirty count from `git status` inside the worktree
+/// (its own nested worktrees left out, as the project's poll does), and whether a session or
+/// terminal in `running` has its cwd inside it. `Err` when the project is not a repository or
+/// the branch has no linked worktree (the project's own checkout never counts).
+pub fn remove_check(git_bin: &Path, project: &Path, branch: &str, running: &[(String, String)]) -> Result<RemoveCheck, String> {
+    let (top, entries) = super::branches::worktree_listing(git_bin, project).map_err(|e| branch_error(&e))?;
+    let own = top.display().to_string();
+    let (index, entry) = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| !w.bare && w.branch.as_deref() == Some(branch))
+        .find(|(_, w)| !crate::graph::same_path(&canonical_or_raw(&w.path), &own))
+        .ok_or_else(|| NO_WORKTREE.to_string())?;
+    // The first record is the main checkout (the chip a project that is itself a linked
+    // worktree shows for the main branch): never removed, never stored as history.
+    if index == 0 {
+        return Err(MAIN_CHECKOUT.to_string());
+    }
+    let path = canonical_or_raw(&entry.path);
+    let missing = entry.prunable || !Path::new(&path).is_dir();
+    let mut check = RemoveCheck {
+        branch: branch.to_string(),
+        path: path.clone(),
+        missing,
+        locked: entry.locked,
+        delete_command: command_line(&delete_argv(branch)),
+        ..RemoveCheck::default()
+    };
+    if entry.locked {
+        check.refusal = Some(match &entry.lock_reason {
+            Some(reason) => format!("{LOCKED}: {reason}"),
+            None => LOCKED.to_string(),
+        });
+    } else if let Some(name) = running_in(&path, running) {
+        check.refusal = Some(format!("{LIVE_IN_WORKTREE}{name}"));
+    } else if !missing {
+        let wt = PathBuf::from(&path);
+        let excludes = super::branches::inside_of(&entries, &wt);
+        match super::status::repo_status_with_timeout(git_bin, &wt, super::status::STATUS_TIMEOUT, &excludes) {
+            Ok(status) => check.dirty = status.map(|s| s.dirty).unwrap_or(0),
+            Err(err) => check.refusal = Some(format!("could not read the worktree's status: {}", branch_error(&err))),
+        }
+    }
+    check.command = command_line(&remove_argv(&check, false));
+    check.force_command = (check.dirty > 0).then(|| command_line(&remove_argv(&check, true)));
+    Ok(check)
+}
+
+/// Remove `branch`'s worktree on the sheet's click: [`remove_check`] again (any refusal is the
+/// `Err` and nothing runs), then the command it names, from the project folder. `force` is the
+/// dirty count the operator confirmed discarding: a dirty worktree runs `--force` only when its
+/// count now is exactly that (else the `Err` is the current dirty line). `Err` is git's first
+/// stderr line. Returns the check it ran.
+pub fn remove(git_bin: &Path, project: &Path, branch: &str, force: Option<u32>, running: &[(String, String)]) -> Result<RemoveCheck, String> {
+    let check = remove_check(git_bin, project, branch, running)?;
+    run_remove(git_bin, project, &check, force, REMOVE_TIMEOUT)?;
+    Ok(check)
+}
+
+/// Run what `check` names. Its refusal is the `Err`; so is a dirty worktree unless `force` is
+/// its exact dirty count (what the second confirm stated).
+pub fn run_remove(git_bin: &Path, project: &Path, check: &RemoveCheck, force: Option<u32>, timeout: Duration) -> Result<(), String> {
+    if let Some(refusal) = &check.refusal {
+        return Err(refusal.clone());
+    }
+    if check.dirty > 0 && force != Some(check.dirty) {
+        return Err(dirty_line(check.dirty));
+    }
+    let argv = remove_argv(check, force.is_some());
+    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    crate::process::run(git(git_bin, project, &args), timeout)
+        .map_err(|e| branch_error(&e))?
+        .success()
+        .map_err(|e| branch_error(&e))?;
+    Ok(())
+}
+
+/// `git branch -d <branch>` from the project folder (never `-D`): `Err` is git's refusal
+/// (not fully merged, checked out elsewhere), its first stderr line.
+pub fn delete_branch(git_bin: &Path, project: &Path, branch: &str) -> Result<(), String> {
+    let argv = delete_argv(branch);
+    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    crate::process::run(git(git_bin, project, &args), REMOVE_TIMEOUT)
+        .map_err(|e| branch_error(&e))?
+        .success()
+        .map_err(|e| branch_error(&e))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::branches::tests::{git_ok, real_git, temp_repo};
@@ -515,5 +681,138 @@ mod tests {
         }
         assert_eq!(options_of(&git, dir.path()).unwrap_err(), NOT_A_REPO);
         assert_eq!(options_of(&dir.path().join("no-git.exe"), dir.path()).unwrap_err(), "git unavailable");
+    }
+
+    #[test]
+    fn the_dirty_line_and_the_running_check() {
+        assert_eq!(dirty_line(1), "1 changed file (modified or untracked)");
+        assert_eq!(dirty_line(3), "3 changed files (modified or untracked)");
+        let dir = tempfile::tempdir().unwrap();
+        let wt = dunce::canonicalize(dir.path()).unwrap().join("wt");
+        std::fs::create_dir_all(wt.join("src")).unwrap();
+        let wt_s = wt.display().to_string();
+        let sibling = format!("{wt_s}-other");
+        let running = vec![(sibling.clone(), "elsewhere".to_string()), (wt.join("src").display().to_string(), "spike".to_string())];
+        assert_eq!(running_in(&wt_s, &running).as_deref(), Some("spike"), "a cwd inside it");
+        assert_eq!(running_in(&wt_s, &running[..1]), None, "a sibling with the same prefix is not inside");
+        if cfg!(windows) {
+            let upper = vec![(wt_s.to_uppercase().replace('\\', "/"), "x".to_string())];
+            assert_eq!(running_in(&wt_s, &upper).as_deref(), Some("x"));
+        }
+    }
+
+    fn count_worktrees(git: &Path, repo: &Path) -> usize {
+        git_ok(git, repo, &["worktree", "list", "--porcelain"]).lines().filter(|l| l.starts_with("worktree ")).count()
+    }
+
+    #[test]
+    fn remove_checks_and_runs_on_a_temp_repo() {
+        let Some(git) = real_git() else {
+            eprintln!("git not on PATH; skipping");
+            return;
+        };
+        let dir = temp_repo(&git);
+        let repo = dir.path();
+        let top = dunce::canonicalize(repo).unwrap();
+        let add = |name: &str| {
+            let path = top.join(".worktrees").join(name);
+            git_ok(&git, repo, &["worktree", "add", "-q", "-b", name, &path.display().to_string(), "main"]);
+            path
+        };
+        let none: &[(String, String)] = &[];
+
+        // The project's own checkout, and a branch without a worktree: nothing to remove.
+        assert_eq!(remove_check(&git, repo, "main", none).unwrap_err(), NO_WORKTREE);
+        git_ok(&git, repo, &["branch", "plain"]);
+        assert_eq!(remove_check(&git, repo, "plain", none).unwrap_err(), NO_WORKTREE);
+
+        // Clean: one command, no force; the branch survives the removal.
+        let clean = add("clean");
+        let check = remove_check(&git, repo, "clean", none).unwrap();
+        let path = clean.display().to_string();
+        assert_eq!(check.path, path);
+        assert_eq!((check.missing, check.locked, check.dirty, check.refusal.clone()), (false, false, 0, None));
+        assert_eq!(check.command, format!("git worktree remove {path}"));
+        assert_eq!(check.force_command, None);
+        assert_eq!(check.delete_command, "git branch -d clean");
+        let before = count_worktrees(&git, repo);
+        remove(&git, repo, "clean", None, none).unwrap();
+        assert!(!clean.exists(), "the folder went");
+        assert_eq!(count_worktrees(&git, repo), before - 1);
+        git_ok(&git, repo, &["show-ref", "--verify", "--quiet", "refs/heads/clean"]);
+        // Merged into main: `-d` deletes it.
+        delete_branch(&git, repo, "clean").unwrap();
+        assert!(git_ok(&git, repo, &["branch", "--list", "clean"]).trim().is_empty());
+
+        // Dirty: 2 modified + 1 untracked is 3; Remove is refused, force runs `--force`.
+        let feat = add("feat");
+        std::fs::write(feat.join("b.txt"), "b").unwrap();
+        git_ok(&git, &feat, &["add", "b.txt"]);
+        git_ok(&git, &feat, &["commit", "-q", "-m", "b on feat"]);
+        std::fs::write(feat.join("a.txt"), "changed").unwrap();
+        std::fs::write(feat.join("b.txt"), "changed").unwrap();
+        std::fs::write(feat.join("c.txt"), "new").unwrap();
+        let check = remove_check(&git, repo, "feat", none).unwrap();
+        assert_eq!(check.dirty, 3);
+        assert_eq!(check.refusal, None);
+        let path = feat.display().to_string();
+        assert_eq!(check.command, format!("git worktree remove {path}"));
+        assert_eq!(check.force_command.as_deref(), Some(format!("git worktree remove --force {path}").as_str()));
+        assert_eq!(remove(&git, repo, "feat", None, none).unwrap_err(), dirty_line(3));
+        // A force confirmed for another count (the sheet showed 2): refused with the current line.
+        assert_eq!(remove(&git, repo, "feat", Some(2), none).unwrap_err(), dirty_line(3));
+        assert!(feat.join("c.txt").is_file(), "nothing ran");
+        // A session running in it: refused, named, even with force.
+        let running = vec![(feat.join("sub").display().to_string(), "spike".to_string())];
+        let check = remove_check(&git, repo, "feat", &running).unwrap();
+        assert_eq!(check.refusal.as_deref(), Some("a session is running in this worktree: spike"));
+        assert_eq!(remove(&git, repo, "feat", Some(3), &running).unwrap_err(), "a session is running in this worktree: spike");
+        assert!(feat.is_dir());
+        remove(&git, repo, "feat", Some(3), none).unwrap();
+        assert!(!feat.exists(), "forced");
+        git_ok(&git, repo, &["show-ref", "--verify", "--quiet", "refs/heads/feat"]);
+        // Not merged: `-d` refuses with git's message, the branch stays.
+        let err = delete_branch(&git, repo, "feat").unwrap_err();
+        assert!(err.contains("not fully merged"), "{err}");
+        git_ok(&git, repo, &["show-ref", "--verify", "--quiet", "refs/heads/feat"]);
+
+        // Locked: refused with git's reason, no force; without a reason just `locked`.
+        let locked = add("locked");
+        git_ok(&git, repo, &["worktree", "lock", "--reason", "testing", &locked.display().to_string()]);
+        let check = remove_check(&git, repo, "locked", none).unwrap();
+        assert!(check.locked);
+        assert_eq!(check.refusal.as_deref(), Some("locked: testing"));
+        assert_eq!(remove(&git, repo, "locked", Some(0), none).unwrap_err(), "locked: testing");
+        assert!(locked.is_dir());
+        git_ok(&git, repo, &["worktree", "unlock", &locked.display().to_string()]);
+        git_ok(&git, repo, &["worktree", "lock", &locked.display().to_string()]);
+        assert_eq!(remove_check(&git, repo, "locked", none).unwrap().refusal.as_deref(), Some(LOCKED));
+        git_ok(&git, repo, &["worktree", "unlock", &locked.display().to_string()]);
+
+        // The main checkout, seen from a project that is itself a linked worktree: refused.
+        assert_eq!(remove_check(&git, &locked, "main", none).unwrap_err(), MAIN_CHECKOUT);
+
+        // Two missing folders: Remove clears only the selected record.
+        let gone = add("gone");
+        let other = add("other-gone");
+        std::fs::remove_dir_all(&gone).unwrap();
+        std::fs::remove_dir_all(&other).unwrap();
+        let check = remove_check(&git, repo, "gone", none).unwrap();
+        assert!(check.missing);
+        assert_eq!(check.dirty, 0);
+        assert_eq!(check.command, format!("git worktree remove {}", check.path));
+        let before = count_worktrees(&git, repo);
+        remove(&git, repo, "gone", None, none).unwrap();
+        assert_eq!(count_worktrees(&git, repo), before - 1);
+        assert_eq!(remove_check(&git, repo, "gone", none).unwrap_err(), NO_WORKTREE);
+        assert!(remove_check(&git, repo, "other-gone", none).unwrap().missing, "the other stale record stays");
+
+        // git itself refuses (here: the worktree is not a worktree any more): its first line.
+        let stale = RemoveCheck {
+            path: top.join(".worktrees").join("never").display().to_string(),
+            ..RemoveCheck::default()
+        };
+        let err = run_remove(&git, repo, &stale, None, REMOVE_TIMEOUT).unwrap_err();
+        assert!(!err.is_empty() && !err.contains('\n'), "{err}");
     }
 }

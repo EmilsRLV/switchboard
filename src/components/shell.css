@@ -480,6 +480,36 @@
   gap: 0.4rem;
 }
 
+/* --- remove-worktree sheet (Story 5.4): the app's first confirmation. The branch, its folder,
+   what the checks found and the worktree sheet's command preview. Tokens only; the accent
+   appears only through .pane-error. ------------------------------------------------------ */
+
+.remove-worktree-branch {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.remove-worktree-path {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.remove-worktree-dirty {
+  margin: 0;
+  font-size: var(--text-md);
+  color: var(--fg);
+}
+
+.remove-worktree-name {
+  font-family: var(--font-mono);
+}
+
 /* --- palette ------------------------------------------------------------------------- */
 
 .palette-backdrop {

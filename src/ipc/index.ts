@@ -514,6 +514,32 @@ export type WorktreePreview = {
 /** Mirrors `ipc::WorktreeAdded`: the snapshot once the branches were re-read, and the new card's id. */
 export type WorktreeAdded = { snapshot: WorkspaceSnapshot; branchId: string };
 
+/**
+ * Mirrors `worktree::RemoveCheck` (Story 5.4): what the "Remove worktree" sheet shows, read-only.
+ * Rust owns the checks and every command's text.
+ */
+export type RemoveWorktreeCheck = {
+  branch: string;
+  /** The worktree folder (canonical when it exists). */
+  path: string;
+  /** The folder is gone: Remove clears that one stale record. */
+  missing: boolean;
+  locked: boolean;
+  /** Modified and untracked files inside it; 0 when missing or locked. */
+  dirty: number;
+  /** What Remove runs: `git worktree remove <path>` (a missing folder too). */
+  command: string;
+  /** What the second confirm runs while dirty: `git worktree remove --force <path>`. */
+  forceCommand: string | null;
+  /** What runs after the remove when "Also delete branch" is ticked: `git branch -d <name>`. */
+  deleteCommand: string;
+  /** Why nothing may run (`locked` or `locked: <reason>`, a session running in it); `null` when it may. */
+  refusal: string | null;
+};
+
+/** Mirrors `ipc::WorktreeRemoved`: the snapshot once re-read, and how the branch delete went. */
+export type WorktreeRemoved = { snapshot: WorkspaceSnapshot; branchDeleted: boolean; deleteError: string | null };
+
 /** Return type of every command, keyed by command name. */
 type Commands = {
   app_info: AppInfo;
@@ -528,6 +554,8 @@ type Commands = {
   project_set_show_branches: WorkspaceSnapshot;
   worktree_preview: WorktreePreview;
   worktree_add: WorktreeAdded;
+  worktree_remove_preview: RemoveWorktreeCheck;
+  worktree_remove: WorktreeRemoved;
   workspace_move_node: WorkspaceSnapshot;
   workspace_relayout_children: WorkspaceSnapshot;
   claude_projects_list: ClaudeProject[];
@@ -672,6 +700,32 @@ export function worktreePreview(projectId: string, request: WorktreeRequest): Pr
  */
 export function worktreeAdd(projectId: string, request: WorktreeRequest): Promise<WorktreeAdded> {
   return call("worktree_add", { projectId, request });
+}
+
+/**
+ * `ipc::worktree_remove_preview` (Story 5.4) -- read-only: the "Remove worktree" sheet's checks
+ * (missing, locked, the dirty count, a live session in it) and the exact commands. Rejects for an
+ * unknown project or a branch without a linked worktree.
+ */
+export function worktreeRemovePreview(projectId: string, branch: string): Promise<RemoveWorktreeCheck> {
+  return call("worktree_remove_preview", { projectId, branch });
+}
+
+/**
+ * `ipc::worktree_remove` (Story 5.4) -- the sheet's click: Rust checks again and runs
+ * `git worktree remove [--force] <path>` (a missing folder too), then, with `deleteBranch`,
+ * `git branch -d <branch>`. A force carries `dirty`, the count the second confirm stated; Rust
+ * refuses when the worktree's count is not that any more. Rejects with the refusal or git's
+ * first stderr line.
+ */
+export function worktreeRemove(
+  projectId: string,
+  branch: string,
+  force: boolean,
+  dirty: number | null,
+  deleteBranch: boolean,
+): Promise<WorktreeRemoved> {
+  return call("worktree_remove", { projectId, branch, force, dirty, deleteBranch });
 }
 
 /**

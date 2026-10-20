@@ -191,6 +191,22 @@ drag handle) follows every rule here.
   `--fg-muted`, wrapping anywhere, `—` while there is nothing to run. Then **Create**, the reason beside it
   while disabled (`--text-xs` `--fg-muted`), and a refusal or git's error under it as `.pane-error` text
   (`role="alert"`). Tokens only; the accent appears only through `.pane-error`. No new motion.
+- **The remove-worktree sheet** ("Remove worktree…" on a branch card with a worktree chip, Story 5.4) is the
+  app's first confirmation, a pane at the worktree sheet's width: the title `Remove worktree`, the branch
+  (`--text-md` / 500) and the worktree's full path under it (mono `--text-xs` `--fg-muted`, wrapping anywhere,
+  selectable). Then what the checks found, one line each: `N changed files (modified or untracked)` in `--fg`
+  for a dirty worktree, `No changed files.` or the missing-folder line in `--fg-muted`; a refusal (`locked`, a
+  session running in it, or an app terminal that was started in it) is `.pane-error` text and the sheet
+  offers no button. Then the checkbox **Also delete
+  branch `<name>`** (off; the launch sheet's checkbox look, the name mono) with the muted `--text-xs` line `The
+  branch is kept.` while it is off, the `Runs` heading and the worktree sheet's command preview block (one
+  command per line, both when the box is ticked). Then one ordinary button: **Remove**; on a dirty worktree
+  **Force remove…**, which, pressed, turns disabled and reveals a second ordinary button in its own row below
+  it that states the loss, `Discard N changed files and remove`, disabled for its first 0.6 s and never
+  focused on appearing, so a double-click cannot confirm. No colour marks the destructive step: the words do,
+  and focus starts on **Close**, never on a button that removes (Enter on those is swallowed). git's error, or a refused branch delete under the
+  muted `Worktree removed; the branch was kept.`, is `.pane-error` text (`role="alert"`). Tokens only; the
+  accent appears only through `.pane-error`. No new motion.
 - **The palette** is centred near the top over a dimmed page (`--bg` at 55%): `--bg-raised`, 1-px border,
   `--radius-md`; rows in `--text-base`, key hints in `--text-sm` `--fg-muted`.
 - **The context menu** is the palette's row look at the pointer: `--bg-raised`, 1-px border,
@@ -335,7 +351,7 @@ Only six motions exist; every one is instant (or static) under `prefers-reduced-
 | Attention pulse (the accent dot before `finished` / `waiting`: the busy pulse) | 1.2 s |
 | Project glow (the accent outline around a project needing you: opacity 1 → 0.4, ease-in-out, alternating, looping; opacity only) | 1.2 s |
 
-Panes (the terminal pane and the launch and worktree sheets too), terminal tabs and pop-out windows, banners, the notice, the menu and the Elsewhere tray appear without animation.
+Panes (the terminal pane and the launch, worktree and remove-worktree sheets too), terminal tabs and pop-out windows, banners, the notice, the menu and the Elsewhere tray appear without animation.
 
 ## Icons
 

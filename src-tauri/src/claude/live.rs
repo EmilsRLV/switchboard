@@ -26,7 +26,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use super::hooks::{HookSignal, WaitKind};
-use crate::graph::{self, LiveChild, Workspace};
+use crate::graph::{self, KnownWorktrees, LiveChild, Workspace};
 use crate::process::{self, RunError};
 use crate::settings::{AppState, BinaryStatus, SettingsState};
 
@@ -357,6 +357,13 @@ impl LiveMap {
     /// Returns the sessions that entered `Finished` / `Waiting` with this poll (none on a
     /// failure, a startup `idle`, or for a session already in that state).
     pub fn apply_at(&mut self, polled: Result<Vec<LiveRow>, String>, workspace: &Workspace, now: i64) -> Vec<Transition> {
+        self.apply_in(polled, workspace, &HashMap::new(), now)
+    }
+
+    /// [`LiveMap::apply_at`], with each row's project also matched through the worktrees git
+    /// lists for each project (`known`, Story 5.4; `graph::project_for_cwd_in`): a session in a
+    /// worktree the app never stored is not sent to the Elsewhere tray.
+    pub fn apply_in(&mut self, polled: Result<Vec<LiveRow>, String>, workspace: &Workspace, known: &KnownWorktrees, now: i64) -> Vec<Transition> {
         let rows = match polled {
             Ok(rows) => rows,
             Err(cause) => {
@@ -374,7 +381,7 @@ impl LiveMap {
             if next.contains_key(&row.session_id) || self.app_exited.contains_key(&row.session_id) {
                 continue;
             }
-            let project_id = graph::project_for_cwd(workspace, &row.cwd);
+            let project_id = graph::project_for_cwd_in(workspace, known, &row.cwd);
             let previous = self.sessions.get(&row.session_id);
             let polled = SessionState::from_status(row.status.as_deref());
             let busy_seen = match polled {
@@ -472,7 +479,7 @@ impl LiveMap {
             gone.attention_since = None;
             gone.last_line = None;
             gone.detail = None;
-            gone.project_id = graph::project_for_cwd(workspace, &gone.cwd);
+            gone.project_id = graph::project_for_cwd_in(workspace, known, &gone.cwd);
             next.insert(id.clone(), gone);
         }
         while self.exited_order.len() > MAX_EXITED {
@@ -964,11 +971,14 @@ pub async fn refresh<R: Runtime>(app: &AppHandle<R>) -> LiveSnapshot {
 /// decision (`crate::notify::on_transitions`).
 pub fn apply_and_emit<R: Runtime>(app: &AppHandle<R>, polled: Result<Vec<LiveRow>, String>) -> LiveSnapshot {
     let state = app.state::<AppState>();
-    let workspace = state.read_workspace().workspace.clone();
+    let (workspace, known) = {
+        let st = state.read_workspace();
+        (st.workspace.clone(), st.worktrees.clone())
+    };
     let (after, mut transitions) = {
         let mut map = state.write_sessions_live();
         let before = map.snapshot();
-        let transitions = map.apply(polled, &workspace);
+        let transitions = map.apply_in(polled, &workspace, &known, now_ms());
         let after = map.snapshot();
         // Announced under the map lock: a launched session's first-output or exit change made
         // on a PTY thread can never be overtaken by an older snapshot.
@@ -1254,6 +1264,29 @@ mod tests {
         map.apply(rows("busy"), &ws);
         assert_eq!(map.sessions["s1"].state, SessionState::Busy);
         assert!(map.exited.is_empty());
+    }
+
+    #[test]
+    fn a_row_in_a_worktree_git_lists_for_a_project_is_not_elsewhere() {
+        let ws = workspace_with_ide();
+        let sep = std::path::MAIN_SEPARATOR;
+        let wt = format!("{}{sep}.claude{sep}worktrees{sep}x", ide_path());
+        let polled = || parse_rows(&Value::Array(vec![row("x", &wt, "busy")]).to_string());
+        let mut map = LiveMap::default();
+        map.apply(polled(), &ws);
+        assert_eq!(map.snapshot().elsewhere.len(), 1, "without the list: Elsewhere");
+        let known = HashMap::from([(
+            "ide".to_string(),
+            vec![graph::KnownWorktree {
+                path: wt.clone(),
+                branch: Some("worktree-x".into()),
+            }],
+        )]);
+        map.apply_in(polled(), &ws, &known, now_ms());
+        let snap = map.snapshot();
+        assert!(snap.elsewhere.is_empty());
+        assert_eq!(snap.sessions["x"].project_id.as_deref(), Some("ide"));
+        assert_eq!(map.live_children()["ide"][0].cwd, wt);
     }
 
     #[test]
