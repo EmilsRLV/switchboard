@@ -2,7 +2,7 @@
 title: 'Story 5.3: Session on a branch'
 type: 'feature'
 created: '2026-10-20'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'df6c75edb42d3d99647816a066e9a868abf9ed78'
