@@ -2,7 +2,7 @@
 title: 'Story 5.2: Create a worktree node'
 type: 'feature'
 created: '2026-10-20'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '932a31fd7be52c0b4105625d6f4dedc4c01c028d'
