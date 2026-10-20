@@ -2,7 +2,7 @@
 title: 'Story 5.4: Sessions follow worktrees; remove worktree'
 type: 'feature'
 created: '2026-10-20'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '708b70a05962a78944a70a4d2a570f6388bd6e01'
