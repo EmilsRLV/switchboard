@@ -2,7 +2,7 @@
 title: 'Story 6.2: Context edges at launch'
 type: 'feature'
 created: '2026-10-21'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'd593fe2ecba64fb31d92c125631917f03b336d6f'
@@ -116,7 +116,7 @@ context:
 
 - 2026-10-21 GUI pass (orchestrator, scratch folder projects `alpha` and `beta`, `claude.path` = the scratchpad stub that prints its argv): dragging alpha's handle to beta drew the dashed context edge; `n` on alpha opened the sheet with ADD-DIRS prefilled `C:\…\edgedemo\beta` marked `via edge → beta`; Start ran the stub with `--add-dir <…\edgedemo\beta>` in its argv and cwd alpha. Resume, fork and the `not added:` line were not driven in the GUI (the Rust IPC test and vitest cover them).
 
-- 2026-10-21 GUI re-run after the patch round (orchestrator, same scratch projects, stub `claude`): the same result: the prefilled row `C:\…\edgedemoeta` with `via edge → beta` (suffix laid out beside Remove), and the stub's argv carried `--add-dir <…\edgedemoeta>`.
+- 2026-10-21 GUI re-run after the patch round (orchestrator, same scratch projects, stub `claude`): the same result: the prefilled row `C:\…\edgedemo\beta` with `via edge → beta` (suffix laid out beside Remove), and the stub's argv carried `--add-dir <…\edgedemo\beta>`.
 
 ## Spec Change Log
 
