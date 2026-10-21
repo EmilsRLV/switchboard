@@ -2,7 +2,7 @@
 title: 'Story 6.1: Draw and persist edges'
 type: 'feature'
 created: '2026-10-21'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'a2ef38ceeb697580861b108a30add93533efd50e'
