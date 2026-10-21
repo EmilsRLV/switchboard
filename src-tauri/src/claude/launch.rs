@@ -124,6 +124,11 @@ pub struct LaunchPrefill {
     /// The project's sheet of a git project: its top level, where `--worktree` runs (the
     /// sheet states `<top>/.claude/worktrees/<name>`). `None` elsewhere: no `--worktree` offer.
     pub repo_top: Option<String>,
+    /// Story 6.2: the folders the project's outgoing context edges grant, each with the label
+    /// of the edge's target; the sheet prefills its add-dirs with them. Never remembered.
+    pub add_dirs: Vec<graph::EdgeDir>,
+    /// The project's context edges whose target gives no folder (the sheet's `not added:` line).
+    pub skipped: Vec<graph::SkippedEdge>,
 }
 
 /// The "Worktree" section of a branch sheet whose branch has no worktree: the command and
@@ -371,11 +376,11 @@ pub enum LaunchKind {
 /// - Resume: `--resume <id>` (its `id`; `session_id` is the same id);
 /// - Fork: `--resume <from> --fork-session --session-id <id> --name <name>`.
 ///
-/// The common tail is `[--model <m>] [--effort <e>] [--permission-mode <p>] --settings <path>
-/// --append-system-prompt <context>`; a New launch also gets `[--add-dir <d>]…` before
-/// `--settings` and `[<prompt>]` last (Resume and Fork never pass add-dirs or a prompt). A
-/// choice left at `default` is omitted; the prompt is the last argument, only when not blank
-/// (after a `--` when it starts with `-`, so it is never read as a flag). `req.add_dirs` are
+/// The common tail is `[--model <m>] [--effort <e>] [--permission-mode <p>] [--add-dir <d>]…
+/// --settings <path> --append-system-prompt <context>` (Resume and Fork pass the add-dirs their
+/// context edges grant, Story 6.2); a New launch also gets `[<prompt>]` last (never Resume or
+/// Fork). A choice left at `default` is omitted; the prompt is the last argument, only when not
+/// blank (after a `--` when it starts with `-`, so it is never read as a flag). `req.add_dirs` are
 /// taken as given (see [`normalise_add_dirs`]). Validation failures are `Err`: a blank name
 /// (New and Fork), `bypassPermissions`, an effort or mode not offered.
 pub fn build_args(kind: &LaunchKind, req: &LaunchRequest, session_id: &str, settings_path: &Path, system_prompt: &str) -> Result<Vec<String>, String> {
@@ -401,13 +406,11 @@ pub fn build_args(kind: &LaunchKind, req: &LaunchRequest, session_id: &str, sett
             args.push(value.into());
         }
     }
-    let new = *kind == LaunchKind::New;
-    if new {
-        for dir in &req.add_dirs {
-            args.push("--add-dir".into());
-            args.push(dir.clone());
-        }
+    for dir in &req.add_dirs {
+        args.push("--add-dir".into());
+        args.push(dir.clone());
     }
+    let new = *kind == LaunchKind::New;
     args.push("--settings".into());
     args.push(settings_path.display().to_string());
     args.push("--append-system-prompt".into());
@@ -552,6 +555,8 @@ pub fn prefill(project: Option<&graph::LaunchDefaults>, settings: &settings::Lau
         target_path: None,
         worktree_plan: None,
         repo_top: None,
+        add_dirs: Vec::new(),
+        skipped: Vec::new(),
     }
 }
 
@@ -934,25 +939,42 @@ mod tests {
     }
 
     #[test]
-    fn resume_and_fork_change_only_the_head_and_never_pass_add_dirs_or_a_prompt() {
+    fn resume_and_fork_change_only_the_head_pass_add_dirs_and_never_a_prompt() {
         const NEW: &str = "9c1e3f2a-5b7d-4e8f-9a0b-1c2d3e4f5a6b";
         let req = LaunchRequest {
             name: "ide-59cd-fork-9c1e".into(),
             model: Some("opus".into()),
             effort: Some("default".into()),
             permission_mode: Some("plan".into()),
-            add_dirs: vec!["/work/a".into()],
+            add_dirs: vec!["/work/a".into(), "/work/b c".into()],
             prompt: Some("hi".into()),
             ..request()
         };
-        let tail = ["--model", "opus", "--permission-mode", "plan", "--settings", "s.json", "--append-system-prompt", "ctx"];
+        let tail = [
+            "--model",
+            "opus",
+            "--permission-mode",
+            "plan",
+            "--add-dir",
+            "/work/a",
+            "--add-dir",
+            "/work/b c",
+            "--settings",
+            "s.json",
+            "--append-system-prompt",
+            "ctx",
+        ];
         let resume = build_args(&LaunchKind::Resume { id: ID.into() }, &req, ID, Path::new("s.json"), "ctx").unwrap();
         let expected: Vec<&str> = ["--resume", ID].into_iter().chain(tail).collect();
         assert_eq!(resume, expected);
-        assert!(!resume.iter().any(|a| a == "--session-id" || a == "--name" || a == "--add-dir" || a == "hi"));
+        assert!(!resume.iter().any(|a| a == "--session-id" || a == "--name" || a == "hi"));
         // A resume needs no name: a blank one is not refused.
         let blank = LaunchRequest { name: " ".into(), ..req.clone() };
         assert!(build_args(&LaunchKind::Resume { id: ID.into() }, &blank, ID, Path::new("s.json"), "ctx").is_ok());
+        // No add-dirs: none passed.
+        let bare = LaunchRequest { add_dirs: Vec::new(), ..req.clone() };
+        let resume = build_args(&LaunchKind::Resume { id: ID.into() }, &bare, ID, Path::new("s.json"), "ctx").unwrap();
+        assert!(!resume.iter().any(|a| a == "--add-dir"));
 
         let fork = build_args(&LaunchKind::Fork { from: ID.into() }, &req, NEW, Path::new("s.json"), "ctx").unwrap();
         let expected: Vec<&str> = ["--resume", ID, "--fork-session", "--session-id", NEW, "--name", "ide-59cd-fork-9c1e"]
@@ -960,6 +982,7 @@ mod tests {
             .chain(tail)
             .collect();
         assert_eq!(fork, expected);
+        assert!(!fork.iter().any(|a| a == "hi"), "a prompt stays New-only");
         assert_eq!(
             build_args(&LaunchKind::Fork { from: ID.into() }, &blank, NEW, Path::new("s.json"), "ctx"),
             Err("name must not be blank".to_string())
@@ -1154,6 +1177,8 @@ mod tests {
                 target_path: None,
                 worktree_plan: None,
                 repo_top: None,
+                add_dirs: Vec::new(),
+                skipped: Vec::new(),
             }
         );
         let project = graph::LaunchDefaults {

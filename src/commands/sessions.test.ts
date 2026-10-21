@@ -97,6 +97,36 @@ describe("the launch sheet commands", () => {
     await expect(openLaunchSheet("nope")).resolves.toBe(false);
   });
 
+  it("prefills the add-dirs from the project's context edges and keeps their labels and the skipped ones (Story 6.2)", async () => {
+    const edges = {
+      addDirs: [{ path: "/p/ui", via: "ui" }],
+      skipped: [{ label: "old", reason: "no worktree" }],
+    };
+    runtime({ launch_defaults: () => ({ sessionId: "3f2a-id", name: "ide-3f2a", model: "default", effort: "default", permissionMode: "default", ...edges }) });
+    await expect(openLaunchSheet("ide")).resolves.toBe(true);
+    const sheet = useLaunchStore.getState();
+    expect(sheet.form?.addDirs).toEqual(["/p/ui"]);
+    expect(sheet.edgeDirs).toEqual(edges.addDirs);
+    expect(sheet.skipped).toEqual(edges.skipped);
+    // Removed for this launch only: the label list stays (the edge is not touched).
+    removeAddDir(0);
+    expect(useLaunchStore.getState().form?.addDirs).toEqual([]);
+    expect(useLaunchStore.getState().edgeDirs).toEqual(edges.addDirs);
+    // The branch sheet on that project gets the same prefill.
+    runtime({
+      launch_defaults: (args) => {
+        expect(args).toEqual({ projectId: "ide", branch: "feat" });
+        return { sessionId: "4b1c-id", name: "ide-4b1c", model: "default", effort: "default", permissionMode: "default", branch: "feat", targetPath: "/p/wt", ...edges };
+      },
+    });
+    await expect(openLaunchSheet("ide", "feat")).resolves.toBe(true);
+    expect(useLaunchStore.getState()).toMatchObject({ branch: "feat", edgeDirs: edges.addDirs, skipped: edges.skipped });
+    expect(useLaunchStore.getState().form?.addDirs).toEqual(["/p/ui"]);
+    // A sheet opened without edges has none.
+    await openSheet();
+    expect(useLaunchStore.getState()).toMatchObject({ edgeDirs: [], skipped: [] });
+  });
+
   it("starts in the foreground: the terminal is known, the pane opens on it, the child is selected and its project expanded", async () => {
     await openSheet();
     let sent: { request: LaunchRequest } | null = null;
@@ -408,6 +438,20 @@ describe("resume, fork and stop (Story 4.4)", () => {
     expect(useUiStore.getState().selection).toEqual({ kind: "session", id: "orig" });
     expect(useUiStore.getState().pane).toBe("terminal");
     expect(useUiStore.getState().activeTerminal).toBe("session:orig");
+  });
+
+  it("Resume and Fork name the context edges that gave no folder (Story 6.2)", async () => {
+    const skipped = [{ label: "feat", reason: "no worktree" }];
+    runtime({ session_resume: () => ({ session_id: "orig", term: sessionTerm("orig"), choices, skipped }) });
+    await expect(resumeSelectedSession()).resolves.toBe(true);
+    expect(useUiStore.getState().notice).toEqual({ text: "resumed without: feat (no worktree) · resumed with model opus, effort default, mode plan" });
+    runtime({ session_fork: () => ({ session_id: "fork-1", term: sessionTerm("fork-1"), choices, skipped: [] }) });
+    useUiStore.setState({ selection: { kind: "session", id: "orig" } });
+    await expect(forkSelectedSession()).resolves.toBe(true);
+    expect(useUiStore.getState().notice).toEqual({ text: "forked with model opus, effort default, mode plan" });
+    expect(startedNotice("forked", choices, [...skipped, { label: "ui", reason: "folder missing" }])).toBe(
+      "forked without: feat (no worktree), ui (folder missing) · forked with model opus, effort default, mode plan",
+    );
   });
 
   it("Resume over a popped-out terminal returns it to the pane only once the resume succeeded (Story 4.5)", async () => {

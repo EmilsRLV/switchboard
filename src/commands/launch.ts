@@ -3,7 +3,7 @@
 // field or select, Enter in the prompt is a newline, ctrl+Enter starts from anywhere). Rust owns
 // the launch itself (`claude/launch.rs`): it validates again, assigns the id and builds the argv.
 
-import type { LaunchPrefill, LaunchRequest, WorktreePlanPreview } from "../ipc";
+import type { EdgeDir, LaunchPrefill, LaunchRequest, SkippedEdge, WorktreePlanPreview } from "../ipc";
 
 /** The choice that leaves a flag out (`claude`'s own default applies). */
 export const DEFAULT_CHOICE = "default";
@@ -123,7 +123,8 @@ function offered(value: string, choices: readonly string[]): string {
 /**
  * The sheet's first state from Rust's prefill (the project's last choices, else settings, else
  * `default`): a model that is not a named entry is `custom` with its text; an effort or mode
- * not offered reads as `default`. Add-dirs and the prompt start empty, background off.
+ * not offered reads as `default`. The add-dirs start as the folders the project's context
+ * edges grant (Story 6.2, resolved by Rust), the prompt empty, background off.
  */
 export function formFromPrefill(prefill: LaunchPrefill): LaunchForm {
   const model = prefill.model.trim() || DEFAULT_CHOICE;
@@ -134,7 +135,7 @@ export function formFromPrefill(prefill: LaunchPrefill): LaunchForm {
     customModel: named ? "" : model,
     effort: offered(prefill.effort, EFFORT_CHOICES),
     permissionMode: offered(prefill.permissionMode, PERMISSION_CHOICES),
-    addDirs: [],
+    addDirs: (prefill.addDirs ?? []).map((dir) => dir.path),
     prompt: "",
     background: false,
     useWorktree: false,
@@ -262,6 +263,21 @@ export function withAddDir(dirs: readonly string[], path: string, targetPath: st
   const trimmed = path.trim();
   if (trimmed === "" || samePath(trimmed, targetPath) || dirs.some((d) => samePath(d, trimmed))) return [...dirs];
   return [...dirs, trimmed];
+}
+
+/** The label of the context edge that granted `dir` (`via edge → <label>` on its row), or `null` for a folder added by hand. */
+export function edgeVia(edgeDirs: readonly EdgeDir[], dir: string): string | null {
+  return edgeDirs.find((d) => samePath(d.path, dir))?.via ?? null;
+}
+
+/**
+ * The note naming context edges whose target gives no folder (Story 6.2): `<prefix>: feat (no
+ * worktree), ui (folder missing)`; `null` when there are none. The sheet's prefix is
+ * `not added`, a resume's `resumed without`, a fork's `forked without`.
+ */
+export function skippedNote(prefix: string, skipped: readonly SkippedEdge[] | undefined): string | null {
+  if (skipped === undefined || skipped.length === 0) return null;
+  return `${prefix}: ${skipped.map((s) => `${s.label} (${s.reason})`).join(", ")}`;
 }
 
 /** `dirs` without the entry at `index`. */

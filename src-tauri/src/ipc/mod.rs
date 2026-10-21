@@ -878,6 +878,9 @@ pub struct LaunchResult {
     /// The model, effort and permission mode the session was started with (`default`: the
     /// flag was left out). Resume and Fork name them in their notice (Story 4.4).
     pub choices: LaunchChoices,
+    /// Story 6.2, Resume and Fork: the context edges whose target gave no folder (the notice
+    /// names them, `resumed without: …`). Empty for a sheet launch.
+    pub skipped: Vec<graph::SkippedEdge>,
 }
 
 /// The three choices a launch used, as `LaunchResult.choices` carries them.
@@ -908,6 +911,8 @@ impl LaunchChoices {
 /// `git worktree add` the Start runs first (Story 5.2's plan for `{ existing, branch }`, read-only;
 /// a refusal is the section's error). An unknown branch or a missing worktree folder is the `Err`.
 /// On the project's sheet of a git project the reply carries its top level, for `--worktree`.
+/// Story 6.2: `addDirs` are the folders the project's outgoing context edges grant (both sheets;
+/// the folder the session runs in is left out), `skipped` the edges that grant none.
 #[tauri::command]
 pub async fn launch_defaults<R: Runtime>(app: AppHandle<R>, project_id: String, branch: Option<String>) -> Result<LaunchPrefill, String> {
     let state = app.state::<AppState>();
@@ -974,6 +979,13 @@ pub async fn launch_defaults<R: Runtime>(app: AppHandle<R>, project_id: String, 
             (Some(path.clone()), None, top)
         }
     };
+    let edges_app = app.clone();
+    let source = [graph::NodeRef {
+        kind: graph::NodeType::Project,
+        id: project_id.clone(),
+    }];
+    let own = target_path.clone().unwrap_or_else(|| path.clone());
+    let (add_dirs, skipped) = blocking(move || edge_add_dirs(&edges_app.state::<AppState>(), &source, &own)).await?;
     let settings = state.read().settings.defaults.clone();
     let session_id = state.launcher.propose(&project_id);
     let name = launch::default_name(&label, &session_id);
@@ -982,8 +994,47 @@ pub async fn launch_defaults<R: Runtime>(app: AppHandle<R>, project_id: String, 
         target_path,
         worktree_plan,
         repo_top,
+        add_dirs,
+        skipped,
         ..launch::prefill(project_defaults.as_ref(), &settings, session_id, name)
     })
+}
+
+/// The add-dirs the context edges leaving `from` grant, for a session running in `cwd`, and the
+/// edges skipped: branch ends resolve against the latest branch lists, the worktrees the status
+/// poll listed and the branch checked out in each project's folder. The targets are read under
+/// the workspace lock ([`graph::context_targets`]); the folders are checked and canonicalised
+/// after it is released ([`graph::resolve_context_targets`]). Blocking: call it off the async
+/// runtime.
+fn edge_add_dirs(state: &AppState, from: &[graph::NodeRef], cwd: &str) -> (Vec<graph::EdgeDir>, Vec<graph::SkippedEdge>) {
+    let heads: HashMap<String, String> = state
+        .read_live()
+        .statuses
+        .iter()
+        .filter_map(|(id, status)| match status {
+            git::ProjectStatus::Repo(repo) if !repo.detached => Some((id.clone(), repo.branch.clone())),
+            _ => None,
+        })
+        .collect();
+    let targets = graph::context_targets(&state.read_workspace(), from, &heads);
+    graph::resolve_context_targets(targets, cwd)
+}
+
+/// A resumed or forked session's add-dirs (Story 6.2): its own context edges (`session_id`, the
+/// original's for a fork) plus its project's, resolved against `cwd`.
+fn resume_add_dirs(state: &AppState, project_id: &str, session_id: &str, cwd: &str) -> (Vec<String>, Vec<graph::SkippedEdge>) {
+    let from = [
+        graph::NodeRef {
+            kind: graph::NodeType::Session,
+            id: session_id.to_string(),
+        },
+        graph::NodeRef {
+            kind: graph::NodeType::Project,
+            id: project_id.to_string(),
+        },
+    ];
+    let (dirs, skipped) = edge_add_dirs(state, &from, cwd);
+    (dirs.into_iter().map(|d| d.path).collect(), skipped)
 }
 
 /// The Story 5.2 request for a worktree of the existing local branch `name`.
@@ -1098,8 +1149,10 @@ struct Launch {
     session_id: String,
     /// The terminal's title and the live entry's name.
     name: String,
-    /// The flags (model, effort, permission mode; add-dirs and prompt for New only).
+    /// The flags (model, effort, permission mode, add-dirs; the prompt for New only).
     request: LaunchRequest,
+    /// Resume and Fork (Story 6.2): the context edges whose target gave no folder.
+    skipped: Vec<graph::SkippedEdge>,
     /// The system prompt's branch (Story 5.3): the branch the session starts on; `None` takes
     /// the project's checked-out branch from the status poll.
     branch: Option<String>,
@@ -1188,6 +1241,7 @@ fn new_launch(state: &AppState, request: LaunchRequest) -> Result<(Launch, Optio
         session_id: request.session_id.clone(),
         name,
         request: LaunchRequest { add_dirs, ..request },
+        skipped: Vec::new(),
         branch,
         branch_id,
         worktree,
@@ -1212,7 +1266,9 @@ fn start_claimed<R: Runtime>(app: &AppHandle<R>, launch: Launch, program: PathBu
 
 /// Resume (Story 4.4): `claude --resume <id>` for a session with a transcript that is not live,
 /// in its transcript's folder (else its project's), with the standard app flags; the same node
-/// becomes live. No sheet: the choices are the project's last ones, else settings.
+/// becomes live. No sheet: the choices are the project's last ones, else settings. The add-dirs
+/// are the session's own context edges plus its project's (Story 6.2); the reply's `skipped`
+/// names the edges that gave no folder.
 #[tauri::command]
 pub async fn session_resume<R: Runtime>(
     app: AppHandle<R>,
@@ -1349,9 +1405,14 @@ pub fn resume_session<R: Runtime>(app: &AppHandle<R>, project_id: &str, session_
     let state = app.state::<AppState>();
     let source = source_session(&state, project_id, session_id)?;
     let cwd = launch::resume_cwd(source.cwd.as_deref(), &source.project.path)?;
+    let (add_dirs, skipped) = resume_add_dirs(&state, &source.project.id, session_id, &cwd);
     let launch = Launch {
         kind: launch::LaunchKind::Resume { id: session_id.to_string() },
-        request: sheetless_request(&state, &source.project, session_id, &source.name),
+        request: LaunchRequest {
+            add_dirs,
+            ..sheetless_request(&state, &source.project, session_id, &source.name)
+        },
+        skipped,
         project_id: source.project.id.clone(),
         project_path: source.project.path.clone(),
         label: source.project.label.clone(),
@@ -1374,12 +1435,17 @@ pub fn fork_session<R: Runtime>(app: &AppHandle<R>, project_id: &str, from: &str
     let state = app.state::<AppState>();
     let source = source_session(&state, project_id, from)?;
     let cwd = launch::resume_cwd(source.cwd.as_deref(), &source.project.path)?;
+    let (add_dirs, skipped) = resume_add_dirs(&state, &source.project.id, from, &cwd);
     let new_id = uuid::Uuid::new_v4().to_string();
     let _forking = state.launcher.begin_fork(from, &new_id)?;
     let name = launch::fork_name(&source.name, &new_id);
     let launch = Launch {
         kind: launch::LaunchKind::Fork { from: from.to_string() },
-        request: sheetless_request(&state, &source.project, &new_id, &name),
+        request: LaunchRequest {
+            add_dirs,
+            ..sheetless_request(&state, &source.project, &new_id, &name)
+        },
+        skipped,
         project_id: source.project.id.clone(),
         project_path: source.project.path.clone(),
         label: source.project.label.clone(),
@@ -1602,6 +1668,7 @@ fn run_launch<R: Runtime>(
         session_id,
         term,
         choices: LaunchChoices::of(&launch.request),
+        skipped: launch.skipped.clone(),
     })
 }
 

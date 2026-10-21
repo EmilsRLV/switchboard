@@ -28,7 +28,7 @@ export const FORK_HANDLE = "fork";
 export const REFUSE_SELF = "can't link a node to itself";
 export const REFUSE_FROM_BRANCH = "can't link from a branch";
 export const REFUSE_PROJECT_TO_SESSION = "can't link a project to a session";
-export const REFUSE_FOLDER = "can't link a folder yet";
+export const REFUSE_FOLDER = "can't link a folder yet: folder targets come later";
 export const REFUSE_DUPLICATE = "already linked";
 /** A drop on something that is not a link node (a `more` row): refused, with no notice. */
 export const REFUSE_NOT_A_NODE = "";

@@ -4,6 +4,7 @@ import {
   canStart,
   claudeWorktreeFolder,
   editedForm,
+  edgeVia,
   chosenModel,
   EFFORT_CHOICES,
   formErrors,
@@ -15,6 +16,7 @@ import {
   MODEL_CHOICES,
   PERMISSION_CHOICES,
   samePath,
+  skippedNote,
   startBlockedReason,
   withAddDir,
   withoutAddDir,
@@ -64,6 +66,43 @@ describe("the prefill", () => {
     expect(EFFORT_CHOICES).toEqual(["default", "low", "medium", "high", "xhigh", "max"]);
     expect(PERMISSION_CHOICES).toEqual(["default", "manual", "acceptEdits", "plan", "auto", "dontAsk"]);
     expect(PERMISSION_CHOICES as readonly string[]).not.toContain("bypassPermissions");
+  });
+});
+
+describe("context edges on the sheet (Story 6.2)", () => {
+  const edgeDirs = [
+    { path: "B:\\projects\\ui", via: "ui" },
+    { path: "/work/ui-feat", via: "feat" },
+  ];
+
+  it("prefill the add-dirs with the folders Rust resolved, and the request sends them", () => {
+    const f = formFromPrefill({ ...prefill, addDirs: edgeDirs, skipped: [{ label: "old", reason: "no worktree" }] });
+    expect(f.addDirs).toEqual(["B:\\projects\\ui", "/work/ui-feat"]);
+    expect(launchRequest("ide", "3f2a-id", f).addDirs).toEqual(["B:\\projects\\ui", "/work/ui-feat"]);
+    // Removed on the sheet: not sent this time.
+    const removed = { ...f, addDirs: withoutAddDir(f.addDirs, 0) };
+    expect(launchRequest("ide", "3f2a-id", removed).addDirs).toEqual(["/work/ui-feat"]);
+    // A prefill without edges (an older reply) starts empty.
+    expect(formFromPrefill(prefill).addDirs).toEqual([]);
+  });
+
+  it("mark a prefilled row with its edge's target, not a folder added by hand", () => {
+    expect(edgeVia(edgeDirs, "b:\\Projects\\UI\\")).toBe("ui");
+    expect(edgeVia(edgeDirs, "/work/ui-feat")).toBe("feat");
+    expect(edgeVia(edgeDirs, "/work/other")).toBeNull();
+    expect(edgeVia([], "/work/ui-feat")).toBeNull();
+  });
+
+  it("name the unusable targets in one line, and never block Start", () => {
+    const skipped = [
+      { label: "feat", reason: "no worktree" },
+      { label: "ui", reason: "folder missing" },
+    ];
+    expect(skippedNote("not added", skipped)).toBe("not added: feat (no worktree), ui (folder missing)");
+    expect(skippedNote("resumed without", [{ label: "feat", reason: "no worktree" }])).toBe("resumed without: feat (no worktree)");
+    expect(skippedNote("not added", [])).toBeNull();
+    expect(skippedNote("not added", undefined)).toBeNull();
+    expect(startBlockedReason(formFromPrefill({ ...prefill, skipped }), [], false)).toBeNull();
   });
 });
 

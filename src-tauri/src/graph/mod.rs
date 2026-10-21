@@ -1493,8 +1493,8 @@ pub const REFUSE_SELF: &str = "can't link a node to itself";
 pub const REFUSE_FROM_BRANCH: &str = "can't link from a branch";
 /// Refusal: context runs from a project to a project or a branch, never to a session.
 pub const REFUSE_PROJECT_TO_SESSION: &str = "can't link a project to a session";
-/// Refusal: folder targets come with Story 6.2.
-pub const REFUSE_FOLDER: &str = "can't link a folder yet";
+/// Refusal: edges to folders that are not canvas nodes are deferred.
+pub const REFUSE_FOLDER: &str = "can't link a folder yet: folder targets come later";
 /// Refusal: the same kind between the same two ends already exists.
 pub const REFUSE_DUPLICATE: &str = "already linked";
 
@@ -1707,6 +1707,157 @@ pub fn remove_edge<R: Runtime>(app: &AppHandle<R>, id: &str) -> Result<Workspace
         (st.write_target(), st.workspace.clone())
     };
     Ok(persist_and_emit(app, target, &workspace))
+}
+
+// ---------------------------------------------------------------------------------------
+// Context edges at launch (Story 6.2): edge → folder, one resolver
+// ---------------------------------------------------------------------------------------
+
+/// Why a context edge's target gives no add-dir: a branch with no worktree (and not checked out
+/// in its project's folder).
+pub const SKIP_NO_WORKTREE: &str = "no worktree";
+/// Why a context edge's target gives no add-dir: its folder no longer exists.
+pub const SKIP_FOLDER_MISSING: &str = "folder missing";
+/// Why a context edge's target gives no add-dir: the project or branch it names is gone.
+pub const SKIP_NOT_FOUND: &str = "not found";
+
+/// A folder a context edge grants (`--add-dir`): canonical, with the label of the edge's
+/// target (`via edge → <via>` on the launch sheet).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EdgeDir {
+    pub path: String,
+    pub via: String,
+}
+
+/// A context edge whose target gives no folder: its label and why (`not added: feat (no
+/// worktree)` on the sheet, `resumed without: …` after a resume).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkippedEdge {
+    pub label: String,
+    pub reason: String,
+}
+
+/// The label of a context target that is gone (a project removed from the canvas).
+pub const REMOVED_PROJECT: &str = "a removed project";
+
+/// The add-dirs the context edges leaving `from` grant (in `from` order, then edge order), and
+/// the edges skipped: [`context_targets`] under the workspace lock, then
+/// [`resolve_context_targets`] (the file system) with it released by the caller.
+pub fn context_dirs(st: &WorkspaceState, from: &[NodeRef], heads: &HashMap<String, String>, own_cwd: &str) -> (Vec<EdgeDir>, Vec<SkippedEdge>) {
+    resolve_context_targets(context_targets(st, from, heads), own_cwd)
+}
+
+/// The raw folder each context edge leaving `from` names, or why it names none, from the
+/// workspace state alone (no file-system access, so it is cheap under the workspace lock). A
+/// project end is the project's folder (labelled with the project's label); a branch end
+/// (`<projectId>:<name>`, labelled `<project label>:<name>`) is, as Story 5.3 resolves it from
+/// the latest branch list, its linked worktree, or the project's folder for the checked-out
+/// branch; a chip marked missing is [`SKIP_FOLDER_MISSING`], a branch with no worktree
+/// [`SKIP_NO_WORKTREE`], a branch not in the list [`SKIP_NOT_FOUND`]. With no list (branches
+/// off): the worktrees the status poll last listed, then `heads` (project id → the branch
+/// checked out in its folder; a detached HEAD is not one), else [`SKIP_NO_WORKTREE`]. A project
+/// that is gone is [`SKIP_NOT_FOUND`] labelled [`REMOVED_PROJECT`]. Cooperate edges grant nothing.
+pub fn context_targets(st: &WorkspaceState, from: &[NodeRef], heads: &HashMap<String, String>) -> Vec<Result<EdgeDir, SkippedEdge>> {
+    from.iter()
+        .flat_map(|source| st.workspace.edges.iter().filter(move |e| e.kind == EdgeKind::Context && e.from == *source))
+        .map(|edge| context_target(st, &edge.to, heads))
+        .collect()
+}
+
+/// [`context_targets`] made usable: each folder canonical and existing (else
+/// [`SKIP_FOLDER_MISSING`]); duplicates and the folder the session runs in (`own_cwd`) dropped
+/// without a note; each skipped edge named once.
+pub fn resolve_context_targets(targets: Vec<Result<EdgeDir, SkippedEdge>>, own_cwd: &str) -> (Vec<EdgeDir>, Vec<SkippedEdge>) {
+    let own = canonical_dir(own_cwd).unwrap_or_else(|| own_cwd.trim().to_string());
+    let mut dirs: Vec<EdgeDir> = Vec::new();
+    let mut skipped: Vec<SkippedEdge> = Vec::new();
+    for target in targets {
+        let resolved = target.and_then(|raw| match canonical_dir(&raw.path) {
+            Some(path) => Ok(EdgeDir { path, via: raw.via }),
+            None => Err(SkippedEdge {
+                label: raw.via,
+                reason: SKIP_FOLDER_MISSING.to_string(),
+            }),
+        });
+        match resolved {
+            Ok(dir) => {
+                if !same_path(&dir.path, &own) && !dirs.iter().any(|d| same_path(&d.path, &dir.path)) {
+                    dirs.push(dir);
+                }
+            }
+            Err(skip) => {
+                if !skipped.contains(&skip) {
+                    skipped.push(skip);
+                }
+            }
+        }
+    }
+    (dirs, skipped)
+}
+
+/// The project and branch name a branch end (`<projectId>:<name>`) names: the project on the
+/// canvas whose id is the longest such prefix.
+fn branch_end<'a>(workspace: &'a Workspace, id: &'a str) -> Option<(&'a Project, &'a str)> {
+    workspace
+        .projects
+        .iter()
+        .filter_map(|p| id.strip_prefix(p.id.as_str()).and_then(|rest| rest.strip_prefix(':')).map(|name| (p, name)))
+        .filter(|(_, name)| !name.is_empty())
+        .max_by_key(|(p, _)| p.id.len())
+}
+
+/// The raw folder one context edge's target names, or why it names none (see [`context_targets`]).
+fn context_target(st: &WorkspaceState, to: &NodeRef, heads: &HashMap<String, String>) -> Result<EdgeDir, SkippedEdge> {
+    let skip = |label: &str, reason: &str| SkippedEdge {
+        label: label.to_string(),
+        reason: reason.to_string(),
+    };
+    let folder = |path: &str, label: &str| {
+        Ok(EdgeDir {
+            path: path.to_string(),
+            via: label.to_string(),
+        })
+    };
+    match to.kind {
+        NodeType::Project => match st.workspace.projects.iter().find(|p| p.id == to.id) {
+            Some(project) => folder(&project.path, &project.label),
+            None => Err(skip(REMOVED_PROJECT, SKIP_NOT_FOUND)),
+        },
+        NodeType::Branch => {
+            let Some((project, name)) = branch_end(&st.workspace, &to.id) else {
+                return Err(skip(REMOVED_PROJECT, SKIP_NOT_FOUND));
+            };
+            let label = format!("{}:{name}", project.label);
+            match st.branches.get(&project.id) {
+                Some(list) => match list.iter().find(|b| b.name == name) {
+                    Some(info) => match &info.worktree {
+                        Some(chip) if chip.missing => Err(skip(&label, SKIP_FOLDER_MISSING)),
+                        Some(chip) => folder(&chip.path, &label),
+                        None if info.head => folder(&project.path, &label),
+                        None => Err(skip(&label, SKIP_NO_WORKTREE)),
+                    },
+                    // Listed, and not there: the branch is gone.
+                    None => Err(skip(&label, SKIP_NOT_FOUND)),
+                },
+                // No list (branches off): git's worktree list, then the checked-out branch.
+                None => {
+                    let known = st
+                        .worktrees
+                        .get(&project.id)
+                        .and_then(|list| list.iter().find(|w| w.branch.as_deref() == Some(name)));
+                    match known {
+                        Some(worktree) => folder(&worktree.path, &label),
+                        None if heads.get(&project.id).is_some_and(|head| head == name) => folder(&project.path, &label),
+                        None => Err(skip(&label, SKIP_NO_WORKTREE)),
+                    }
+                }
+            }
+        }
+        // Folder targets come later: a stored one is named by its path.
+        NodeType::Folder => Err(skip(&to.id, SKIP_NOT_FOUND)),
+        // Context edges never end on a session.
+        NodeType::Session => Err(skip("a session", SKIP_NOT_FOUND)),
+    }
 }
 
 /// Store what a status pass listed of each project's linked worktrees (Story 5.4,
@@ -4594,7 +4745,7 @@ mod tests {
             (end(NodeType::Branch, "ide:main"), p("ide"), "can't link from a branch"),
             (s("stub-1-ide"), s("stub-1-ide"), "can't link a node to itself"),
             (p("ide"), p("ide"), "can't link a node to itself"),
-            (s("stub-1-ide"), end(NodeType::Folder, "/x"), "can't link a folder yet"),
+            (s("stub-1-ide"), end(NodeType::Folder, "/x"), "can't link a folder yet: folder targets come later"),
             (s("stub-1-ide"), s("stub-2-other"), "already linked"),
             (s("stub-2-other"), s("stub-1-ide"), "already linked"),
             (s("stub-1-ide"), p("other"), "already linked"),
@@ -4727,5 +4878,149 @@ mod tests {
         let snapshot = remove_edge(app.handle(), &edge.id).unwrap();
         assert_eq!(snapshot.revision, 3);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "file untouched");
+    }
+
+    // -- context edges at launch (Story 6.2) ------------------------------------------
+
+    fn context_edge(from: (NodeType, &str), to: (NodeType, &str)) -> Edge {
+        Edge {
+            kind: EdgeKind::Context,
+            ..edge("", from, to)
+        }
+    }
+
+    fn skipped(label: &str, reason: &str) -> SkippedEdge {
+        SkippedEdge {
+            label: label.into(),
+            reason: reason.into(),
+        }
+    }
+
+    fn dir(path: &str, via: &str) -> EdgeDir {
+        EdgeDir { path: path.into(), via: via.into() }
+    }
+
+    #[test]
+    fn context_edges_resolve_to_project_folders_worktrees_and_notes() {
+        let root = tempfile::tempdir().unwrap();
+        let mk = |name: &str| {
+            let path = root.path().join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            canonical(&path)
+        };
+        let (api, ui, docs, wt) = (mk("api"), mk("ui"), mk("docs"), mk("ui-feat"));
+        let gone = root.path().join("gone").display().to_string();
+        let project = |id: &str, path: &str| Project {
+            id: id.into(),
+            path: path.into(),
+            label: id.into(),
+            ..Project::default()
+        };
+        let mut st = WorkspaceState::default();
+        st.workspace.projects = vec![project("api", &api), project("ui", &ui), project("docs", &docs), project("lost", &gone)];
+        st.branches.insert(
+            "ui".into(),
+            vec![
+                listed_branch("main", true),
+                BranchInfo {
+                    worktree: Some(WorktreeChip { path: wt.clone(), missing: false }),
+                    ..listed_branch("feat", false)
+                },
+                listed_branch("old", false),
+                BranchInfo {
+                    worktree: Some(WorktreeChip { path: gone.clone(), missing: true }),
+                    ..listed_branch("wtgone", false)
+                },
+            ],
+        );
+        use NodeType::{Branch, Project as P, Session};
+        st.workspace.edges = vec![
+            context_edge((P, "api"), (P, "ui")),
+            context_edge((P, "api"), (Branch, "ui:feat")),
+            context_edge((P, "api"), (Branch, "ui:main")),
+            context_edge((P, "api"), (Branch, "ui:old")),
+            context_edge((P, "api"), (Branch, "ui:wtgone")),
+            context_edge((P, "api"), (P, "lost")),
+            // Cooperate edges grant nothing; another source's edges are not this one's.
+            Edge {
+                kind: EdgeKind::Cooperate,
+                ..edge("", (Session, "s"), (Session, "t"))
+            },
+            context_edge((P, "docs"), (P, "ui")),
+            context_edge((Session, "s"), (P, "docs")),
+            context_edge((Session, "s"), (P, "ui")),
+        ];
+        let heads = HashMap::new();
+        let from_api = [end(P, "api")];
+        let (dirs, skips) = context_dirs(&st, &from_api, &heads, &api);
+        // ui and ui:main are both the ui folder: one row, the first edge's label.
+        assert_eq!(dirs, vec![dir(&ui, "ui"), dir(&wt, "ui:feat")]);
+        assert_eq!(
+            skips,
+            vec![skipped("ui:old", SKIP_NO_WORKTREE), skipped("ui:wtgone", SKIP_FOLDER_MISSING), skipped("lost", SKIP_FOLDER_MISSING)]
+        );
+        // The session's own cwd is dropped (here ui's folder, spelled with a trailing separator).
+        let spelled = format!("{ui}{}", std::path::MAIN_SEPARATOR);
+        let (dirs, _) = context_dirs(&st, &from_api, &heads, &spelled);
+        assert_eq!(dirs, vec![dir(&wt, "ui:feat")]);
+        // A session's edges, then its project's, deduplicated.
+        let (dirs, skips) = context_dirs(&st, &[end(Session, "s"), end(P, "api")], &heads, &api);
+        assert_eq!(dirs, vec![dir(&docs, "docs"), dir(&ui, "ui"), dir(&wt, "ui:feat")]);
+        assert_eq!(skips.len(), 3);
+        // No edges: nothing.
+        assert_eq!(context_dirs(&st, &[end(P, "ui")], &heads, &ui), (Vec::new(), Vec::new()));
+
+        // A removed project, as a target or a branch's project, reads as one; two branches of
+        // the same name in different projects are told apart.
+        st.workspace.edges = vec![
+            context_edge((P, "api"), (P, "removed-id")),
+            context_edge((P, "api"), (Branch, "removed-id:main")),
+            context_edge((P, "api"), (Branch, "docs:old")),
+        ];
+        st.branches.insert("docs".into(), vec![listed_branch("old", false)]);
+        assert_eq!(
+            context_dirs(&st, &from_api, &heads, &api).1,
+            vec![skipped(REMOVED_PROJECT, SKIP_NOT_FOUND), skipped("docs:old", SKIP_NO_WORKTREE)]
+        );
+        st.branches.remove("docs");
+        // A branch gone from the list is not found; with no list (branches off) git's worktree
+        // list, then the checked-out branch, else no worktree.
+        st.workspace.edges = vec![context_edge((P, "api"), (Branch, "ui:nope"))];
+        assert_eq!(context_dirs(&st, &from_api, &heads, &api).1, vec![skipped("ui:nope", SKIP_NOT_FOUND)]);
+        st.branches.clear();
+        st.workspace.edges = vec![
+            context_edge((P, "api"), (Branch, "ui:feat")),
+            context_edge((P, "api"), (Branch, "ui:main")),
+            context_edge((P, "api"), (Branch, "ui:old")),
+            context_edge((P, "api"), (Branch, "gone:x")),
+        ];
+        st.worktrees.insert(
+            "ui".into(),
+            vec![KnownWorktree {
+                path: wt.clone(),
+                branch: Some("feat".into()),
+            }],
+        );
+        let heads = HashMap::from([("ui".to_string(), "main".to_string())]);
+        let (dirs, skips) = context_dirs(&st, &from_api, &heads, &api);
+        assert_eq!(dirs, vec![dir(&wt, "ui:feat"), dir(&ui, "ui:main")]);
+        assert_eq!(skips, vec![skipped("ui:old", SKIP_NO_WORKTREE), skipped(REMOVED_PROJECT, SKIP_NOT_FOUND)]);
+    }
+
+    #[test]
+    fn a_branch_end_names_the_longest_matching_project() {
+        let mut ws = Workspace::default();
+        for id in ["a", "a:b"] {
+            ws.projects.push(Project {
+                id: id.into(),
+                ..Project::default()
+            });
+        }
+        let (project, name) = branch_end(&ws, "a:b:feat").unwrap();
+        assert_eq!((project.id.as_str(), name), ("a:b", "feat"));
+        let (project, name) = branch_end(&ws, "a:main").unwrap();
+        assert_eq!((project.id.as_str(), name), ("a", "main"));
+        assert!(branch_end(&ws, "a:").is_none());
+        assert!(branch_end(&ws, "zz:main").is_none());
     }
 }

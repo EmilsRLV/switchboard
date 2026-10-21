@@ -475,13 +475,26 @@ export type LaunchPrefill = {
   worktreePlan?: WorktreePlanPreview | null;
   /** The project's sheet of a git project: its top level (`--worktree` runs there); `null` otherwise. */
   repoTop?: string | null;
+  /** Story 6.2: the folders the project's outgoing context edges grant (Rust resolved them); the sheet prefills its add-dirs. */
+  addDirs?: EdgeDir[];
+  /** The project's context edges whose target gives no folder (the sheet's `not added:` line). */
+  skipped?: SkippedEdge[];
 };
+
+/** Mirrors `graph::EdgeDir`: a folder a context edge grants, and the label of the edge's target (`via edge → <via>`). */
+export type EdgeDir = { path: string; via: string };
+
+/** Mirrors `graph::SkippedEdge`: a context edge whose target gives no folder, and why (`no worktree`, `folder missing`, `not found`). */
+export type SkippedEdge = { label: string; reason: string };
 
 /** Mirrors `ipc::LaunchChoices`: the model, effort and permission mode a launch used (`default`: no flag). */
 export type LaunchChoices = { model: string; effort: string; permission_mode: string };
 
-/** Mirrors `ipc::LaunchResult`: the new session, the terminal it runs in and the choices it used. */
-export type LaunchResult = { session_id: string; term: TermInfo; choices: LaunchChoices };
+/**
+ * Mirrors `ipc::LaunchResult`: the new session, the terminal it runs in and the choices it used;
+ * for Resume and Fork (Story 6.2) the context edges whose target gave no folder.
+ */
+export type LaunchResult = { session_id: string; term: TermInfo; choices: LaunchChoices; skipped?: SkippedEdge[] };
 
 // --- worktrees (`src-tauri/src/git/worktree.rs`, Story 5.2) ---------------------------------
 

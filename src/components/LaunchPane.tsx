@@ -4,11 +4,13 @@ import {
   CLAUDE_WORKTREE_BRANCH_PREFIX,
   CUSTOM_MODEL,
   EFFORT_CHOICES,
+  edgeVia,
   formErrors,
   launchKeyAction,
   launchKeyTarget,
   MODEL_CHOICES,
   PERMISSION_CHOICES,
+  skippedNote,
   startBlockedReason,
 } from "../commands/launch";
 import { runCommand } from "../commands/registry";
@@ -27,6 +29,10 @@ import { usePaletteStore } from "../state/palette";
  * On a branch card (Story 5.3) the subtitle names the branch and the folder Rust resolved; a
  * branch without a worktree adds a "Worktree" section with the exact `git worktree add` the
  * Start runs first. The project sheet of a git project offers `claude --worktree <name>`.
+ *
+ * Story 6.2: the project's context edges prefill the add-dirs; such a row reads `via edge →
+ * <target>` and can be removed for this launch only (the edge stays). Edges whose target gives
+ * no folder are listed in a muted `not added:` line; they never block Start.
  */
 export function LaunchPane() {
   const projectLabel = useLaunchStore((s) => s.projectLabel);
@@ -38,6 +44,8 @@ export function LaunchPane() {
   const starting = useLaunchStore((s) => s.starting);
   const error = useLaunchStore((s) => s.error);
   const missingDirs = useLaunchStore((s) => s.missingDirs);
+  const edgeDirs = useLaunchStore((s) => s.edgeDirs);
+  const skipped = useLaunchStore((s) => s.skipped);
   const edit = useLaunchStore((s) => s.edit);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -55,6 +63,7 @@ export function LaunchPane() {
   const errors = formErrors(form, repoTop);
   const blocked = startBlockedReason(form, missingDirs, starting, worktreePlan, repoTop);
   const worktreeFolder = repoTop === null ? null : claudeWorktreeFolder(repoTop, form.worktreeName.trim() || "<name>");
+  const notAdded = skippedNote("not added", skipped);
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (launchKeyAction(event.nativeEvent, launchKeyTarget(event.target)) !== "start") return;
@@ -217,11 +226,17 @@ export function LaunchPane() {
             {form.addDirs.map((dir, index) => {
               const missing = missingDirs.includes(dir);
               const errorId = `launch-dir-error-${index}`;
+              const via = edgeVia(edgeDirs, dir);
               return (
                 <li key={dir} className="launch-dir">
                   <span className="launch-dir-path" title={dir} aria-describedby={missing ? errorId : undefined}>
                     {shortenPath(dir, 44)}
                   </span>
+                  {via !== null && (
+                    <span className="launch-dir-via" title={`via edge → ${via}`}>
+                      via edge → {via}
+                    </span>
+                  )}
                   <button type="button" className="btn" onClick={() => removeAddDir(index)} aria-label={`Remove ${dir}`}>
                     Remove
                   </button>
@@ -235,6 +250,7 @@ export function LaunchPane() {
             })}
           </ul>
         )}
+        {notAdded !== null && <p className="launch-skipped">{notAdded}</p>}
         <div className="actions">
           <button type="button" className="btn" onClick={() => void pickAddDir()} disabled={starting}>
             Add folder…

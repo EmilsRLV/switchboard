@@ -174,7 +174,11 @@ drag handle) follows every rule here.
   selects and the prompt textarea on `--bg` with a 1-px `--border`, `--radius-sm`, `--text-md`, a `--fg-muted`
   border on hover and the 1-px `--focus` outline on keyboard focus; the prompt in `--font-mono`). The add-dirs
   are a bordered list, one row per folder (mono `--text-xs` path with ellipsis and a Remove button), split by
-  1-px `--border` lines; a missing folder's row adds `.pane-error` text. A field hint (blank name) is
+  1-px `--border` lines; a missing folder's row adds `.pane-error` text. A row a context edge prefilled
+  (Story 6.2) adds `via edge → <target>` after the path (`--text-xs` `--fg-muted`; a long target is cut with an
+  ellipsis before the Remove button would be pushed out, the full text on hover). Under the list, context
+  edges that gave no folder are one muted line, `not added: ui:feat (no worktree), docs (folder missing)`
+  (`--text-xs` `--fg-muted`, wrapping anywhere); it never blocks Start. A field hint (blank name) is
   `--text-xs` `--fg-muted`, as is the reason beside a disabled Start; a refused start is `.pane-error` text under Start (`role="alert"`, like a row's error). No new motion.
   On a branch card (Story 5.3) the same sheet: its muted subtitle reads `Starts claude on <branch> in
   <folder>` (the folder mono, middle-elided, full path on hover). A branch without a worktree adds a

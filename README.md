@@ -489,8 +489,9 @@ canvas. There are two kinds, and Rust picks the kind from the two ends:
 | context | a session or a project | a project or a branch (project → project included) | a dashed 1-px line |
 | cooperate | a session | another session (undirected) | two parallel 1-px lines |
 
-Edges are only drawn and stored in this release. They do not affect launches or live sessions yet (that
-is Stories 6.2–6.4).
+A context edge grants its source directory access **at launch** (see [Context edges at
+launch](#context-edges-at-launch)). Edges do not affect live sessions yet, and cooperate edges do nothing
+yet (that is Stories 6.3–6.4). Edges to folders that are not canvas nodes come later.
 
 **Drawing an edge.** Hover a session or project card, or select it, and a small round handle appears on its
 right edge. Drag from the handle and drop on any project, branch or session card. The whole card is the
@@ -531,6 +532,40 @@ the right, so it never sweeps back across the canvas. A branch end is always sto
 end without a `sessions[]` entry gets one, so the edge goes when its project is removed. Removing a project deletes every edge touching it or its children. An edge to a session or branch
 that is no longer listed is kept until its project is removed. The "forked from" line is not an edge: it
 cannot be selected, labelled or deleted.
+
+### Context edges at launch
+
+A context edge means "you may also work in there": Rust turns it into `--add-dir <folder>` when a session
+starts. The folder an edge grants is resolved by Rust, never by the UI:
+
+| The edge's `to` | Folder |
+|---|---|
+| A project | The project's folder. |
+| A branch with a linked worktree | That worktree's folder. |
+| The checked-out branch | The project's folder. |
+| A branch with no worktree | None: `no worktree`. |
+| Any target whose folder no longer exists | None: `folder missing`. |
+| A project removed from the canvas, or a branch no longer listed | None: `not found`. |
+
+A branch is looked up in its project's latest branch list. With branches off there is no list: the
+worktrees git last listed are used, then the branch checked out in the project's folder (from the status
+poll; a detached HEAD checks out none), else `no worktree`. A project end is labelled with the project's
+label, a branch end `<project>:<branch>`, and a removed project `a removed project`. Paths are canonical, a
+folder is passed once, and a folder equal to the one the session runs in is dropped.
+
+- **New session.** The project's outgoing context edges prefill the launch sheet's add-dirs, on the project's
+  sheet and on a branch sheet of that project. Each prefilled row reads `via edge → <target>`; **Remove** drops
+  it for this launch only (the edge stays). Targets that give no folder are not prefilled: a muted line under
+  the add-dirs lists them (`not added: ui:feat (no worktree), docs (folder missing)`), and Start is not
+  blocked. A prefilled folder that disappears before Start is refused like any missing add-dir: its row is
+  marked and Start is blocked until it is removed.
+- **Resume and Fork.** The session's own context edges plus its project's are passed as `--add-dir`, resolved
+  against the folder the session resumes in. Unusable targets are skipped, and the notice names them first
+  (`resumed without: ui:feat (no worktree) · resumed with model …`, or `forked without: …` after a fork). A
+  fork takes the original's edges; a later Resume of the fork applies the fork's own edges, not the
+  original's.
+- **Not remembered.** Edge add-dirs are recomputed at every launch and never stored in the project's launch
+  defaults.
 
 ### The file
 
@@ -664,14 +699,14 @@ the right like settings and import:
 | Model | `default`, `fable`, `opus`, `sonnet`, `haiku`, or `custom` with free text (`--model`). |
 | Effort | `default`, `low`, `medium`, `high`, `xhigh`, `max` (`--effort`). |
 | Permission mode | `default`, `manual`, `acceptEdits`, `plan`, `auto`, `dontAsk` (`--permission-mode`). `bypassPermissions` is not offered, and Switchboard never passes `--dangerously-skip-permissions`. |
-| Add-dirs | Extra folders the session may use (`--add-dir` each): **Add folder…** opens the folder dialog ("Add folder for this session"), **Remove** drops a row. Duplicates and the project's own folder are left out; every folder that no longer exists is marked on its row and blocks Start until removed. |
+| Add-dirs | Extra folders the session may use (`--add-dir` each): prefilled with the folders the project's context edges grant, each marked `via edge → <target>` (see [Context edges at launch](#context-edges-at-launch)); **Add folder…** opens the folder dialog ("Add folder for this session"), **Remove** drops a row. Duplicates and the project's own folder are left out; every folder that no longer exists is marked on its row and blocks Start until removed. |
 | First prompt | Optional; sent as the session's first message. |
 | Start in background | Start without opening the terminal. |
 
 Model, effort and permission mode come from the project's last choices, then `defaults` in
 [Settings](#settings), then `default`; each start remembers the three for the project (in `workspace.json`).
-Add-dirs, the prompt, the name and the background toggle are never remembered. A choice left at `default`
-passes no flag, so `claude`'s own default applies.
+Add-dirs (edge-derived ones included), the prompt, the name and the background toggle are never
+remembered. A choice left at `default` passes no flag, so `claude`'s own default applies.
 
 **Keys.** Enter in a one-line text field or a select starts; Enter in the prompt adds a newline (and on the
 background checkbox or a button does what it does there); `ctrl+Enter` starts from anywhere in the sheet; Esc
@@ -776,12 +811,13 @@ Three commands on a selected session card (its menu, in this order, and the pale
 with the **project's latest choices** (the last ones a launch sheet started with, else `defaults`) for model,
 effort and permission mode, not the ones the session itself last ran with. The notice after each says what was
 used, for example `resumed with model opus, effort default, mode plan` (`default`: the flag was left out). The
-rest is the same: the hooks `--settings` file, the `--append-system-prompt` context and the environment; no
-add-dirs and no first prompt:
+rest is the same: the hooks `--settings` file, the `--append-system-prompt` context and the environment; the
+add-dirs are the folders the session's own context edges and its project's grant (see [Context edges at
+launch](#context-edges-at-launch)); there is no first prompt:
 
 ```
-<claude> --resume <id> [--model …] [--effort …] [--permission-mode …] --settings … --append-system-prompt …
-<claude> --resume <id> --fork-session --session-id <new> --name <name>-fork-<4 hex> [--model …] … --settings … --append-system-prompt …
+<claude> --resume <id> [--model …] [--effort …] [--permission-mode …] [--add-dir <d>]… --settings … --append-system-prompt …
+<claude> --resume <id> --fork-session --session-id <new> --name <name>-fork-<4 hex> [--model …] … [--add-dir <d>]… --settings … --append-system-prompt …
 ```
 
 A resume passes no `--session-id` and no `--name`, so the session keeps its own name; a fork is named after the

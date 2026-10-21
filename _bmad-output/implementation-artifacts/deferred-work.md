@@ -73,3 +73,10 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-6-1-draw-and-persist-edges.md`
   summary: Component tests for the canvas edge handlers (isValidConnection, onConnect, onConnectEnd, onEdgeClick) and the EdgePane (save on Enter and blur, the Delete skip).
   evidence: Story 6.1 review round 1; no DOM test environment yet.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-6-2-context-edges-at-launch.md`
+  summary: Folder targets (context edges to arbitrary folders that are not canvas nodes) are deferred; `edge_add` still refuses them (`can't link a folder yet: folder targets come later`) and the resolver skips a stored one as `not found`.
+  evidence: Story 6.2 "Never" boundary; the epic's open decision 1 had planned them for 6.2.
+- source_spec: `_bmad-output/implementation-artifacts/spec-6-2-context-edges-at-launch.md`
+  summary: No component test renders the launch sheet's `via edge → <target>` suffix or its `not added:` line; the rules behind them (`edgeVia`, `skippedNote`) and the store are tested.
+  evidence: Story 6.2; no DOM test environment yet.

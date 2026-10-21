@@ -2052,6 +2052,167 @@ mod tests {
         super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
     }
 
+    /// The argv a fixture printed contains `--add-dir <path>` for each of `paths` (on Windows
+    /// `cmd`'s echo prints the argv on one line; elsewhere one `[arg]` per line).
+    fn assert_add_dirs(text: &str, paths: &[&str]) {
+        for path in paths {
+            if cfg!(windows) {
+                let flat = text.replace(['\r', '\n'], "");
+                assert!(flat.contains(&format!("--add-dir {path}")), "--add-dir {path} missing from {flat:?}");
+            } else {
+                assert!(text.contains(&format!("[--add-dir]\r\n[{path}]")), "--add-dir {path} missing from:\n{text}");
+            }
+        }
+    }
+
+    /// Story 6.2: a project's context edges prefill the launch sheet's add-dirs (with the target's
+    /// label) and note the unusable ones; the Start passes them as `--add-dir`. Resume and Fork
+    /// pass the session's own edges plus its project's, and name the skipped ones.
+    #[test]
+    fn context_edges_become_add_dirs_on_the_sheet_and_on_resume_and_fork() {
+        use super::claude::live::SessionState;
+        use super::graph::{Edge, EdgeKind, NodeRef, NodeType, Project};
+        use serde_json::json;
+        let (app, webview, _dir, folder, _sessions) = launch_fixture();
+        let state = app.state::<super::AppState>();
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        let others = tempfile::tempdir().unwrap();
+        let mk = |name: &str| {
+            let path = others.path().join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            dunce::canonicalize(&path).unwrap().display().to_string()
+        };
+        let (ui, docs) = (mk("ui"), mk("docs"));
+        let gone = others.path().join("gone").display().to_string();
+        let ide = dunce::canonicalize(folder.path()).unwrap().display().to_string();
+        let end = |kind: NodeType, id: &str| NodeRef { kind, id: id.into() };
+        let context = |from: NodeRef, to: NodeRef| Edge {
+            id: uuid::Uuid::new_v4().to_string(),
+            from,
+            to,
+            kind: EdgeKind::Context,
+            ..Edge::default()
+        };
+        {
+            let mut ws = state.write_workspace();
+            for (id, path) in [("ui", ui.as_str()), ("docs", docs.as_str()), ("lost", gone.as_str())] {
+                ws.workspace.projects.push(Project {
+                    id: id.into(),
+                    path: path.into(),
+                    label: id.into(),
+                    ..Project::default()
+                });
+            }
+            ws.workspace.edges = vec![
+                context(end(NodeType::Project, "ide"), end(NodeType::Project, "ui")),
+                context(end(NodeType::Project, "ide"), end(NodeType::Project, "lost")),
+            ];
+        }
+
+        // The sheet: prefilled with ui (via edge → ui), lost noted; the edge-derived add-dirs
+        // are not remembered as launch defaults.
+        let prefill = call("launch_defaults", json!({ "projectId": "ide" })).expect("launch_defaults");
+        assert_eq!(prefill["addDirs"], json!([{ "path": ui, "via": "ui" }]));
+        assert_eq!(prefill["skipped"], json!([{ "label": "lost", "reason": "folder missing" }]));
+        let request = json!({
+            "projectId": "ide", "sessionId": prefill["sessionId"], "name": prefill["name"],
+            "addDirs": [ui], "background": true
+        });
+        let reply = call("session_launch", json!({ "request": request, "cols": 1000, "rows": 40 })).expect("session_launch");
+        assert_eq!(reply["skipped"], json!([]));
+        let id = reply["session_id"].as_str().unwrap().to_string();
+        let term_id = format!("session:{id}");
+        state.terms.write(&term_id, b"go\r").unwrap();
+        let output = |term: &str| super::pty::tests::strip_escapes(&state.terms.buffer(term).unwrap().data);
+        wait_until(&app, &term_id, "the launch's exit", || {
+            state.read_sessions_live().sessions[&id].state == SessionState::Exited
+        });
+        assert_add_dirs(&output(&term_id), &[&ui]);
+        let remembered = serde_json::to_value(state.read_workspace().workspace.projects[0].launch_defaults.clone()).unwrap();
+        assert!(remembered.get("addDirs").is_none(), "{remembered}");
+
+        // Resume: the session's own edge (docs) plus its project's (ui); one to its own folder
+        // is dropped; the unusable one is named.
+        *state.launcher.program.lock().unwrap() = Some(echo_program());
+        let orig = "6a2e1e3f-5b7d-4e8f-9a0b-1c2d3e4f5a6b";
+        discover(&app, orig, "ide-6a2e", &ide);
+        state.write_workspace().workspace.edges.extend([
+            context(end(NodeType::Session, orig), end(NodeType::Project, "docs")),
+            context(end(NodeType::Session, orig), end(NodeType::Project, "ide")),
+        ]);
+        let reply = call("session_resume", json!({ "projectId": "ide", "sessionId": orig, "cols": 1000, "rows": 40 })).expect("session_resume");
+        assert_eq!(reply["skipped"], json!([{ "label": "lost", "reason": "folder missing" }]));
+        let term_id = format!("session:{orig}");
+        state.terms.write(&term_id, b"go\r").unwrap();
+        wait_until(&app, &term_id, "the resume's exit", || {
+            state.read_sessions_live().sessions[orig].state == SessionState::Exited
+        });
+        let text = output(&term_id);
+        assert_add_dirs(&text, &[&docs, &ui]);
+        let flat = text.replace(['\r', '\n'], "");
+        assert!(!flat.contains(&format!("--add-dir {ide}")) && !flat.contains(&format!("[--add-dir][{ide}]")), "{flat}");
+
+        // Fork: the same add-dirs.
+        let reply = call("session_fork", json!({ "projectId": "ide", "sessionId": orig, "cols": 1000, "rows": 40 })).expect("session_fork");
+        assert_eq!(reply["skipped"], json!([{ "label": "lost", "reason": "folder missing" }]));
+        let fork = reply["session_id"].as_str().unwrap().to_string();
+        let fork_term = format!("session:{fork}");
+        state.terms.write(&fork_term, b"go\r").unwrap();
+        wait_until(&app, &fork_term, "the fork's exit", || {
+            state.read_sessions_live().sessions[&fork].state == SessionState::Exited
+        });
+        assert_add_dirs(&output(&fork_term), &[&docs, &ui]);
+
+        // Branches off (no list): an edge to the branch checked out in a project's folder (from
+        // the status poll) grants that folder; a detached HEAD checks out no branch.
+        let repo = |detached: bool| {
+            super::git::ProjectStatus::Repo(super::git::RepoStatus {
+                branch: "main".into(),
+                detached,
+                ..Default::default()
+            })
+        };
+        state.write_workspace().workspace.edges = vec![context(end(NodeType::Project, "ide"), end(NodeType::Branch, "ui:main"))];
+        state.write_live().statuses.insert("ui".into(), repo(false));
+        let prefill = call("launch_defaults", json!({ "projectId": "ide" })).unwrap();
+        assert_eq!(prefill["addDirs"], json!([{ "path": ui, "via": "ui:main" }]));
+        assert_eq!(prefill["skipped"], json!([]));
+        state.write_live().statuses.insert("ui".into(), repo(true));
+        let prefill = call("launch_defaults", json!({ "projectId": "ide" })).unwrap();
+        assert_eq!(prefill["addDirs"], json!([]));
+        assert_eq!(prefill["skipped"], json!([{ "label": "ui:main", "reason": "no worktree" }]));
+
+        // A branch sheet on a linked worktree W: an edge to that branch is W itself (dropped);
+        // one to the checked-out branch keeps the project's folder.
+        let wt = mk("ide-feat");
+        let listed = |name: &str, head: bool, worktree: Option<&str>| super::git::BranchInfo {
+            name: name.into(),
+            head,
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            gone: false,
+            committed_at: 0,
+            worktree: worktree.map(|path| super::git::WorktreeChip { path: path.into(), missing: false }),
+        };
+        state
+            .write_workspace()
+            .branches
+            .insert("ide".into(), vec![listed("main", true, None), listed("feat", false, Some(&wt))]);
+        state.write_workspace().workspace.edges = vec![
+            context(end(NodeType::Project, "ide"), end(NodeType::Branch, "ide:feat")),
+            context(end(NodeType::Project, "ide"), end(NodeType::Branch, "ide:main")),
+        ];
+        let prefill = call("launch_defaults", json!({ "projectId": "ide", "branch": "feat" })).unwrap();
+        assert_eq!(prefill["targetPath"], json!(wt));
+        assert_eq!(prefill["addDirs"], json!([{ "path": ide, "via": "ide:main" }]));
+        assert_eq!(prefill["skipped"], json!([]));
+
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
+    }
+
     /// Story 4.4: Stop on a busy session sends Ctrl+C twice; a session that ignores them is
     /// killed 5 s after the Stop and turns `exited`. A second Stop kills at once.
     #[test]

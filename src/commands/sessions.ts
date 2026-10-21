@@ -6,14 +6,14 @@
 // gone, never a throw. Story 4.4 adds `session.resume`, `session.fork` and `session.stop`
 // (no sheet; a refusal is the notice).
 
-import { launchDefaults, projectPickFolder, sessionFork, sessionLaunch, sessionResume, sessionStop, type ChildNode, type LaunchChoices, type LaunchResult } from "../ipc";
+import { launchDefaults, projectPickFolder, sessionFork, sessionLaunch, sessionResume, sessionStop, type ChildNode, type LaunchChoices, type LaunchResult, type SkippedEdge } from "../ipc";
 import { isSheetOpen, sheetToken, useLaunchStore } from "../state/launch";
 import { sessionState } from "../state/live";
 import { isTerminalRunning, sessionTerminal, sessionTerminalId, terminalInfo, useTerminalStore } from "../state/terminals";
 import { disposeView, restore } from "../terminal/registry";
 import { isPoppedOut, useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
-import { canStart, formFromPrefill, launchRequest, missingAddDirs, withAddDir, withoutAddDir } from "./launch";
+import { canStart, formFromPrefill, launchRequest, missingAddDirs, skippedNote, withAddDir, withoutAddDir } from "./launch";
 import { notify, selectedBranch } from "./navigation";
 import { setExpanded } from "./nodes";
 import { closeOpenPane, openPane } from "./panes";
@@ -38,10 +38,12 @@ export async function openLaunchSheet(projectId: string, branch?: string): Promi
     const prefill = await launchDefaults(projectId, branch ?? null);
     // On a branch (Story 5.3) the folder is Rust's: its worktree, the project folder for the
     // checked-out branch, or the worktree the Start will create (`worktreePlan`).
+    // Story 6.2: the project's context edges, resolved by Rust, prefill the add-dirs on both sheets.
+    const edges = { edgeDirs: prefill.addDirs ?? [], skipped: prefill.skipped ?? [] };
     const target =
       branch === undefined
-        ? { repoTop: prefill.repoTop ?? null }
-        : { branch, targetPath: prefill.targetPath ?? null, worktreePlan: prefill.worktreePlan ?? null };
+        ? { repoTop: prefill.repoTop ?? null, ...edges }
+        : { branch, targetPath: prefill.targetPath ?? null, worktreePlan: prefill.worktreePlan ?? null, ...edges };
     useLaunchStore.getState().open({ id: project.id, path: project.path, label: project.label }, prefill.sessionId, formFromPrefill(prefill), target);
     openPane("launch");
     return true;
@@ -193,10 +195,14 @@ const forking = new Set<string>();
 
 /**
  * The notice after a Resume or Fork: what it ran with, since no sheet showed it (the
- * project's latest choices; a flag left out reads `default`).
+ * project's latest choices; a flag left out reads `default`). Context edges whose target gave
+ * no folder (Story 6.2) come first, so the one-line notice never cuts them off:
+ * `resumed without: feat (no worktree) · resumed with model …`.
  */
-export function startedNotice(verb: "resumed" | "forked", choices: LaunchChoices): string {
-  return `${verb} with model ${choices.model}, effort ${choices.effort}, mode ${choices.permission_mode}`;
+export function startedNotice(verb: "resumed" | "forked", choices: LaunchChoices, skipped?: readonly SkippedEdge[]): string {
+  const used = `${verb} with model ${choices.model}, effort ${choices.effort}, mode ${choices.permission_mode}`;
+  const without = skippedNote(`${verb} without`, skipped);
+  return without === null ? used : `${without} · ${used}`;
 }
 
 /**
@@ -260,7 +266,7 @@ export async function resumeSelectedSession(): Promise<boolean> {
     // Its pop-out (Story 4.5) shows the earlier run: once the new one runs, it returns to the pane.
     if (isPoppedOut(termId)) await returnToPane(termId);
     await showStarted(child.projectId, started);
-    notify(startedNotice("resumed", started.choices));
+    notify(startedNotice("resumed", started.choices, started.skipped));
     return true;
   } catch (err) {
     notify(describe(err));
@@ -291,7 +297,7 @@ export async function forkSelectedSession(): Promise<boolean> {
   try {
     const started = await sessionFork(child.projectId, child.id, null, null);
     await showStarted(child.projectId, started);
-    notify(startedNotice("forked", started.choices));
+    notify(startedNotice("forked", started.choices, started.skipped));
     return true;
   } catch (err) {
     notify(describe(err));

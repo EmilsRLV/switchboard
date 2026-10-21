@@ -418,6 +418,24 @@
   font-size: var(--text-xs);
 }
 
+/* Story 6.2: a row a context edge prefilled, and the edges that gave no folder. */
+.launch-dir-via {
+  min-width: 0;
+  max-width: 50%;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.launch-skipped {
+  margin: 0.4rem 0 0;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
 .launch-start {
   align-items: center;
   flex-wrap: wrap;

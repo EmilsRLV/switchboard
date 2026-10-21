@@ -6,11 +6,13 @@
 // remembers the three choices per project). Story 5.3 adds where the sheet starts: the branch
 // card it was opened on and the folder Rust resolved for it (never recomputed here), the
 // `git worktree add` its Start runs first for a branch without a worktree, and the repo's top
-// level for the project sheet's `--worktree` option.
+// level for the project sheet's `--worktree` option. Story 6.2 adds the folders the project's
+// context edges granted (each row's `via edge → <label>`) and the edges skipped; recomputed by
+// Rust at every open, never remembered.
 
 import { create } from "zustand";
 import { editedForm, type LaunchForm } from "../commands/launch";
-import type { WorktreePlanPreview } from "../ipc";
+import type { EdgeDir, SkippedEdge, WorktreePlanPreview } from "../ipc";
 
 /** Where an open sheet starts, as Rust's prefill said (Story 5.3). */
 export type LaunchSheetTarget = {
@@ -22,6 +24,10 @@ export type LaunchSheetTarget = {
   worktreePlan: WorktreePlanPreview | null;
   /** The project's sheet of a git project: its top level (`--worktree`); `null` otherwise. */
   repoTop: string | null;
+  /** Story 6.2: the folders the project's context edges granted, with their target's label (a prefilled row's `via edge → <label>`). */
+  edgeDirs: readonly EdgeDir[];
+  /** The project's context edges whose target gave no folder (the `not added:` line). */
+  skipped: readonly SkippedEdge[];
 };
 
 export type LaunchSheetState = LaunchSheetTarget & {
@@ -77,6 +83,8 @@ const initial = {
   targetPath: null,
   worktreePlan: null,
   repoTop: null,
+  edgeDirs: Object.freeze([]) as readonly EdgeDir[],
+  skipped: Object.freeze([]) as readonly SkippedEdge[],
 };
 
 export const useLaunchStore = create<LaunchSheetState>()((set) => ({
@@ -95,6 +103,8 @@ export const useLaunchStore = create<LaunchSheetState>()((set) => ({
       targetPath: target.targetPath === undefined ? project.path : target.targetPath,
       worktreePlan: target.worktreePlan ?? null,
       repoTop: target.repoTop ?? null,
+      edgeDirs: target.edgeDirs ?? initial.edgeDirs,
+      skipped: target.skipped ?? initial.skipped,
       opened: s.opened + 1,
     })),
   edit: (patch) =>
