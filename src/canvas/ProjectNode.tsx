@@ -2,6 +2,7 @@ import { memo, type MouseEvent as ReactMouseEvent } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { runCommand } from "../commands/registry";
 import { useUiStore } from "../state/ui";
+import { LinkHandles } from "./LinkHandles";
 import { aheadBehind, BRANCHES_UNAVAILABLE, branchesChipShown, chevronCommandId, shortenPath, statusLine, type ProjectFlowNode } from "./nodes";
 
 /**
@@ -17,7 +18,7 @@ import { aheadBehind, BRANCHES_UNAVAILABLE, branchesChipShown, chevronCommandId,
  * `project.expand` / `project.collapse`. Dragging, selection and the right-click menu are
  * the canvas's; the selected card shows an outline in `--fg`. While any of its sessions is
  * `finished` or `waiting` the card glows: a pulsing accent outline outside the selection's
- * (`project-glow`, Story 3.3).
+ * (`project-glow`, Story 3.3). The card's edge handle (Story 6.1) sits on its right edge.
  */
 export const ProjectNode = memo(function ProjectNode({ data }: NodeProps<ProjectFlowNode>) {
   const { project, status, flashed, selected, childCount, liveCount, attention, branchesError } = data;
@@ -39,67 +40,70 @@ export const ProjectNode = memo(function ProjectNode({ data }: NodeProps<Project
   };
 
   return (
-    <div
-      className={
-        "project-node" + (flashed ? " is-flash" : "") + (selected ? " is-selected" : "") + (attention ? " project-glow" : "")
-      }
-      role="group"
-      aria-label={`Project ${project.label}${attention ? ", needs you" : ""}`}
-      title={attention ? `${project.label}: a session needs you` : undefined}
-    >
-      <div className="project-node-head">
-        {childCount > 0 && (
-          // `nodrag`: a press on the chevron never starts a drag of the card.
-          <button
-            type="button"
-            className="project-node-toggle nodrag"
-            aria-expanded={project.expanded}
-            aria-label={project.expanded ? "Collapse children" : `Expand ${childCount} children`}
-            title={project.expanded ? "Collapse" : "Expand"}
-            onClick={toggle}
-          >
-            <span className="project-node-chevron" aria-hidden="true">
-              {project.expanded ? "▾" : "▸"}
-            </span>
-            {!project.expanded && <span className="project-node-badge">{childCount}</span>}
-          </button>
-        )}
-        <span className="project-node-label" title={branchesError === null ? undefined : project.path}>
-          {project.label}
-        </span>
-        {liveCount > 0 && (
-          <span className="project-node-live" title="live sessions">
-            {liveCount} live
+    <>
+      <div
+        className={
+          "project-node" + (flashed ? " is-flash" : "") + (selected ? " is-selected" : "") + (attention ? " project-glow" : "")
+        }
+        role="group"
+        aria-label={`Project ${project.label}${attention ? ", needs you" : ""}`}
+        title={attention ? `${project.label}: a session needs you` : undefined}
+      >
+        <div className="project-node-head">
+          {childCount > 0 && (
+            // `nodrag`: a press on the chevron never starts a drag of the card.
+            <button
+              type="button"
+              className="project-node-toggle nodrag"
+              aria-expanded={project.expanded}
+              aria-label={project.expanded ? "Collapse children" : `Expand ${childCount} children`}
+              title={project.expanded ? "Collapse" : "Expand"}
+              onClick={toggle}
+            >
+              <span className="project-node-chevron" aria-hidden="true">
+                {project.expanded ? "▾" : "▸"}
+              </span>
+              {!project.expanded && <span className="project-node-badge">{childCount}</span>}
+            </button>
+          )}
+          <span className="project-node-label" title={branchesError === null ? undefined : project.path}>
+            {project.label}
           </span>
-        )}
-      </div>
-      {branchesError === null ? (
-        <div className="project-node-path" title={project.path}>
-          {shortenPath(project.path)}
+          {liveCount > 0 && (
+            <span className="project-node-live" title="live sessions">
+              {liveCount} live
+            </span>
+          )}
         </div>
-      ) : (
-        <div className="project-node-path" title={branchesError}>
-          {BRANCHES_UNAVAILABLE}
-        </div>
-      )}
-      <div className="project-node-status">
-        <span className={line.tone === "muted" ? "project-node-muted" : undefined} title={line.title}>
-          {line.text}
-        </span>
-        {divergence !== null && <span className="project-node-ab">{divergence}</span>}
-        {branchesChipShown(project, isRepo) && (
-          // `nodrag`: a press on the chip never starts a drag of the card.
-          <button
-            type="button"
-            className={"project-node-branches nodrag" + (project.showBranches ? " is-on" : "")}
-            aria-pressed={project.showBranches}
-            title={project.showBranches ? "Hide branches" : "Show branches"}
-            onClick={toggleBranches}
-          >
-            branches
-          </button>
+        {branchesError === null ? (
+          <div className="project-node-path" title={project.path}>
+            {shortenPath(project.path)}
+          </div>
+        ) : (
+          <div className="project-node-path" title={branchesError}>
+            {BRANCHES_UNAVAILABLE}
+          </div>
         )}
+        <div className="project-node-status">
+          <span className={line.tone === "muted" ? "project-node-muted" : undefined} title={line.title}>
+            {line.text}
+          </span>
+          {divergence !== null && <span className="project-node-ab">{divergence}</span>}
+          {branchesChipShown(project, isRepo) && (
+            // `nodrag`: a press on the chip never starts a drag of the card.
+            <button
+              type="button"
+              className={"project-node-branches nodrag" + (project.showBranches ? " is-on" : "")}
+              aria-pressed={project.showBranches}
+              title={project.showBranches ? "Hide branches" : "Show branches"}
+              onClick={toggleBranches}
+            >
+              branches
+            </button>
+          )}
+        </div>
       </div>
-    </div>
+      <LinkHandles source shown={selected} />
+    </>
   );
 });

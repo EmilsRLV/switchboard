@@ -967,3 +967,28 @@
   pointer-events: none;
   overflow: hidden;
 }
+
+/* --- edge inspector (Story 6.1) ----------------------------------------------------------- */
+
+.edge-pane {
+  width: min(320px, 90vw);
+}
+
+.edge-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.25rem 0.75rem;
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.edge-facts dt {
+  color: var(--fg-muted);
+}
+
+.edge-facts dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

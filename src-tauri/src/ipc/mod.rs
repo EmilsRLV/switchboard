@@ -13,7 +13,7 @@ use crate::claude::launch::{self, LaunchPrefill, LaunchRequest};
 use crate::claude::live::{self, LiveSnapshot};
 use crate::claude::{self, ClaudeProject};
 use crate::git::{self, ProjectStatus};
-use crate::graph::{self, AddProjectsResult, NodeTarget, Position, Viewport, WorkspaceSnapshot};
+use crate::graph::{self, AddProjectsResult, Edge, NodeRef, NodeTarget, Position, Viewport, WorkspaceSnapshot};
 use crate::process;
 use crate::pty::{self, EventSink, SessionHooks, SpawnSpec, TermBuffer, TermInfo, TermKind};
 use crate::settings::detect::Search;
@@ -391,6 +391,28 @@ pub async fn workspace_move_node<R: Runtime>(
     position: Position,
 ) -> Result<WorkspaceSnapshot, String> {
     graph::move_node(&app, &target, position)
+}
+
+/// Draw an edge (Story 6.1): Rust picks the kind from the pair and refuses an invalid pair, a
+/// duplicate or an unknown end with the notice to show (`"can't link a project to a session"`,
+/// `"already linked"`, ...). Replies with the new edge; the snapshot follows as
+/// `workspace://changed`.
+#[tauri::command]
+pub async fn edge_add<R: Runtime>(app: AppHandle<R>, from: NodeRef, to: NodeRef) -> Result<Edge, String> {
+    graph::add_edge(&app, &from, &to)
+}
+
+/// Set an edge's label: trimmed, a blank one stored as `null`. Replies with the snapshot, or
+/// `Err("unknown edge")`.
+#[tauri::command]
+pub async fn edge_set_label<R: Runtime>(app: AppHandle<R>, id: String, label: Option<String>) -> Result<WorkspaceSnapshot, String> {
+    graph::set_edge_label(&app, &id, label.as_deref())
+}
+
+/// Delete an edge. Replies with the snapshot, or `Err("unknown edge")`.
+#[tauri::command]
+pub async fn edge_remove<R: Runtime>(app: AppHandle<R>, id: String) -> Result<WorkspaceSnapshot, String> {
+    graph::remove_edge(&app, &id)
 }
 
 /// Put a project's children back into their column (`project.relayout`): clears their

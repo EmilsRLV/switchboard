@@ -35,9 +35,9 @@ files. `settings.theme` stays reserved; there is no light theme.
 | Token | Value | Use |
 |---|---|---|
 | `--border` | `#262a33` | Every border and separator. |
-| `--border-strong` | `var(--fg-muted)` | The active terminal tab's underline (Story 4.5). |
+| `--border-strong` | `var(--fg-muted)` | The active terminal tab's underline (Story 4.5); stored edges and the edge handle (Story 6.1). |
 | `--accent` | `#e8a33d` | Attention only (see [The accent](#the-accent)). |
-| `--focus` | `var(--fg)` | Focus rings and the node selection outline. |
+| `--focus` | `var(--fg)` | Focus rings, the node selection outline and the selected edge. |
 | `--selection` | `var(--fg-muted)` | Text selection background (text in `--bg`). |
 | `--line` | `1px` | The width of every border, outline and separator. |
 
@@ -90,7 +90,8 @@ cursor `--fg`, the text under the cursor `--bg-raised`, selection `--selection` 
 ## Rules
 
 1. **Lines are 1 px** (`--line`) in `--border`. The only 2-px lines are the left indicators: the banner
-   (accent), the notice and the selected palette or menu row (`--fg-muted`).
+   (accent), the notice and the selected palette or menu row (`--fg-muted`). Stored edges are 1-px lines in
+   `--border-strong`; a cooperate edge's double line is two 1-px lines (see [Edges](#edges)).
 2. **No depth effects.** No `box-shadow`, `text-shadow`, `drop-shadow()` or gradient anywhere. Layers are
    told apart by surface (`--bg` / `--bg-raised` / `--bg-hover`) and a border.
 3. **Colours come from tokens.** No hex, `rgb()`, `hsl()` or named colour outside `tokens.css`
@@ -131,6 +132,7 @@ drag handle) follows every rule here.
 | Selected row (palette, menu) | `--bg-hover` background and a 2-px `--fg-muted` left border (transparent when not selected, so the text never shifts). |
 | Keyboard focus | A 1-px `--focus` outline, offset 1 px. The palette input shows none: it always has focus while the palette is open, and the dialog's border is the cue. |
 | Selected node | A 1-px `--focus` outline, offset 2 px, and the node draws above its siblings. |
+| Selected edge | Its line (both lines of a cooperate edge) and its label in `--focus`. No accent. |
 | Attention (session card) | A `finished` or `waiting` session: 1-px `--accent` border, the state word in `--accent` after its 4-px dot (`currentColor`) pulsing like `busy`'s. |
 | Glow (project card) | Any of its sessions (drawn or hidden, collapsed or not) is `finished` / `waiting`: a 1-px `--accent` outline at 2-px offset whose opacity pulses 1 → 0.4. No shadow, gradient or filter. Selected and glowing, the `--focus` outline stays at 2 px and the glow moves out to 4 px around it. |
 | Text selection | `--selection` background, `--bg` text. |
@@ -208,7 +210,14 @@ drag handle) follows every rule here.
   muted `Worktree removed; the branch was kept.`, is `.pane-error` text (`role="alert"`). Tokens only; the
   accent appears only through `.pane-error`. No new motion.
 - **The palette** is centred near the top over a dimmed page (`--bg` at 55%): `--bg-raised`, 1-px border,
-  `--radius-md`; rows in `--text-base`, key hints in `--text-sm` `--fg-muted`.
+  `--radius-md`; rows in `--text-base`, key hints in `--text-sm` `--fg-muted`. As the "Link to…" pick list
+  (Story 6.1) it is the same dialog with the placeholder `Link to…` and one row per target, no key hints.
+- **The edge inspector** (Story 6.1) is a pane, narrower than the others: `min(320px, 90vw)`. It shows the title
+  `Edge`, then the facts as a two-column list: the term in `--fg-muted`, the value in `--fg`, `--text-md`, and
+  each value on one line with an ellipsis. The facts are `Kind` and the two ends: `From` and `To`, or
+  `Between` and `And` for a cooperate edge. Each end is its label and `(project)`. Below the facts sit the
+  launch sheet's **Label** field and an ordinary **Delete** button. No colour marks the delete: an edge is
+  cheap to redraw. It never takes the focus on opening. Tokens only, no accent, no new motion.
 - **The context menu** is the palette's row look at the pointer: `--bg-raised`, 1-px border,
   `--radius-md`, items in `--text-md`, groups split by a 1-px `--border` line. Project, session and branch cards
   have one; it lists only enabled entries and does not open when there are none.
@@ -293,6 +302,29 @@ to the left of both (so two cards of one column are joined beside the column, no
 arrowhead, no label, never the accent; it sits under the cards, cannot be hovered, selected or edited, and is
 not an edge kind (Epic 6's edges are something else). Its anchors are invisible.
 
+### Edges
+
+Stored edges (Story 6.1) join two drawn cards with a curve. They run from the source card's right edge to
+the target card's left edge; to a card further left, from the source's left edge to the target's right edge;
+between two cards of one column, from right edge to right edge, curving out and back. There is no arrowhead, and they never use the accent.
+
+- **Context:** one dashed 1-px line (`4 3`) in `--border-strong`.
+- **Cooperate:** two parallel 1-px lines in `--border-strong`. This is drawn as a 3-px stroke whose middle
+  pixel is drawn over in `--bg`.
+- **Selected:** drawn in `--focus`.
+- **Label:** the label sits at the midpoint in `--font-sans` `--text-xs` `--fg-muted` (`--focus` while the edge is
+  selected), on `--bg`. It is one line, at most 160 px wide, and cut with an ellipsis. The full text shows
+  on hover.
+- **Hidden ends:** an edge with an end that is not drawn is not drawn.
+- **The pointer:** a click within 6 px of the line selects the edge.
+
+**The handle.** Session and project cards carry one handle on the right edge, centred vertically. It is a
+7-px circle with a 1-px `--border-strong` border on `--bg-raised` (a `--focus` border on hover). It is
+invisible until the card is hovered or selected, and the cursor over it is a crosshair. While a link is
+dragged, the line that follows the pointer has the context edge's dashed look. Every project, branch and session
+card is a drop target over its whole area. Over a card the pair is refused for, the cursor is
+`not-allowed`. Nothing else changes colour.
+
 ### The more row
 
 A column has two groups (Story 5.1): the sessions, then the branches; each is cut on its own. A session
@@ -351,7 +383,7 @@ Only six motions exist; every one is instant (or static) under `prefers-reduced-
 | Attention pulse (the accent dot before `finished` / `waiting`: the busy pulse) | 1.2 s |
 | Project glow (the accent outline around a project needing you: opacity 1 → 0.4, ease-in-out, alternating, looping; opacity only) | 1.2 s |
 
-Panes (the terminal pane and the launch, worktree and remove-worktree sheets too), terminal tabs and pop-out windows, banners, the notice, the menu and the Elsewhere tray appear without animation.
+Panes (the terminal pane, the launch, worktree and remove-worktree sheets and the edge inspector too), terminal tabs and pop-out windows, banners, the notice, the menu and the Elsewhere tray appear without animation. Edges appear and go without animation.
 
 ## Icons
 

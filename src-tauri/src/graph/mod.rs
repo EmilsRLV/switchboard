@@ -1329,9 +1329,10 @@ pub fn clear_session_branch<R: Runtime>(app: &AppHandle<R>, project_id: &str, se
             return;
         };
         existing.branch_id = None;
+        let linked = edge_session_ids(&st.workspace);
         st.workspace
             .sessions
-            .retain(|s| !(s.session_id == session_id && s.project_id == project_id && s.is_bare()));
+            .retain(|s| !(s.session_id == session_id && s.project_id == project_id && s.is_bare() && !linked.contains(&s.session_id)));
         st.revision += 1;
         (st.write_target(), st.workspace.clone())
     };
@@ -1354,9 +1355,10 @@ pub fn clear_forked_from<R: Runtime>(app: &AppHandle<R>, project_id: &str, sessi
             return;
         };
         existing.forked_from = None;
+        let linked = edge_session_ids(&st.workspace);
         st.workspace
             .sessions
-            .retain(|s| !(s.session_id == session_id && s.project_id == project_id && s.is_bare()));
+            .retain(|s| !(s.session_id == session_id && s.project_id == project_id && s.is_bare() && !linked.contains(&s.session_id)));
         st.revision += 1;
         (st.write_target(), st.workspace.clone())
     };
@@ -1401,7 +1403,10 @@ pub fn relayout_children<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Re
         for session in st.workspace.sessions.iter_mut().filter(|s| s.project_id == project_id) {
             session.position = None;
         }
-        st.workspace.sessions.retain(|s| s.project_id != project_id || !s.is_bare());
+        let linked = edge_session_ids(&st.workspace);
+        st.workspace
+            .sessions
+            .retain(|s| s.project_id != project_id || !s.is_bare() || linked.contains(&s.session_id));
         for branch in st.workspace.branches.iter_mut().filter(|b| b.project_id == project_id) {
             branch.position = None;
         }
@@ -1472,6 +1477,232 @@ pub fn remove_project<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Resul
         st.branches.remove(project_id);
         st.branch_errors.remove(project_id);
         st.worktrees.remove(project_id);
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    Ok(persist_and_emit(app, target, &workspace))
+}
+
+// ---------------------------------------------------------------------------------------
+// Edges (Story 6.1): Rust picks the kind, refuses invalid pairs and owns the list
+// ---------------------------------------------------------------------------------------
+
+/// Refusal: both ends are the same node.
+pub const REFUSE_SELF: &str = "can't link a node to itself";
+/// Refusal: a branch is never the source of an edge.
+pub const REFUSE_FROM_BRANCH: &str = "can't link from a branch";
+/// Refusal: context runs from a project to a project or a branch, never to a session.
+pub const REFUSE_PROJECT_TO_SESSION: &str = "can't link a project to a session";
+/// Refusal: folder targets come with Story 6.2.
+pub const REFUSE_FOLDER: &str = "can't link a folder yet";
+/// Refusal: the same kind between the same two ends already exists.
+pub const REFUSE_DUPLICATE: &str = "already linked";
+
+/// The kind of an edge drawn from `from` to `to`, or why the pair is refused (the notice the
+/// UI shows): `cooperate` between two sessions; `context` from a session or a project to a
+/// project or a branch. A branch as the source, a project to a session, a node to itself and
+/// (for now) a folder at either end are refused. Mirrored by `src/canvas/edges.ts`.
+pub fn edge_kind(from: &NodeRef, to: &NodeRef) -> Result<EdgeKind, &'static str> {
+    if from.kind == NodeType::Folder || to.kind == NodeType::Folder {
+        return Err(REFUSE_FOLDER);
+    }
+    if from == to {
+        return Err(REFUSE_SELF);
+    }
+    match (from.kind, to.kind) {
+        (NodeType::Branch, _) => Err(REFUSE_FROM_BRANCH),
+        (NodeType::Session, NodeType::Session) => Ok(EdgeKind::Cooperate),
+        (NodeType::Project, NodeType::Session) => Err(REFUSE_PROJECT_TO_SESSION),
+        (NodeType::Session | NodeType::Project, NodeType::Project | NodeType::Branch) => Ok(EdgeKind::Context),
+        // Folders are refused above.
+        (NodeType::Folder, _) | (_, NodeType::Folder) => Err(REFUSE_FOLDER),
+    }
+}
+
+/// True when `edges` already holds an edge of `kind` between `from` and `to`: same direction,
+/// or either direction for an (undirected) cooperate edge.
+pub fn is_duplicate_edge(edges: &[Edge], kind: EdgeKind, from: &NodeRef, to: &NodeRef) -> bool {
+    edges.iter().any(|e| {
+        e.kind == kind && ((e.from == *from && e.to == *to) || (kind == EdgeKind::Cooperate && e.from == *to && e.to == *from))
+    })
+}
+
+/// Whether `node` names a node of the workspace: a project on the canvas; a session child
+/// (stubs included) or a stored session ref of a project on the canvas; a listed branch child
+/// or a stored branch node (by its id or its `<projectId>:<name>` child id).
+fn edge_end_exists(workspace: &Workspace, children: &[ChildNode], node: &NodeRef) -> bool {
+    let on_canvas = |project_id: &str| workspace.projects.iter().any(|p| p.id == project_id);
+    match node.kind {
+        NodeType::Project => on_canvas(&node.id),
+        NodeType::Session => {
+            children.iter().any(|c| c.kind == ChildKind::Session && c.id == node.id)
+                || workspace.sessions.iter().any(|s| s.session_id == node.id && on_canvas(&s.project_id))
+        }
+        NodeType::Branch => {
+            children.iter().any(|c| c.kind == ChildKind::Branch && c.id == node.id)
+                || workspace
+                    .branches
+                    .iter()
+                    .any(|b| on_canvas(&b.project_id) && (b.id == node.id || branch_child_id(&b.project_id, &b.name) == node.id))
+        }
+        NodeType::Folder => false,
+    }
+}
+
+fn node_type_word(kind: NodeType) -> &'static str {
+    match kind {
+        NodeType::Project => "project",
+        NodeType::Branch => "branch",
+        NodeType::Session => "session",
+        NodeType::Folder => "folder",
+    }
+}
+
+/// A branch end as stored: always the card's `<projectId>:<name>` id, so a stored branch node
+/// named by its own id is the same end (for the self and duplicate checks, and for drawing).
+/// Any other end, or a branch not found, comes back unchanged.
+fn canonical_end(workspace: &Workspace, children: &[ChildNode], node: &NodeRef) -> NodeRef {
+    if node.kind != NodeType::Branch || children.iter().any(|c| c.kind == ChildKind::Branch && c.id == node.id) {
+        return node.clone();
+    }
+    workspace
+        .branches
+        .iter()
+        .find(|b| b.id == node.id || branch_child_id(&b.project_id, &b.name) == node.id)
+        .map(|b| NodeRef {
+            kind: NodeType::Branch,
+            id: branch_child_id(&b.project_id, &b.name),
+        })
+        .unwrap_or_else(|| node.clone())
+}
+
+/// Session ids some edge ends on: their refs are kept even when bare, so
+/// [`remove_project`] can still find (and prune) the edge once the session is unlisted.
+fn edge_session_ids(workspace: &Workspace) -> HashSet<String> {
+    workspace
+        .edges
+        .iter()
+        .flat_map(|e| [&e.from, &e.to])
+        .filter(|n| n.kind == NodeType::Session)
+        .map(|n| n.id.clone())
+        .collect()
+}
+
+/// Draw an edge from `from` to `to` (`edge_add`): the kind comes from the pair
+/// ([`edge_kind`]); a branch end is stored by its card id ([`canonical_end`]); both ends must be
+/// nodes of the workspace (`Err("unknown <type>")`) and the edge must not exist yet
+/// ([`is_duplicate_edge`], `Err("already linked")`). A session end without a [`SessionRef`] gets
+/// one (just `sessionId` and `projectId`, as a drag does), so the edge goes with its project.
+/// The new edge gets a UUID v4, no label and `createdAt` now; it is written and emitted like any
+/// mutation. A refusal changes nothing.
+pub fn add_edge<R: Runtime>(app: &AppHandle<R>, from: &NodeRef, to: &NodeRef) -> Result<Edge, String> {
+    let kind = edge_kind(from, to).map_err(str::to_string)?;
+    let state = app.state::<AppState>();
+    let (target, workspace, edge) = {
+        let mut st = state.write_workspace();
+        let children = st.children();
+        let from = canonical_end(&st.workspace, &children, from);
+        let to = canonical_end(&st.workspace, &children, to);
+        if from == to {
+            return Err(REFUSE_SELF.to_string());
+        }
+        for end in [&from, &to] {
+            if !edge_end_exists(&st.workspace, &children, end) {
+                return Err(format!("unknown {}", node_type_word(end.kind)));
+            }
+        }
+        if is_duplicate_edge(&st.workspace.edges, kind, &from, &to) {
+            return Err(REFUSE_DUPLICATE.to_string());
+        }
+        for end in [&from, &to] {
+            if end.kind != NodeType::Session || st.workspace.sessions.iter().any(|s| s.session_id == end.id) {
+                continue;
+            }
+            if let Some(child) = children.iter().find(|c| c.kind == ChildKind::Session && c.id == end.id) {
+                st.workspace.sessions.push(SessionRef {
+                    session_id: end.id.clone(),
+                    project_id: child.project_id.clone(),
+                    ..SessionRef::default()
+                });
+            }
+        }
+        let edge = Edge {
+            id: uuid::Uuid::new_v4().to_string(),
+            from,
+            to,
+            kind,
+            label: None,
+            created_at: format_iso_ms(crate::claude::live::now_ms()),
+        };
+        st.workspace.edges.push(edge.clone());
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone(), edge)
+    };
+    persist_and_emit(app, target, &workspace);
+    Ok(edge)
+}
+
+/// The longest label stored, in characters.
+pub const MAX_EDGE_LABEL_CHARS: usize = 200;
+
+/// A label as stored: every run of control characters (newlines, tabs, ...) becomes one space,
+/// then it is trimmed and cut to [`MAX_EDGE_LABEL_CHARS`] characters; `None` when that leaves
+/// nothing.
+pub fn normalise_edge_label(label: Option<&str>) -> Option<String> {
+    let raw = label?;
+    let mut clean = String::with_capacity(raw.len());
+    let mut in_control = false;
+    for c in raw.chars() {
+        if c.is_control() {
+            if !in_control {
+                clean.push(' ');
+            }
+            in_control = true;
+        } else {
+            clean.push(c);
+            in_control = false;
+        }
+    }
+    let cut: String = clean.trim().chars().take(MAX_EDGE_LABEL_CHARS).collect();
+    let cut = cut.trim_end();
+    (!cut.is_empty()).then(|| cut.to_string())
+}
+
+/// Set an edge's label (`edge_set_label`): trimmed, a blank one stored as `None`. Written and
+/// emitted like any mutation; the same label again changes nothing. An unknown id is an `Err`
+/// and nothing changes.
+pub fn set_edge_label<R: Runtime>(app: &AppHandle<R>, id: &str, label: Option<&str>) -> Result<WorkspaceSnapshot, String> {
+    let label = normalise_edge_label(label);
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        let edge = st
+            .workspace
+            .edges
+            .iter_mut()
+            .find(|e| e.id == id)
+            .ok_or_else(|| "unknown edge".to_string())?;
+        if edge.label == label {
+            return Ok(st.snapshot());
+        }
+        edge.label = label;
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    Ok(persist_and_emit(app, target, &workspace))
+}
+
+/// Delete an edge (`edge_remove`): written and emitted like any mutation. An unknown id is an
+/// `Err` and nothing changes.
+pub fn remove_edge<R: Runtime>(app: &AppHandle<R>, id: &str) -> Result<WorkspaceSnapshot, String> {
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        let before = st.workspace.edges.len();
+        st.workspace.edges.retain(|e| e.id != id);
+        if st.workspace.edges.len() == before {
+            return Err("unknown edge".to_string());
+        }
         st.revision += 1;
         (st.write_target(), st.workspace.clone())
     };
@@ -4241,5 +4472,260 @@ mod tests {
             id: "s1".into(),
         };
         assert!(move_node(app.handle(), &target, Position { x: 1.0, y: 2.0 }).is_ok());
+    }
+
+    // -- edges (Story 6.1) ------------------------------------------------------------
+
+    fn end(kind: NodeType, id: &str) -> NodeRef {
+        NodeRef { kind, id: id.into() }
+    }
+
+    #[test]
+    fn edge_kind_picks_the_kind_from_the_pair_and_refuses_the_rest() {
+        use NodeType::*;
+        let kind = |a: NodeType, b: NodeType| edge_kind(&end(a, "x"), &end(b, "y"));
+        assert_eq!(kind(Session, Project), Ok(EdgeKind::Context));
+        assert_eq!(kind(Session, Branch), Ok(EdgeKind::Context));
+        assert_eq!(kind(Project, Project), Ok(EdgeKind::Context), "Emils' decision: project→project is context");
+        assert_eq!(kind(Project, Branch), Ok(EdgeKind::Context));
+        assert_eq!(kind(Session, Session), Ok(EdgeKind::Cooperate));
+        assert_eq!(kind(Project, Session), Err(REFUSE_PROJECT_TO_SESSION));
+        assert_eq!(REFUSE_PROJECT_TO_SESSION, "can't link a project to a session");
+        for to in [Project, Branch, Session] {
+            assert_eq!(kind(Branch, to), Err(REFUSE_FROM_BRANCH));
+        }
+        for other in [Project, Branch, Session, Folder] {
+            assert_eq!(kind(Folder, other), Err(REFUSE_FOLDER));
+            assert_eq!(kind(other, Folder), Err(REFUSE_FOLDER));
+        }
+        for same in [Project, Session] {
+            assert_eq!(edge_kind(&end(same, "a"), &end(same, "a")), Err(REFUSE_SELF));
+        }
+        assert_eq!(edge_kind(&end(Branch, "a"), &end(Branch, "a")), Err(REFUSE_SELF));
+        assert_eq!(REFUSE_DUPLICATE, "already linked");
+    }
+
+    #[test]
+    fn duplicates_match_the_same_kind_and_ends_and_either_direction_for_cooperate() {
+        let mut coop = edge("c", (NodeType::Session, "b"), (NodeType::Session, "a"));
+        coop.kind = EdgeKind::Cooperate;
+        let ctx = edge("x", (NodeType::Project, "p"), (NodeType::Project, "q"));
+        let edges = [coop, ctx];
+        let s = |id: &str| end(NodeType::Session, id);
+        let p = |id: &str| end(NodeType::Project, id);
+        assert!(is_duplicate_edge(&edges, EdgeKind::Cooperate, &s("a"), &s("b")), "B→A exists: A→B is a duplicate");
+        assert!(is_duplicate_edge(&edges, EdgeKind::Cooperate, &s("b"), &s("a")));
+        assert!(!is_duplicate_edge(&edges, EdgeKind::Cooperate, &s("a"), &s("c")));
+        assert!(is_duplicate_edge(&edges, EdgeKind::Context, &p("p"), &p("q")));
+        assert!(!is_duplicate_edge(&edges, EdgeKind::Context, &p("q"), &p("p")), "context is directed");
+    }
+
+    /// `ide` (two stubs, branches on with `main` listed, a stored branch `br-old`, a ref
+    /// `ref-only`) and `other` (two stubs).
+    fn app_for_edges() -> (tauri::App<MockRuntime>, tempfile::TempDir, PathBuf) {
+        let (app, cfg, path) = app_with_ide(2);
+        with_listed_branches(&app, &["main"]);
+        {
+            let state = app.state::<AppState>();
+            let mut st = state.write_workspace();
+            st.workspace.projects.push(project_with("other"));
+            st.workspace.branches.push(BranchNode {
+                id: "br-old".into(),
+                project_id: "ide".into(),
+                name: "old".into(),
+                ..BranchNode::default()
+            });
+            st.workspace.sessions.push(SessionRef {
+                session_id: "ref-only".into(),
+                project_id: "ide".into(),
+                pinned: true,
+                ..SessionRef::default()
+            });
+        }
+        (app, cfg, path)
+    }
+
+    #[test]
+    fn add_edge_creates_each_valid_pair_persists_and_emits() {
+        let (app, _cfg, path) = app_for_edges();
+        let rx = listen(&app);
+        let cases = [
+            (end(NodeType::Session, "stub-1-ide"), end(NodeType::Project, "other"), EdgeKind::Context),
+            (end(NodeType::Session, "stub-1-ide"), end(NodeType::Session, "stub-1-other"), EdgeKind::Cooperate),
+            (end(NodeType::Project, "ide"), end(NodeType::Project, "other"), EdgeKind::Context),
+            (end(NodeType::Project, "other"), end(NodeType::Project, "ide"), EdgeKind::Context),
+            (end(NodeType::Project, "other"), end(NodeType::Branch, "ide:main"), EdgeKind::Context),
+            (end(NodeType::Session, "stub-2-ide"), end(NodeType::Branch, "br-old"), EdgeKind::Context),
+            (end(NodeType::Session, "ref-only"), end(NodeType::Branch, "ide:old"), EdgeKind::Context),
+        ];
+        for (i, (from, to, kind)) in cases.iter().enumerate() {
+            let edge = add_edge(app.handle(), from, to).unwrap_or_else(|e| panic!("case {i}: {e}"));
+            // A stored branch named by its own id is stored by its card id.
+            let stored_to = if to.id == "br-old" { end(NodeType::Branch, "ide:old") } else { to.clone() };
+            assert_eq!((&edge.from, &edge.to, edge.kind, edge.label.as_deref()), (from, &stored_to, *kind, None), "case {i}");
+            assert!(is_uuid_v4(&edge.id), "{}", edge.id);
+            assert!(edge.created_at.ends_with('Z') && edge.created_at.len() == 24, "{}", edge.created_at);
+            let snapshot = rx.try_recv().expect("workspace://changed");
+            assert_eq!(snapshot.revision, i as u64 + 1);
+            assert_eq!(snapshot.workspace.edges.last(), Some(&edge));
+        }
+        let disk = on_disk(&path);
+        assert_eq!(disk.edges, app.state::<AppState>().read_workspace().workspace.edges);
+        let on_file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let first = &on_file["edges"][0];
+        assert_eq!(first["from"], serde_json::json!({ "type": "session", "id": "stub-1-ide" }));
+        assert_eq!(first["kind"], "context");
+        assert_eq!(first["label"], serde_json::Value::Null);
+        assert!(first["createdAt"].is_string());
+        assert_eq!(on_file["edges"][1]["kind"], "cooperate");
+    }
+
+    #[test]
+    fn add_edge_refuses_invalid_pairs_duplicates_and_unknown_ends_without_storing() {
+        let (app, _cfg, path) = app_for_edges();
+        let s = |id: &str| end(NodeType::Session, id);
+        let p = |id: &str| end(NodeType::Project, id);
+        add_edge(app.handle(), &s("stub-2-other"), &s("stub-1-ide")).unwrap();
+        add_edge(app.handle(), &s("stub-1-ide"), &p("other")).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        let rx = listen(&app);
+        let refused = [
+            (p("ide"), s("stub-1-ide"), "can't link a project to a session"),
+            (end(NodeType::Branch, "ide:main"), p("ide"), "can't link from a branch"),
+            (s("stub-1-ide"), s("stub-1-ide"), "can't link a node to itself"),
+            (p("ide"), p("ide"), "can't link a node to itself"),
+            (s("stub-1-ide"), end(NodeType::Folder, "/x"), "can't link a folder yet"),
+            (s("stub-1-ide"), s("stub-2-other"), "already linked"),
+            (s("stub-2-other"), s("stub-1-ide"), "already linked"),
+            (s("stub-1-ide"), p("other"), "already linked"),
+            (p("nope"), p("ide"), "unknown project"),
+            (s("stub-1-ide"), p("nope"), "unknown project"),
+            (s("nope"), p("ide"), "unknown session"),
+            (s("stub-1-ide"), end(NodeType::Branch, "ide:gone"), "unknown branch"),
+            (s("stub-1-ide"), end(NodeType::Branch, "other:main"), "unknown branch"),
+        ];
+        for (from, to, why) in refused {
+            assert_eq!(add_edge(app.handle(), &from, &to), Err(why.to_string()), "{from:?} → {to:?}");
+        }
+        assert!(rx.try_recv().is_err(), "nothing emitted");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "nothing written");
+        let state = app.state::<AppState>();
+        let st = state.read_workspace();
+        assert_eq!(st.workspace.edges.len(), 2);
+        assert_eq!(st.revision, 2);
+    }
+
+    #[test]
+    fn a_stored_branch_is_one_end_under_both_its_ids() {
+        let (app, _cfg, _path) = app_for_edges();
+        let s = end(NodeType::Session, "stub-1-ide");
+        let edge = add_edge(app.handle(), &s, &end(NodeType::Branch, "br-old")).unwrap();
+        assert_eq!(edge.to, end(NodeType::Branch, "ide:old"), "stored by the card id, so it is drawn");
+        assert_eq!(add_edge(app.handle(), &s, &end(NodeType::Branch, "ide:old")), Err("already linked".to_string()));
+        assert_eq!(add_edge(app.handle(), &s, &end(NodeType::Branch, "br-old")), Err("already linked".to_string()));
+    }
+
+    #[test]
+    fn an_edge_to_a_session_without_a_ref_pins_one_and_goes_with_its_project() {
+        let (app, _cfg, path) = app_with_ide(0);
+        app.state::<AppState>().write_workspace().workspace.projects.push(project_with("other"));
+        set_discovered(app.handle(), discovered_of("ide", vec![summary("d1", "2026-10-18T10:00:00.000Z")])).unwrap();
+        let edge = add_edge(app.handle(), &end(NodeType::Session, "d1"), &end(NodeType::Project, "other")).unwrap();
+        let refs = on_disk(&path).sessions;
+        assert_eq!(refs.len(), 1);
+        assert_eq!((refs[0].session_id.as_str(), refs[0].project_id.as_str()), ("d1", "ide"));
+        // A re-layout keeps the bare ref: an edge ends on it.
+        relayout_children(app.handle(), "ide").unwrap();
+        assert_eq!(on_disk(&path).sessions.len(), 1);
+        // The session is no longer listed; removing its project still drops the edge.
+        set_discovered(app.handle(), HashMap::new()).unwrap();
+        assert_eq!(on_disk(&path).edges, [edge]);
+        let snapshot = remove_project(app.handle(), "ide").unwrap();
+        assert!(snapshot.workspace.edges.is_empty());
+        assert!(snapshot.workspace.sessions.is_empty());
+    }
+
+    #[test]
+    fn set_edge_label_trims_turns_blank_into_null_and_persists() {
+        let (app, _cfg, path) = app_for_edges();
+        let edge = add_edge(app.handle(), &end(NodeType::Session, "stub-1-ide"), &end(NodeType::Project, "other")).unwrap();
+        let rx = listen(&app);
+
+        let snapshot = set_edge_label(app.handle(), &edge.id, Some("  API shape \n")).unwrap();
+        assert_eq!(snapshot.workspace.edges[0].label.as_deref(), Some("API shape"));
+        assert_eq!(snapshot.revision, 2);
+        assert_eq!(rx.try_recv().expect("workspace://changed"), snapshot);
+        assert_eq!(on_disk(&path).edges[0].label.as_deref(), Some("API shape"));
+
+        // The same label again: nothing.
+        assert_eq!(set_edge_label(app.handle(), &edge.id, Some("API shape")).unwrap().revision, 2);
+        assert!(rx.try_recv().is_err());
+
+        // Blank and absent both clear it.
+        assert_eq!(set_edge_label(app.handle(), &edge.id, Some("   ")).unwrap().workspace.edges[0].label, None);
+        assert_eq!(on_disk(&path).edges[0].label, None);
+        set_edge_label(app.handle(), &edge.id, Some("x")).unwrap();
+        assert_eq!(set_edge_label(app.handle(), &edge.id, None).unwrap().workspace.edges[0].label, None);
+
+        assert_eq!(set_edge_label(app.handle(), "nope", Some("x")), Err("unknown edge".to_string()));
+        assert_eq!(normalise_edge_label(Some(" a b ")), Some("a b".to_string()));
+        assert_eq!(normalise_edge_label(Some("a\r\n\tb\u{7}c")), Some("a b c".to_string()), "control runs become one space");
+        assert_eq!(normalise_edge_label(Some("\n\t ")), None);
+        let long = "é".repeat(MAX_EDGE_LABEL_CHARS + 5);
+        assert_eq!(normalise_edge_label(Some(&long)).unwrap().chars().count(), MAX_EDGE_LABEL_CHARS, "cut on a char boundary");
+        assert_eq!(normalise_edge_label(Some("")), None);
+        assert_eq!(normalise_edge_label(None), None);
+    }
+
+    #[test]
+    fn remove_edge_deletes_persists_emits_and_rejects_an_unknown_id() {
+        let (app, _cfg, path) = app_for_edges();
+        let a = add_edge(app.handle(), &end(NodeType::Session, "stub-1-ide"), &end(NodeType::Project, "other")).unwrap();
+        let b = add_edge(app.handle(), &end(NodeType::Project, "ide"), &end(NodeType::Project, "other")).unwrap();
+        let rx = listen(&app);
+        let snapshot = remove_edge(app.handle(), &a.id).unwrap();
+        assert_eq!(snapshot.workspace.edges, std::slice::from_ref(&b));
+        assert_eq!(rx.try_recv().expect("workspace://changed"), snapshot);
+        assert_eq!(on_disk(&path).edges, [b]);
+        let before = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(remove_edge(app.handle(), &a.id), Err("unknown edge".to_string()));
+        assert!(rx.try_recv().is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn edges_with_their_labels_survive_a_restart_and_a_hidden_end_keeps_its_edge() {
+        let (app, _cfg, path) = app_for_edges();
+        let edge = add_edge(app.handle(), &end(NodeType::Session, "stub-1-ide"), &end(NodeType::Session, "stub-2-ide")).unwrap();
+        set_edge_label(app.handle(), &edge.id, Some("API shape")).unwrap();
+        // Collapsing the project hides both ends; the edge stays stored.
+        set_expanded(app.handle(), "ide", false).unwrap();
+        assert_eq!(on_disk(&path).edges.len(), 1);
+
+        initialise_at(app.handle(), Some(path.clone()));
+        let state = app.state::<AppState>();
+        let st = state.read_workspace();
+        assert_eq!(st.workspace.edges.len(), 1);
+        let loaded = &st.workspace.edges[0];
+        assert_eq!(
+            (loaded.id.as_str(), loaded.kind, loaded.label.as_deref()),
+            (edge.id.as_str(), EdgeKind::Cooperate, Some("API shape"))
+        );
+        assert_eq!(loaded.created_at, edge.created_at);
+    }
+
+    #[test]
+    fn edge_mutations_respect_the_read_only_guard() {
+        let app = mock_app();
+        let cfg = tempfile::tempdir().unwrap();
+        let path = cfg.path().join("workspace.json");
+        let original = r#"{ "version": 2, "projects": [{ "id": "a", "path": "/p/a", "label": "a" }, { "id": "b", "path": "/p/b", "label": "b" }] }"#;
+        std::fs::write(&path, original).unwrap();
+        initialise_at(app.handle(), Some(path.clone()));
+        let edge = add_edge(app.handle(), &end(NodeType::Project, "a"), &end(NodeType::Project, "b")).unwrap();
+        set_edge_label(app.handle(), &edge.id, Some("x")).unwrap();
+        let snapshot = remove_edge(app.handle(), &edge.id).unwrap();
+        assert_eq!(snapshot.revision, 3);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "file untouched");
     }
 }

@@ -69,3 +69,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-4-sessions-follow-worktrees-remove-worktree.md`
   summary: Component tests for the remove-worktree sheet's safeguards (Enter swallowed on removing buttons, focus on Close, Discard not reusing the Force button).
   evidence: Story 5.4 review round 1; no DOM test environment yet.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-6-1-draw-and-persist-edges.md`
+  summary: Component tests for the canvas edge handlers (isValidConnection, onConnect, onConnectEnd, onEdgeClick) and the EdgePane (save on Enter and blur, the Delete skip).
+  evidence: Story 6.1 review round 1; no DOM test environment yet.

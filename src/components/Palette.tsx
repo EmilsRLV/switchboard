@@ -3,8 +3,8 @@ import { useUiStore } from "../state/ui";
 import { isInsideTerminal } from "../terminal/keys";
 import { focusView } from "../terminal/registry";
 import { formatKeybinding } from "../commands/keybindings";
-import { listCommands, runCommand } from "../commands/registry";
-import { clampSelection, paletteKeyAction, usePaletteStore } from "../state/palette";
+import { listCommands } from "../commands/registry";
+import { clampSelection, paletteKeyAction, paletteRows, runPaletteRow, usePaletteStore } from "../state/palette";
 
 const OPTION_ID_PREFIX = "palette-option-";
 
@@ -13,6 +13,8 @@ const OPTION_ID_PREFIX = "palette-option-";
  * filtered as you type. ↑/↓ move, Enter runs the selected row and closes, Esc closes (through
  * the `palette.close` command, so the dispatcher owns that key too). Rows are clickable but
  * nothing here needs the mouse. Tokens only; this is the first piece of Story 2.5's system.
+ * As a pick list (Story 6.1, "Link to…") it lists the pick's rows instead, and Enter hands the
+ * chosen one to the pick.
  */
 export function Palette() {
   const isOpen = usePaletteStore((s) => s.isOpen);
@@ -25,13 +27,13 @@ function PaletteDialog() {
   const setQuery = usePaletteStore((s) => s.setQuery);
   const move = usePaletteStore((s) => s.move);
   const close = usePaletteStore((s) => s.close);
-  const filtered = usePaletteStore((s) => s.filtered);
+  const pick = usePaletteStore((s) => s.pick);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
   // The registry is not reactive, so the list is recomputed on every render of the open
   // palette (each keystroke); `when` clauses are read at that moment.
-  const rows = filtered(listCommands({ enabledOnly: true, visibleOnly: true }));
+  const rows = paletteRows(pick, listCommands({ enabledOnly: true, visibleOnly: true }), query);
   const selected = clampSelection(selectedRaw, rows.length);
   const activeId = rows[selected] === undefined ? undefined : OPTION_ID_PREFIX + rows[selected].id;
 
@@ -55,11 +57,7 @@ function PaletteDialog() {
 
   const runRow = (index: number) => {
     const row = rows[index];
-    if (row === undefined) return;
-    // Run first, then close: "Toggle command palette" chosen from the list closes it once
-    // rather than closing and reopening.
-    runCommand(row.id);
-    usePaletteStore.getState().close();
+    if (row !== undefined) runPaletteRow(row.id);
   };
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -77,7 +75,7 @@ function PaletteDialog() {
       <div
         className="palette"
         role="dialog"
-        aria-label="Command palette"
+        aria-label={pick === null ? "Command palette" : pick.placeholder}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <input
@@ -91,15 +89,15 @@ function PaletteDialog() {
           aria-autocomplete="list"
           autoComplete="off"
           spellCheck={false}
-          placeholder="Type a command…"
+          placeholder={pick === null ? "Type a command…" : pick.placeholder}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={onKeyDown}
         />
-        <ul ref={listRef} id="palette-list" className="palette-list" role="listbox" aria-label="Commands">
+        <ul ref={listRef} id="palette-list" className="palette-list" role="listbox" aria-label={pick === null ? "Commands" : pick.placeholder}>
           {rows.length === 0 ? (
             <li className="palette-empty" role="option" aria-selected="false" aria-disabled="true">
-              No matching commands
+              {pick === null ? "No matching commands" : "Nothing matches"}
             </li>
           ) : (
             rows.map((row, index) => (

@@ -3,18 +3,25 @@ import {
   Background,
   BackgroundVariant,
   BaseEdge,
+  EdgeLabelRenderer,
   ReactFlow,
   ReactFlowProvider,
+  getBezierPath,
+  type Connection,
   type Edge,
+  type EdgeMouseHandler,
   type EdgeProps,
   type EdgeTypes,
+  type IsValidConnection,
   type NodeMouseHandler,
+  type OnConnectEnd,
   type NodeTypes,
   type OnNodeDrag,
   type OnNodesChange,
   type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
+import { clickEdge, link, refuseDrop } from "../commands/edges";
 import { clickNode } from "../commands/navigation";
 import { moveNode, rightClickNode } from "../commands/nodes";
 import { dropProjects } from "../commands/projects";
@@ -23,6 +30,7 @@ import {
   onFileDrop,
   workspaceSetViewport,
   type ChildNode,
+  type Edge as StoredEdge,
   type Position,
   type Project,
   type Viewport,
@@ -34,6 +42,7 @@ import { stoppingSessionIds, useTerminalStore } from "../state/terminals";
 import { useUiStore } from "../state/ui";
 import { persistViewport, useWorkspaceStore } from "../state/workspace";
 import { BranchNode, MoreNode, SessionNode } from "./ChildNode";
+import { FORK_HANDLE, checkFlowLink, linkFlowEdges, nodeRefOfFlowId, type LinkEdgeData, type LinkFlowEdge } from "./edges";
 import { MAX_ZOOM, MIN_ZOOM } from "./limits";
 import {
   DRAG_THRESHOLD,
@@ -56,6 +65,7 @@ const NO_PROJECTS: readonly Project[] = [];
 const NO_CHILDREN: readonly ChildNode[] = [];
 const NO_BRANCH_ERRORS: Readonly<Record<string, string>> = Object.freeze({});
 const NO_STOPPING: readonly string[] = [];
+const NO_EDGES: readonly StoredEdge[] = [];
 const NODE_TYPES: NodeTypes = { project: ProjectNode, session: SessionNode, branch: BranchNode, more: MoreNode };
 
 /**
@@ -67,7 +77,57 @@ function ForkEdge({ sourceX, sourceY, targetX, targetY }: EdgeProps) {
   return <BaseEdge path={forkLinePath(sourceX, sourceY, targetX, targetY)} className="fork-line" interactionWidth={0} />;
 }
 
-const EDGE_TYPES: EdgeTypes = { fork: ForkEdge };
+/** How wide (flow px) the invisible stroke that takes a click on an edge is. */
+const LINK_HIT_WIDTH = 12;
+
+/**
+ * A stored edge's label (Story 6.1): at the line's midpoint, muted `--text-xs`, cut with an
+ * ellipsis (the full text on hover). A click on it selects the edge like a click on its line.
+ */
+function LinkLabel({ x, y, data }: { x: number; y: number; data: LinkEdgeData | undefined }) {
+  if (data === undefined || data.label === null) return null;
+  const { edgeId, label, selected } = data;
+  return (
+    <EdgeLabelRenderer>
+      <div
+        className={"link-label nodrag nopan" + (selected ? " is-selected" : "")}
+        style={{ transform: `translate(-50%, -50%) translate(${x}px, ${y}px)` }}
+        title={label}
+        onClick={() => clickEdge(edgeId)}
+      >
+        {label}
+      </div>
+    </EdgeLabelRenderer>
+  );
+}
+
+/** A context edge (Story 6.1): a dashed 1-px `--border-strong` curve; `--focus` while selected. */
+function ContextEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps<LinkFlowEdge>) {
+  const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
+  return (
+    <>
+      <BaseEdge path={path} className="link-line link-context" interactionWidth={LINK_HIT_WIDTH} />
+      <LinkLabel x={labelX} y={labelY} data={data} />
+    </>
+  );
+}
+
+/**
+ * A cooperate edge (Story 6.1): two parallel 1-px `--border-strong` lines -- a 3-px stroke with
+ * its middle pixel drawn over in the canvas colour; `--focus` while selected.
+ */
+function CooperateEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps<LinkFlowEdge>) {
+  const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
+  return (
+    <>
+      <BaseEdge path={path} className="link-line link-cooperate" interactionWidth={LINK_HIT_WIDTH} />
+      <path d={path} className="link-cooperate-gap" fill="none" />
+      <LinkLabel x={labelX} y={labelY} data={data} />
+    </>
+  );
+}
+
+const EDGE_TYPES: EdgeTypes = { fork: ForkEdge, context: ContextEdge, cooperate: CooperateEdge };
 
 /** Pan with the middle (1) or right (2) button; the left button pans only while Space is held. */
 const PAN_BUTTONS = [1, 2];
@@ -78,7 +138,9 @@ const DOT_SIZE = 1;
  * The home surface: an infinite canvas with a dot grid holding one card per project and,
  * under an expanded project, a column of its children. Pan with middle/right drag or Space +
  * left drag, zoom with the wheel, `ctrl+0` fits the view. Drag any node to move it (a child
- * moves with its parent); click to select; right-click a project or session card for its menu. The
+ * moves with its parent); click to select; right-click a project or session card for its menu.
+ * Drag from a session or project card's handle onto another card to link them (Story 6.1); click
+ * an edge to select it. The
  * viewport and every position come from Rust's snapshot and go back to it at the end of each
  * gesture. Projects come from Rust's snapshot (`ctrl+o`, a folder dropped from the OS, or
  * Import from Claude); their git lines from the status store.
@@ -179,6 +241,7 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
   const projects = useWorkspaceStore((s) => s.snapshot?.workspace.projects ?? NO_PROJECTS);
   const children = useWorkspaceStore((s) => s.snapshot?.children ?? NO_CHILDREN);
   const branchErrors = useWorkspaceStore((s) => s.snapshot?.branchErrors ?? NO_BRANCH_ERRORS);
+  const storedEdges = useWorkspaceStore((s) => s.snapshot?.workspace.edges ?? NO_EDGES);
   const statuses = useStatusStore((s) => s.statuses);
   const live = useLiveStore((s) => s.snapshot.sessions);
   const flashed = useUiStore((s) => s.flashed);
@@ -204,18 +267,23 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
     return next;
   }, [projects, statuses, flashed, children, selection, dragging, showAll, showAllBranches, live, stopping, branchErrors]);
 
-  // The "forked from" lines between drawn cards (Story 4.4); inert.
+  // The "forked from" lines between drawn cards (Story 4.4), inert; then the stored edges whose
+  // two ends are drawn (Story 6.1).
   const edges = useMemo<Edge[]>(
-    () =>
-      forkLines(nodes).map((line) => ({
+    () => [
+      ...forkLines(nodes).map((line) => ({
         ...line,
+        sourceHandle: FORK_HANDLE,
+        targetHandle: FORK_HANDLE,
         type: "fork",
         selectable: false,
         focusable: false,
         deletable: false,
         interactionWidth: 0,
       })),
-    [nodes],
+      ...linkFlowEdges(storedEdges, nodes, selection),
+    ],
+    [nodes, storedEdges, selection],
   );
 
   // The viewport most recently sent to Rust, acknowledged or not: a gesture that ends where
@@ -265,13 +333,37 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
   const onNodeDragStop = useCallback<OnNodeDrag<CanvasFlowNode>>((_event, node) => {
     const [target, position] = dropTarget(node.id, useCanvasStore.getState().dragging, node.position);
     // A `more` row is not draggable and has no position to store.
-    if (target.kind === "more") return;
+    if (target.kind === "more" || target.kind === "edge") return;
     void moveNode(target, position);
   }, []);
 
   // A click selects; on a `more` row it also shows all (or fewer) of the project's children.
   const onNodeClick = useCallback<NodeMouseHandler<CanvasFlowNode>>((_event, node) => {
     clickNode(node.id);
+  }, []);
+
+  // Story 6.1: a click on a stored edge selects it and opens its inspector; fork lines are inert.
+  const onEdgeClick = useCallback<EdgeMouseHandler>((_event, edge) => {
+    const target = parseFlowId(edge.id);
+    if (target.kind === "edge") clickEdge(target.id);
+  }, []);
+
+  // Dragging from a card's handle: a card the pair is refused for shows the not-allowed state
+  // (Rust decides on the drop); a valid drop asks Rust for the edge; a refused one says why.
+  const isValidConnection = useCallback<IsValidConnection>((connection) => {
+    const edges = useWorkspaceStore.getState().snapshot?.workspace.edges ?? NO_EDGES;
+    return checkFlowLink(edges, connection.source, connection.target).kind !== null;
+  }, []);
+
+  const onConnect = useCallback((connection: Connection) => {
+    const from = nodeRefOfFlowId(connection.source);
+    const to = nodeRefOfFlowId(connection.target);
+    if (from !== null && to !== null) void link(from, to);
+  }, []);
+
+  const onConnectEnd = useCallback<OnConnectEnd>((_event, state) => {
+    if (state.isValid === true || state.fromNode === null) return;
+    refuseDrop(state.fromNode.id, state.toNode?.id ?? null);
   }, []);
 
   const onPaneClick = useCallback(() => {
@@ -330,7 +422,8 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
       nodesDraggable
       nodeDragThreshold={DRAG_THRESHOLD}
       selectNodesOnDrag={false}
-      nodesConnectable={false}
+      nodesConnectable
+      connectionRadius={0}
       nodesFocusable={false}
       disableKeyboardA11y
       elementsSelectable={false}
@@ -340,6 +433,10 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
       onNodeDragStart={onNodeDragStart}
       onNodeDragStop={onNodeDragStop}
       onNodeClick={onNodeClick}
+      onEdgeClick={onEdgeClick}
+      isValidConnection={isValidConnection}
+      onConnect={onConnect}
+      onConnectEnd={onConnectEnd}
       onPaneClick={onPaneClick}
     >
       <Background variant={BackgroundVariant.Dots} gap={DOT_GAP} size={DOT_SIZE} color="var(--fg-faint)" />

@@ -10,6 +10,7 @@
 // pane is open, the selection also switches the pane to the node's terminal tab (Story 4.5).
 
 import { create } from "zustand";
+import { drawnFlowIds, isEdgeDrawn } from "../canvas/edges";
 import type { CanvasTarget, ChildGroup } from "../canvas/nodes";
 import { sessionAcknowledge, type Position, type Project } from "../ipc";
 import {
@@ -27,9 +28,10 @@ import { useWorkspaceStore } from "./workspace";
 
 /**
  * The right-hand panes; `launch` is the new-session sheet (Story 4.2), `worktree` the new-worktree sheet (Story 5.2),
- * `removeWorktree` the remove-worktree confirmation (Story 5.4).
+ * `removeWorktree` the remove-worktree confirmation (Story 5.4), `edge` the edge inspector of the
+ * selected edge (Story 6.1).
  */
-export type Pane = "settings" | "import" | "terminal" | "launch" | "worktree" | "removeWorktree";
+export type Pane = "settings" | "import" | "terminal" | "launch" | "worktree" | "removeWorktree" | "edge";
 
 /** The terminal pane's narrowest width, in CSS pixels. */
 export const TERMINAL_MIN_WIDTH = 360;
@@ -350,6 +352,11 @@ useUiStore.subscribe((ui, previous) => {
   if (ui.selection !== previous.selection) {
     acknowledgeIfNeeded(ui.selection);
     followSelection(ui.selection);
+    // The edge inspector shows the selected edge (Story 6.1): it goes with it.
+    if (ui.pane === "edge" && ui.selection?.kind !== "edge") useUiStore.getState().closePane();
+  }
+  if (ui.selection !== previous.selection || ui.showAll !== previous.showAll || ui.showAllBranches !== previous.showAllBranches) {
+    dropHiddenEdge();
   }
   if (ui.elsewhereOpen && !previous.elsewhereOpen) {
     for (const row of useLiveStore.getState().snapshot.elsewhere) {
@@ -357,6 +364,23 @@ useUiStore.subscribe((ui, previous) => {
     }
   }
 });
+
+/**
+ * A selected edge that is no longer drawn -- deleted, pruned with its project, or an end hidden
+ * (collapsed, cut by the limit) -- is no longer selected (which closes its inspector), so Del never
+ * deletes an edge the operator cannot see.
+ */
+function dropHiddenEdge(): void {
+  const ui = useUiStore.getState();
+  const selection = ui.selection;
+  const snapshot = useWorkspaceStore.getState().snapshot;
+  if (selection === null || selection.kind !== "edge" || snapshot === null) return;
+  const edge = snapshot.workspace.edges.find((e) => e.id === selection.id);
+  const drawn = drawnFlowIds(snapshot.workspace.projects, snapshot.children, ui.showAll, ui.showAllBranches);
+  if (edge === undefined || !isEdgeDrawn(edge, drawn)) ui.clearSelection();
+}
+
+useWorkspaceStore.subscribe(dropHiddenEdge);
 
 /**
  * The terminal a selected node has, when it has one: a session's Switchboard terminal, or a

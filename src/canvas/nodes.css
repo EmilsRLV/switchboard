@@ -440,3 +440,123 @@
   stroke: var(--border);
   stroke-width: var(--line);
 }
+
+/* Edges (Story 6.1). Every session and project card has one handle an edge is dragged from, on
+   its right edge: a small round mark, shown on hover and while the card is selected. Every
+   project, branch and session card is a drop target: an invisible handle over the whole card
+   that takes the pointer only while a link is being dragged (`is-armed`); over a card the pair is
+   refused for, the cursor is not-allowed. Stored edges: a context edge is a dashed 1-px
+   `--border-strong` curve, a cooperate edge two parallel 1-px `--border-strong` lines (a 3-px
+   stroke whose middle pixel is drawn over in the canvas colour); the selected edge is drawn in
+   `--focus`. A label sits at the midpoint in muted `--text-xs`, cut with an ellipsis. No accent. */
+.react-flow__handle.link-handle {
+  width: 7px;
+  height: 7px;
+  min-width: 0;
+  min-height: 0;
+  border: var(--line) solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--bg-raised);
+  opacity: 0;
+  cursor: crosshair;
+}
+
+.react-flow__node:hover .react-flow__handle.link-handle,
+.react-flow__handle.link-handle.is-shown,
+.react-flow__handle.link-handle.connectingfrom,
+.react-flow__handle.link-handle:focus-visible {
+  opacity: 1;
+}
+
+.react-flow__handle.link-handle:hover {
+  border-color: var(--focus);
+}
+
+.react-flow__handle.link-target {
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  transform: none;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.react-flow__handle.link-anchor {
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.react-flow__handle.link-target.is-armed {
+  pointer-events: all;
+  cursor: crosshair;
+}
+
+.react-flow__handle.link-target.is-armed.connectingto:not(.valid) {
+  cursor: not-allowed;
+}
+
+.react-flow__edge.link-edge {
+  cursor: pointer;
+}
+
+.react-flow__edge .link-line {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: var(--line);
+}
+
+.react-flow__edge .link-context {
+  stroke-dasharray: 4 3;
+}
+
+.react-flow__edge .link-cooperate {
+  stroke-width: calc(var(--line) * 3);
+}
+
+.react-flow__edge .link-cooperate-gap {
+  stroke: var(--bg);
+  stroke-width: var(--line);
+  pointer-events: none;
+}
+
+.react-flow__edge.is-selected .link-line {
+  stroke: var(--focus);
+}
+
+.link-label {
+  position: absolute;
+  max-width: 160px;
+  padding: 0 0.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  background: var(--bg);
+  pointer-events: all;
+  cursor: pointer;
+}
+
+.link-label.is-selected {
+  color: var(--focus);
+}
+
+/* The line drawn while a link is being dragged: the context edge's look. */
+.react-flow__connection-path {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: var(--line);
+  stroke-dasharray: 4 3;
+}

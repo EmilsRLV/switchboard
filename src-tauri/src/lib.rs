@@ -37,6 +37,9 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::worktree_remove,
             ipc::workspace_move_node,
             ipc::workspace_relayout_children,
+            ipc::edge_add,
+            ipc::edge_set_label,
+            ipc::edge_remove,
             ipc::claude_projects_list,
             ipc::projects_status_get,
             ipc::live_sessions_get,
@@ -494,6 +497,46 @@ mod tests {
         assert_eq!(err, serde_json::json!("unknown branch"));
         let args = serde_json::json!({ "target": { "kind": "folder", "id": "x" }, "position": { "x": 0, "y": 0 } });
         invoke_with(&webview, "workspace_move_node", InvokeBody::Json(args)).expect_err("not a node kind");
+    }
+
+    #[test]
+    fn the_edge_commands_are_registered_take_camel_case_arguments_and_persist() {
+        let (_app, webview, dir) = app_with_ide();
+
+        let args = serde_json::json!({ "from": { "type": "session", "id": "stub-1-ide" }, "to": { "type": "session", "id": "stub-2-ide" } });
+        let body = invoke_with(&webview, "edge_add", InvokeBody::Json(args)).expect("edge_add should be registered and succeed");
+        let edge: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(edge["kind"], "cooperate");
+        assert_eq!(edge["label"], serde_json::Value::Null);
+        assert!(edge["createdAt"].is_string());
+        let id = edge["id"].as_str().unwrap().to_string();
+
+        // A refusal is the command's `Err` string, the notice the UI shows.
+        let args = serde_json::json!({ "from": { "type": "project", "id": "ide" }, "to": { "type": "session", "id": "stub-1-ide" } });
+        let err = invoke_with(&webview, "edge_add", InvokeBody::Json(args)).expect_err("project → session");
+        assert_eq!(err, serde_json::json!("can't link a project to a session"));
+        let args = serde_json::json!({ "from": { "type": "session", "id": "stub-2-ide" }, "to": { "type": "session", "id": "stub-1-ide" } });
+        let err = invoke_with(&webview, "edge_add", InvokeBody::Json(args)).expect_err("duplicate");
+        assert_eq!(err, serde_json::json!("already linked"));
+
+        let args = serde_json::json!({ "id": id, "label": " API shape " });
+        let body = invoke_with(&webview, "edge_set_label", InvokeBody::Json(args)).expect("edge_set_label");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value["workspace"]["edges"][0]["label"], "API shape");
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("workspace.json")).unwrap()).unwrap();
+        assert_eq!(on_disk["edges"][0]["label"], "API shape");
+        let args = serde_json::json!({ "id": id, "label": null });
+        let body = invoke_with(&webview, "edge_set_label", InvokeBody::Json(args)).expect("null clears");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value["workspace"]["edges"][0]["label"], serde_json::Value::Null);
+
+        let args = serde_json::json!({ "id": id });
+        let body = invoke_with(&webview, "edge_remove", InvokeBody::Json(args.clone())).expect("edge_remove");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value["workspace"]["edges"], serde_json::json!([]));
+        let err = invoke_with(&webview, "edge_remove", InvokeBody::Json(args)).expect_err("gone");
+        assert_eq!(err, serde_json::json!("unknown edge"));
     }
 
     #[test]

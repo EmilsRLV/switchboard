@@ -39,6 +39,9 @@ import {
   workspaceGet,
   workspaceMoveNode,
   workspaceRelayoutChildren,
+  edgeAdd,
+  edgeRemove,
+  edgeSetLabel,
   workspaceRemoveProject,
   workspaceSetExpanded,
   workspaceSetViewport,
@@ -109,6 +112,19 @@ describe("workspace command wrappers", () => {
     expect(invoke).toHaveBeenCalledWith("workspace_move_node", { target, position }, undefined);
     await expect(workspaceRelayoutChildren("p1")).resolves.toBe(snapshot);
     expect(invoke).toHaveBeenCalledWith("workspace_relayout_children", { projectId: "p1" }, undefined);
+  });
+
+  it("the 6.1 edge wrappers invoke their wire names with { from, to }, { id, label } and { id }", async () => {
+    const invoke = vi.fn().mockResolvedValue(snapshot);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    const from = { type: "session", id: "s1" } as const;
+    const to = { type: "project", id: "p1" } as const;
+    await edgeAdd(from, to);
+    expect(invoke).toHaveBeenCalledWith("edge_add", { from, to }, undefined);
+    await expect(edgeSetLabel("e1", null)).resolves.toBe(snapshot);
+    expect(invoke).toHaveBeenCalledWith("edge_set_label", { id: "e1", label: null }, undefined);
+    await expect(edgeRemove("e1")).resolves.toBe(snapshot);
+    expect(invoke).toHaveBeenCalledWith("edge_remove", { id: "e1" }, undefined);
   });
 
   it("the 5.1 toggle invokes project_set_show_branches with { projectId, show }", async () => {

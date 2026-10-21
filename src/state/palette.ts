@@ -1,5 +1,21 @@
 import { create } from "zustand";
-import type { Command } from "../commands/registry";
+import type { Keybinding } from "../commands/keybindings";
+import { runCommand, type Command } from "../commands/registry";
+
+/** One row of a pick list (see {@link PalettePick}). */
+export type PickItem = { id: string; title: string };
+
+/**
+ * The palette as a pick list (Story 6.1, "Link to…"): instead of the commands it lists `items`,
+ * filtered the same way; Enter (or a click) closes it and hands the chosen row's id to
+ * `onPick`; Esc closes it with nothing picked.
+ */
+export type PalettePick = {
+  /** The input's placeholder and the list's accessible name. */
+  placeholder: string;
+  items: readonly PickItem[];
+  onPick: (id: string) => void;
+};
 
 /**
  * UI state of the command palette: whether it is showing, what has been typed and which row
@@ -7,11 +23,15 @@ import type { Command } from "../commands/registry";
  */
 export type PaletteState = {
   isOpen: boolean;
+  /** The pick list showing in place of the commands, or `null` (the command palette). */
+  pick: PalettePick | null;
   query: string;
   /** Index into the filtered list; clamped by `move`, reset by `setQuery` and `open`. */
   selected: number;
   /** Show the palette with an empty query and the first row selected. */
   open: () => void;
+  /** Show the palette as the pick list `pick`, with an empty query and the first row selected. */
+  openPick: (pick: PalettePick) => void;
   close: () => void;
   toggle: () => void;
   setQuery: (query: string) => void;
@@ -32,6 +52,46 @@ export function filterCommands<C extends Pick<Command, "id" | "title">>(
     (command) =>
       command.title.toLowerCase().includes(needle) || command.id.toLowerCase().includes(needle),
   );
+}
+
+/** Case-insensitive substring match of `query` against each pick row's title only (its id is internal). */
+export function filterPickItems<I extends PickItem>(items: readonly I[], query: string): I[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === "") return [...items];
+  return items.filter((item) => item.title.toLowerCase().includes(needle));
+}
+
+/** One row the palette shows: a command (with its key) or a pick row (without). */
+export type PaletteRow = { id: string; title: string; binding: Keybinding | null };
+
+/**
+ * The rows the palette shows for `query`: the pick list's rows (matched on titles) while it is a
+ * pick list, else `commands` (matched on title and id).
+ */
+export function paletteRows(
+  pick: PalettePick | null,
+  commands: readonly (Pick<Command, "id" | "title"> & { binding: Keybinding | null })[],
+  query: string,
+): PaletteRow[] {
+  if (pick !== null) return filterPickItems(pick.items, query).map(({ id, title }) => ({ id, title, binding: null }));
+  return filterCommands(commands, query).map(({ id, title, binding }) => ({ id, title, binding }));
+}
+
+/**
+ * Run the palette row `rowId` (Enter or a click). A pick row closes the palette, then goes to the
+ * pick's `onPick`. A command runs first and then the palette closes -- "Toggle command palette"
+ * closes it once rather than closing and reopening -- unless the command turned the palette into
+ * a pick list ("Link to…"), which stays open.
+ */
+export function runPaletteRow(rowId: string): void {
+  const pick = usePaletteStore.getState().pick;
+  if (pick !== null) {
+    usePaletteStore.getState().close();
+    pick.onPick(rowId);
+    return;
+  }
+  runCommand(rowId);
+  if (usePaletteStore.getState().pick === null) usePaletteStore.getState().close();
 }
 
 /** Keep `index` within a list of `count` rows; an empty list has nothing to select but 0. */
@@ -65,10 +125,12 @@ export function paletteKeyAction(key: string): PaletteKeyAction | null {
 
 export const usePaletteStore = create<PaletteState>()((set, get) => ({
   isOpen: false,
+  pick: null,
   query: "",
   selected: 0,
-  open: () => set({ isOpen: true, query: "", selected: 0 }),
-  close: () => set({ isOpen: false }),
+  open: () => set({ isOpen: true, pick: null, query: "", selected: 0 }),
+  openPick: (pick) => set({ isOpen: true, pick, query: "", selected: 0 }),
+  close: () => set({ isOpen: false, pick: null }),
   toggle: () => (get().isOpen ? get().close() : get().open()),
   setQuery: (query) => set({ query, selected: 0 }),
   // `selected` may be stale from a longer list; clamp it first so `delta` moves from a real row.

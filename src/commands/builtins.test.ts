@@ -53,7 +53,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the fifty commands with the spec's keybindings", () => {
+  it("register the fifty-four commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
@@ -64,6 +64,10 @@ describe("built-in commands", () => {
       "branch.removeWorktree",
       "canvas.fitView",
       "contextMenu.close",
+      "edge.delete",
+      "edge.inspect",
+      "edge.link",
+      "edge.select",
       "elsewhere.close",
       "elsewhere.toggle",
       "palette.close",
@@ -130,13 +134,16 @@ describe("built-in commands", () => {
     ]) {
       expect(getCommand(id)?.keybinding, id).toBeUndefined();
     }
-    // `n` opens the launch sheet (Story 4.2); `e`, `/` and Delete stay unbound.
+    // `n` opens the launch sheet (Story 4.2); `/` stays unbound. Story 6.1: `e` links, Delete
+    // deletes the selected edge (and does nothing otherwise).
     expect(getCommand("project.newSession")?.keybinding).toBe("n");
     // `n` on a branch card too (Story 5.3): the two `when`s never both hold.
     expect(getCommand("branch.newSession")?.keybinding).toBe("n");
-    expect(listCommands().map((c) => c.keybinding)).not.toContain("e");
+    expect(getCommand("edge.link")?.keybinding).toBe("e");
+    expect(getCommand("edge.link")?.title).toBe("Link to…");
+    expect(getCommand("edge.delete")?.keybinding).toBe("delete");
+    expect(getCommand("edge.inspect")?.keybinding).toBeUndefined();
     expect(listCommands().map((c) => c.keybinding)).not.toContain("/");
-    expect(listCommands().map((c) => c.keybinding)).not.toContain("delete");
     expect(getCommand("palette.toggle")?.keybinding).toBe("ctrl+k");
     expect(getCommand("palette.toggleFromTerminal")?.keybinding).toBe("ctrl+shift+k");
     expect(getCommand("palette.toggleFromTerminal")?.hidden).toBe(true);
@@ -165,7 +172,7 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the thirty-eight actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the forty-two actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
@@ -175,6 +182,10 @@ describe("built-in commands", () => {
       "branch.newWorktree",
       "branch.removeWorktree",
       "canvas.fitView",
+      "edge.delete",
+      "edge.inspect",
+      "edge.link",
+      "edge.select",
       "elsewhere.toggle",
       "palette.toggle",
       "project.add",
@@ -208,7 +219,7 @@ describe("built-in commands", () => {
     ]);
   });
 
-  it("exactly the twelve project commands, the five session commands and the four branch commands are tagged for the node menu, and the menu lists none without a selection", () => {
+  it("exactly the twelve project commands, the five session commands, the four branch commands, Link to… and Select edge… are tagged for the node menu, and the menu lists none without a selection", () => {
     expect(
       listCommands()
         .filter((c) => c.menu === "node")
@@ -219,6 +230,8 @@ describe("built-in commands", () => {
       "branch.newSession",
       "branch.newWorktree",
       "branch.removeWorktree",
+      "edge.link",
+      "edge.select",
       "project.collapse",
       "project.expand",
       "project.newSession",
@@ -242,7 +255,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(50);
+    expect(listCommands()).toHaveLength(54);
   });
 
   const PROJECT_ACTIONS = [
@@ -265,7 +278,8 @@ describe("built-in commands", () => {
     for (const id of PROJECT_ACTIONS) {
       expect(listCommands({ enabledOnly: true }).map((c) => c.id), id).not.toContain(id);
     }
-    expect(nodeMenuCommands()).toEqual([]);
+    // A historic session's menu holds only Link to… (Story 6.1).
+    expect(nodeMenuCommands().map((c) => c.id)).toEqual(["edge.link"]);
   });
 
   it("with a project selected the palette lists the six actions by title, Re-layout and exactly one of Expand/Collapse", () => {
@@ -274,6 +288,7 @@ describe("built-in commands", () => {
     const titles = () => listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title);
     expect(titles()).toEqual([
       "Expand project",
+      "Link to…",
       "New session…",
       "Open in external editor",
       "Open in file manager",
@@ -289,6 +304,7 @@ describe("built-in commands", () => {
     expect(nodeMenuCommands().map((c) => c.title)).toEqual([
       "New session…",
       "Plain terminal…",
+      "Link to…",
       "Open in external editor",
       "Open in file manager",
       "Reveal Claude project dir",
@@ -303,6 +319,7 @@ describe("built-in commands", () => {
     expect(nodeMenuCommands().map((c) => c.title)).toEqual([
       "New session…",
       "Plain terminal…",
+      "Link to…",
       "Open in external editor",
       "Open in file manager",
       "Reveal Claude project dir",
@@ -373,12 +390,12 @@ describe("built-in commands", () => {
     useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(false)], stubs(3)) });
     useUiStore.getState().select({ kind: "project", id: "ide" });
     const items = nodeMenuCommands();
-    expect(items.map((c) => c.menuOrder)).toEqual([10, 11, 20, 21, 22, 30, 31, 40]);
+    expect(items.map((c) => c.menuOrder)).toEqual([10, 11, 13, 20, 21, 22, 30, 31, 40]);
     const separatorBefore = items.map((item, index) => {
       const previous = items[index - 1];
       return previous !== undefined && menuGroup(previous) !== menuGroup(item);
     });
-    expect(separatorBefore).toEqual([false, false, true, false, false, true, false, true]);
+    expect(separatorBefore).toEqual([false, false, false, true, false, false, true, false, true]);
     // The palette keeps its title order regardless.
     const titles = listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title);
     expect(titles).toEqual([...titles].sort((a, b) => a.localeCompare(b)));
@@ -450,6 +467,7 @@ describe("built-in commands", () => {
     expect(nodeMenuCommands().map((c) => [c.title, c.menuOrder])).toEqual([
       ["Show terminal", 9],
       ["Stop", 12],
+      ["Link to…", 13],
     ]);
     expect(runCommand("session.showTerminal")).toBe(true);
     await flush();
@@ -902,7 +920,10 @@ describe("built-in commands", () => {
     expect(enabled()).not.toContain("session.attach");
     useUiStore.getState().select({ kind: "session", id: "stub-1-ide" });
     expect(enabled()).toContain("session.attach");
-    expect(nodeMenuCommands().map((c) => [c.title, c.menuOrder])).toEqual([["Attach in terminal", 10]]);
+    expect(nodeMenuCommands().map((c) => [c.title, c.menuOrder])).toEqual([
+      ["Attach in terminal", 10],
+      ["Link to…", 13],
+    ]);
     expect(runCommand("session.attach")).toBe(true);
     expect(useUiStore.getState().notice).toEqual({ text: "Attach arrives in Epic 4 (claude attach stub-1-ide)" });
     vi.advanceTimersByTime(3000);
@@ -923,7 +944,7 @@ describe("built-in commands", () => {
       expect(runCommand("session.attach"), target.id).toBe(false);
     }
     useUiStore.getState().select({ kind: "session", id: "stub-2-ide" });
-    expect(nodeMenuCommands()).toEqual([]);
+    expect(nodeMenuCommands().map((c) => c.id)).toEqual(["edge.link"]);
   });
 
   it("Toggle Elsewhere sessions is offered only while the tray has rows and opens and closes the list", () => {

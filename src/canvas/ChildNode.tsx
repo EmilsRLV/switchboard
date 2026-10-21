@@ -1,6 +1,7 @@
 import { memo, useSyncExternalStore } from "react";
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import type { NodeProps } from "@xyflow/react";
 import type { ChildKind } from "../ipc";
+import { ForkHandles, LinkHandles } from "./LinkHandles";
 import {
   branchCardParts,
   branchCardTitle,
@@ -27,7 +28,8 @@ import {
  * full title and exact times are on hover. Stubs and branches show the label and a muted
  * detail on one row. A live session whose Switchboard terminal is being stopped reads `stopping`
  * (muted, Story 4.4), and a fork's tooltip and label say what it was forked from; a session card
- * also carries the invisible anchors of the "forked from" line. A discovered branch (Story 5.1)
+ * also carries the invisible anchors of the "forked from" line and, like every card, the edge
+ * handles of Story 6.1 (`LinkHandles`). A discovered branch (Story 5.1)
  * shows its name with `*` when checked out, over a muted line: `↑n ↓m` against its upstream,
  * `upstream gone`, then the worktree chip (the folder's last two segments, or `missing`; the
  * full path on hover). `SessionNode` and `BranchNode` are thin wrappers so xyflow has a type per
@@ -140,25 +142,19 @@ export const SessionNode = memo(function SessionNode({ data }: NodeProps<Session
     <>
       <ChildCard data={data} kind="session" />
       <ForkHandles />
+      <LinkHandles source shown={data.selected} />
     </>
   );
 });
 
-/**
- * The anchors of the "forked from" line (Story 4.4) at the card's left edge: invisible and
- * inert (no connecting, no pointer events), only there so xyflow can route the line.
- */
-function ForkHandles() {
+/** A branch card: an edge may end on it (Story 6.1) but never start from it. */
+export const BranchNode = memo(function BranchNode({ data }: NodeProps<BranchFlowNode>) {
   return (
     <>
-      <Handle type="source" position={Position.Left} className="fork-handle" isConnectable={false} />
-      <Handle type="target" position={Position.Left} className="fork-handle" isConnectable={false} />
+      <ChildCard data={data} kind="branch" />
+      <LinkHandles source={false} shown={false} />
     </>
   );
-}
-
-export const BranchNode = memo(function BranchNode({ data }: NodeProps<BranchFlowNode>) {
-  return <ChildCard data={data} kind="branch" />;
 });
 
 /**

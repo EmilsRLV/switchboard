@@ -93,12 +93,15 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | `ctrl+pageup` / `ctrl+pagedown` | Previous / next terminal tab, wrapping around (see [Tabs and pop-outs](#tabs-and-pop-outs)). Only while the terminal pane shows two tabs or more; works with focus in the terminal too. |
 | `ctrl+j` | Go to session that needs you: the session that has been `finished` (or `waiting`) longest is revealed and selected, its project expanded first when collapsed (see [Needs you](#needs-you)). Enabled only while a session on a canvas project needs you; press again for the next one. |
 | `←` `→` `↑` `↓` | Move the selection to the nearest node in that direction (see [Keyboard navigation](#keyboard-navigation)); with nothing selected, select the node nearest the middle of the view. Only while no palette, pane, menu or Elsewhere list is open: those keep their own arrow handling. |
-| Enter | The selected node's default action: a project with children expands or collapses (persisted); a `show all (N)` / `show fewer` row toggles the column (see [Sessions](#sessions)); a childless project or a child card does nothing (Resume, Fork and Stop are menu and palette commands; see [Resume, fork, stop](#resume-fork-stop)). Same condition as the arrows. |
-| Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings, import, terminal, the launch sheet, the worktree sheet or the remove-worktree sheet), else clears the selected node. With all of them open, five presses. With focus in a terminal Esc is the terminal's (see [Terminal](#terminal)). |
+| Enter | The selected node's default action (with an edge selected, it opens the edge inspector): a project with children expands or collapses (persisted); a `show all (N)` / `show fewer` row toggles the column (see [Sessions](#sessions)); a childless project or a child card does nothing (Resume, Fork and Stop are menu and palette commands; see [Resume, fork, stop](#resume-fork-stop)). Same condition as the arrows. |
+| `e` | Link to…: with a session or project card selected, the palette becomes a pick list of the nodes it can be linked to; Enter draws the edge, Esc cancels (see [Edges](#edges)). Also in the node menu and the palette. Not while focus is in a text field or a select, nor while the context menu is open. |
+| Delete | Delete edge: only while an edge is selected (a click on its line), deletes it at once, no confirmation (see [Edges](#edges)). With no edge selected Delete does nothing; in a text field it is the field's. |
+| Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings, import, terminal, the launch sheet, the worktree sheet, the remove-worktree sheet or the edge inspector), else clears the selected node or edge. With all of them open, five presses. With focus in a terminal Esc is the terminal's (see [Terminal](#terminal)). |
 
-`e` and `/` are reserved for later epics and deliberately unbound; so is Delete (removal is a menu action).
+`/` is reserved for a later epic and deliberately unbound. Delete is bound only to deleting a selected edge;
+removing a project stays a menu action.
 
-The palette lists thirty-six commands: Toggle command palette, Add project folder…, Import from Claude…, Open
+The palette lists forty commands: Toggle command palette, Add project folder…, Import from Claude…, Open
 settings, Reveal settings file (only when the file's location is known), Re-detect binaries (not while one
 runs), Fit view (once the canvas has mounted; the two project commands need it too), Quit, Toggle Elsewhere
 sessions (only while the Elsewhere tray has rows), Go to session that needs you (only while one does),
@@ -117,7 +120,9 @@ project / Collapse project (neither for a project without children), Show all se
 expanded project with more than ten sessions) and, for a git repo, Show branches / Hide branches (see
 [Branches](#branches)); while a branch card is selected, Copy branch name and, for a branch with no worktree
 that is not checked out in the project's folder, New worktree…, New session… (unless its worktree is `missing`), and, for a
-branch with a worktree chip (a `missing` one too), Remove worktree… (see [Removing a worktree](#removing-a-worktree)). The palette sorts by title. The key-only
+branch with a worktree chip (a `missing` one too), Remove worktree… (see [Removing a worktree](#removing-a-worktree));
+Link to… while a session or project card is selected, Select edge… while the selected card has a drawn
+edge, and Delete edge and Inspect edge while an edge is selected (Inspect edge only while its inspector is closed; see [Edges](#edges)). The palette sorts by title. The key-only
 carriers (the `ctrl+,` toggle, the palette's second binding `ctrl+shift+k`, the five Esc commands, the four
 arrows and Enter) are registered but hidden from
 the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron on a card runs
@@ -180,15 +185,15 @@ inside the window, in a fixed order with a 1-px rule between the groups:
 
 | Group | Entries | What they do |
 |---|---|---|
-| Sessions | New session…, Plain terminal… | New session… opens the launch sheet (see [Starting sessions](#starting-sessions)). Plain terminal… opens the project's terminal (see [Terminal](#terminal)). |
+| Sessions | New session…, Plain terminal…, Link to… | New session… opens the launch sheet (see [Starting sessions](#starting-sessions)). Plain terminal… opens the project's terminal (see [Terminal](#terminal)). Link to… picks a node to draw an edge to (see [Edges](#edges)). |
 | Open | Open in external editor, Open in file manager, Reveal Claude project dir | Rust performs each (the webview never spawns a process or touches the file system). The editor is the program named by the first token of `external_editor` in settings, launched detached with the project folder as its only argument (see [Settings](#settings)); the file manager opens the folder itself; the reveal opens `~/.claude/projects/<dir>` for the Claude project whose working directory is this folder (the import pane's comparison), and only if that directory already exists. The editor action is meant for GUI editors: a terminal editor such as vim starts with no window and nothing is seen. |
 | Layout | Expand project or Collapse project (whichever applies, only when the project has children), Re-layout children | As before. |
 | Remove | Remove from canvas | Immediate: no confirmation, no undo. The card, its children, its `sessions[]` refs and `branches`, every edge touching any of them and its live git status go; the selection is cleared if it pointed at the project or one of its children; a relaunch does not bring it back. On a read-only or newer-version `workspace.json` the removal applies in memory only, and the project comes back on relaunch. |
 
 `↑`/`↓` move, Enter or a click runs, Esc, a click elsewhere or losing focus closes. The same commands are in
 the palette (by title) while a project card is selected. A right-click on a **session card** selects it and
-opens a menu with its enabled entries only: **Attach in terminal** while the session is live, nothing (no
-menu) for a historic or exited one. A right-click on a **branch card** opens a menu with **Copy branch name**
+opens a menu with its enabled entries only: **Attach in terminal** while the session is live, and **Link to…**
+on every session (see [Edges](#edges)). A right-click on a **branch card** opens a menu with **Copy branch name**
 only (see [Branches](#branches)).
 
 An action that cannot run is a **notice**: a muted line laid over the top edge of the canvas (so it never
@@ -474,6 +479,59 @@ stores nothing), so the sessions run there keep their place under the branch car
 (the branch still exists). Resume of such a session falls back to the project folder. A launch on the branch
 still resolves from git's live list, so a removed path is never used as a working folder.
 
+### Edges
+
+An **edge** records a relationship between two nodes. It is stored in `workspace.json` and drawn on the
+canvas. There are two kinds, and Rust picks the kind from the two ends:
+
+| Kind | From | To | Drawn as |
+|---|---|---|---|
+| context | a session or a project | a project or a branch (project → project included) | a dashed 1-px line |
+| cooperate | a session | another session (undirected) | two parallel 1-px lines |
+
+Edges are only drawn and stored in this release. They do not affect launches or live sessions yet (that
+is Stories 6.2–6.4).
+
+**Drawing an edge.** Hover a session or project card, or select it, and a small round handle appears on its
+right edge. Drag from the handle and drop on any project, branch or session card. The whole card is the
+target. While you drag, a card the pair is refused for shows the not-allowed cursor. A drop on empty canvas
+does nothing. A refused drop shows a notice with the reason:
+
+- `can't link a project to a session`
+- `can't link from a branch`
+- `can't link a node to itself`
+- `already linked`: the same kind between the same two ends already exists, in either direction for
+  cooperate.
+
+From the keyboard, **Link to…** (`e`, the node menu or the palette, with a session or project selected)
+turns the palette into a pick list of the nodes the selected one can be linked to. Collapsed projects'
+children are included. Each row reads `<kind>: <target label> (<project>)`. Type to filter, Enter links,
+and Esc cancels. The UI sends only the two ends: Rust validates the pair, refuses an unknown node, creates
+the edge (`edge_add`), writes the file and broadcasts the snapshot.
+
+**Selecting, labelling, deleting.** A click on an edge's line (or its label) selects it, which draws it in the
+focus colour, and opens the **edge inspector** on the right. While the launch, worktree or remove-worktree
+sheet is open, the click only selects the edge, so the sheet's form is kept; **Inspect edge** (or Enter
+with no pane open) opens the inspector. From the keyboard, **Select edge…** (node menu or palette, with a
+card selected) lists that card's drawn edges as `<kind>: <other end> — <label>`; picking one selects it
+and opens the inspector. The inspector shows the kind, both ends and a
+**Label** field. The label is saved on Enter or when the field loses focus. Control characters become a single space, it is trimmed and cut to 200 characters, and a blank
+label clears it. The label shows at the edge's midpoint in small muted text, cut with an ellipsis. **Delete**
+in the inspector, or Del while the edge is selected and focus is not in the field, deletes it at once
+(`edge_remove`). There is no confirmation, because an edge is cheap to redraw. Esc closes the inspector and
+keeps the edge selected. A second Esc, or a click on empty canvas, clears the selection. The arrow keys never
+visit edges.
+
+**Hidden ends.** An edge is drawn only while both of its end cards are drawn. If an end is in a collapsed
+project, cut by the show-all limit, or no longer listed, the edge is not drawn but stays stored, as fork lines
+behave; a selected edge that stops being drawn is deselected. An edge between two cards of one column (a
+session and its own project, two sessions of one project) ends on the target's right edge, so it curves out
+to the right and back; an edge to a card further left leaves its source on the left and enters the target on
+the right, so it never sweeps back across the canvas. A branch end is always stored by its card id (`<projectId>:<name>`), and a session
+end without a `sessions[]` entry gets one, so the edge goes when its project is removed. Removing a project deletes every edge touching it or its children. An edge to a session or branch
+that is no longer listed is kept until its project is removed. The "forked from" line is not an edge: it
+cannot be selected, labelled or deleted.
+
 ### The file
 
 What the canvas shows is persisted in one app-written JSON file beside `settings.json`:
@@ -494,8 +552,9 @@ showBranches }`;
 relative to its parent card and `null` in its slot), `branches[].position` likewise (a branch is written
 only once it is moved, or given a worktree from the sheet, which also sets its `worktreePath`, or a session is
 started in its worktree; see [Branches](#branches), [Worktrees](#worktrees) and
-[Sessions on a branch](#sessions-on-a-branch)); a session started on a branch has its `branchId`; `edges` is reserved
-for Epic 6. A `sessions[]` entry whose session is no longer a child (a stub from a higher count, a
+[Sessions on a branch](#sessions-on-a-branch)); a session started on a branch has its `branchId`; `edges[]` holds
+`{ id (UUID v4), from, to, kind: context|cooperate, label, createdAt }`, each end `{ type:
+project|branch|session, id }` (see [Edges](#edges)), written when an edge is drawn, labelled or deleted. A `sessions[]` entry whose session is no longer a child (a stub from a higher count, a
 hand-edited id) is kept verbatim and never pruned by this story; only Re-layout touches refs, and only
 those of the project it was run on. Rust owns the file: the UI never writes it, it mirrors Rust's snapshot (`workspace_get`, then
 every `workspace://changed` event) just as it does for settings, and every snapshot carries a revision so a
@@ -514,7 +573,7 @@ banners, never a crash:
 | workspace.json had N projects with an empty or duplicate id | Hand-edited `projects` | Those entries are dropped (the first of a duplicate is kept); the rest load. |
 | cannot write workspace: … | The write failed (no config dir, permissions) | The change lives in memory; the next write is tried again. |
 | project add failed: … | Adding a folder failed (picker, IPC) | Nothing added; the banner clears on the next successful add. |
-| node move failed / expand failed / collapse failed / re-layout failed / remove failed: … | Rust rejected the change (an id it does not know, no runtime) | Nothing changes; a dropped node goes back to its stored position; the banner clears on the next successful change. |
+| node move failed / expand failed / collapse failed / re-layout failed / remove failed / label edge failed / delete edge failed: … | Rust rejected the change (an id it does not know, no runtime) | Nothing changes; a dropped node goes back to its stored position; the banner clears on the next successful change. |
 
 ## Terminal
 

@@ -7,6 +7,8 @@
 // commands, the `ctrl+,` toggle, the arrows, Enter) are `hidden`: the dispatcher sees them,
 // the palette does not. The project commands act on the selected project and are tagged
 // `menu: "node"` with a `menuOrder`, which is what the right-click menu lists, in that order.
+// Edges (Story 6.1): `e` links the selected session or project ("Link to…", a pick list), Del
+// deletes the selected edge (only then), and a click on an edge opens its inspector.
 // With focus in a terminal the dispatcher yields every key to it (Esc included) except
 // `terminal.toggle` (ctrl+`), the palette's second binding, ctrl+shift+k, and the tab keys
 // `terminal.prevTab` / `terminal.nextTab` (ctrl+pageup / ctrl+pagedown, Story 4.5; `terminal/keys`).
@@ -33,6 +35,17 @@ import {
   toggleShowAllOfSelected,
 } from "./navigation";
 import { canGoToAttention, goToNextAttention } from "./attention";
+import {
+  canDeleteEdge,
+  canInspectEdge,
+  canLink,
+  canSelectEdge,
+  deleteSelectedEdge,
+  inspectSelectedEdge,
+  selectedEdge,
+  startLink,
+  startSelectEdge,
+} from "./edges";
 import { canToggleBranches, relayoutChildren, removeProject, setExpanded, toggleBranches, toggleBranchesTitle } from "./nodes";
 import {
   canForkSession,
@@ -225,7 +238,9 @@ export function builtinCommands(): Command[] {
       hidden: true,
       when: () => hasSelection() && noSurfaceOpen(),
       run: async () => {
-        await activateSelection();
+        // A selected edge: Enter opens its inspector (Story 6.1).
+        if (selectedEdge() !== null) inspectSelectedEdge();
+        else await activateSelection();
       },
     },
     {
@@ -502,6 +517,46 @@ export function builtinCommands(): Command[] {
       run: async () => {
         await openRemoveWorktreeSheet();
       },
+    },
+    {
+      // Story 6.1: the palette as a pick list of the selected session's or project's valid
+      // targets; Enter links, Esc cancels. Dragging from a card's handle does the same.
+      id: "edge.link",
+      title: "Link to…",
+      keybinding: "e",
+      menu: "node",
+      menuOrder: 13,
+      when: canLink,
+      run: () => {
+        startLink();
+      },
+    },
+    {
+      // The keyboard path to an edge: a pick list of the selected node's drawn edges.
+      id: "edge.select",
+      title: "Select edge…",
+      menu: "node",
+      menuOrder: 14,
+      when: canSelectEdge,
+      run: () => {
+        startSelectEdge();
+      },
+    },
+    {
+      // Only while an edge is selected (a click on its line); otherwise Delete does nothing.
+      id: "edge.delete",
+      title: "Delete edge",
+      keybinding: "delete",
+      when: canDeleteEdge,
+      run: async () => {
+        await deleteSelectedEdge();
+      },
+    },
+    {
+      id: "edge.inspect",
+      title: "Inspect edge",
+      when: canInspectEdge,
+      run: inspectSelectedEdge,
     },
     {
       id: "project.remove",

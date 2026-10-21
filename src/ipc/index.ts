@@ -116,12 +116,15 @@ export type SessionRef = {
 /** Mirrors `graph::NodeRef`; `folder` is an ad-hoc path target that is not a node. */
 export type NodeRef = { type: "project" | "branch" | "session" | "folder"; id: string };
 
+/** Mirrors `graph::EdgeKind`: `context` (dashed) or `cooperate` (a double line, undirected). */
+export type EdgeKind = "context" | "cooperate";
+
 /** Mirrors `graph::Edge` (Epic 6). */
 export type Edge = {
   id: string;
   from: NodeRef;
   to: NodeRef;
-  kind: "context" | "cooperate";
+  kind: EdgeKind;
   label: string | null;
   createdAt: string;
 };
@@ -558,6 +561,9 @@ type Commands = {
   worktree_remove: WorktreeRemoved;
   workspace_move_node: WorkspaceSnapshot;
   workspace_relayout_children: WorkspaceSnapshot;
+  edge_add: Edge;
+  edge_set_label: WorkspaceSnapshot;
+  edge_remove: WorkspaceSnapshot;
   claude_projects_list: ClaudeProject[];
   projects_status_get: ProjectStatusMap;
   live_sessions_get: LiveSnapshot;
@@ -742,6 +748,29 @@ export function workspaceMoveNode(target: NodeTarget, position: Position): Promi
  */
 export function workspaceRelayoutChildren(projectId: string): Promise<WorkspaceSnapshot> {
   return call("workspace_relayout_children", { projectId });
+}
+
+/**
+ * `ipc::edge_add` (Story 6.1) -- draw an edge from `from` to `to`. Rust picks the kind from the
+ * pair and rejects an invalid pair, a duplicate or an unknown end with the notice to show
+ * (`"can't link a project to a session"`, `"already linked"`, ...). Resolves with the new edge;
+ * the snapshot follows as `workspace://changed`.
+ */
+export function edgeAdd(from: NodeRef, to: NodeRef): Promise<Edge> {
+  return call("edge_add", { from, to });
+}
+
+/**
+ * `ipc::edge_set_label` (Story 6.1) -- set an edge's label (trimmed; blank or `null` clears it).
+ * Rejects with `"unknown edge"`.
+ */
+export function edgeSetLabel(id: string, label: string | null): Promise<WorkspaceSnapshot> {
+  return call("edge_set_label", { id, label });
+}
+
+/** `ipc::edge_remove` (Story 6.1) -- delete an edge. Rejects with `"unknown edge"`. */
+export function edgeRemove(id: string): Promise<WorkspaceSnapshot> {
+  return call("edge_remove", { id });
 }
 
 /**

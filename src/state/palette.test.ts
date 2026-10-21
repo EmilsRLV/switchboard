@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { clampSelection, filterCommands, paletteKeyAction, usePaletteStore } from "./palette";
+import { clampSelection, filterCommands, filterPickItems, paletteKeyAction, paletteRows, usePaletteStore } from "./palette";
 
 const commands = [
   { id: "settings.open", title: "Open settings" },
@@ -139,5 +139,36 @@ describe("palette store", () => {
     ]);
     usePaletteStore.getState().setQuery("");
     expect(usePaletteStore.getState().filtered(commands)).toEqual(commands);
+  });
+
+  it("openPick shows a pick list with an empty query; open and close drop it (Story 6.1)", () => {
+    const onPick = () => {};
+    usePaletteStore.getState().setQuery("x");
+    usePaletteStore.getState().openPick({ placeholder: "Link to…", items: [{ id: "p", title: "context: p (p)" }], onPick });
+    expect(usePaletteStore.getState()).toMatchObject({ isOpen: true, query: "", selected: 0 });
+    expect(usePaletteStore.getState().pick?.placeholder).toBe("Link to…");
+    usePaletteStore.getState().close();
+    expect(usePaletteStore.getState()).toMatchObject({ isOpen: false, pick: null });
+    usePaletteStore.getState().openPick({ placeholder: "Link to…", items: [], onPick });
+    usePaletteStore.getState().open();
+    expect(usePaletteStore.getState().pick).toBeNull();
+    usePaletteStore.getState().close();
+  });
+
+  it("in pick mode the rows are the pick's, matched on titles only; otherwise the commands with their keys", () => {
+    const items = [
+      { id: "session:3f2a", title: "cooperate: api (b)" },
+      { id: "project:p", title: "context: p (p)" },
+    ];
+    // Ids are not matched.
+    expect(filterPickItems(items, "session").map((i) => i.id)).toEqual([]);
+    expect(filterPickItems(items, "API").map((i) => i.id)).toEqual(["session:3f2a"]);
+    const pick = { placeholder: "Link to…", items, onPick: () => {} };
+    expect(paletteRows(pick, [], "")).toEqual([
+      { id: "session:3f2a", title: "cooperate: api (b)", binding: null },
+      { id: "project:p", title: "context: p (p)", binding: null },
+    ]);
+    const quit = { id: "app.quit", title: "Quit", binding: { ctrl: true, shift: false, alt: false, key: "q" } };
+    expect(paletteRows(null, [quit], "app.")).toEqual([quit]);
   });
 });

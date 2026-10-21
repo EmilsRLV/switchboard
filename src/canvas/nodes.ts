@@ -116,8 +116,14 @@ export function moreTarget(projectId: string, group: ChildGroup): MoreTarget {
   return group === "sessions" ? { kind: "more", id: projectId } : { kind: "more", id: projectId, group };
 }
 
-/** Anything the canvas draws and can select: a node Rust knows, or a `more` row. */
-export type CanvasTarget = NodeTarget | MoreTarget;
+/**
+ * A stored edge (Story 6.1), selected by a click on its line: `id` is the edge's id. Not a node:
+ * the arrow keys never visit it.
+ */
+export type EdgeTarget = { kind: "edge"; id: string };
+
+/** Anything the canvas draws and can select: a node Rust knows, a `more` row, or an edge. */
+export type CanvasTarget = NodeTarget | MoreTarget | EdgeTarget;
 
 /** How many children an expanded project shows until `show all` is clicked. */
 export const SHOW_LIMIT = 10;
@@ -165,9 +171,15 @@ export function moreFlowId(projectId: string, group: ChildGroup = "sessions"): s
   return group === "sessions" ? `more:${projectId}` : `more-branches:${projectId}`;
 }
 
-/** The flow-node id of any canvas target. */
+/** The flow id of a stored edge (Story 6.1): `edge:<id>`. */
+export function edgeFlowId(id: string): string {
+  return `edge:${id}`;
+}
+
+/** The flow id of any canvas target (an edge's is its xyflow edge id). */
 export function flowIdOf(target: CanvasTarget): string {
   if (target.kind === "project") return target.id;
+  if (target.kind === "edge") return edgeFlowId(target.id);
   if (target.kind === "more") return moreFlowId(target.id, moreGroup(target));
   return childFlowId({ kind: target.kind, id: target.id });
 }
@@ -178,6 +190,7 @@ export function parseFlowId(flowId: string): CanvasTarget {
   if (flowId.startsWith("branch:")) return { kind: "branch", id: flowId.slice("branch:".length) };
   if (flowId.startsWith("more-branches:")) return moreTarget(flowId.slice("more-branches:".length), "branches");
   if (flowId.startsWith("more:")) return { kind: "more", id: flowId.slice("more:".length) };
+  if (flowId.startsWith("edge:")) return { kind: "edge", id: flowId.slice("edge:".length) };
   return { kind: "project", id: flowId };
 }
 
@@ -347,7 +360,7 @@ export function rightClickTarget(press: RightPress | null, release: Position): C
  * else only select (a card with nothing to offer, a `more` row).
  */
 export function rightClickAction(target: CanvasTarget, hasMenuItems: boolean): "menu" | "select" {
-  return target.kind !== "more" && hasMenuItems ? "menu" : "select";
+  return target.kind !== "more" && target.kind !== "edge" && hasMenuItems ? "menu" : "select";
 }
 
 /**
