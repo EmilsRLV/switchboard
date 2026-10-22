@@ -1021,3 +1021,8 @@
 .edge-now-term {
   color: var(--fg-muted);
 }
+
+/* Story 6.4: one Now line per side of a cooperate edge, its Retry under it. */
+.edge-now-side .btn {
+  margin-top: 0.25rem;
+}

@@ -124,7 +124,9 @@ branch with a worktree chip (a `missing` one too), Remove worktree… (see [Remo
 Link to… while a session or project card is selected, Select edge… while the selected card has a drawn
 edge, and Delete edge and Inspect edge while an edge is selected (Inspect edge only while its inspector is closed; see [Edges](#edges));
 Restart with flags while a context edge from a session is selected, and Retry edge while that edge failed or
-a draft holds it back (see [Context edges on live sessions](#context-edges-on-live-sessions)). The palette sorts by title. The key-only
+a draft holds it back, and Retry edge while a selected cooperate edge has a side that failed or that a draft
+holds back (see [Context edges on live sessions](#context-edges-on-live-sessions) and [Cooperation
+edges](#cooperation-edges)). The palette sorts by title. The key-only
 carriers (the `ctrl+,` toggle, the palette's second binding `ctrl+shift+k`, the five Esc commands, the four
 arrows and Enter) are registered but hidden from
 the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron on a card runs
@@ -493,8 +495,9 @@ canvas. There are two kinds, and Rust picks the kind from the two ends:
 
 A context edge grants its source directory access **at launch** (see [Context edges at
 launch](#context-edges-at-launch)), and one drawn from a session running in Switchboard is applied to it at
-once (see [Context edges on live sessions](#context-edges-on-live-sessions)). Cooperate edges do nothing yet
-(that is Story 6.4). Edges to folders that are not canvas nodes come later.
+once (see [Context edges on live sessions](#context-edges-on-live-sessions)). A cooperate edge tells each of
+its two sessions that the other exists (see [Cooperation edges](#cooperation-edges)). Edges to folders that
+are not canvas nodes come later.
 
 **Drawing an edge.** Hover a session or project card, or select it, and a small round handle appears on its
 right edge. Drag from the handle and drop on any project, branch or session card. The whole card is the
@@ -616,6 +619,70 @@ drawn muted and a failed one in the attention accent. The state goes out on `edg
 - **The session exits** while an edge is pending: its state is dropped; the edge applies at the next resume.
 - **Deleting an edge** takes nothing away from a running session: Claude has no `/remove-dir`, so the folder
   stays until the session restarts.
+
+### Cooperation edges
+
+A cooperate edge between two sessions tells each session that the other exists, what the link is for and how
+to reach it, so two sessions in different repos can coordinate without you passing messages along. Each
+session is a **peer** of the other. Rust owns all of the text below; the UI only shows it.
+
+A peer is named the way Resume names a session: its live name (`--name`), else its transcript title, else its
+project's label. Its **node path** is `<project label>` (or `<project label>:<branch>` when the branch it was
+started on is known), then ` / <name>`. Its **purpose** is the edge's label, or `no stated purpose`.
+
+**At launch.** A resumed session's `--append-system-prompt` adds, after its context lines:
+
+```
+Peer sessions (cooperate edges):
+- "ui-2" (ui / ui-2): API shape for auth refresh
+Prefer SendMessage to a peer by its name to coordinate.
+```
+
+At most five peers are listed, then `- … and N more`. Control characters and the Unicode line and paragraph
+separators are stripped from every value, a `"` becomes `'` (so a name cannot close its quotes), and each value
+is cut to 120 characters (then `…`), so no value can add a line. A session with no peers gets the prompt
+unchanged. A new session has no edges yet. A **fork does not inherit** the original's peers: the peer only
+knows the original.
+
+**On live sessions.** When you link two sessions, each end that runs in a Switchboard terminal is sent one
+plain line, with the same idle wait, draft rule and one-injection-per-session rule as `/add-dir` (see
+[Context edges on live sessions](#context-edges-on-live-sessions)):
+
+```
+A new peer session "<other name>" is linked to you (<purpose>). Use SendMessage to coordinate.
+```
+
+followed by Enter, with the same value cleaning as the prompt. The line is a user prompt, so a side counts as
+`notified` when its session goes busy within 3 s of the write. An end that is not running gets nothing now: the peer is in its prompt at its next resume.
+Because an edge starts without a label, the line usually says `no stated purpose`; the label you set later is
+in the prompt at the next resume.
+
+The edge inspector shows one **Now:** line per side:
+
+- `<name>: pending (waiting for idle)`: the session is not idle yet;
+- `<name>: pending (you're typing — Retry when done)`: a draft in its prompt holds the line back;
+- `<name>: pending (sent, waiting for the session to take it)`: the line was written;
+- `<name>: notified`: the session went busy within 3 s of the line. That is the only signal there is, so
+  something else making the session busy in that window reads the same;
+- `<name>: failed (not confirmed)`: it did not go busy within 3 s (or its terminal was being stopped);
+- `<name>: failed (session stayed busy)`: it stayed not idle for 60 s;
+- `<name>: failed (<error>)`: the write failed, or a Restart with flags of that session failed while the
+  side was pending;
+- `<name>: peer named at the next resume`: no live state (the session is not running in Switchboard, or
+  the app restarted).
+
+**Retry** appears under a side that failed or that a draft holds back, and sends that side's line again;
+Rust refuses it for any other side, since a pending line may already have been written. **Retry edge** in
+the palette retries every such side. There is no
+Restart with flags: the next resume carries the peer anyway. On the canvas the edge is drawn muted while a side
+is pending and in the attention accent when a side failed. The state lives in memory only, on `edges://live`,
+keyed `<edgeId>#<sessionId>` per side; the session exiting or the edge being deleted drops it.
+
+Only `SendMessage` is named for now; the `switchboard` MCP `send` / `inbox` tools and an inbox link notice
+come with Epic 7. **Not yet verified:** that `SendMessage` from one session by the peer's name reaches the
+other while it is idle. That check is done by hand with the real `claude`; if it does not deliver, the inbox
+nudge of Story 7.3 becomes the primary channel. See
+[`docs/research/claude-code-integration.md`](docs/research/claude-code-integration.md).
 
 ### The file
 
@@ -780,7 +847,8 @@ npm, uninstall the global npm package after installing the native one.
 
 in the project folder, in a terminal (`TERM=xterm-256color`, `COLORTERM=truecolor`, `SWITCHBOARD_NODE=<uuid>`).
 `<context>` is a few lines saying the session runs inside Switchboard, with the project's label, folder and
-branch (when known) and the session's name and node id; no instructions. The settings file holds the session's
+branch (when known) and the session's name and node id. A session with cooperate peers (on Resume) also gets
+the peer block and its one instruction (see [Cooperation edges](#cooperation-edges)). The settings file holds the session's
 hooks (see [Status](#status)), or `{}` when the hooks endpoint is down; the env then also has
 `SWITCHBOARD_PORT=<port>`. Your own Claude settings and hooks are untouched (settings layers merge) and
 nothing is written under `~/.claude`.

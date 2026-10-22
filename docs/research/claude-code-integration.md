@@ -15,7 +15,7 @@ Anything marked **verify** was not exercised and must be checked in the story th
 | `--model`, `--effort`, `--permission-mode` | Launch sheet fields |
 | `--mcp-config <json-or-file>` | Inject the `switchboard` MCP server (HTTP, bearer header) |
 | `--settings <file-or-json>` | Inject hooks for status (`Notification`, `Stop`, `SessionStart`, `SessionEnd`, …) |
-| `--append-system-prompt <text>` | ~10-line node/peer context |
+| `--append-system-prompt <text>` | Node context (up to 6 lines) and, with cooperate peers, a peer block (Story 6.4) |
 | `--bg` / `claude attach` / `claude logs` / `claude stop` | Optional background start; adopting externally started sessions |
 | `-p --input-format stream-json --output-format stream-json` | Headless helper runs (titles, summaries) — the "SDK underneath" |
 | `--max-budget-usd` | Cap on headless helper runs |
@@ -70,7 +70,18 @@ Rust MCP server crate: `rmcp` (official `modelcontextprotocol/rust-sdk`), stream
 
 ## Native session-to-session messaging
 
-Claude Code's `ListAgents` tool lists "other local Claude sessions on this machine" and `SendMessage` can address them by name. This is the preferred cooperation channel (Story 6.4); the `switchboard` inbox is the structured fallback. **verify** delivery semantics when the target is busy vs idle.
+Claude Code's `ListAgents` tool lists "other local Claude sessions on this machine" and `SendMessage` can address them by name. This is the preferred cooperation channel (Story 6.4); the `switchboard` inbox is the structured fallback (Epic 7). **verify** delivery semantics when the target is busy vs idle.
+
+Story 6.4 relies on it: a session started from Switchboard (Resume; New has no edges yet; a fork inherits
+none) gets its cooperate peers in `--append-system-prompt` (`Peer sessions (cooperate edges):`, then
+`- "<name>" (<node path>): <purpose>` per peer, at most 5 and `- … and N more`, then `Prefer SendMessage
+to a peer by its name to coordinate.`), and an idle live session is sent one line when it is linked:
+`A new peer session "<name>" is linked to you (<purpose>). Use SendMessage to coordinate.` + Enter. That
+line is a user prompt, so the session going busy within 3 s confirms it was taken. Until Epic 7 only
+`SendMessage` is named, never the MCP `send`/`inbox`.
+
+**Pending, by hand with the real `claude` (Emils):** session A sends `SendMessage` to B by name while B is
+idle; record whether it is delivered. If it is not, Story 7.3's inbox nudge becomes the primary channel.
 
 ## Slash commands used by injection
 
@@ -83,6 +94,10 @@ Claude Code's `ListAgents` tool lists "other local Claude sessions on this machi
   appears as expected, and whether a choice dialog shows. **No `/remove-dir`:** deleting an edge cannot take a
   folder away from a running session; it stays until the session restarts. "Restart with flags" (stop, then
   `--resume <id> --add-dir …`) is the fallback.
+- The peer line (Story 6.4) — not a slash command: one plain user prompt naming a newly linked peer, written
+  under the same rules as `/add-dir` (idle, no draft, one injection per session at a time, control
+  characters stripped from the name and the label, each cut to 120 characters). **Detection:** busy within
+  3 s of the write (`notified`), else `failed (not confirmed)`.
 - `/exit` — used by Stop (Story 4.4).
 
 ## Agent SDK note

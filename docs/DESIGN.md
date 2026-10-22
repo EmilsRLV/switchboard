@@ -114,7 +114,8 @@ styled, after the final combinator) starts with one of
 ```
 
 That is: a banner's left border and mark, error text in a pane (`.pane-error`), attention text
-(`.attention`; also the line of a context edge whose live application failed, Story 6.3), and the attention states of Story 3.3: a session card in `finished` / `waiting` (its border,
+(`.attention`; also the line of a context edge whose live application failed, Story 6.3, or of a cooperate
+edge with a failed side, Story 6.4), and the attention states of Story 3.3: a session card in `finished` / `waiting` (its border,
 `.session-attention`, and its state word, `.session-attention-word`) and the glow of its project card
 (`.project-glow`). Inline styles never use the accent.
 
@@ -228,6 +229,12 @@ drag handle) follows every rule here.
   context edge from a session adds ordinary buttons before Delete: **Retry** (only when it failed or a draft
   holds it back) and **Restart with flags** (always; disabled while it runs). A failure is said in words,
   never in the accent.
+  Story 6.4: a cooperate edge has one **Now:** line per side, the same look: `<name>: pending (waiting for
+  idle)`, `<name>: pending (you're typing — Retry when done)`, `<name>: pending (sent, waiting for the session
+  to take it)`, `<name>: notified` (the session went busy within 3 s of the line, which another cause could
+  also make happen), `<name>: failed (not confirmed)`, `<name>: failed (session stayed busy)`, `<name>: failed
+  (<error>)`, or `<name>: peer named at the next resume` with no live state. An ordinary **Retry** button sits
+  under a side that failed or that a draft holds back. No Restart with flags for a cooperate edge.
 - **The context menu** is the palette's row look at the pointer: `--bg-raised`, 1-px border,
   `--radius-md`, items in `--text-md`, groups split by a 1-px `--border` line. Project, session and branch cards
   have one; it lists only enabled entries and does not open when there are none.
@@ -326,7 +333,8 @@ and they never use the accent except for a failed live application (below).
 - **Live state (Story 6.3):** a context edge being applied to a running session (`is-pending` on the edge) is
   drawn in `--fg-faint`; one whose application failed carries `.attention` on its line and is drawn in
   `--accent` (attention: it needs the operator). Applied, or with no live state, it is drawn as usual.
-  Selected wins over both.
+  A cooperate edge (Story 6.4) takes the same looks from its two sides: a failed side wins, then a pending
+  one; notified sides draw it as usual. Selected wins over both.
 - **Label:** the label sits at the midpoint in `--font-sans` `--text-xs` `--fg-muted` (`--focus` while the edge is
   selected), on `--bg`. It is one line, at most 160 px wide, and cut with an ellipsis. The full text shows
   on hover.

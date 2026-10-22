@@ -1598,7 +1598,7 @@ mod tests {
             .collect();
         let path = state.read_workspace().workspace.projects[0].path.clone();
         let name = prefill["name"].as_str().unwrap();
-        let context = super::claude::launch::system_prompt("ide", &path, None, name, &id).replace('\n', "\\n");
+        let context = super::claude::launch::system_prompt("ide", &path, None, name, &id, &[]).replace('\n', "\\n");
         let expected: Vec<String> = [
             "--session-id",
             &id,
@@ -2333,6 +2333,7 @@ mod tests {
         *state.live_edges.timeouts.lock().unwrap() = live_edges::Timeouts {
             busy: std::time::Duration::from_millis(1500),
             confirm: std::time::Duration::from_millis(1500),
+            notify: std::time::Duration::from_millis(1500),
             tick: std::time::Duration::from_millis(50),
         };
         let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
@@ -2522,6 +2523,200 @@ mod tests {
             call("edge_live_retry", json!({ "edgeId": again })),
             Err(json!(live_edges::NOT_LIVE))
         );
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
+    }
+
+    /// Story 6.4: a resumed session's appended system prompt lists its cooperate peers (a fork's
+    /// does not); linking two live idle sessions sends each exactly one line naming the other,
+    /// and a side is `notified` once its session goes busy, else `failed (not confirmed)`; Retry
+    /// sends a side's line again; an end that is not live gets nothing; deleting the edge drops
+    /// both sides.
+    #[test]
+    fn cooperate_edges_name_peers_at_resume_and_reach_live_sessions() {
+        use super::claude::launch::{PEERS_HEADING, PEERS_INSTRUCTION};
+        use super::claude::live::SessionState;
+        use super::claude::live_edges::{self, EdgeState};
+        use super::graph::Project;
+        use serde_json::json;
+        let (app, webview, dir, folder, _sessions) = launch_fixture();
+        let state = app.state::<super::AppState>();
+        *state.launcher.program.lock().unwrap() = Some(line_echo_program(dir.path()));
+        *state.live_edges.timeouts.lock().unwrap() = live_edges::Timeouts {
+            busy: std::time::Duration::from_millis(1500),
+            confirm: std::time::Duration::from_millis(1500),
+            notify: std::time::Duration::from_millis(1500),
+            tick: std::time::Duration::from_millis(50),
+        };
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        let ui_dir = tempfile::tempdir().unwrap();
+        let ui = dunce::canonicalize(ui_dir.path()).unwrap().display().to_string();
+        state.write_workspace().workspace.projects.push(Project {
+            id: "ui".into(),
+            path: ui.clone(),
+            label: "ui".into(),
+            ..Project::default()
+        });
+        let ide = dunce::canonicalize(folder.path()).unwrap().display().to_string();
+        let (api, web, docs) = (
+            "a1a1a1a1-5b7d-4e8f-9a0b-1c2d3e4f5a6b",
+            "b2b2b2b2-5b7d-4e8f-9a0b-1c2d3e4f5a6b",
+            "c3c3c3c3-5b7d-4e8f-9a0b-1c2d3e4f5a6b",
+        );
+        let summary = |id: &str, title: &str, cwd: &str| super::claude::SessionSummary {
+            id: id.into(),
+            title: title.into(),
+            started_at: "2026-10-18T10:00:00.000Z".into(),
+            last_active: "2026-10-18T10:05:00.000Z".into(),
+            branch: None,
+            messages: 4,
+            cwd: Some(cwd.into()),
+        };
+        super::graph::set_discovered(
+            app.handle(),
+            std::collections::HashMap::from([
+                ("ide".to_string(), vec![summary(api, "api-1", &ide)]),
+                ("ui".to_string(), vec![summary(web, "ui-2", &ui), summary(docs, "docs-3", &ui)]),
+            ]),
+        );
+        let link = |a: &str, b: &str| -> String {
+            let edge = call("edge_add", json!({ "from": { "type": "session", "id": a }, "to": { "type": "session", "id": b } })).expect("edge_add");
+            edge["id"].as_str().unwrap().to_string()
+        };
+        let term = |id: &str| format!("session:{id}");
+        let output = |id: &str| super::pty::tests::strip_escapes(&state.terms.buffer(&term(id)).map(|b| b.data).unwrap_or_default());
+        let peer_lines = |id: &str| -> Vec<String> {
+            output(id)
+                .lines()
+                .filter(|l| l.starts_with("got=") && l.contains("peer session"))
+                .map(|l| l.trim_end().to_string())
+                .collect()
+        };
+        let set_state = |id: &str, s: SessionState| state.write_sessions_live().sessions.get_mut(id).unwrap().state = s;
+        let live_of = |key: &str| state.live_edges.snapshot().get(key).cloned();
+        let is = |key: &str, want: EdgeState, detail: Option<&str>| live_of(key).is_some_and(|e| e.state == want && e.detail.as_deref() == detail);
+
+        // Two historic sessions linked with a purpose: no live state.
+        let first = link(api, web);
+        call("edge_set_label", json!({ "id": first, "label": "API shape for auth refresh" })).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(state.live_edges.snapshot().is_empty());
+
+        // Resumed, each prompt names the other with its node path and the edge's label.
+        call("session_resume", json!({ "projectId": "ide", "sessionId": api, "cols": 1000, "rows": 40 })).expect("resume api");
+        wait_until(&app, &term(api), "api's prompt", || output(api).contains(PEERS_INSTRUCTION));
+        let text = output(api);
+        assert!(text.contains(PEERS_HEADING), "{text}");
+        assert!(text.contains("- \"ui-2\" (ui / ui-2): API shape for auth refresh"), "{text}");
+        call("session_resume", json!({ "projectId": "ui", "sessionId": web, "cols": 1000, "rows": 40 })).expect("resume web");
+        wait_until(&app, &term(web), "web's prompt", || output(web).contains(PEERS_INSTRUCTION));
+        assert!(output(web).contains("- \"api-1\" (ide / api-1): API shape for auth refresh"), "{}", output(web));
+
+        // A fork does not inherit the original's peers.
+        let fork = call("session_fork", json!({ "projectId": "ide", "sessionId": api, "cols": 1000, "rows": 40 })).expect("fork");
+        let fork = fork["session_id"].as_str().unwrap().to_string();
+        wait_until(&app, &term(&fork), "the fork's prompt", || output(&fork).contains(&format!("Switchboard node id: {fork}")));
+        assert!(!output(&fork).contains(PEERS_HEADING), "{}", output(&fork));
+        assert!(!output(&fork).contains("SendMessage"), "{}", output(&fork));
+        state.terms.write(&term(&fork), b"/exit\r").unwrap();
+
+        // Both live and idle: linking sends each exactly one line naming the other.
+        call("edge_remove", json!({ "id": first })).unwrap();
+        set_state(api, SessionState::Idle);
+        set_state(web, SessionState::Idle);
+        let live = link(api, web);
+        let (api_side, web_side) = (live_edges::side_key(&live, api), live_edges::side_key(&live, web));
+        wait_until(&app, &term(api), "api's line", || !peer_lines(api).is_empty());
+        set_state(api, SessionState::Busy);
+        wait_until(&app, &term(web), "web's line", || !peer_lines(web).is_empty());
+        assert_eq!(
+            peer_lines(api),
+            ["got=A new peer session \"ui-2\" is linked to you (no stated purpose). Use SendMessage to coordinate."],
+            "{}",
+            output(api)
+        );
+        assert_eq!(
+            peer_lines(web),
+            ["got=A new peer session \"api-1\" is linked to you (no stated purpose). Use SendMessage to coordinate."],
+            "{}",
+            output(web)
+        );
+        // Busy within the window: notified. Never busy: failed (not confirmed).
+        wait_until(&app, &term(api), "api notified", || is(&api_side, EdgeState::Notified, None));
+        wait_until(&app, &term(web), "web not confirmed", || is(&web_side, EdgeState::Failed, Some(live_edges::NOT_CONFIRMED)));
+        let wire = call("edges_live_get", json!({})).unwrap();
+        assert_eq!(wire[&api_side]["state"], "notified");
+        assert_eq!(wire[&api_side]["edgeId"], json!(live));
+        assert_eq!(wire[&web_side]["sessionId"], web);
+
+        // Retry names a side; that side's line goes again and it is notified on busy.
+        assert_eq!(call("edge_live_retry", json!({ "edgeId": live })), Err(json!(live_edges::NOT_A_SIDE)));
+        assert_eq!(
+            call("edge_live_retry", json!({ "edgeId": live, "sessionId": docs })),
+            Err(json!(live_edges::NOT_A_SIDE))
+        );
+        call("edge_live_retry", json!({ "edgeId": live, "sessionId": web })).expect("retry web");
+        wait_until(&app, &term(web), "web's second line", || peer_lines(web).len() >= 2);
+        set_state(web, SessionState::Busy);
+        wait_until(&app, &term(web), "web notified", || is(&web_side, EdgeState::Notified, None));
+
+        // One live end: only it gets the line; the historic end has no entry.
+        set_state(web, SessionState::Idle);
+        let half = link(web, docs);
+        wait_until(&app, &term(web), "the line naming docs", || {
+            peer_lines(web).iter().any(|l| l.contains("\"docs-3\""))
+        });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(live_of(&live_edges::side_key(&half, web)).is_some());
+        assert!(live_of(&live_edges::side_key(&half, docs)).is_none());
+        assert_eq!(
+            call("edge_live_retry", json!({ "edgeId": half, "sessionId": docs })),
+            Err(json!(live_edges::NOT_LIVE))
+        );
+
+        // Removing an unrelated project keeps both sides.
+        state.write_workspace().workspace.projects.push(Project {
+            id: "other".into(),
+            path: ui.clone(),
+            label: "other".into(),
+            ..Project::default()
+        });
+        call("workspace_remove_project", json!({ "projectId": "other" })).expect("remove other");
+        assert!(live_of(&api_side).is_some() && live_of(&web_side).is_some());
+
+        // A Restart with flags that fails retires the session's side jobs (one with no entry
+        // yet too) and fails its pending sides with the error, so Retry is offered.
+        set_state(web, SessionState::Busy);
+        let to_fork = link(web, &fork);
+        let fork_side = live_edges::side_key(&to_fork, web);
+        wait_until(&app, &term(web), "waiting for idle", || {
+            is(&fork_side, EdgeState::Pending, Some(live_edges::WAITING_FOR_IDLE))
+        });
+        let context = call("edge_add", json!({ "from": { "type": "session", "id": web }, "to": { "type": "project", "id": "ide" } })).unwrap();
+        let context = context["id"].as_str().unwrap().to_string();
+        live_edges::cancel_session(app.handle(), web);
+        live_edges::fail_session(app.handle(), web, &context, "boom");
+        set_state(web, SessionState::Idle);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        assert!(is(&fork_side, EdgeState::Failed, Some("boom")), "{:?}", live_of(&fork_side));
+        assert!(is(&web_side, EdgeState::Notified, None), "a notified side stays: {:?}", live_of(&web_side));
+        assert!(!peer_lines(web).iter().any(|l| l.contains("-fork-")), "no line after the jobs were retired");
+        // Retry refuses a side that is not failed or held back; a failed side is retried.
+        assert_eq!(
+            call("edge_live_retry", json!({ "edgeId": live, "sessionId": web })),
+            Err(json!(live_edges::SIDE_NOT_RETRYABLE))
+        );
+        call("edge_live_retry", json!({ "edgeId": to_fork, "sessionId": web })).expect("retry the failed side");
+        // (The stub's console cannot echo many long lines reliably on Windows, so the line is
+        // seen through the state: written, then not confirmed because the stub never goes busy.)
+        wait_until(&app, &term(web), "the retried side to be sent", || {
+            is(&fork_side, EdgeState::Pending, Some(live_edges::SENT_PEER_LINE)) || is(&fork_side, EdgeState::Failed, Some(live_edges::NOT_CONFIRMED))
+        });
+
+        // Deleting the edge drops both sides.
+        call("edge_remove", json!({ "id": live })).unwrap();
+        assert!(live_of(&api_side).is_none() && live_of(&web_side).is_none());
         super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
     }
 

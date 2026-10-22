@@ -400,7 +400,8 @@ pub async fn workspace_move_node<R: Runtime>(
 /// `workspace://changed`.
 ///
 /// Story 6.3: a context edge from a session running in a Switchboard terminal is applied to it
-/// now (`/add-dir` once it is idle; its state follows on `edges://live`).
+/// now (`/add-dir` once it is idle; its state follows on `edges://live`). Story 6.4: a cooperate
+/// edge sends each end running in Switchboard one line naming the other.
 #[tauri::command]
 pub async fn edge_add<R: Runtime>(app: AppHandle<R>, from: NodeRef, to: NodeRef) -> Result<Edge, String> {
     let edge = graph::add_edge(&app, &from, &to)?;
@@ -425,7 +426,8 @@ pub async fn edge_remove<R: Runtime>(app: AppHandle<R>, id: String) -> Result<Wo
     Ok(snapshot)
 }
 
-/// The live state of the context edges applied to running sessions (Story 6.3), by edge id;
+/// The live state of the context edges applied to running sessions (Story 6.3), by edge id, and
+/// of the cooperate sides (Story 6.4), by `<edgeId>#<sessionId>`;
 /// `edges://live` carries the same map on every change. Memory only.
 #[tauri::command]
 pub fn edges_live_get(state: State<'_, AppState>) -> std::collections::BTreeMap<String, live_edges::EdgeLive> {
@@ -433,11 +435,14 @@ pub fn edges_live_get(state: State<'_, AppState>) -> std::collections::BTreeMap<
 }
 
 /// Retry (Story 6.3): run the `/add-dir` injection of a context edge from a running session
-/// again (the operator says the prompt is clear). `Err` for an unknown edge, another kind of
-/// edge, or a session not running in a Switchboard terminal.
+/// again (the operator says the prompt is clear). For a cooperate edge (Story 6.4) it sends the
+/// peer line again to the side of `session_id`, which must be one of its ends and must have
+/// failed or be held back by a draft. `Err` for an unknown edge, a project's context edge, a
+/// cooperate edge without one of its sessions, a side whose line may already be on its way, or a
+/// session not running in a Switchboard terminal.
 #[tauri::command]
-pub async fn edge_live_retry<R: Runtime>(app: AppHandle<R>, edge_id: String) -> Result<(), String> {
-    live_edges::retry(&app, &edge_id)
+pub async fn edge_live_retry<R: Runtime>(app: AppHandle<R>, edge_id: String, session_id: Option<String>) -> Result<(), String> {
+    live_edges::retry(&app, &edge_id, session_id.as_deref())
 }
 
 /// Restart with flags (Story 6.3): stop the edge's session the way Stop does, wait until it has
@@ -1587,7 +1592,10 @@ fn prepare_launch(state: &AppState, launch: &Launch) -> Result<(PathBuf, Vec<Str
         (None, Some(git::ProjectStatus::Repo(repo))) if !repo.detached => Some(repo.branch.clone()),
         _ => None,
     };
-    let context = launch::system_prompt(&launch.label, &launch.project_path, branch.as_deref(), &launch.name, &launch.session_id);
+    // Story 6.4: the launching id's own cooperate peers. A fork launches under its new id, which
+    // no edge names, so it inherits none; a New session has no edges yet.
+    let peers = graph::session_peers(state, &launch.session_id);
+    let context = launch::system_prompt(&launch.label, &launch.project_path, branch.as_deref(), &launch.name, &launch.session_id, &peers);
     let mut built = launch::build_args(
         &launch.kind,
         &launch.request,

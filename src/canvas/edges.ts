@@ -105,11 +105,37 @@ export function edgeLiveIn(entries: EdgesLiveMap, id: string): EdgeLive | null {
   return Object.hasOwn(entries, id) ? (entries[id] ?? null) : null;
 }
 
-/** The class an edge carries for its live state (Story 6.3): `is-pending`, `is-failed` or none. */
-export function liveEdgeClass(live: EdgeLive | null): string | null {
-  if (live === null) return null;
-  if (live.state === "pending") return "is-pending";
-  if (live.state === "failed") return "is-failed";
+/** The key of one side of a cooperate edge in the live map (Rust's `live_edges::side_key`). */
+export function sideKey(edgeId: string, sessionId: string): string {
+  return `${edgeId}#${sessionId}`;
+}
+
+/** One side of a cooperate edge: its session and that side's live state. */
+export type CooperateSide = { sessionId: string; live: EdgeLive | null };
+
+/** Both sides of cooperate edge `edge` (from, then to) with their live state in `entries`. */
+export function cooperateSides(edge: Pick<Edge, "id" | "from" | "to">, entries: EdgesLiveMap): CooperateSide[] {
+  return [edge.from, edge.to].map((end) => ({ sessionId: end.id, live: edgeLiveIn(entries, sideKey(edge.id, end.id)) }));
+}
+
+/**
+ * The state a cooperate edge is drawn with: `failed` when a side failed, else `pending` when one
+ * is pending, else `notified` when one was, else none.
+ */
+export function cooperateState(sides: readonly CooperateSide[]): EdgeLiveState | null {
+  for (const state of ["failed", "pending", "notified"] as const) {
+    if (sides.some((side) => side.live?.state === state)) return state;
+  }
+  return null;
+}
+
+/**
+ * The class an edge carries for its live state (Story 6.3; a cooperate edge's combined state,
+ * Story 6.4): `is-pending`, `is-failed` or none.
+ */
+export function liveEdgeClass(state: EdgeLiveState | null): string | null {
+  if (state === "pending") return "is-pending";
+  if (state === "failed") return "is-failed";
   return null;
 }
 
@@ -145,8 +171,8 @@ export function linkFlowEdges(
     if (source === null || target === null || !drawn.has(source) || !drawn.has(target)) continue;
     const selected = selection !== null && selection.kind === "edge" && selection.id === edge.id;
     // Story 6.3: a context edge being applied to a running session is muted; a failed one
-    // carries the attention accent.
-    const state = edgeLiveIn(live, edge.id);
+    // carries the attention accent. Story 6.4: a cooperate edge by its sides (a failed side wins).
+    const state = edge.kind === "cooperate" ? cooperateState(cooperateSides(edge, live)) : (edgeLiveIn(live, edge.id)?.state ?? null);
     const liveClass = liveEdgeClass(state);
     out.push({
       id: edgeFlowId(edge.id),
@@ -154,12 +180,12 @@ export function linkFlowEdges(
       target,
       ...edgeSides(placeOf(source), placeOf(target)),
       type: edge.kind,
-      data: { edgeId: edge.id, label: edge.label, selected, live: state?.state ?? null },
+      data: { edgeId: edge.id, label: edge.label, selected, live: state },
       className: ["link-edge", selected ? "is-selected" : null, liveClass].filter((c) => c !== null).join(" "),
       selectable: false,
       focusable: false,
       deletable: false,
-      ariaLabel: edgeAriaLabel(edge, state?.state ?? null),
+      ariaLabel: edgeAriaLabel(edge, state),
     });
   }
   return out;
@@ -230,7 +256,8 @@ export function edgeChoices(
 
 /**
  * An edge's accessible name: `context edge` / `cooperate edge`, then its label, then a pending or
- * failed live state (Story 6.3): `context edge: API shape (failed)`.
+ * failed live state (Story 6.3; a cooperate edge's sides, Story 6.4): `context edge: API shape
+ * (failed)`.
  */
 export function edgeAriaLabel(edge: Pick<Edge, "kind" | "label">, live: EdgeLiveState | null = null): string {
   const name = edge.label === null ? `${edge.kind} edge` : `${edge.kind} edge: ${edge.label}`;

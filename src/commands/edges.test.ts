@@ -13,6 +13,8 @@ import {
   link,
   refuseDrop,
   restartedNotice,
+  retryableSides,
+  retryEdge,
   saveEdgeLabel,
   selectedEdge,
   startLink,
@@ -339,7 +341,10 @@ describe("edge commands on live sessions (Story 6.3)", () => {
   afterEach(() => clearCommands());
 
   const live = (state: "pending" | "applied" | "failed", detail: string | null = null) => ({
-    e1: { state, detail, sessionId: "s1", path: "/p/b" },
+    e1: { state, detail, edgeId: "e1", sessionId: "s1", path: "/p/b" },
+  });
+  const side = (session: string, state: "pending" | "notified" | "failed", detail: string | null = null) => ({
+    [`c1#${session}`]: { state, detail, edgeId: "c1", sessionId: session, path: null },
   });
 
   it("Restart with flags is offered for every context edge from a session; Retry only after a failure or a draft", () => {
@@ -356,11 +361,31 @@ describe("edge commands on live sessions (Story 6.3)", () => {
     expect(listCommands({ enabledOnly: true }).map((c) => c.id)).toEqual(expect.arrayContaining(["edge.retry", "edge.restartWithFlags"]));
     useEdgesLiveStore.setState({ entries: live("applied") });
     expect(canRetryEdge()).toBe(false);
-    // A project's edge (a launch default) and a cooperate edge: neither.
+    // A project's edge (a launch default): neither. A cooperate edge: no Restart with flags.
     useUiStore.getState().select({ kind: "edge", id: "p1" });
     expect(canRestartEdge()).toBe(false);
+    expect(canRetryEdge()).toBe(false);
     useUiStore.getState().select({ kind: "edge", id: "c1" });
     expect(canRestartEdge()).toBe(false);
+  });
+
+  it("Retry is offered for a cooperate edge with a failed or draft-held side and retries each such side (Story 6.4)", async () => {
+    useUiStore.getState().select({ kind: "edge", id: "c1" });
+    expect(canRetryEdge()).toBe(false);
+    useEdgesLiveStore.setState({ entries: { ...side("s1", "notified"), ...side("s2", "pending", "waiting for idle") } });
+    expect(canRetryEdge()).toBe(false);
+    useEdgesLiveStore.setState({ entries: { ...side("s1", "failed", "not confirmed"), ...side("s2", "pending", TYPING_DETAIL) } });
+    expect(canRetryEdge()).toBe(true);
+    expect(retryableSides(cooperate)).toEqual(["s1", "s2"]);
+    edgeLiveRetry.mockResolvedValue(undefined);
+    expect(runCommand("edge.retry")).toBe(true);
+    await flush();
+    expect(edgeLiveRetry).toHaveBeenCalledWith("c1", "s1");
+    expect(edgeLiveRetry).toHaveBeenCalledWith("c1", "s2");
+    expect(useUiStore.getState().notice).toBeNull();
+    edgeLiveRetry.mockRejectedValue("the session is not running in Switchboard");
+    await expect(retryEdge("c1", "s1")).resolves.toBe(false);
+    expect(useUiStore.getState().notice).toEqual({ text: "the session is not running in Switchboard" });
   });
 
   it("Retry edge calls Rust; a refusal is the notice", async () => {

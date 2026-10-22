@@ -120,13 +120,15 @@ function ContextEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targe
 
 /**
  * A cooperate edge (Story 6.1): two parallel 1-px `--border-strong` lines -- a 3-px stroke with
- * its middle pixel drawn over in the canvas colour; `--focus` while selected.
+ * its middle pixel drawn over in the canvas colour; `--focus` while selected. Story 6.4: muted
+ * while a side's peer line is pending, in the attention accent once a side failed.
  */
 function CooperateEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps<LinkFlowEdge>) {
   const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
+  const failed = data?.live === "failed";
   return (
     <>
-      <BaseEdge path={path} className="link-line link-cooperate" interactionWidth={LINK_HIT_WIDTH} />
+      <BaseEdge path={path} className={failed ? "attention link-line link-cooperate" : "link-line link-cooperate"} interactionWidth={LINK_HIT_WIDTH} />
       <path d={path} className="link-cooperate-gap" fill="none" />
       <LinkLabel x={labelX} y={labelY} data={data} />
     </>

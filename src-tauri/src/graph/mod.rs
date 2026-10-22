@@ -1795,6 +1795,145 @@ pub fn resolve_context_targets(targets: Vec<Result<EdgeDir, SkippedEdge>>, own_c
     (dirs, skipped)
 }
 
+/// The other end of every cooperate edge touching session `session_id` (Story 6.4), in stored
+/// edge order: the peer's session id and the edge's label.
+pub fn cooperate_peers(st: &WorkspaceState, session_id: &str) -> Vec<(String, Option<String>)> {
+    st.workspace
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Cooperate)
+        .filter_map(|e| {
+            let other = if e.from.kind == NodeType::Session && e.from.id == session_id {
+                &e.to
+            } else if e.to.kind == NodeType::Session && e.to.id == session_id {
+                &e.from
+            } else {
+                return None;
+            };
+            (other.kind == NodeType::Session && other.id != session_id).then(|| (other.id.clone(), e.label.clone()))
+        })
+        .collect()
+}
+
+/// Whether `text` still says something once cleaned for the prompt (not blank, not only
+/// control characters).
+fn usable(text: &str) -> bool {
+    !crate::claude::launch::peer_value(text).is_empty()
+}
+
+/// What the workspace knows of a peer session: the projects it may belong to, in order (the
+/// session ref's, then the project whose discovered sessions list it), the branch it was started
+/// on with the project that branch is of (the ref's `branchId` without the project prefix) and
+/// its transcript title.
+fn peer_facts(st: &WorkspaceState, session_id: &str) -> (Vec<String>, Option<(String, String)>, Option<String>) {
+    let session_ref = st.workspace.sessions.iter().find(|s| s.session_id == session_id);
+    let mut projects: Vec<String> = session_ref.map(|s| s.project_id.clone()).into_iter().collect();
+    projects.extend(
+        st.discovered
+            .iter()
+            .find(|(_, list)| list.iter().any(|s| s.id == session_id))
+            .map(|(id, _)| id.clone()),
+    );
+    let branch = session_ref.and_then(|r| {
+        r.branch_id
+            .as_deref()
+            .and_then(|id| id.strip_prefix(&format!("{}:", r.project_id)))
+            .filter(|name| !name.is_empty())
+            .map(|name| (r.project_id.clone(), name.to_string()))
+    });
+    let title = st
+        .discovered
+        .values()
+        .flatten()
+        .find(|s| s.id == session_id)
+        .map(|s| s.title.clone())
+        .filter(|t| usable(t) && t != crate::claude::transcript::UNTITLED);
+    (projects, branch, title)
+}
+
+/// A peer as the workspace knows it, before the live map is read.
+struct FoundPeer {
+    id: String,
+    label: Option<String>,
+    projects: Vec<String>,
+    branch: Option<(String, String)>,
+    title: Option<String>,
+}
+
+/// The cooperate peers of session `session_id` (Story 6.4) as the system prompt names them:
+/// each peer's name is its live name (`--name`), else its transcript title, else its project's
+/// label (the rule Resume uses), else its id; its node path is `<project label>` or `<project
+/// label>:<branch>`, then ` / <name>` (`unknown project` when none of its project sources -- the
+/// session ref, the discovered list, the live map -- names a project on the canvas); its purpose
+/// is the edge label, or `no stated purpose`. A name, title or label that is empty once cleaned
+/// for the prompt does not count. The workspace lock is released before the live map is read.
+pub fn session_peers(state: &AppState, session_id: &str) -> Vec<crate::claude::launch::Peer> {
+    let list = cooperate_peers(&state.read_workspace(), session_id);
+    name_peers(state, list)
+}
+
+/// [`session_peers`] for a given list of (peer session id, edge label).
+pub fn name_peers(state: &AppState, list: Vec<(String, Option<String>)>) -> Vec<crate::claude::launch::Peer> {
+    let found: Vec<FoundPeer> = {
+        let st = state.read_workspace();
+        list.into_iter()
+            .map(|(id, label)| {
+                let (projects, branch, title) = peer_facts(&st, &id);
+                FoundPeer {
+                    id,
+                    label,
+                    projects,
+                    branch,
+                    title,
+                }
+            })
+            .collect()
+    };
+    if found.is_empty() {
+        return Vec::new();
+    }
+    let live: Vec<(Option<String>, Option<String>)> = {
+        let map = state.read_sessions_live();
+        found
+            .iter()
+            .map(|peer| {
+                let row = map.sessions.get(&peer.id);
+                (
+                    row.and_then(|s| s.name.clone()).filter(|n| usable(n)),
+                    row.and_then(|s| s.project_id.clone()),
+                )
+            })
+            .collect()
+    };
+    let st = state.read_workspace();
+    found
+        .into_iter()
+        .zip(live)
+        .map(|(FoundPeer { id, label, mut projects, branch, title }, (live_name, live_project))| {
+            projects.extend(live_project);
+            let project = projects
+                .iter()
+                .find_map(|pid| st.workspace.projects.iter().find(|p| p.id == *pid))
+                .map(|p| (p.id.clone(), p.label.clone()));
+            let project_label = project.as_ref().map(|(_, l)| l.clone()).filter(|l| usable(l));
+            let name = live_name.or(title).or_else(|| project_label.clone()).unwrap_or_else(|| id.clone());
+            let branch = branch.filter(|(pid, _)| project.as_ref().is_some_and(|(id, _)| id == pid)).map(|(_, b)| b);
+            let node = match (&project_label, &branch) {
+                (Some(label), Some(branch)) => format!("{label}:{branch}"),
+                (Some(label), None) => label.clone(),
+                (None, _) => "unknown project".to_string(),
+            };
+            crate::claude::launch::Peer {
+                path: format!("{node} / {name}"),
+                name,
+                purpose: label
+                    .filter(|l| usable(l))
+                    .unwrap_or_else(|| crate::claude::launch::NO_STATED_PURPOSE.to_string()),
+            }
+        })
+        .collect()
+}
+
 /// The project and branch name a branch end (`<projectId>:<name>`) names: the project on the
 /// canvas whose id is the longest such prefix.
 fn branch_end<'a>(workspace: &'a Workspace, id: &'a str) -> Option<(&'a Project, &'a str)> {
@@ -4645,6 +4784,77 @@ mod tests {
 
     fn end(kind: NodeType, id: &str) -> NodeRef {
         NodeRef { kind, id: id.into() }
+    }
+
+    /// Story 6.4: how a peer is named and placed for the prompt and the injected line.
+    #[test]
+    fn name_peers_names_and_places_each_peer() {
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let summary = |id: &str, title: &str| SessionSummary {
+            id: id.into(),
+            title: title.into(),
+            started_at: String::new(),
+            last_active: String::new(),
+            branch: None,
+            messages: 0,
+            cwd: None,
+        };
+        {
+            let mut st = state.write_workspace();
+            for id in ["api", "ui"] {
+                st.workspace.projects.push(Project {
+                    id: id.into(),
+                    path: format!("/w/{id}"),
+                    label: id.into(),
+                    ..Project::default()
+                });
+            }
+            let session_ref = |sid: &str, project: &str, branch: Option<&str>| SessionRef {
+                session_id: sid.into(),
+                project_id: project.into(),
+                branch_id: branch.map(str::to_string),
+                ..SessionRef::default()
+            };
+            st.workspace.sessions.push(session_ref("p1", "api", Some("api:feat")));
+            st.workspace.sessions.push(session_ref("p2", "ui", None));
+            st.workspace.sessions.push(session_ref("p4", "gone", None));
+            st.workspace.sessions.push(session_ref("p5", "ui", None));
+            st.discovered.insert(
+                "api".into(),
+                vec![summary("p1", "title one"), summary("p2", crate::claude::transcript::UNTITLED), summary("p5", "title five")],
+            );
+        }
+        {
+            let mut live = state.write_sessions_live();
+            live.launched("p1", Some("api".into()), "/w/api", "live-one", 0);
+            live.launched("p4", Some("ui".into()), "/w/ui", "four", 0);
+            live.launched("p5", Some("ui".into()), "/w/ui", "\x1b\x07 ", 0);
+        }
+        let peers = name_peers(
+            &state,
+            ["p1", "p2", "p3", "p4", "p5"].iter().map(|id| (id.to_string(), None)).collect(),
+        );
+        let got: Vec<(String, String, String)> = peers.into_iter().map(|p| (p.name, p.path, p.purpose)).collect();
+        let want = |name: &str, path: &str| (name.to_string(), path.to_string(), "no stated purpose".to_string());
+        assert_eq!(
+            got,
+            [
+                // The live name over the title; the ref's branch in the path.
+                want("live-one", "api:feat / live-one"),
+                // Untitled, not live: the project's label.
+                want("ui", "ui / ui"),
+                // Nothing knows it: its id, in no project.
+                want("p3", "unknown project / p3"),
+                // The ref's project is gone: the live map's project.
+                want("four", "ui / four"),
+                // A live name of control characters only does not count: the title.
+                want("title five", "ui / title five"),
+            ]
+        );
+        let labelled = name_peers(&state, vec![("p1".into(), Some("API shape".into())), ("p1".into(), Some("\n".into()))]);
+        assert_eq!(labelled[0].purpose, "API shape");
+        assert_eq!(labelled[1].purpose, "no stated purpose");
     }
 
     #[test]

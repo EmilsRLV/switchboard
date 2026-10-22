@@ -532,7 +532,8 @@
 }
 
 /* Story 6.3: a context edge being applied to a running session is muted; a failed one is drawn
-   in the attention accent (its line carries `.attention`). Selected still reads `--focus`. */
+   in the attention accent (its line carries `.attention`). Story 6.4: a cooperate edge likewise
+   while a side's peer line is pending or once a side failed. Selected still reads `--focus`. */
 .react-flow__edge.is-pending .link-line {
   stroke: var(--fg-faint);
 }

@@ -1,7 +1,9 @@
 // The edges-live store mirrors Story 6.3's live edge state (`edges_live_get`, then every
 // `edges://live`): what each context edge drawn from a running session does now -- pending,
-// applied or failed, with a detail. Rust owns it; runtime only, never persisted. After an app
-// restart it is empty, and the inspector says what an edge does at the next launch or resume.
+// applied or failed, with a detail -- and (Story 6.4) each side of a cooperate edge, keyed
+// `<edgeId>#<sessionId>`: pending, notified or failed. Rust owns it; runtime only, never
+// persisted. After an app restart it is empty, and the inspector says what an edge does at the
+// next launch or resume.
 
 import { create } from "zustand";
 import { edgeLiveIn } from "../canvas/edges";
@@ -35,9 +37,14 @@ export function edgeLive(id: string): EdgeLive | null {
 /** The pending detail Rust sets while the operator's draft holds the line back (`live_edges::TYPING`). */
 export const TYPING_DETAIL = "you're typing — Retry when done";
 
-/** A context edge from a session: the only kind applied to a running session (Retry, Restart with flags). */
+/** A context edge from a session: the only kind applied to a running session with `/add-dir` (Retry, Restart with flags). */
 export function isSessionContext(edge: Pick<Edge, "kind" | "from">): boolean {
   return edge.kind === "context" && edge.from.type === "session";
+}
+
+/** A cooperate edge between two sessions (Story 6.4): each running end is sent a peer line, per side. */
+export function isCooperate(edge: Pick<Edge, "kind" | "from" | "to">): boolean {
+  return edge.kind === "cooperate" && edge.from.type === "session" && edge.to.type === "session";
 }
 
 /** Whether Retry applies: the edge failed, or a draft holds it back. */
@@ -45,14 +52,28 @@ export function canRetryLive(live: EdgeLive | null): boolean {
   return live !== null && (live.state === "failed" || (live.state === "pending" && live.detail === TYPING_DETAIL));
 }
 
+/** A live state in words: `pending (waiting for idle)`, `applied`, `failed (not confirmed)`. */
+function stateText(live: EdgeLive): string {
+  return live.detail === null ? live.state : `${live.state} (${live.detail})`;
+}
+
 /**
  * The inspector's "Now:" line: the live state and its detail (`pending (waiting for idle)`,
  * `applied`, `failed (not confirmed)`); with none, what the edge does at the next launch or
- * resume. `null` for a cooperate edge (nothing to say yet).
+ * resume. `null` for a cooperate edge (it has one line per side: {@link sideNowText}).
  */
 export function nowText(edge: Pick<Edge, "kind" | "from">, live: EdgeLive | null): string | null {
-  if (live !== null) return live.detail === null ? live.state : `${live.state} (${live.detail})`;
   if (edge.kind !== "context") return null;
+  if (live !== null) return stateText(live);
   if (edge.from.type === "project") return "--add-dir for every new session on this project";
   return "--add-dir at the next resume";
+}
+
+/**
+ * One side's "Now:" line of a cooperate edge (Story 6.4): `<name>: notified`, `<name>: pending
+ * (waiting for idle)`, `<name>: failed (not confirmed)`; with no live state, the peer is in that
+ * session's prompt at its next resume.
+ */
+export function sideNowText(name: string, live: EdgeLive | null): string {
+  return `${name}: ${live === null ? "peer named at the next resume" : stateText(live)}`;
 }

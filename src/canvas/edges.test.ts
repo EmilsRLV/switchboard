@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChildNode, Edge, NodeRef, Project } from "../ipc";
+import type { ChildNode, Edge, EdgesLiveMap, NodeRef, Project } from "../ipc";
 import {
   LINK_SOURCE_HANDLE,
   LINK_SOURCE_LEFT_HANDLE,
@@ -13,6 +13,8 @@ import {
   REFUSE_SELF,
   checkFlowLink,
   checkLink,
+  cooperateSides,
+  cooperateState,
   drawnFlowIds,
   edgeAriaLabel,
   edgeChoices,
@@ -28,6 +30,7 @@ import {
   linkTargets,
   nodeRefOf,
   nodeRefOfFlowId,
+  sideKey,
 } from "./edges";
 import { SHOW_LIMIT, flowIdOf, parseFlowId, toFlowNodes } from "./nodes";
 
@@ -160,7 +163,7 @@ describe("linkFlowEdges", () => {
       edge("e2", ref("session", "s1"), ref("branch", "b:main")),
       edge("e3", ref("project", "a"), ref("branch", "b:main")),
     ];
-    const entry = (state: "pending" | "applied" | "failed") => ({ state, detail: null, sessionId: "s1", path: null });
+    const entry = (state: "pending" | "applied" | "failed") => ({ state, detail: null, edgeId: "e", sessionId: "s1", path: null });
     const drawn = linkFlowEdges(edges, nodes(), { kind: "edge", id: "e2" }, { e1: entry("pending"), e2: entry("failed"), e3: entry("applied") });
     expect(drawn.map((e) => [e.id, e.className, e.data?.live, e.ariaLabel])).toEqual([
       ["edge:e1", "link-edge is-pending", "pending", "context edge (pending)"],
@@ -170,6 +173,29 @@ describe("linkFlowEdges", () => {
     expect(edgeAriaLabel({ kind: "context", label: "API shape" }, "failed")).toBe("context edge: API shape (failed)");
     expect(liveEdgeClass(null)).toBeNull();
     expect(edgeLiveIn({}, "constructor")).toBeNull();
+  });
+
+  it("draws a cooperate edge by its sides: a failed side wins, then a pending one (Story 6.4)", () => {
+    const edges = [edge("c1", ref("session", "s1"), ref("session", "s2"), "cooperate")];
+    const side = (session: string, state: "pending" | "notified" | "failed") => ({
+      [sideKey("c1", session)]: { state, detail: null, edgeId: "c1", sessionId: session, path: null },
+    });
+    const draw = (entries: EdgesLiveMap) => {
+      const [drawn] = linkFlowEdges(edges, nodes(), null, entries);
+      return [drawn?.className, drawn?.data?.live, drawn?.ariaLabel];
+    };
+    expect(draw({})).toEqual(["link-edge", null, "cooperate edge"]);
+    expect(draw({ ...side("s1", "notified"), ...side("s2", "pending") })).toEqual(["link-edge is-pending", "pending", "cooperate edge (pending)"]);
+    expect(draw({ ...side("s1", "failed"), ...side("s2", "pending") })).toEqual(["link-edge is-failed", "failed", "cooperate edge (failed)"]);
+    expect(draw({ ...side("s1", "notified"), ...side("s2", "notified") })).toEqual(["link-edge", "notified", "cooperate edge"]);
+    // A context edge's entry under the edge id is not a side.
+    expect(draw({ c1: { state: "failed", detail: null, edgeId: "c1", sessionId: "s1", path: null } })).toEqual(["link-edge", null, "cooperate edge"]);
+    expect(sideKey("c1", "s2")).toBe("c1#s2");
+    expect(cooperateSides(edges[0]!, side("s2", "failed")).map((s) => [s.sessionId, s.live?.state ?? null])).toEqual([
+      ["s1", null],
+      ["s2", "failed"],
+    ]);
+    expect(cooperateState([])).toBeNull();
   });
 
   it("ends an edge between two cards of one column on the target's right edge, so it curves out and back", () => {

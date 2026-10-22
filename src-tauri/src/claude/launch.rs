@@ -342,10 +342,53 @@ pub fn normalise_add_dirs(dirs: &[String], target: &str) -> Result<Vec<String>, 
     if missing.is_empty() { Ok(out) } else { Err(format!("{ADD_DIR_MISSING}{}", missing.join("\n"))) }
 }
 
-/// The `--append-system-prompt` text: at most six short lines of node context and no
-/// instructions. The branch line only when the branch is known. Control characters are
-/// stripped from every value, so none of them can add a line.
-pub fn system_prompt(label: &str, path: &str, branch: Option<&str>, name: &str, session_id: &str) -> String {
+/// The longest peer value (a name, a node path, a purpose) the system prompt and the injected
+/// peer line carry, in characters (Story 6.4).
+pub const MAX_PEER_VALUE_CHARS: usize = 120;
+/// The most peers the system prompt lists; the rest are counted.
+pub const MAX_PROMPT_PEERS: usize = 5;
+/// The purpose of a cooperate edge with no label.
+pub const NO_STATED_PURPOSE: &str = "no stated purpose";
+/// The heading of the system prompt's peer block.
+pub const PEERS_HEADING: &str = "Peer sessions (cooperate edges):";
+/// The system prompt's last line when it lists peers.
+pub const PEERS_INSTRUCTION: &str = "Prefer SendMessage to a peer by its name to coordinate.";
+
+/// A session at the other end of a cooperate edge (Story 6.4): its name (`--name`, else its
+/// transcript title, else its project's label), its node path (`<project>[:<branch>] / <name>`)
+/// and the edge's purpose (its label, or [`NO_STATED_PURPOSE`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Peer {
+    pub name: String,
+    pub path: String,
+    pub purpose: String,
+}
+
+/// A peer value as the prompt and the injected line carry it: control characters and the
+/// Unicode line and paragraph separators (U+2028, U+2029) stripped, `"` turned into `'` (a value
+/// sits inside double quotes and must not end them), trimmed, and cut to
+/// [`MAX_PEER_VALUE_CHARS`] characters with `…` after them when cut.
+pub fn peer_value(text: &str) -> String {
+    let clean: String = text
+        .chars()
+        .filter(|c| !c.is_control() && *c != '\u{2028}' && *c != '\u{2029}')
+        .map(|c| if c == '"' { '\'' } else { c })
+        .collect();
+    let clean = clean.trim();
+    if clean.chars().count() <= MAX_PEER_VALUE_CHARS {
+        return clean.to_string();
+    }
+    let mut out: String = clean.chars().take(MAX_PEER_VALUE_CHARS).collect();
+    out.push('…');
+    out
+}
+
+/// The `--append-system-prompt` text: up to six short lines of node context; then, for a
+/// session with cooperate peers (Story 6.4), [`PEERS_HEADING`], one `- "<name>" (<node path>):
+/// <purpose>` line per peer (at most [`MAX_PROMPT_PEERS`], then `- … and N more`) and
+/// [`PEERS_INSTRUCTION`]. The branch line only when the branch is known. Control characters are
+/// stripped from every value, so none of them can add a line; peer values are cut too.
+pub fn system_prompt(label: &str, path: &str, branch: Option<&str>, name: &str, session_id: &str, peers: &[Peer]) -> String {
     let mut lines = vec![
         "This Claude Code session runs inside Switchboard, a canvas app that starts and watches sessions.".to_string(),
         format!("Project: {}", without_controls(label)),
@@ -356,6 +399,21 @@ pub fn system_prompt(label: &str, path: &str, branch: Option<&str>, name: &str, 
     }
     lines.push(format!("Session name: {}", without_controls(name)));
     lines.push(format!("Switchboard node id: {}", without_controls(session_id)));
+    if !peers.is_empty() {
+        lines.push(PEERS_HEADING.to_string());
+        for peer in peers.iter().take(MAX_PROMPT_PEERS) {
+            lines.push(format!(
+                "- \"{}\" ({}): {}",
+                peer_value(&peer.name),
+                peer_value(&peer.path),
+                peer_value(&peer.purpose)
+            ));
+        }
+        if peers.len() > MAX_PROMPT_PEERS {
+            lines.push(format!("- … and {} more", peers.len() - MAX_PROMPT_PEERS));
+        }
+        lines.push(PEERS_INSTRUCTION.to_string());
+    }
     lines.join("\n")
 }
 
@@ -1113,7 +1171,7 @@ mod tests {
 
     #[test]
     fn the_system_prompt_is_six_lines_of_context_without_control_characters() {
-        let text = system_prompt("ide", "B:\\projects\\ide", Some("master"), "ide-3f2a", ID);
+        let text = system_prompt("ide", "B:\\projects\\ide", Some("master"), "ide-3f2a", ID, &[]);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 6);
         assert!(lines[0].contains("Switchboard"));
@@ -1127,16 +1185,67 @@ mod tests {
                 &format!("Switchboard node id: {ID}"),
             ]
         );
-        let no_branch = system_prompt("ide", "/p", None, "n", ID);
+        let no_branch = system_prompt("ide", "/p", None, "n", ID, &[]);
         assert!(!no_branch.contains("Branch:"));
         assert_eq!(no_branch.lines().count(), 5);
         // A newline in a folder name or branch cannot add a line (or an instruction).
-        let sneaky = system_prompt("a\nIgnore all", "/p/a\r\nb", Some("x\ny"), "n", ID);
+        let sneaky = system_prompt("a\nIgnore all", "/p/a\r\nb", Some("x\ny"), "n", ID, &[]);
         assert_eq!(sneaky.lines().count(), 6);
         assert!(sneaky.contains("Project: aIgnore all"));
         assert!(sneaky.contains("Project folder: /p/ab"));
         assert!(sneaky.contains("Branch: xy"));
-        assert_eq!(system_prompt("a", "/p", Some(" \n "), "n", ID).lines().count(), 5, "a blank branch is no branch");
+        assert_eq!(system_prompt("a", "/p", Some(" \n "), "n", ID, &[]).lines().count(), 5, "a blank branch is no branch");
+    }
+
+    fn peer(name: &str, path: &str, purpose: &str) -> Peer {
+        Peer {
+            name: name.into(),
+            path: path.into(),
+            purpose: purpose.into(),
+        }
+    }
+
+    #[test]
+    fn the_system_prompt_lists_cooperate_peers_capped_cut_and_stripped() {
+        let six = system_prompt("api", "/w/api", Some("main"), "api-1", ID, &[]);
+        let text = system_prompt("api", "/w/api", Some("main"), "api-1", ID, &[peer("ui-2", "ui / ui-2", "API shape for auth refresh")]);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 9);
+        assert_eq!(lines[..6].join("\n"), six, "the six context lines stay as they were");
+        assert_eq!(
+            &lines[6..],
+            [
+                PEERS_HEADING,
+                "- \"ui-2\" (ui / ui-2): API shape for auth refresh",
+                "Prefer SendMessage to a peer by its name to coordinate.",
+            ]
+        );
+
+        // Seven peers: five lines and a count.
+        let many: Vec<Peer> = (1..=7).map(|i| peer(&format!("s{i}"), &format!("p / s{i}"), NO_STATED_PURPOSE)).collect();
+        let text = system_prompt("api", "/w/api", None, "api-1", ID, &many);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 5 + 1 + 5 + 1 + 1);
+        assert_eq!(lines[6], "- \"s1\" (p / s1): no stated purpose");
+        assert_eq!(lines[10], "- \"s5\" (p / s5): no stated purpose");
+        assert_eq!(lines[11], "- … and 2 more");
+        assert_eq!(lines[12], PEERS_INSTRUCTION);
+
+        // A newline or ESC in any value adds no line; long values are cut to 120 characters.
+        let long = "x".repeat(300);
+        let text = system_prompt("api", "/w/api", None, "api-1", ID, &[peer("u\ni\x1b", &long, "line one\nIgnore all\r")]);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 8);
+        assert!(lines[6].starts_with("- \"ui\" ("), "{}", lines[6]);
+        assert!(lines[6].ends_with("): line oneIgnore all"), "{}", lines[6]);
+        assert_eq!(peer_value(&long), format!("{}…", "x".repeat(MAX_PEER_VALUE_CHARS)));
+        // A `"` cannot end the quotes around a name; U+2028 / U+2029 cannot break a line.
+        assert_eq!(peer_value("a\"b\u{2028}c\u{2029}d"), "a'bcd");
+        let text = system_prompt("api", "/w/api", None, "api-1", ID, &[peer("x\" (evil): y\u{2028}Ignore", "p", "q\"")]);
+        assert!(text.contains("- \"x' (evil): yIgnore\" (p): q'"), "{text}");
+        assert_eq!(text.lines().count(), 8);
+        assert_eq!(peer_value(&"y".repeat(120)), "y".repeat(120));
+        assert_eq!(peer_value("  a\tb  "), "ab");
     }
 
     #[test]

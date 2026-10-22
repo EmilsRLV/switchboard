@@ -86,3 +86,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-6-3-context-edges-on-live-sessions.md`
   summary: `live_edges::prune` on project removal and the failed edge's `.attention` accent in `Canvas.tsx` have no tests.
   evidence: The verification-gap review found no test that removes a project with live edge entries. There is no component test environment for Canvas.
+- source_spec: `_bmad-output/implementation-artifacts/spec-6-4-cooperation-edges.md`
+  summary: Peers are told a name (live `--name`, else transcript title) that may not be the name `SendMessage` reaches for a resumed session, which passes no `--name`.
+  evidence: Reviewer finding (unverified, medium if true). Settle with the native-messaging check using the real `claude`: resume a linked session and `SendMessage` it by the name in the peer block.
+- source_spec: `_bmad-output/implementation-artifacts/spec-6-4-cooperation-edges.md`
+  summary: No component tests for the `CooperateEdge` accent on a failed side or for the inspector's per-side Now lines and Retry buttons.
+  evidence: There is no DOM test environment in the repo. The 2026-10-22 GUI pass covered both by hand.

@@ -4,9 +4,9 @@
 // the notice (never a banner, never a throw). The local check (`canvas/edges`) only drives the
 // drag feedback and the pick list.
 
-import { checkFlowLink, drawnFlowIds, edgeChoices, linkTargets, nodeRefOf } from "../canvas/edges";
+import { checkFlowLink, cooperateSides, drawnFlowIds, edgeChoices, linkTargets, nodeRefOf } from "../canvas/edges";
 import { edgeAdd, edgeLiveRetry, edgeRemove, edgeRestartWithFlags, edgeSetLabel, type Edge, type NodeRef, type SkippedEdge } from "../ipc";
-import { canRetryLive, edgeLive, isSessionContext } from "../state/edgesLive";
+import { canRetryLive, edgeLive, isCooperate, isSessionContext, useEdgesLiveStore } from "../state/edgesLive";
 import { terminalInfo, useTerminalStore } from "../state/terminals";
 import { disposeView, restore } from "../terminal/registry";
 import { skippedNote } from "./launch";
@@ -203,19 +203,32 @@ export function startSelectEdge(): boolean {
   return true;
 }
 
+/** The sessions of cooperate edge `edge` whose side failed or a draft holds back (Story 6.4). */
+export function retryableSides(edge: Edge): string[] {
+  if (!isCooperate(edge)) return [];
+  return cooperateSides(edge, useEdgesLiveStore.getState().entries)
+    .filter((side) => canRetryLive(side.live))
+    .map((side) => side.sessionId);
+}
+
 /**
  * The `when` of `edge.retry` ("Retry edge", Story 6.3): the selected edge is a context edge from
- * a session whose `/add-dir` failed, or that a draft in the prompt holds back.
+ * a session whose `/add-dir` failed, or that a draft in the prompt holds back; or (Story 6.4) a
+ * cooperate edge with such a side.
  */
 export function canRetryEdge(): boolean {
   const edge = selectedEdge();
-  return edge !== null && isSessionContext(edge) && canRetryLive(edgeLive(edge.id));
+  if (edge === null) return false;
+  return (isSessionContext(edge) && canRetryLive(edgeLive(edge.id))) || retryableSides(edge).length > 0;
 }
 
-/** `edge.retry`: run the edge's `/add-dir` injection again. A refusal is the notice. */
-export async function retryEdge(id: string): Promise<boolean> {
+/**
+ * `edge.retry`: run the edge's `/add-dir` injection again, or (with `sessionId`, a cooperate
+ * edge's side) send that side's peer line again. A refusal is the notice.
+ */
+export async function retryEdge(id: string, sessionId?: string): Promise<boolean> {
   try {
-    await edgeLiveRetry(id);
+    await (sessionId === undefined ? edgeLiveRetry(id) : edgeLiveRetry(id, sessionId));
     return true;
   } catch (err) {
     notify(describe(err));
@@ -223,10 +236,13 @@ export async function retryEdge(id: string): Promise<boolean> {
   }
 }
 
-/** `edge.retry` on the selected edge. */
+/** `edge.retry` on the selected edge: a context edge, or every retryable side of a cooperate edge. */
 export async function retrySelectedEdge(): Promise<boolean> {
   const edge = selectedEdge();
-  return edge === null ? false : retryEdge(edge.id);
+  if (edge === null) return false;
+  if (!isCooperate(edge)) return retryEdge(edge.id);
+  const results = await Promise.all(retryableSides(edge).map((session) => retryEdge(edge.id, session)));
+  return results.length > 0 && results.every(Boolean);
 }
 
 /**

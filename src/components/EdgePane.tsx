@@ -1,9 +1,9 @@
 import { useEffect, useState, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { edgeLiveIn, endText, type EndText } from "../canvas/edges";
+import { cooperateSides, edgeLiveIn, endText, type EndText } from "../canvas/edges";
 import { restartEdge, retryEdge, saveEdgeLabel } from "../commands/edges";
 import { runCommand } from "../commands/registry";
-import type { ChildNode, Edge, EdgeLive, Project } from "../ipc";
-import { canRetryLive, isSessionContext, nowText, useEdgesLiveStore } from "../state/edgesLive";
+import type { ChildNode, Edge, EdgeLive, EdgesLiveMap, Project } from "../ipc";
+import { canRetryLive, isCooperate, isSessionContext, nowText, sideNowText, useEdgesLiveStore } from "../state/edgesLive";
 import { useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 
@@ -33,6 +33,7 @@ export function EdgePane() {
       from={endText(edge.from, projects, children)}
       to={endText(edge.to, projects, children)}
       live={edgeLiveIn(entries, edge.id)}
+      entries={entries}
     />
   );
 }
@@ -41,7 +42,7 @@ function endLine(end: EndText): string {
   return end.project === null ? end.label : `${end.label} (${end.project})`;
 }
 
-function EdgeInspector({ edge, from, to, live }: { edge: Edge; from: EndText; to: EndText; live: EdgeLive | null }) {
+function EdgeInspector({ edge, from, to, live, entries }: { edge: Edge; from: EndText; to: EndText; live: EdgeLive | null; entries: EdgesLiveMap }) {
   const [draft, setDraft] = useState(edge.label ?? "");
   const [restarting, setRestarting] = useState(false);
   // A label stored elsewhere (or trimmed by Rust) replaces the draft.
@@ -63,6 +64,10 @@ function EdgeInspector({ edge, from, to, live }: { edge: Edge; from: EndText; to
   // Restart with flags always for a context edge from a session.
   const now = nowText(edge, live);
   const sessionContext = isSessionContext(edge);
+  // Story 6.4: one Now line per side of a cooperate edge, each with its own Retry.
+  const sides = isCooperate(edge)
+    ? cooperateSides(edge, entries).map((side, i) => ({ ...side, name: (i === 0 ? from : to).label }))
+    : [];
   const restart = () => {
     setRestarting(true);
     void restartEdge(edge.id).finally(() => setRestarting(false));
@@ -91,6 +96,23 @@ function EdgeInspector({ edge, from, to, live }: { edge: Edge; from: EndText; to
             <span className="edge-now-term">Now:</span> {now}
           </p>
         )}
+        {sides.map((side) => (
+          <div key={side.sessionId} className="edge-now-side">
+            <p className="edge-now" aria-live="polite">
+              <span className="edge-now-term">Now:</span> {sideNowText(side.name, side.live)}
+            </p>
+            {canRetryLive(side.live) && (
+              <button
+                type="button"
+                className="btn"
+                onClick={() => void retryEdge(edge.id, side.sessionId)}
+                title={`Send the peer line to ${side.name} again`}
+              >
+                Retry
+              </button>
+            )}
+          </div>
+        ))}
         <label className="launch-field">
           <span className="launch-label">Label</span>
           <input

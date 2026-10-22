@@ -129,23 +129,29 @@ export type Edge = {
   createdAt: string;
 };
 
-/** Mirrors `live_edges::EdgeState` (Story 6.3). */
-export type EdgeLiveState = "pending" | "applied" | "failed";
+/** Mirrors `live_edges::EdgeState` (Story 6.3; `notified` is a cooperate side's, Story 6.4). */
+export type EdgeLiveState = "pending" | "applied" | "notified" | "failed";
 
 /**
- * Mirrors `live_edges::EdgeLive`: what a context edge from a running session does now. Runtime
- * only; after an app restart no edge has one.
+ * Mirrors `live_edges::EdgeLive`: what a context edge from a running session does now, or (Story
+ * 6.4) one side of a cooperate edge. Runtime only; after an app restart no edge has one.
  */
 export type EdgeLive = {
   state: EdgeLiveState;
   /** Why, or what it waits for (`waiting for idle`, `no worktree`, Claude's stdout, ...). */
   detail: string | null;
+  /** The edge the entry belongs to. */
+  edgeId: string;
+  /** The session the edge runs from; a cooperate side's session. */
   sessionId: string;
   /** The folder the edge grants, once resolved. */
   path: string | null;
 };
 
-/** What `edges_live_get` returns and `edges://live` carries: every edge's live state by edge id. */
+/**
+ * What `edges_live_get` returns and `edges://live` carries: every context edge's live state by
+ * edge id, and every cooperate side's by `<edgeId>#<sessionId>` (`live_edges::side_key`).
+ */
 export type EdgesLiveMap = Record<string, EdgeLive>;
 
 /** Event name Rust emits with the whole `EdgesLiveMap` whenever an edge's live state changes. */
@@ -817,11 +823,13 @@ export function edgesLiveGet(): Promise<EdgesLiveMap> {
 }
 
 /**
- * `ipc::edge_live_retry` (Story 6.3) -- run a context edge's `/add-dir` injection again. Rejects
- * when the edge is gone, is not a context edge from a session, or its session is not running.
+ * `ipc::edge_live_retry` (Story 6.3) -- run a context edge's `/add-dir` injection again; for a
+ * cooperate edge (Story 6.4), send the peer line again to the side of `sessionId`. Rejects when
+ * the edge is gone, is a project's context edge, a cooperate edge is given none of its sessions,
+ * or the session is not running.
  */
-export function edgeLiveRetry(edgeId: string): Promise<void> {
-  return call("edge_live_retry", { edgeId });
+export function edgeLiveRetry(edgeId: string, sessionId?: string): Promise<void> {
+  return call("edge_live_retry", sessionId === undefined ? { edgeId } : { edgeId, sessionId });
 }
 
 /**

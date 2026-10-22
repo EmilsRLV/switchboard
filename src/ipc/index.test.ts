@@ -139,6 +139,8 @@ describe("workspace command wrappers", () => {
     expect(invoke).toHaveBeenCalledWith("edges_live_get", {}, undefined);
     await edgeLiveRetry("e1");
     expect(invoke).toHaveBeenCalledWith("edge_live_retry", { edgeId: "e1" }, undefined);
+    await edgeLiveRetry("c1", "s1");
+    expect(invoke).toHaveBeenCalledWith("edge_live_retry", { edgeId: "c1", sessionId: "s1" }, undefined);
     await edgeRestartWithFlags("e1");
     expect(invoke).toHaveBeenCalledWith("edge_restart_with_flags", { edgeId: "e1" }, undefined);
     expect(EDGES_LIVE_EVENT).toBe("edges://live");
