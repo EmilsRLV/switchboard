@@ -114,7 +114,7 @@ styled, after the final combinator) starts with one of
 ```
 
 That is: a banner's left border and mark, error text in a pane (`.pane-error`), attention text
-(`.attention`), and the attention states of Story 3.3: a session card in `finished` / `waiting` (its border,
+(`.attention`; also the line of a context edge whose live application failed, Story 6.3), and the attention states of Story 3.3: a session card in `finished` / `waiting` (its border,
 `.session-attention`, and its state word, `.session-attention-word`) and the glow of its project card
 (`.project-glow`). Inline styles never use the accent.
 
@@ -222,6 +222,12 @@ drag handle) follows every rule here.
   `Between` and `And` for a cooperate edge. Each end is its label and `(project)`. Below the facts sit the
   launch sheet's **Label** field and an ordinary **Delete** button. No colour marks the delete: an edge is
   cheap to redraw. It never takes the focus on opening. Tokens only, no accent, no new motion.
+  Story 6.3 adds, under the facts, the **Now:** line (`Now:` in `--fg-muted`, then the state and its detail in
+  `--fg`, `--text-md`, wrapping anywhere; `aria-live` polite): `pending (waiting for idle)`, `applied`,
+  `failed (not confirmed)`, or, with no live state, what the edge does at the next launch or resume. A
+  context edge from a session adds ordinary buttons before Delete: **Retry** (only when it failed or a draft
+  holds it back) and **Restart with flags** (always; disabled while it runs). A failure is said in words,
+  never in the accent.
 - **The context menu** is the palette's row look at the pointer: `--bg-raised`, 1-px border,
   `--radius-md`, items in `--text-md`, groups split by a 1-px `--border` line. Project, session and branch cards
   have one; it lists only enabled entries and does not open when there are none.
@@ -310,12 +316,17 @@ not an edge kind (Epic 6's edges are something else). Its anchors are invisible.
 
 Stored edges (Story 6.1) join two drawn cards with a curve. They run from the source card's right edge to
 the target card's left edge; to a card further left, from the source's left edge to the target's right edge;
-between two cards of one column, from right edge to right edge, curving out and back. There is no arrowhead, and they never use the accent.
+between two cards of one column, from right edge to right edge, curving out and back. There is no arrowhead,
+and they never use the accent except for a failed live application (below).
 
 - **Context:** one dashed 1-px line (`4 3`) in `--border-strong`.
 - **Cooperate:** two parallel 1-px lines in `--border-strong`. This is drawn as a 3-px stroke whose middle
   pixel is drawn over in `--bg`.
 - **Selected:** drawn in `--focus`.
+- **Live state (Story 6.3):** a context edge being applied to a running session (`is-pending` on the edge) is
+  drawn in `--fg-faint`; one whose application failed carries `.attention` on its line and is drawn in
+  `--accent` (attention: it needs the operator). Applied, or with no live state, it is drawn as usual.
+  Selected wins over both.
 - **Label:** the label sits at the midpoint in `--font-sans` `--text-xs` `--fg-muted` (`--focus` while the edge is
   selected), on `--bg`. It is one line, at most 160 px wide, and cut with an ellipsis. The full text shows
   on hover.

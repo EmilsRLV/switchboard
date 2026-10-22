@@ -36,6 +36,7 @@ import {
   type Viewport,
 } from "../ipc";
 import { HOME_VIEWPORT, clientToFlow, useCanvasStore, type CanvasElement } from "../state/canvas";
+import { useEdgesLiveStore } from "../state/edgesLive";
 import { useLiveStore } from "../state/live";
 import { useStatusStore } from "../state/status";
 import { stoppingSessionIds, useTerminalStore } from "../state/terminals";
@@ -101,12 +102,17 @@ function LinkLabel({ x, y, data }: { x: number; y: number; data: LinkEdgeData | 
   );
 }
 
-/** A context edge (Story 6.1): a dashed 1-px `--border-strong` curve; `--focus` while selected. */
+/**
+ * A context edge (Story 6.1): a dashed 1-px `--border-strong` curve; `--focus` while selected.
+ * Story 6.3: muted while it is being applied to a running session (`is-pending` on the edge),
+ * in the attention accent once that failed (the line carries `.attention`).
+ */
 function ContextEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps<LinkFlowEdge>) {
   const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
+  const failed = data?.live === "failed";
   return (
     <>
-      <BaseEdge path={path} className="link-line link-context" interactionWidth={LINK_HIT_WIDTH} />
+      <BaseEdge path={path} className={failed ? "attention link-line link-context" : "link-line link-context"} interactionWidth={LINK_HIT_WIDTH} />
       <LinkLabel x={labelX} y={labelY} data={data} />
     </>
   );
@@ -242,6 +248,7 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
   const children = useWorkspaceStore((s) => s.snapshot?.children ?? NO_CHILDREN);
   const branchErrors = useWorkspaceStore((s) => s.snapshot?.branchErrors ?? NO_BRANCH_ERRORS);
   const storedEdges = useWorkspaceStore((s) => s.snapshot?.workspace.edges ?? NO_EDGES);
+  const edgesLive = useEdgesLiveStore((s) => s.entries);
   const statuses = useStatusStore((s) => s.statuses);
   const live = useLiveStore((s) => s.snapshot.sessions);
   const flashed = useUiStore((s) => s.flashed);
@@ -281,9 +288,9 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
         deletable: false,
         interactionWidth: 0,
       })),
-      ...linkFlowEdges(storedEdges, nodes, selection),
+      ...linkFlowEdges(storedEdges, nodes, selection, edgesLive),
     ],
-    [nodes, storedEdges, selection],
+    [nodes, storedEdges, selection, edgesLive],
   );
 
   // The viewport most recently sent to Rust, acknowledged or not: a gesture that ends where

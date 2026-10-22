@@ -5,7 +5,11 @@
 // drag feedback and the pick list.
 
 import { checkFlowLink, drawnFlowIds, edgeChoices, linkTargets, nodeRefOf } from "../canvas/edges";
-import { edgeAdd, edgeRemove, edgeSetLabel, type Edge, type NodeRef } from "../ipc";
+import { edgeAdd, edgeLiveRetry, edgeRemove, edgeRestartWithFlags, edgeSetLabel, type Edge, type NodeRef, type SkippedEdge } from "../ipc";
+import { canRetryLive, edgeLive, isSessionContext } from "../state/edgesLive";
+import { terminalInfo, useTerminalStore } from "../state/terminals";
+import { disposeView, restore } from "../terminal/registry";
+import { skippedNote } from "./launch";
 import { usePaletteStore } from "../state/palette";
 import { useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
@@ -197,4 +201,87 @@ export function startSelectEdge(): boolean {
   useUiStore.getState().closeContextMenu();
   usePaletteStore.getState().openPick({ placeholder: "Select edge…", items: choices, onPick: showEdge });
   return true;
+}
+
+/**
+ * The `when` of `edge.retry` ("Retry edge", Story 6.3): the selected edge is a context edge from
+ * a session whose `/add-dir` failed, or that a draft in the prompt holds back.
+ */
+export function canRetryEdge(): boolean {
+  const edge = selectedEdge();
+  return edge !== null && isSessionContext(edge) && canRetryLive(edgeLive(edge.id));
+}
+
+/** `edge.retry`: run the edge's `/add-dir` injection again. A refusal is the notice. */
+export async function retryEdge(id: string): Promise<boolean> {
+  try {
+    await edgeLiveRetry(id);
+    return true;
+  } catch (err) {
+    notify(describe(err));
+    return false;
+  }
+}
+
+/** `edge.retry` on the selected edge. */
+export async function retrySelectedEdge(): Promise<boolean> {
+  const edge = selectedEdge();
+  return edge === null ? false : retryEdge(edge.id);
+}
+
+/**
+ * The `when` of `edge.restartWithFlags` ("Restart with flags", Story 6.3): the selected edge is a
+ * context edge from a session. Always offered for one, whatever its live state.
+ */
+export function canRestartEdge(): boolean {
+  const edge = selectedEdge();
+  return edge !== null && isSessionContext(edge);
+}
+
+/** Session ids a Restart with flags was sent for and has not replied yet (Rust guards them too). */
+const restarting = new Set<string>();
+
+/** The notice after a Restart with flags: `restarted with flags`, the edges that gave no folder first. */
+export function restartedNotice(skipped?: readonly SkippedEdge[]): string {
+  const without = skippedNote("restarted without", skipped);
+  return without === null ? "restarted with flags" : `${without} · restarted with flags`;
+}
+
+/**
+ * `edge.restartWithFlags`: Rust stops the edge's session as Stop does, waits for its exit and
+ * resumes the same id with its context edges as `--add-dir`. The terminal's view starts afresh on
+ * the new run. A refusal (no transcript: nothing was stopped) is the notice.
+ */
+export async function restartEdge(id: string): Promise<boolean> {
+  const edge = workspaceEdges().find((e) => e.id === id);
+  const session = edge?.from.type === "session" ? edge.from.id : id;
+  if (restarting.has(session)) {
+    notify("that session is already restarting");
+    return false;
+  }
+  restarting.add(session);
+  try {
+    const started = await edgeRestartWithFlags(id);
+    const termId = started.term.id;
+    // The new run's output counts from 0 again: its view replays the fresh buffer.
+    if (terminalInfo(termId) !== null) {
+      disposeView(termId);
+      useTerminalStore.getState().remove([termId]);
+    }
+    useTerminalStore.getState().upsert(started.term);
+    restore(termId).catch((err: unknown) => notify(describe(err)));
+    notify(restartedNotice(started.skipped));
+    return true;
+  } catch (err) {
+    notify(describe(err));
+    return false;
+  } finally {
+    restarting.delete(session);
+  }
+}
+
+/** `edge.restartWithFlags` on the selected edge. */
+export async function restartSelectedEdge(): Promise<boolean> {
+  const edge = selectedEdge();
+  return edge === null ? false : restartEdge(edge.id);
 }

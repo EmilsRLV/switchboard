@@ -1,7 +1,9 @@
 import { useEffect } from "react";
 import {
+  edgesLiveGet,
   hasTauriRuntime,
   liveSessionsGet,
+  onEdgesLive,
   onLiveSessions,
   onNotifyReveal,
   onProjectsStatus,
@@ -16,6 +18,7 @@ import { revealToastSession } from "./commands/attention";
 import { registerBuiltins } from "./commands/builtins";
 import { useKeybindings } from "./commands/keybindings";
 import { forgetTerminal } from "./commands/terminal";
+import { useEdgesLiveStore } from "./state/edgesLive";
 import { useLiveStore } from "./state/live";
 import { useSettingsStore } from "./state/settings";
 import { useStatusStore } from "./state/status";
@@ -57,6 +60,8 @@ export default function App() {
   const setStatusLoadError = useStatusStore((s) => s.setLoadError);
   const applyLive = useLiveStore((s) => s.applySnapshot);
   const setLiveLoadError = useLiveStore((s) => s.setLoadError);
+  const applyEdgesLive = useEdgesLiveStore((s) => s.applySnapshot);
+  const setEdgesLiveLoadError = useEdgesLiveStore((s) => s.setLoadError);
 
   // Rust is the source of truth for all four; `mirror` subscribes, then reads.
   useEffect(() => {
@@ -103,6 +108,19 @@ export default function App() {
       fail: (message) => setLiveLoadError(`live sessions load failed: ${message}`),
     });
   }, [applyLive, setLiveLoadError]);
+
+  // Story 6.3: what each context edge on a running session does now (runtime only).
+  useEffect(() => {
+    if (!hasTauriRuntime()) return;
+    return mirror({
+      listen: onEdgesLive,
+      get: edgesLiveGet,
+      apply: applyEdgesLive,
+      hasSnapshot: () => useEdgesLiveStore.getState().received,
+      // The inspector then says what each edge does at the next launch; no banner.
+      fail: (message) => setEdgesLiveLoadError(`live edges load failed: ${message}`),
+    });
+  }, [applyEdgesLive, setEdgesLiveLoadError]);
 
   // A click on an OS toast: Rust has focused the window; reveal and select its session
   // (Story 3.3).

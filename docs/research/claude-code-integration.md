@@ -74,7 +74,15 @@ Claude Code's `ListAgents` tool lists "other local Claude sessions on this machi
 
 ## Slash commands used by injection
 
-- `/add-dir <path>` — expected to exist in interactive mode; **verify** in Story 6.3.
+- `/add-dir <path>` — injected by Story 6.3 into an idle Switchboard session for a context edge drawn from it:
+  exactly one line, `/add-dir <path>` and Enter, never over an unsent draft and never with a control character
+  in the path. It is a local command: no assistant turn, so busy/idle cycles say nothing. **Detection:** the
+  transcript gets a `<local-command-stdout>` record (`Added <path> as a working directory…`, or `… already
+  accessible …`), which Rust tails (read-only) for 10 s after the line; any other stdout is a failure, no record
+  is `not confirmed` (a choice dialog included). **Verify** with the real `claude` (Emils): that the record
+  appears as expected, and whether a choice dialog shows. **No `/remove-dir`:** deleting an edge cannot take a
+  folder away from a running session; it stays until the session restarts. "Restart with flags" (stop, then
+  `--resume <id> --add-dir …`) is the fallback.
 - `/exit` — used by Stop (Story 4.4).
 
 ## Agent SDK note

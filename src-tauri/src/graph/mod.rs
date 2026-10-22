@@ -1806,8 +1806,24 @@ fn branch_end<'a>(workspace: &'a Workspace, id: &'a str) -> Option<(&'a Project,
         .max_by_key(|(p, _)| p.id.len())
 }
 
-/// The raw folder one context edge's target names, or why it names none (see [`context_targets`]).
-fn context_target(st: &WorkspaceState, to: &NodeRef, heads: &HashMap<String, String>) -> Result<EdgeDir, SkippedEdge> {
+/// Project id → the branch checked out in its folder, from the status poll (a detached HEAD is
+/// not one): the `heads` [`context_targets`] and [`context_target`] take.
+pub fn checked_out_heads(state: &AppState) -> HashMap<String, String> {
+    state
+        .read_live()
+        .statuses
+        .iter()
+        .filter_map(|(id, status)| match status {
+            crate::git::ProjectStatus::Repo(repo) if !repo.detached => Some((id.clone(), repo.branch.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The raw folder one context edge's target names, or why it names none (see
+/// [`context_targets`]). Story 6.3 resolves a single edge with it (under the workspace lock),
+/// then [`resolve_context_targets`] with the lock released.
+pub fn context_target(st: &WorkspaceState, to: &NodeRef, heads: &HashMap<String, String>) -> Result<EdgeDir, SkippedEdge> {
     let skip = |label: &str, reason: &str| SkippedEdge {
         label: label.to_string(),
         reason: reason.to_string(),

@@ -40,8 +40,13 @@ import {
   workspaceMoveNode,
   workspaceRelayoutChildren,
   edgeAdd,
+  edgeLiveRetry,
   edgeRemove,
+  edgeRestartWithFlags,
   edgeSetLabel,
+  edgesLiveGet,
+  EDGES_LIVE_EVENT,
+  onEdgesLive,
   workspaceRemoveProject,
   workspaceSetExpanded,
   workspaceSetViewport,
@@ -125,6 +130,25 @@ describe("workspace command wrappers", () => {
     expect(invoke).toHaveBeenCalledWith("edge_set_label", { id: "e1", label: null }, undefined);
     await expect(edgeRemove("e1")).resolves.toBe(snapshot);
     expect(invoke).toHaveBeenCalledWith("edge_remove", { id: "e1" }, undefined);
+  });
+
+  it("the 6.3 live edge wrappers invoke their wire names with {}, { edgeId } and { edgeId }", async () => {
+    const invoke = vi.fn().mockResolvedValue({});
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await expect(edgesLiveGet()).resolves.toEqual({});
+    expect(invoke).toHaveBeenCalledWith("edges_live_get", {}, undefined);
+    await edgeLiveRetry("e1");
+    expect(invoke).toHaveBeenCalledWith("edge_live_retry", { edgeId: "e1" }, undefined);
+    await edgeRestartWithFlags("e1");
+    expect(invoke).toHaveBeenCalledWith("edge_restart_with_flags", { edgeId: "e1" }, undefined);
+    expect(EDGES_LIVE_EVENT).toBe("edges://live");
+  });
+
+  it("onEdgesLive is a no-op without the Tauri runtime", async () => {
+    const callback = vi.fn();
+    const unlisten = await onEdgesLive(callback);
+    unlisten();
+    expect(callback).not.toHaveBeenCalled();
   });
 
   it("the 5.1 toggle invokes project_set_show_branches with { projectId, show }", async () => {

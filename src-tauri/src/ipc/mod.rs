@@ -11,6 +11,7 @@ use tauri_plugin_opener::OpenerExt;
 use crate::claude::hooks::{self, DiagnosticsSnapshot};
 use crate::claude::launch::{self, LaunchPrefill, LaunchRequest};
 use crate::claude::live::{self, LiveSnapshot};
+use crate::claude::live_edges;
 use crate::claude::{self, ClaudeProject};
 use crate::git::{self, ProjectStatus};
 use crate::graph::{self, AddProjectsResult, Edge, NodeRef, NodeTarget, Position, Viewport, WorkspaceSnapshot};
@@ -397,9 +398,14 @@ pub async fn workspace_move_node<R: Runtime>(
 /// duplicate or an unknown end with the notice to show (`"can't link a project to a session"`,
 /// `"already linked"`, ...). Replies with the new edge; the snapshot follows as
 /// `workspace://changed`.
+///
+/// Story 6.3: a context edge from a session running in a Switchboard terminal is applied to it
+/// now (`/add-dir` once it is idle; its state follows on `edges://live`).
 #[tauri::command]
 pub async fn edge_add<R: Runtime>(app: AppHandle<R>, from: NodeRef, to: NodeRef) -> Result<Edge, String> {
-    graph::add_edge(&app, &from, &to)
+    let edge = graph::add_edge(&app, &from, &to)?;
+    live_edges::edge_added(&app, &edge);
+    Ok(edge)
 }
 
 /// Set an edge's label: trimmed, a blank one stored as `null`. Replies with the snapshot, or
@@ -409,10 +415,120 @@ pub async fn edge_set_label<R: Runtime>(app: AppHandle<R>, id: String, label: Op
     graph::set_edge_label(&app, &id, label.as_deref())
 }
 
-/// Delete an edge. Replies with the snapshot, or `Err("unknown edge")`.
+/// Delete an edge. Replies with the snapshot, or `Err("unknown edge")`. Its live state goes
+/// too (Story 6.3); a folder already added to a running session stays until it restarts
+/// (Claude has no `/remove-dir`).
 #[tauri::command]
 pub async fn edge_remove<R: Runtime>(app: AppHandle<R>, id: String) -> Result<WorkspaceSnapshot, String> {
-    graph::remove_edge(&app, &id)
+    let snapshot = graph::remove_edge(&app, &id)?;
+    live_edges::forget_edge(&app, &id);
+    Ok(snapshot)
+}
+
+/// The live state of the context edges applied to running sessions (Story 6.3), by edge id;
+/// `edges://live` carries the same map on every change. Memory only.
+#[tauri::command]
+pub fn edges_live_get(state: State<'_, AppState>) -> std::collections::BTreeMap<String, live_edges::EdgeLive> {
+    state.live_edges.snapshot()
+}
+
+/// Retry (Story 6.3): run the `/add-dir` injection of a context edge from a running session
+/// again (the operator says the prompt is clear). `Err` for an unknown edge, another kind of
+/// edge, or a session not running in a Switchboard terminal.
+#[tauri::command]
+pub async fn edge_live_retry<R: Runtime>(app: AppHandle<R>, edge_id: String) -> Result<(), String> {
+    live_edges::retry(&app, &edge_id)
+}
+
+/// Restart with flags (Story 6.3): stop the edge's session the way Stop does, wait until it has
+/// exited, and resume the same id, which passes its context edges as `--add-dir` (Story 6.2).
+/// The edge is then `applied (restarted with flags)`, or `failed` when its target gives no
+/// folder. A session with no discovered transcript is refused before anything is stopped.
+#[tauri::command]
+pub async fn edge_restart_with_flags<R: Runtime>(app: AppHandle<R>, edge_id: String) -> Result<LaunchResult, String> {
+    blocking(move || restart_with_flags(&app, &edge_id)).await?
+}
+
+/// How long Restart with flags waits for the stopped session to exit, past Stop's kill.
+pub const RESTART_EXIT_SLACK: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Why Restart with flags gave up: the session did not exit.
+pub const DID_NOT_STOP: &str = "the session did not stop";
+
+/// The work of [`edge_restart_with_flags`].
+pub fn restart_with_flags<R: Runtime>(app: &AppHandle<R>, edge_id: &str) -> Result<LaunchResult, String> {
+    let state = app.state::<AppState>();
+    let edge = live_edges::stored_edge(&state, edge_id).ok_or_else(|| live_edges::UNKNOWN_EDGE.to_string())?;
+    if !live_edges::is_session_context(&edge) {
+        return Err(live_edges::NOT_SESSION_CONTEXT.to_string());
+    }
+    let session_id = edge.from.id.clone();
+    let project_id = session_project(&state, &session_id).ok_or_else(|| NO_TRANSCRIPT.to_string())?;
+    // Resume needs a discovered transcript: without one nothing is stopped.
+    source_session(&state, &project_id, &session_id)?;
+    // One restart per session at a time; released on every path.
+    let _restarting = live_edges::begin_restart(&state, &session_id)?;
+    let term_id = pty::session_id(&session_id);
+    let size = state.terms.get(&term_id).map_or((pty::DEFAULT_COLS, pty::DEFAULT_ROWS), |t| t.size());
+    live_edges::cancel_session(app, &session_id);
+    // From here on a failure leaves no edge of the session pending without a job.
+    let fail = |message: String| -> Result<LaunchResult, String> {
+        live_edges::fail_session(app, &session_id, edge_id, &message);
+        Err(message)
+    };
+    let running = state.terms.get(&term_id).is_some_and(|t| t.kind == TermKind::Session && t.is_running());
+    if running {
+        if let Err(message) = stop_session(app, &session_id) {
+            return fail(message);
+        }
+        let deadline = std::time::Instant::now() + launch::STOP_KILL_AFTER + RESTART_EXIT_SLACK;
+        loop {
+            let term_done = !state.terms.get(&term_id).is_some_and(|t| t.is_running());
+            let live_done = state.read_sessions_live().sessions.get(&session_id).is_none_or(|s| !s.state.is_live());
+            if term_done && live_done {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                return fail(DID_NOT_STOP.to_string());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+    let result = match resume_session(app, &project_id, &session_id, size) {
+        Ok(result) => result,
+        Err(message) if running => return fail(format!("{STOPPED_NOT_RESUMED}{message}")),
+        Err(message) => return fail(message),
+    };
+    // Every context edge of the session was passed as `--add-dir` (or skipped): each says so.
+    for session_edge in live_edges::session_edges(&state, &session_id) {
+        let (live, detail, path) = match live_edges::resolve(&state, &session_edge, &result.term.cwd) {
+            Ok(path) => (live_edges::EdgeState::Applied, live_edges::RESTARTED.to_string(), path),
+            Err(reason) => (live_edges::EdgeState::Failed, reason, None),
+        };
+        live_edges::mark(app, &session_edge.id, &session_id, live, Some(&detail), path);
+    }
+    Ok(result)
+}
+
+/// What a Restart with flags that stopped the session but could not resume it says first.
+pub const STOPPED_NOT_RESUMED: &str = "stopped but not resumed: ";
+
+/// The project a session belongs to: its session ref's, else the live map's, else the project
+/// whose discovered sessions list it.
+fn session_project(state: &AppState, session_id: &str) -> Option<String> {
+    let ws = state.read_workspace();
+    ws.workspace
+        .sessions
+        .iter()
+        .find(|s| s.session_id == session_id)
+        .map(|s| s.project_id.clone())
+        .or_else(|| state.read_sessions_live().sessions.get(session_id).and_then(|s| s.project_id.clone()))
+        .or_else(|| {
+            ws.discovered
+                .iter()
+                .find(|(_, list)| list.iter().any(|s| s.id == session_id))
+                .map(|(id, _)| id.clone())
+        })
 }
 
 /// Put a project's children back into their column (`project.relayout`): clears their
@@ -430,6 +546,8 @@ pub async fn workspace_relayout_children<R: Runtime>(app: AppHandle<R>, project_
 #[tauri::command]
 pub async fn workspace_remove_project<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<WorkspaceSnapshot, String> {
     let snapshot = graph::remove_project(&app, &project_id)?;
+    // The live state of its edges goes with them (Story 6.3).
+    live_edges::prune(&app);
     git::poll::forget(&app, &project_id).await;
     // Its branch watch stops and its branch lock goes (Story 5.1).
     let watch_app = app.clone();
@@ -775,8 +893,11 @@ pub async fn term_open<R: Runtime>(
 /// terminal that answers a waiting session's prompt turns it busy at once (Story 4.3).
 #[tauri::command]
 pub fn term_write<R: Runtime>(app: AppHandle<R>, id: String, data: String) -> Result<(), String> {
-    app.state::<AppState>().terms.write(&id, data.as_bytes())?;
+    let state = app.state::<AppState>();
+    state.terms.write(&id, data.as_bytes())?;
     if let Some(session_id) = id.strip_prefix(pty::SESSION_PREFIX) {
+        // A draft in the prompt holds back a context edge's `/add-dir` (Story 6.3).
+        live_edges::note_input(&state, session_id, &data);
         live::terminal_input_and_emit(&app, session_id, &data);
     }
     Ok(())
@@ -1007,15 +1128,7 @@ pub async fn launch_defaults<R: Runtime>(app: AppHandle<R>, project_id: String, 
 /// after it is released ([`graph::resolve_context_targets`]). Blocking: call it off the async
 /// runtime.
 fn edge_add_dirs(state: &AppState, from: &[graph::NodeRef], cwd: &str) -> (Vec<graph::EdgeDir>, Vec<graph::SkippedEdge>) {
-    let heads: HashMap<String, String> = state
-        .read_live()
-        .statuses
-        .iter()
-        .filter_map(|(id, status)| match status {
-            git::ProjectStatus::Repo(repo) if !repo.detached => Some((id.clone(), repo.branch.clone())),
-            _ => None,
-        })
-        .collect();
+    let heads = graph::checked_out_heads(state);
     let targets = graph::context_targets(&state.read_workspace(), from, &heads);
     graph::resolve_context_targets(targets, cwd)
 }
@@ -1638,6 +1751,9 @@ fn run_launch<R: Runtime>(
                 // same id can issue its own.
                 exit_app.state::<AppState>().hooks.drop_session(&exit_id);
                 exit_app.state::<AppState>().launcher.remove_settings(&exit_id);
+                // Its context edges' live state goes before the node shows `exited`, so a Restart
+                // with flags waiting for that exit marks the resumed run's edges after it (6.3).
+                live_edges::session_exited(&exit_app, &exit_id);
                 live::update_and_emit(&exit_app, |map| map.process_exited(&exit_id));
             }),
         }

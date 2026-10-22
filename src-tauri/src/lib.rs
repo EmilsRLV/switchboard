@@ -40,6 +40,9 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::edge_add,
             ipc::edge_set_label,
             ipc::edge_remove,
+            ipc::edges_live_get,
+            ipc::edge_live_retry,
+            ipc::edge_restart_with_flags,
             ipc::claude_projects_list,
             ipc::projects_status_get,
             ipc::live_sessions_get,
@@ -2272,6 +2275,253 @@ mod tests {
         // A session started elsewhere (no Switchboard terminal) is never stopped.
         state.write_sessions_live().sessions.get_mut(id).unwrap().state = SessionState::Busy;
         assert_eq!(call("session_stop", json!({ "sessionId": "elsewhere" })), Err(json!(super::ipc::NOT_STOPPABLE)));
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
+    }
+
+    /// The Story 6.3 stub session (never `claude`): prints its argv, then echoes every line it
+    /// reads as `got=<line>` and keeps running, until a line ending in `/exit`.
+    fn line_echo_program(dir: &std::path::Path) -> (std::path::PathBuf, Vec<String>) {
+        #[cfg(windows)]
+        {
+            let script = dir.join("echo-lines.ps1");
+            std::fs::write(
+                &script,
+                "Write-Output ('argv=' + ($args -join ' '))\r\nwhile ($true) {\r\n  $l = [Console]::In.ReadLine()\r\n  if ($null -eq $l) { break }\r\n  Write-Output ('got=' + $l)\r\n  if ($l.EndsWith('/exit')) { break }\r\n}\r\n",
+            )
+            .unwrap();
+            (
+                std::path::PathBuf::from("powershell.exe"),
+                ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]
+                    .map(String::from)
+                    .into_iter()
+                    .chain([script.display().to_string()])
+                    .collect(),
+            )
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = dir;
+            (
+                std::path::PathBuf::from("/bin/sh"),
+                [
+                    "-c",
+                    "echo argv=; printf '[%s]\\n' \"$@\"; while IFS= read -r x; do printf 'got=%s\\n' \"$x\"; case \"$x\" in */exit) exit 0;; esac; done",
+                    "sh",
+                ]
+                .map(String::from)
+                .to_vec(),
+            )
+        }
+    }
+
+    /// Story 6.3: a context edge drawn from a running session is injected as one `/add-dir` line
+    /// once the session is idle and applied on the transcript's answer; a busy session times out
+    /// with nothing written; no answer is `not confirmed`; a draft holds the line back; an unusable
+    /// target fails at once; Restart with flags stops the session and resumes the same id with the
+    /// edge's `--add-dir`; an edge from a session that is not running has no live state.
+    #[test]
+    fn context_edges_on_a_live_session_are_injected_confirmed_and_restarted() {
+        use super::claude::live::SessionState;
+        use super::claude::live_edges::{self, EdgeState};
+        use super::graph::{BranchNode, Project, SessionRef};
+        use serde_json::json;
+        let (app, webview, dir, folder, _sessions) = launch_fixture();
+        let state = app.state::<super::AppState>();
+        *state.launcher.program.lock().unwrap() = Some(line_echo_program(dir.path()));
+        let home = tempfile::tempdir().unwrap();
+        state.claude_home.set(home.path().to_path_buf()).unwrap();
+        *state.live_edges.timeouts.lock().unwrap() = live_edges::Timeouts {
+            busy: std::time::Duration::from_millis(1500),
+            confirm: std::time::Duration::from_millis(1500),
+            tick: std::time::Duration::from_millis(50),
+        };
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        let others = tempfile::tempdir().unwrap();
+        let mk = |name: &str| {
+            let path = others.path().join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            dunce::canonicalize(&path).unwrap().display().to_string()
+        };
+        let (ui, docs, api) = (mk("ui"), mk("docs"), mk("api"));
+        {
+            let mut ws = state.write_workspace();
+            for (id, path) in [("ui", ui.as_str()), ("docs", docs.as_str()), ("api", api.as_str())] {
+                ws.workspace.projects.push(Project {
+                    id: id.into(),
+                    path: path.into(),
+                    label: id.into(),
+                    ..Project::default()
+                });
+            }
+            ws.workspace.branches.push(BranchNode {
+                id: "ui:feat".into(),
+                project_id: "ui".into(),
+                name: "feat".into(),
+                ..BranchNode::default()
+            });
+        }
+        let ide = dunce::canonicalize(folder.path()).unwrap().display().to_string();
+        let orig = "7c3e1e3f-5b7d-4e8f-9a0b-1c2d3e4f5a6b";
+        discover(&app, orig, "ide-7c3e", &ide);
+        let transcripts = home.path().join("projects").join("X--ide");
+        std::fs::create_dir_all(&transcripts).unwrap();
+        let transcript = transcripts.join(format!("{orig}.jsonl"));
+        let record = |text: &str| {
+            let at = super::claude::transcript::format_iso_ms(super::claude::live::now_ms());
+            format!(
+                "{}\n",
+                json!({ "type": "user", "timestamp": at, "message": { "role": "user", "content": format!("<local-command-stdout>{text}</local-command-stdout>") } })
+            )
+        };
+        std::fs::write(&transcript, record("Added an older folder as a working directory")).unwrap();
+        let append = |line: String| {
+            use std::io::Write;
+            std::fs::OpenOptions::new().append(true).open(&transcript).unwrap().write_all(line.as_bytes()).unwrap();
+        };
+        let link = |to: serde_json::Value| -> String {
+            let edge = call("edge_add", json!({ "from": { "type": "session", "id": orig }, "to": to })).expect("edge_add");
+            edge["id"].as_str().unwrap().to_string()
+        };
+        let live_of = |edge: &str| state.live_edges.snapshot().get(edge).cloned();
+        let is = |edge: &str, want: EdgeState, detail: Option<&str>| {
+            live_of(edge).is_some_and(|e| e.state == want && (detail.is_none() || e.detail.as_deref() == detail))
+        };
+        let set_state = |s: SessionState| state.write_sessions_live().sessions.get_mut(orig).unwrap().state = s;
+        let term_id = format!("session:{orig}");
+        let output = || super::pty::tests::strip_escapes(&state.terms.buffer(&term_id).map(|b| b.data).unwrap_or_default());
+        let got = || -> Vec<String> { output().lines().filter(|l| l.starts_with("got=")).map(|l| l.trim_end().to_string()).collect() };
+
+        // A historic session (not running): the edge is a launch default only, no live state.
+        let historic = link(json!({ "type": "project", "id": "docs" }));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(state.live_edges.snapshot().is_empty());
+        call("edge_remove", json!({ "id": historic })).unwrap();
+
+        call("session_resume", json!({ "projectId": "ide", "sessionId": orig, "cols": 1000, "rows": 40 })).expect("session_resume");
+        wait_until(&app, &term_id, "the stub's start", || output().contains("argv="));
+        set_state(SessionState::Idle);
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            use tauri::Listener;
+            app.listen_any(live_edges::EVENT, move |event| {
+                let _ = tx.send(serde_json::from_str::<serde_json::Value>(event.payload()).unwrap());
+            });
+        }
+
+        // Idle: exactly one `/add-dir <canonical path>` line, pending until the transcript answers.
+        let to_ui = link(json!({ "type": "project", "id": "ui" }));
+        wait_until(&app, &term_id, "the injected line", || output().contains(&format!("got=/add-dir {ui}")));
+        assert!(is(&to_ui, EdgeState::Pending, Some(live_edges::CONFIRMING)), "{:?}", live_of(&to_ui));
+        assert_eq!(got(), [format!("got=/add-dir {ui}")], "{}", output());
+        append(record(&format!("Added {ui} as a working directory for this session")));
+        wait_until(&app, &term_id, "applied", || is(&to_ui, EdgeState::Applied, None));
+        let events: Vec<serde_json::Value> = rx.try_iter().collect();
+        assert!(events.iter().any(|e| e[&to_ui]["state"] == "pending"), "{events:?}");
+        assert!(events.iter().any(|e| e[&to_ui]["state"] == "applied" && e[&to_ui]["sessionId"] == orig), "{events:?}");
+        assert_eq!(call("edges_live_get", json!({})).unwrap()[&to_ui]["path"], json!(ui));
+
+        // Busy: waiting for idle, then failed after the (shortened) 60 s with nothing written.
+        set_state(SessionState::Busy);
+        let to_docs = link(json!({ "type": "project", "id": "docs" }));
+        wait_until(&app, &term_id, "waiting for idle", || is(&to_docs, EdgeState::Pending, Some(live_edges::WAITING_FOR_IDLE)));
+        wait_until(&app, &term_id, "stayed busy", || is(&to_docs, EdgeState::Failed, Some(live_edges::STAYED_BUSY)));
+        assert!(!output().contains(&docs), "nothing written while busy");
+
+        // Retry once idle: injected, but no answer in time.
+        set_state(SessionState::Idle);
+        call("edge_live_retry", json!({ "edgeId": to_docs })).expect("edge_live_retry");
+        // (PowerShell's console may hand the stub the earlier line again in front of it; what was
+        // written is still the one line.)
+        wait_until(&app, &term_id, "the retried line", || got().iter().any(|l| l.ends_with(&format!("/add-dir {docs}"))));
+        wait_until(&app, &term_id, "not confirmed", || is(&to_docs, EdgeState::Failed, Some(live_edges::NOT_CONFIRMED)));
+
+        // A draft in the prompt: nothing is injected over it. The UI matches this wording.
+        assert_eq!(live_edges::TYPING, "you're typing — Retry when done");
+        call("term_write", json!({ "id": term_id, "data": "draft" })).unwrap();
+        let to_api = link(json!({ "type": "project", "id": "api" }));
+        wait_until(&app, &term_id, "you're typing", || is(&to_api, EdgeState::Pending, Some(live_edges::TYPING)));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!output().contains(&api), "the draft is never written over");
+        // Retry: the operator says the prompt is clear; the line goes and the edge leaves TYPING.
+        call("edge_live_retry", json!({ "edgeId": to_api })).expect("retry the draft-held edge");
+        wait_until(&app, &term_id, "the line after Retry", || got().iter().any(|l| l.ends_with(&format!("/add-dir {api}"))));
+        wait_until(&app, &term_id, "TYPING left", || live_of(&to_api).is_some_and(|e| e.detail.as_deref() != Some(live_edges::TYPING)));
+        // Deleting the edge drops its state.
+        call("edge_remove", json!({ "id": to_api })).unwrap();
+        assert_eq!(live_of(&to_api), None);
+
+        // An unusable target fails at once, nothing written.
+        let to_feat = link(json!({ "type": "branch", "id": "ui:feat" }));
+        wait_until(&app, &term_id, "no worktree", || is(&to_feat, EdgeState::Failed, Some("no worktree")));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let lines = got();
+        assert!(
+            lines.iter().all(|l| [&ui, &docs, &api].iter().any(|p| l.ends_with(&format!("/add-dir {p}")))),
+            "only the three /add-dir lines were written: {}",
+            output()
+        );
+
+        // Keys pressed while the session is waiting answer a dialog: no draft.
+        set_state(SessionState::Waiting);
+        call("term_write", json!({ "id": term_id, "data": "1" })).unwrap();
+        assert!(!state.live_edges.has_draft(orig));
+        set_state(SessionState::Idle);
+
+        // Restart with flags needs a transcript: an edge from a session without one stops nothing.
+        let bare = "8d4f1e3f-5b7d-4e8f-9a0b-1c2d3e4f5a6b";
+        state.write_workspace().workspace.sessions.push(SessionRef {
+            session_id: bare.into(),
+            project_id: "ide".into(),
+            ..SessionRef::default()
+        });
+        let edge = call("edge_add", json!({ "from": { "type": "session", "id": bare }, "to": { "type": "project", "id": "ui" } })).unwrap();
+        assert_eq!(
+            call("edge_restart_with_flags", json!({ "edgeId": edge["id"] })),
+            Err(json!(super::ipc::NO_TRANSCRIPT))
+        );
+        assert!(state.terms.get(&term_id).unwrap().is_running(), "nothing stopped");
+
+        // One restart per session at a time.
+        let held = live_edges::begin_restart(&state, orig).unwrap();
+        assert_eq!(
+            call("edge_restart_with_flags", json!({ "edgeId": to_docs })),
+            Err(json!(live_edges::ALREADY_RESTARTING))
+        );
+        assert!(state.terms.get(&term_id).unwrap().is_running(), "nothing stopped");
+        drop(held);
+
+        // Restart with flags on the failed `no worktree` edge: stopped, resumed under the same id
+        // with the session's edges as `--add-dir`; every edge of the session says what it did.
+        let reply = call("edge_restart_with_flags", json!({ "edgeId": to_feat })).expect("edge_restart_with_flags");
+        assert_eq!(reply["session_id"], orig);
+        assert!(is(&to_feat, EdgeState::Failed, Some("no worktree")), "{:?}", live_of(&to_feat));
+        assert!(is(&to_docs, EdgeState::Applied, Some(live_edges::RESTARTED)), "{:?}", live_of(&to_docs));
+        assert!(is(&to_ui, EdgeState::Applied, Some(live_edges::RESTARTED)), "{:?}", live_of(&to_ui));
+        wait_until(&app, &term_id, "the resumed stub's argv", || output().contains("argv=") && output().contains(&docs));
+        let text = output();
+        if cfg!(windows) {
+            assert!(text.replace(['\r', '\n'], "").contains(&format!("--resume {orig}")), "{text}");
+        } else {
+            assert!(text.contains(&format!("[--resume]\r\n[{orig}]")), "{text}");
+        }
+        assert_add_dirs(&text, &[&ui, &docs]);
+
+        // The session exits while an edge is pending: its state is dropped.
+        wait_until(&app, &term_id, "the resumed stub to settle", || {
+            state.read_sessions_live().sessions[orig].state != SessionState::Starting
+        });
+        set_state(SessionState::Busy);
+        let again = link(json!({ "type": "project", "id": "api" }));
+        wait_until(&app, &term_id, "pending again", || is(&again, EdgeState::Pending, Some(live_edges::WAITING_FOR_IDLE)));
+        state.terms.write(&term_id, b"/exit\r").unwrap();
+        wait_until(&app, &term_id, "the exit", || state.read_sessions_live().sessions[orig].state == SessionState::Exited);
+        wait_until(&app, &term_id, "the pending entry to go", || live_of(&again).is_none());
+        assert_eq!(
+            call("edge_live_retry", json!({ "edgeId": again })),
+            Err(json!(live_edges::NOT_LIVE))
+        );
         super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
     }
 

@@ -4,7 +4,22 @@ import { paletteRows, runPaletteRow, usePaletteStore } from "../state/palette";
 import { acknowledgeIfNeeded, followSelection, useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 import { registerBuiltins } from "./builtins";
-import { canDeleteEdge, canSelectEdge, clickEdge, link, refuseDrop, saveEdgeLabel, selectedEdge, startLink, startSelectEdge } from "./edges";
+import {
+  canDeleteEdge,
+  canRestartEdge,
+  canRetryEdge,
+  canSelectEdge,
+  clickEdge,
+  link,
+  refuseDrop,
+  restartedNotice,
+  saveEdgeLabel,
+  selectedEdge,
+  startLink,
+  startSelectEdge,
+} from "./edges";
+import { TYPING_DETAIL, useEdgesLiveStore } from "../state/edgesLive";
+import { useTerminalStore } from "../state/terminals";
 import { handleKeydown, type KeyEventLike } from "./keybindings";
 import { clearCommands, listCommands, runCommand } from "./registry";
 
@@ -13,12 +28,23 @@ vi.mock("../ipc", async (importOriginal) => ({
   edgeAdd: vi.fn(),
   edgeRemove: vi.fn(),
   edgeSetLabel: vi.fn(),
+  edgeLiveRetry: vi.fn(),
+  edgeRestartWithFlags: vi.fn(),
+}));
+
+vi.mock("../terminal/registry", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../terminal/registry")>()),
+  disposeView: vi.fn(),
+  restore: vi.fn(() => Promise.resolve()),
 }));
 
 const ipc = await import("../ipc");
 const edgeAdd = vi.mocked(ipc.edgeAdd);
 const edgeRemove = vi.mocked(ipc.edgeRemove);
 const edgeSetLabel = vi.mocked(ipc.edgeSetLabel);
+const edgeLiveRetry = vi.mocked(ipc.edgeLiveRetry);
+const edgeRestartWithFlags = vi.mocked(ipc.edgeRestartWithFlags);
+const registry = await import("../terminal/registry");
 
 function key(k: string, mods: Partial<KeyEventLike> = {}): KeyEventLike {
   return { key: k, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, repeat: false, preventDefault: () => {}, ...mods };
@@ -294,5 +320,85 @@ describe("edge commands (Story 6.1)", () => {
     edgeSetLabel.mockRejectedValue("disk full");
     await saveEdgeLabel("e1", "new");
     expect(useWorkspaceStore.getState().loadError).toBe("label edge failed: disk full");
+  });
+});
+
+describe("edge commands on live sessions (Story 6.3)", () => {
+  const projectEdge: Edge = { ...storedEdge("p1"), from: ref("project", "a") };
+  const cooperate: Edge = { ...storedEdge("c1"), to: ref("session", "s2"), kind: "cooperate" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearCommands();
+    registerBuiltins();
+    useWorkspaceStore.setState({ snapshot: snapshot([storedEdge("e1"), projectEdge, cooperate]), loadError: null });
+    useUiStore.setState({ pane: null, selection: null, contextMenu: null, notice: null, elsewhereOpen: false });
+    useEdgesLiveStore.setState({ entries: {}, received: true, loadError: null });
+    useTerminalStore.setState({ infos: {}, pendingExits: {} });
+  });
+  afterEach(() => clearCommands());
+
+  const live = (state: "pending" | "applied" | "failed", detail: string | null = null) => ({
+    e1: { state, detail, sessionId: "s1", path: "/p/b" },
+  });
+
+  it("Restart with flags is offered for every context edge from a session; Retry only after a failure or a draft", () => {
+    expect(canRestartEdge()).toBe(false);
+    useUiStore.getState().select({ kind: "edge", id: "e1" });
+    expect(canRestartEdge()).toBe(true);
+    expect(canRetryEdge()).toBe(false);
+    useEdgesLiveStore.setState({ entries: live("pending", "waiting for idle") });
+    expect(canRetryEdge()).toBe(false);
+    useEdgesLiveStore.setState({ entries: live("pending", TYPING_DETAIL) });
+    expect(canRetryEdge()).toBe(true);
+    useEdgesLiveStore.setState({ entries: live("failed", "not confirmed") });
+    expect(canRetryEdge()).toBe(true);
+    expect(listCommands({ enabledOnly: true }).map((c) => c.id)).toEqual(expect.arrayContaining(["edge.retry", "edge.restartWithFlags"]));
+    useEdgesLiveStore.setState({ entries: live("applied") });
+    expect(canRetryEdge()).toBe(false);
+    // A project's edge (a launch default) and a cooperate edge: neither.
+    useUiStore.getState().select({ kind: "edge", id: "p1" });
+    expect(canRestartEdge()).toBe(false);
+    useUiStore.getState().select({ kind: "edge", id: "c1" });
+    expect(canRestartEdge()).toBe(false);
+  });
+
+  it("Retry edge calls Rust; a refusal is the notice", async () => {
+    useUiStore.getState().select({ kind: "edge", id: "e1" });
+    useEdgesLiveStore.setState({ entries: live("failed", "not confirmed") });
+    edgeLiveRetry.mockResolvedValue(undefined);
+    expect(runCommand("edge.retry")).toBe(true);
+    await flush();
+    expect(edgeLiveRetry).toHaveBeenCalledWith("e1");
+    expect(useUiStore.getState().notice).toBeNull();
+    edgeLiveRetry.mockRejectedValue("the session is not running in Switchboard");
+    runCommand("edge.retry");
+    await flush();
+    expect(useUiStore.getState().notice).toEqual({ text: "the session is not running in Switchboard" });
+  });
+
+  it("Restart with flags calls Rust, starts the terminal's view afresh and names what it ran without", async () => {
+    useUiStore.getState().select({ kind: "edge", id: "e1" });
+    const term = { id: "session:s1", kind: "session", project_id: "a", title: "s1", cwd: "/p/a", exited: null, error: null, cols: 80, rows: 24, stopping: false } as const;
+    useTerminalStore.getState().upsert({ ...term, exited: 0 });
+    edgeRestartWithFlags.mockResolvedValue({
+      session_id: "s1",
+      term,
+      choices: { model: "default", effort: "default", permission_mode: "default" },
+      skipped: [{ label: "ui:feat", reason: "no worktree" }],
+    });
+    expect(runCommand("edge.restartWithFlags")).toBe(true);
+    await flush();
+    expect(edgeRestartWithFlags).toHaveBeenCalledWith("e1");
+    expect(registry.disposeView).toHaveBeenCalledWith("session:s1");
+    expect(registry.restore).toHaveBeenCalledWith("session:s1");
+    expect(useTerminalStore.getState().infos["session:s1"]?.exited).toBeNull();
+    expect(useUiStore.getState().notice).toEqual({ text: "restarted without: ui:feat (no worktree) · restarted with flags" });
+
+    edgeRestartWithFlags.mockRejectedValue("that session has no transcript to resume");
+    runCommand("edge.restartWithFlags");
+    await flush();
+    expect(useUiStore.getState().notice).toEqual({ text: "that session has no transcript to resume" });
+    expect(restartedNotice([])).toBe("restarted with flags");
   });
 });

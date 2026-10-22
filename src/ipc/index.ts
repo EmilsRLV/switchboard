@@ -129,6 +129,28 @@ export type Edge = {
   createdAt: string;
 };
 
+/** Mirrors `live_edges::EdgeState` (Story 6.3). */
+export type EdgeLiveState = "pending" | "applied" | "failed";
+
+/**
+ * Mirrors `live_edges::EdgeLive`: what a context edge from a running session does now. Runtime
+ * only; after an app restart no edge has one.
+ */
+export type EdgeLive = {
+  state: EdgeLiveState;
+  /** Why, or what it waits for (`waiting for idle`, `no worktree`, Claude's stdout, ...). */
+  detail: string | null;
+  sessionId: string;
+  /** The folder the edge grants, once resolved. */
+  path: string | null;
+};
+
+/** What `edges_live_get` returns and `edges://live` carries: every edge's live state by edge id. */
+export type EdgesLiveMap = Record<string, EdgeLive>;
+
+/** Event name Rust emits with the whole `EdgesLiveMap` whenever an edge's live state changes. */
+export const EDGES_LIVE_EVENT = "edges://live";
+
 /** Mirrors `graph::Workspace`: the on-disk `workspace.json` schema, version 1. */
 export type Workspace = {
   version: number;
@@ -577,6 +599,9 @@ type Commands = {
   edge_add: Edge;
   edge_set_label: WorkspaceSnapshot;
   edge_remove: WorkspaceSnapshot;
+  edges_live_get: EdgesLiveMap;
+  edge_live_retry: void;
+  edge_restart_with_flags: LaunchResult;
   claude_projects_list: ClaudeProject[];
   projects_status_get: ProjectStatusMap;
   live_sessions_get: LiveSnapshot;
@@ -784,6 +809,28 @@ export function edgeSetLabel(id: string, label: string | null): Promise<Workspac
 /** `ipc::edge_remove` (Story 6.1) -- delete an edge. Rejects with `"unknown edge"`. */
 export function edgeRemove(id: string): Promise<WorkspaceSnapshot> {
   return call("edge_remove", { id });
+}
+
+/** `ipc::edges_live_get` (Story 6.3) -- the live state of the context edges on running sessions. */
+export function edgesLiveGet(): Promise<EdgesLiveMap> {
+  return call("edges_live_get");
+}
+
+/**
+ * `ipc::edge_live_retry` (Story 6.3) -- run a context edge's `/add-dir` injection again. Rejects
+ * when the edge is gone, is not a context edge from a session, or its session is not running.
+ */
+export function edgeLiveRetry(edgeId: string): Promise<void> {
+  return call("edge_live_retry", { edgeId });
+}
+
+/**
+ * `ipc::edge_restart_with_flags` (Story 6.3) -- stop the edge's session as Stop does, wait for
+ * its exit and resume the same id with its context edges as `--add-dir`. Resolves with the
+ * resumed run; rejects (nothing stopped) for a session with no transcript.
+ */
+export function edgeRestartWithFlags(edgeId: string): Promise<LaunchResult> {
+  return call("edge_restart_with_flags", { edgeId });
 }
 
 /**
@@ -999,6 +1046,14 @@ export async function onLiveSessions(callback: (snapshot: LiveSnapshot) => void)
     return () => {};
   }
   return listen<LiveSnapshot>(LIVE_SESSIONS_EVENT, (event) => callback(event.payload));
+}
+
+/** Subscribe to `edges://live` (Story 6.3); same contract as {@link onSettingsChanged}. */
+export async function onEdgesLive(callback: (entries: EdgesLiveMap) => void): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return listen<EdgesLiveMap>(EDGES_LIVE_EVENT, (event) => callback(event.payload));
 }
 
 /** Subscribe to `notify://reveal` (a toast was clicked); same contract as {@link onSettingsChanged}. */

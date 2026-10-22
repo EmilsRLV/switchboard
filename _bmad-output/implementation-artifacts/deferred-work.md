@@ -80,3 +80,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-6-2-context-edges-at-launch.md`
   summary: No component test renders the launch sheet's `via edge → <target>` suffix or its `not added:` line; the rules behind them (`edgeVia`, `skippedNote`) and the store are tested.
   evidence: Story 6.2; no DOM test environment yet.
+- source_spec: `_bmad-output/implementation-artifacts/spec-6-3-context-edges-on-live-sessions.md`
+  summary: Live `/add-dir` injection does not quote a path with spaces; whether Claude Code parses the rest of the line as one path is unverified.
+  evidence: Reviewer edge case (unverified, would be medium). Settle by linking a live session to a folder with a space in its path, using the real `claude`.
+- source_spec: `_bmad-output/implementation-artifacts/spec-6-3-context-edges-on-live-sessions.md`
+  summary: `live_edges::prune` on project removal and the failed edge's `.attention` accent in `Canvas.tsx` have no tests.
+  evidence: The verification-gap review found no test that removes a project with live edge entries. There is no component test environment for Canvas.

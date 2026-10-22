@@ -39,9 +39,13 @@ import {
   canDeleteEdge,
   canInspectEdge,
   canLink,
+  canRestartEdge,
+  canRetryEdge,
   canSelectEdge,
   deleteSelectedEdge,
   inspectSelectedEdge,
+  restartSelectedEdge,
+  retrySelectedEdge,
   selectedEdge,
   startLink,
   startSelectEdge,
@@ -550,6 +554,24 @@ export function builtinCommands(): Command[] {
       when: canDeleteEdge,
       run: async () => {
         await deleteSelectedEdge();
+      },
+    },
+    {
+      // Story 6.3: run a failed (or draft-held) `/add-dir` of a context edge on a running session again.
+      id: "edge.retry",
+      title: "Retry edge",
+      when: canRetryEdge,
+      run: async () => {
+        await retrySelectedEdge();
+      },
+    },
+    {
+      // Story 6.3: stop the edge's session and resume it with its context edges as `--add-dir`.
+      id: "edge.restartWithFlags",
+      title: "Restart with flags",
+      when: canRestartEdge,
+      run: async () => {
+        await restartSelectedEdge();
       },
     },
     {

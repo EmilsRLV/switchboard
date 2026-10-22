@@ -22,7 +22,9 @@ import {
   endText,
   flowIdOfRef,
   isDuplicateEdge,
+  edgeLiveIn,
   linkFlowEdges,
+  liveEdgeClass,
   linkTargets,
   nodeRefOf,
   nodeRefOfFlowId,
@@ -148,8 +150,26 @@ describe("linkFlowEdges", () => {
       data: { edgeId: "e1", label: "API shape", selected: false },
       ariaLabel: "context edge: API shape",
     });
-    expect(drawn[1]?.data).toEqual({ edgeId: "e2", label: null, selected: true });
+    expect(drawn[1]?.data).toEqual({ edgeId: "e2", label: null, selected: true, live: null });
     expect(edgeAriaLabel({ kind: "cooperate", label: null })).toBe("cooperate edge");
+  });
+
+  it("marks a context edge being applied to a running session pending, a failed one failed (Story 6.3)", () => {
+    const edges = [
+      edge("e1", ref("session", "s1"), ref("project", "b")),
+      edge("e2", ref("session", "s1"), ref("branch", "b:main")),
+      edge("e3", ref("project", "a"), ref("branch", "b:main")),
+    ];
+    const entry = (state: "pending" | "applied" | "failed") => ({ state, detail: null, sessionId: "s1", path: null });
+    const drawn = linkFlowEdges(edges, nodes(), { kind: "edge", id: "e2" }, { e1: entry("pending"), e2: entry("failed"), e3: entry("applied") });
+    expect(drawn.map((e) => [e.id, e.className, e.data?.live, e.ariaLabel])).toEqual([
+      ["edge:e1", "link-edge is-pending", "pending", "context edge (pending)"],
+      ["edge:e2", "link-edge is-selected is-failed", "failed", "context edge (failed)"],
+      ["edge:e3", "link-edge", "applied", "context edge"],
+    ]);
+    expect(edgeAriaLabel({ kind: "context", label: "API shape" }, "failed")).toBe("context edge: API shape (failed)");
+    expect(liveEdgeClass(null)).toBeNull();
+    expect(edgeLiveIn({}, "constructor")).toBeNull();
   });
 
   it("ends an edge between two cards of one column on the target's right edge, so it curves out and back", () => {

@@ -531,6 +531,16 @@
   pointer-events: none;
 }
 
+/* Story 6.3: a context edge being applied to a running session is muted; a failed one is drawn
+   in the attention accent (its line carries `.attention`). Selected still reads `--focus`. */
+.react-flow__edge.is-pending .link-line {
+  stroke: var(--fg-faint);
+}
+
+.react-flow__edge .attention.link-line {
+  stroke: var(--accent);
+}
+
 .react-flow__edge.is-selected .link-line {
   stroke: var(--focus);
 }

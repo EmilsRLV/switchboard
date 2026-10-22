@@ -53,7 +53,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the fifty-four commands with the spec's keybindings", () => {
+  it("register the fifty-six commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
@@ -67,6 +67,8 @@ describe("built-in commands", () => {
       "edge.delete",
       "edge.inspect",
       "edge.link",
+      "edge.restartWithFlags",
+      "edge.retry",
       "edge.select",
       "elsewhere.close",
       "elsewhere.toggle",
@@ -172,7 +174,7 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the forty-two actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the forty-four actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "app.quit",
       "attention.next",
@@ -185,6 +187,8 @@ describe("built-in commands", () => {
       "edge.delete",
       "edge.inspect",
       "edge.link",
+      "edge.restartWithFlags",
+      "edge.retry",
       "edge.select",
       "elsewhere.toggle",
       "palette.toggle",
@@ -255,7 +259,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(54);
+    expect(listCommands()).toHaveLength(56);
   });
 
   const PROJECT_ACTIONS = [

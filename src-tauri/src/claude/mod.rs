@@ -7,6 +7,7 @@ pub mod discover;
 pub mod hooks;
 pub mod launch;
 pub mod live;
+pub mod live_edges;
 pub mod sessions;
 pub mod transcript;
 

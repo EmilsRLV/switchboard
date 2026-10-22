@@ -1010,3 +1010,14 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Story 6.3: what the edge does now (live state and detail), wrapping anywhere. */
+.edge-now {
+  margin: 0.5rem 0 0;
+  font-size: var(--text-md);
+  overflow-wrap: anywhere;
+}
+
+.edge-now-term {
+  color: var(--fg-muted);
+}

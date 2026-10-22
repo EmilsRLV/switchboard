@@ -122,7 +122,9 @@ expanded project with more than ten sessions) and, for a git repo, Show branches
 that is not checked out in the project's folder, New worktree…, New session… (unless its worktree is `missing`), and, for a
 branch with a worktree chip (a `missing` one too), Remove worktree… (see [Removing a worktree](#removing-a-worktree));
 Link to… while a session or project card is selected, Select edge… while the selected card has a drawn
-edge, and Delete edge and Inspect edge while an edge is selected (Inspect edge only while its inspector is closed; see [Edges](#edges)). The palette sorts by title. The key-only
+edge, and Delete edge and Inspect edge while an edge is selected (Inspect edge only while its inspector is closed; see [Edges](#edges));
+Restart with flags while a context edge from a session is selected, and Retry edge while that edge failed or
+a draft holds it back (see [Context edges on live sessions](#context-edges-on-live-sessions)). The palette sorts by title. The key-only
 carriers (the `ctrl+,` toggle, the palette's second binding `ctrl+shift+k`, the five Esc commands, the four
 arrows and Enter) are registered but hidden from
 the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron on a card runs
@@ -490,8 +492,9 @@ canvas. There are two kinds, and Rust picks the kind from the two ends:
 | cooperate | a session | another session (undirected) | two parallel 1-px lines |
 
 A context edge grants its source directory access **at launch** (see [Context edges at
-launch](#context-edges-at-launch)). Edges do not affect live sessions yet, and cooperate edges do nothing
-yet (that is Stories 6.3–6.4). Edges to folders that are not canvas nodes come later.
+launch](#context-edges-at-launch)), and one drawn from a session running in Switchboard is applied to it at
+once (see [Context edges on live sessions](#context-edges-on-live-sessions)). Cooperate edges do nothing yet
+(that is Story 6.4). Edges to folders that are not canvas nodes come later.
 
 **Drawing an edge.** Hover a session or project card, or select it, and a small round handle appears on its
 right edge. Drag from the handle and drop on any project, branch or session card. The whole card is the
@@ -566,6 +569,53 @@ folder is passed once, and a folder equal to the one the session runs in is drop
   original's.
 - **Not remembered.** Edge add-dirs are recomputed at every launch and never stored in the project's launch
   defaults.
+
+### Context edges on live sessions
+
+A context edge drawn from a session that runs in a Switchboard terminal (its terminal running, its live
+state not `exited`) does something now, not only at the next resume. A project's edges stay launch defaults
+for future sessions; an edge from a historic session, or from a session running elsewhere, has no live state.
+
+1. **Resolve.** Rust resolves the edge's folder with the same rules as at launch (above). A target that gives
+   no folder fails at once with its reason (`failed (no worktree)`, `folder missing`, `not found`), and nothing
+   is written. A folder equal to the one the session runs in is `applied (the session's own folder)`. A path
+   with a control character or a newline is refused (`failed (path has control characters)`).
+2. **Wait for idle.** The line is written only while the session is `idle` or `finished` (as Stop reads them),
+   never while it is `busy`, `waiting`, `starting` or being stopped. Until then the edge is `pending (waiting
+   for idle)`; a session that stays not idle for 60 s fails it: `failed (session stayed busy)`.
+3. **Never over a draft.** If you have typed into that session's terminal and not sent it (Enter, Ctrl+C or
+   Ctrl+U send or clear it; a paste always counts as typed; keys pressed while the session is `waiting`
+   answer a dialog and do not count), nothing is written: the edge stays `pending (you're typing — Retry when done)`
+   and your draft is never touched. **Retry** says the prompt is clear and runs the step again.
+4. **Inject.** Exactly one line is written to the session's PTY: `/add-dir <folder>` and Enter. Nothing else,
+   ever: no further keys, no multi-line text. One edge per session is injected at a time.
+5. **Confirm.** `/add-dir` is a local command: it writes no assistant turn, only (as expected, **not yet
+   verified** with the real `claude`) a `<local-command-stdout>` record to the session's transcript
+   (`~/.claude/projects/<dir>/<id>.jsonl`, read only). Rust tails the transcript for the first such record
+   after the line: `Added … as a working directory` or `… already accessible …` makes the edge `applied`;
+   any other output, and any `<local-command-stderr>`, fails it with that text (escape codes stripped); no
+   record within 10 s is `failed (not confirmed)`. That would also cover a choice dialog waiting for an
+   answer, if `/add-dir` shows one (**unverified**); the app never presses further keys. See
+   [`docs/research/claude-code-integration.md`](docs/research/claude-code-integration.md).
+
+The edge inspector shows a **Now:** line with the state and its detail. With no live state (an edge from a
+historic session, a project's edge, or any edge after an app restart: the state lives in memory only and is
+never persisted) it says what the edge does at the next launch or resume. On the canvas a pending edge is
+drawn muted and a failed one in the attention accent. The state goes out on `edges://live` with the whole map.
+
+- **Retry** (inspector, or **Retry edge** in the palette) appears when the edge failed or a draft holds it
+  back, and runs the injection again.
+- **Restart with flags** (inspector, or the palette) is always offered for a context edge from a session: it
+  stops the session the way Stop does, waits until it has exited, then resumes the same id, which passes the
+  session's context edges as `--add-dir` (see Resume above). The edge then reads `applied (restarted with
+  flags)`, and so does every other context edge of that session (or `failed (<reason>)` when its target
+  gives no folder). It needs a discovered transcript, as Resume does; without one the notice says so and
+  nothing is stopped. One restart per session runs at a time (`that session is already restarting`). If it
+  fails partway, the session's edges read `failed (<error>)`; a session that was stopped but could not be
+  resumed says `stopped but not resumed: <error>`.
+- **The session exits** while an edge is pending: its state is dropped; the edge applies at the next resume.
+- **Deleting an edge** takes nothing away from a running session: Claude has no `/remove-dir`, so the folder
+  stays until the session restarts.
 
 ### The file
 

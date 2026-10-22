@@ -4,7 +4,7 @@
 // list use. No React, no DOM.
 
 import type { Edge as FlowEdge } from "@xyflow/react";
-import type { ChildNode, Edge, EdgeKind, NodeRef, Project } from "../ipc";
+import type { ChildNode, Edge, EdgeKind, EdgeLive, EdgeLiveState, EdgesLiveMap, NodeRef, Project } from "../ipc";
 import { childFlowId, edgeFlowId, flowIdOf, nodeRects, parseFlowId, type CanvasFlowNode, type CanvasTarget } from "./nodes";
 
 /** The id of a session or project card's link handle (the drag source, on its right edge). */
@@ -100,8 +100,21 @@ export function checkFlowLink(edges: readonly Edge[], sourceFlowId: string, targ
   return checkLink(edges, from, to);
 }
 
+/** Edge `id`'s live state (Story 6.3) in `entries`, or `null` (an own-property read). */
+export function edgeLiveIn(entries: EdgesLiveMap, id: string): EdgeLive | null {
+  return Object.hasOwn(entries, id) ? (entries[id] ?? null) : null;
+}
+
+/** The class an edge carries for its live state (Story 6.3): `is-pending`, `is-failed` or none. */
+export function liveEdgeClass(live: EdgeLive | null): string | null {
+  if (live === null) return null;
+  if (live.state === "pending") return "is-pending";
+  if (live.state === "failed") return "is-failed";
+  return null;
+}
+
 /** What a drawn edge renders from. */
-export type LinkEdgeData = { edgeId: string; label: string | null; selected: boolean };
+export type LinkEdgeData = { edgeId: string; label: string | null; selected: boolean; live: EdgeLiveState | null };
 export type LinkFlowEdge = FlowEdge<LinkEdgeData, EdgeKind>;
 
 /**
@@ -110,7 +123,12 @@ export type LinkFlowEdge = FlowEdge<LinkEdgeData, EdgeKind>;
  * limit, gone from the list, a folder -- is not drawn but stays stored, as fork lines behave. The
  * selected edge is marked (`is-selected`, drawn in `--focus`).
  */
-export function linkFlowEdges(edges: readonly Edge[], nodes: readonly CanvasFlowNode[], selection: CanvasTarget | null): LinkFlowEdge[] {
+export function linkFlowEdges(
+  edges: readonly Edge[],
+  nodes: readonly CanvasFlowNode[],
+  selection: CanvasTarget | null,
+  live: EdgesLiveMap = {},
+): LinkFlowEdge[] {
   const drawn = new Set(nodes.filter((n) => n.type !== "more").map((n) => n.id));
   // Each card's column (its project's; a project card heads its own) and absolute x.
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -126,18 +144,22 @@ export function linkFlowEdges(edges: readonly Edge[], nodes: readonly CanvasFlow
     const target = flowIdOfRef(edge.to);
     if (source === null || target === null || !drawn.has(source) || !drawn.has(target)) continue;
     const selected = selection !== null && selection.kind === "edge" && selection.id === edge.id;
+    // Story 6.3: a context edge being applied to a running session is muted; a failed one
+    // carries the attention accent.
+    const state = edgeLiveIn(live, edge.id);
+    const liveClass = liveEdgeClass(state);
     out.push({
       id: edgeFlowId(edge.id),
       source,
       target,
       ...edgeSides(placeOf(source), placeOf(target)),
       type: edge.kind,
-      data: { edgeId: edge.id, label: edge.label, selected },
-      className: selected ? "link-edge is-selected" : "link-edge",
+      data: { edgeId: edge.id, label: edge.label, selected, live: state?.state ?? null },
+      className: ["link-edge", selected ? "is-selected" : null, liveClass].filter((c) => c !== null).join(" "),
       selectable: false,
       focusable: false,
       deletable: false,
-      ariaLabel: edgeAriaLabel(edge),
+      ariaLabel: edgeAriaLabel(edge, state?.state ?? null),
     });
   }
   return out;
@@ -206,9 +228,13 @@ export function edgeChoices(
   return out;
 }
 
-/** An edge's accessible name: `context edge` / `cooperate edge`, then its label. */
-export function edgeAriaLabel(edge: Pick<Edge, "kind" | "label">): string {
-  return edge.label === null ? `${edge.kind} edge` : `${edge.kind} edge: ${edge.label}`;
+/**
+ * An edge's accessible name: `context edge` / `cooperate edge`, then its label, then a pending or
+ * failed live state (Story 6.3): `context edge: API shape (failed)`.
+ */
+export function edgeAriaLabel(edge: Pick<Edge, "kind" | "label">, live: EdgeLiveState | null = null): string {
+  const name = edge.label === null ? `${edge.kind} edge` : `${edge.kind} edge: ${edge.label}`;
+  return live === "pending" || live === "failed" ? `${name} (${live})` : name;
 }
 
 /** What the inspector and the pick list say about an edge end. */

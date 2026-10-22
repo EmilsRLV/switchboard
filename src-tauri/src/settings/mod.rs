@@ -377,6 +377,9 @@ pub struct AppState {
     /// read of a project runs at a time, so an older read never overwrites a newer one, and a
     /// slow repo never holds up another project's read.
     pub branch_locks: crate::git::poll::BranchLocks,
+    /// Context edges applied to live sessions (`crate::claude::live_edges`, Story 6.3): each
+    /// edge's pending / applied / failed state, its job, the sessions with a draft. Memory only.
+    pub live_edges: crate::claude::live_edges::LiveEdges,
 }
 
 impl AppState {
