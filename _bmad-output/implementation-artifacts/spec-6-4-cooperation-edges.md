@@ -2,7 +2,7 @@
 title: 'Story 6.4: Cooperation edges'
 type: 'feature'
 created: '2026-10-22'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '83cdb0dc8a5a1b616a25d2da9eb726937dc35f86'
@@ -136,6 +136,8 @@ context:
 - 2026-10-22 GUI pass (orchestrator, scratch project `alpha`, stub `claude` that never goes busy): two background stub sessions on `alpha` showed `idle`. Dragging one's handle onto the other stored a `cooperate` edge (session to session, no label), drawn as the double line, in the accent colour once both sides failed. The inspector showed Kind cooperate, Between/And both sessions, and two lines, `Now: alpha-d4bd: failed (not confirmed)` and `Now: alpha-04f5: failed (not confirmed)`, each with its own Retry. The injected text and the resume prompt block were not seen on screen; the lib.rs integration test covers them.
 
 - 2026-10-22 GUI re-run after the patch round (orchestrator, same setup): the same result. Both sides read `failed (not confirmed)` with their own Retry, and the double line was drawn in the accent colour.
+
+- 2026-10-22 Closed on local Windows verification (Emils' decision): cargo test, clippy, tsc, vitest, the debug build and two GUI passes. **Linux CI is pending:** GitHub Actions is suspended until the end of the month. Check the run for `f796d37` or later on both runners when Actions resumes.
 
 ## Spec Change Log
 

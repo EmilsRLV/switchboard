@@ -2,7 +2,7 @@
 title: 'Story 6.3: Context edges on live sessions'
 type: 'feature'
 created: '2026-10-22'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'c4b23e2f7d4dc44a61e8f484f8818dbd1ebf842e'
@@ -122,6 +122,8 @@ context:
 - 2026-10-22 GUI pass (orchestrator, scratch projects `alpha` and `beta`, `claude.path` = the scratchpad stub, which prints its argv and writes no transcript): a background stub session on `alpha` showed `idle`; dragging its handle to `beta` stored a session-to-project context edge, drawn faint (pending) at once and in the accent colour after 10 s. The inspector read `Now: failed (not confirmed)` with Retry, Restart with flags and Delete. Restart with flags showed `that session has no transcript to resume` and left the session running. The injected bytes and the restart argv were not seen on screen; the lib.rs integration test covers them.
 
 - 2026-10-22 GUI re-run after the patch round (orchestrator, same scratch projects, stub `claude`): the same result. The edge drew faint, then in the accent colour after 10 s. The inspector read `Now: failed (not confirmed)` with Retry, Restart with flags and Delete. Restart with flags refused with `that session has no transcript to resume` and the session stayed `idle`.
+
+- 2026-10-22 CI (`dbad870`): typecheck, npm test, cargo test, the release build and the bundle check passed on both Windows and Linux. Only the artifact upload failed, on the storage quota; old artifacts were deleted and retention cut to 7 days (`83cdb0d`).
 
 ## Spec Change Log
 

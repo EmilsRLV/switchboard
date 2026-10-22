@@ -92,3 +92,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-6-4-cooperation-edges.md`
   summary: No component tests for the `CooperateEdge` accent on a failed side or for the inspector's per-side Now lines and Retry buttons.
   evidence: There is no DOM test environment in the repo. The 2026-10-22 GUI pass covered both by hand.
+- source_spec: `_bmad-output/implementation-artifacts/spec-6-4-cooperation-edges.md`
+  summary: Story 6.4 (`f796d37`) has not run on CI. It was closed on local Windows verification because GitHub Actions is suspended until the end of the month.
+  evidence: The Linux build and tests have not run for 6.4. When Actions resumes, confirm the CI run on both runners for the latest commit.
