@@ -118,5 +118,6 @@ jobs:
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/msi/*.msi
-          retention-days: 14
+          # Two installers per push add up (about 90 MB): keep a week so the storage quota is not hit.
+          retention-days: 7
           if-no-files-found: error
