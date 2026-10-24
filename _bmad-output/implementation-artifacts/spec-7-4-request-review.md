@@ -2,7 +2,7 @@
 title: 'Story 7.4: Request review'
 type: 'feature'
 created: '2026-10-25'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '87d211c2408a38c455e08f4ea053e3e0bf94bc7e'
@@ -136,6 +136,8 @@ context:
   - opening from the toast showed the pane, now with `Requested 12:19 AM` under the summary, and `src/auth/refresh.ts` marked `missing`;
   - after Esc, a second request raised the flag and a new toast;
   - clicking the flag opened the replaced request, and both the flag and the toast cleared.
+
+- 2026-10-25 Closed on local Windows verification (Emils' decision): cargo test (496), clippy, tsc, vitest (575), the debug build and two GUI passes. **Linux CI is pending:** GitHub Actions is suspended. Check the run for `4e90cd4` or later on both runners when Actions resumes. Emils' check with the real `claude` is still open: a session requesting review gives the flag, the toast, the notification and the pane.
 
 ## Spec Change Log
 

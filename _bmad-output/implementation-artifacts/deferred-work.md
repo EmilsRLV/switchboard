@@ -116,3 +116,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-7-4-request-review.md`
   summary: No component tests for ReviewPane, ReviewToasts and the card's review flag, and no test of `notify::on_review` skipping a focused window.
   evidence: There is no DOM test environment and the mock app has no window. The 2026-10-25 GUI pass covered the UI.
+- source_spec: `_bmad-output/implementation-artifacts/spec-7-4-request-review.md`
+  summary: Story 7.4 (`4e90cd4`) has not run on CI. It was closed on local Windows verification because GitHub Actions is suspended.
+  evidence: The Linux build and tests have not run, including the Unix symlink branch of the containment test. When Actions resumes, confirm the latest commit on both runners.
