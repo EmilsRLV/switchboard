@@ -1611,13 +1611,48 @@ fn prepare_launch(state: &AppState, launch: &Launch) -> Result<(PathBuf, Vec<Str
     Ok((program, args))
 }
 
-/// Start a prepared launch: the live entry (`starting`), the hooks token and settings file, the
-/// session terminal. A failure undoes what this call created and runs `give_back`.
+/// Story 7.1: a launch's add-dirs as `my_node()` reports them, each with where it came from: a
+/// folder one of the context edges the launch draws on grants (the project's for New; the
+/// session's own -- the original's for a fork -- and its project's for Resume and Fork) is
+/// `edge → <target>`, anything else was typed on the sheet. Blocking (the folders are checked).
+fn launch_add_dirs(state: &AppState, launch: &Launch) -> Vec<graph::EdgeDir> {
+    let project = graph::NodeRef {
+        kind: graph::NodeType::Project,
+        id: launch.project_id.clone(),
+    };
+    let from = match &launch.kind {
+        launch::LaunchKind::New => vec![project],
+        launch::LaunchKind::Resume { id: source } | launch::LaunchKind::Fork { from: source } => vec![
+            graph::NodeRef {
+                kind: graph::NodeType::Session,
+                id: source.clone(),
+            },
+            project,
+        ],
+    };
+    let granted = if launch.request.add_dirs.is_empty() { Vec::new() } else { edge_add_dirs(state, &from, &launch.cwd).0 };
+    launch
+        .request
+        .add_dirs
+        .iter()
+        .map(|path| graph::EdgeDir {
+            path: path.clone(),
+            via: granted
+                .iter()
+                .find(|d| graph::same_path(&d.path, path))
+                .map_or_else(|| launch::VIA_SHEET.to_string(), |d| launch::via_edge(&d.via)),
+        })
+        .collect()
+}
+
+/// Start a prepared launch: the live entry (`starting`), the hooks token and settings file (and,
+/// Story 7.1, the MCP config and `--mcp-config`), the session terminal. A failure undoes what
+/// this call created and runs `give_back`.
 fn run_launch<R: Runtime>(
     app: &AppHandle<R>,
     launch: Launch,
     program: PathBuf,
-    args: Vec<String>,
+    mut args: Vec<String>,
     size: (u16, u16),
     give_back: &dyn Fn(),
 ) -> Result<LaunchResult, String> {
@@ -1651,6 +1686,7 @@ fn run_launch<R: Runtime>(
     };
     let forget = || {
         state.hooks.drop_session(&session_id);
+        state.launcher.forget_add_dirs(&session_id);
         // A launch that failed leaves the id as it was: unknown (new, fork), or exited /
         // historic with all its marks (resume).
         live::update_and_emit(app, |map| {
@@ -1661,25 +1697,45 @@ fn run_launch<R: Runtime>(
     // Hooks (Story 4.3) while the endpoint is up: a token for this session, the hooks block in
     // its settings file, its port in the env. Otherwise `{}` and no port, as in Story 4.2.
     let port = state.hooks.port();
-    let content = match port {
-        Some(port) => {
-            // The session counts as hooked only once its first hook event is accepted.
-            let token = state.hooks.register(&session_id);
-            serde_json::to_string_pretty(&hooks::settings_json(port, &token)).unwrap_or_else(|_| launch::SETTINGS_CONTENT.to_string())
+    // The session counts as hooked only once its first hook event is accepted.
+    let token = port.map(|_| state.hooks.register(&session_id));
+    let content = match (port, &token) {
+        (Some(port), Some(token)) => {
+            serde_json::to_string_pretty(&hooks::settings_json(port, token)).unwrap_or_else(|_| launch::SETTINGS_CONTENT.to_string())
         }
-        None => launch::SETTINGS_CONTENT.to_string(),
+        _ => launch::SETTINGS_CONTENT.to_string(),
     };
+    // Story 7.1: what this run's add-dirs are, and where each came from (`my_node().addDirs`);
+    // only `/mcp` reads it, so with the endpoint down the folder checks are skipped.
+    if port.is_some() {
+        state.launcher.record_add_dirs(&session_id, launch_add_dirs(&state, &launch));
+    }
     if resume {
-        // A settings file left by an earlier run of this session (an app that crashed; this
-        // run's own is deleted before its exit shows): the session is not live, so it goes.
+        // A settings file or MCP config left by an earlier run of this session (an app that
+        // crashed; this run's own are deleted before its exit shows): the session is not live,
+        // so they go.
         if let Some(dir) = state.launcher.dir() {
             let _ = std::fs::remove_file(launch::settings_path(&dir, &session_id));
+            let _ = std::fs::remove_file(launch::mcp_path(&dir, &session_id));
         }
     }
     if let Err(message) = state.launcher.write_settings_with(&session_id, &content) {
         forget();
         give_back();
         return Err(message);
+    }
+    // Story 7.1, while the endpoint is up: the `switchboard` MCP server on this session's token,
+    // in `<id>.mcp.json` beside the settings file, passed as `--mcp-config`. Down: neither.
+    if let (Some(port), Some(token)) = (port, &token) {
+        match state.launcher.write_mcp(&session_id, &crate::mcp::config_json(port, token).to_string()) {
+            Ok(path) => args = launch::with_mcp_config(args, &path),
+            Err(message) => {
+                forget();
+                state.launcher.remove_settings(&session_id);
+                give_back();
+                return Err(message);
+            }
+        }
     }
     // A fork's link to its original is saved before the spawn, so its node is emitted once,
     // already linked; a link that cannot be saved refuses the fork.
@@ -1759,6 +1815,7 @@ fn run_launch<R: Runtime>(
                 // same id can issue its own.
                 exit_app.state::<AppState>().hooks.drop_session(&exit_id);
                 exit_app.state::<AppState>().launcher.remove_settings(&exit_id);
+                exit_app.state::<AppState>().launcher.forget_add_dirs(&exit_id);
                 // Its context edges' live state goes before the node shows `exited`, so a Restart
                 // with flags waiting for that exit marks the resumed run's edges after it (6.3).
                 live_edges::session_exited(&exit_app, &exit_id);

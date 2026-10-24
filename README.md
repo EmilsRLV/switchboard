@@ -842,7 +842,8 @@ npm, uninstall the global npm package after installing the native one.
 
 ```
 <claude> --session-id <uuid> --name <name> [--model <m>] [--effort <e>] [--permission-mode <p>] [--add-dir <d>]…
-         --settings <session dir>/<uuid>.settings.json --append-system-prompt <context> [<prompt>]
+         --settings <session dir>/<uuid>.settings.json [--mcp-config <session dir>/<uuid>.mcp.json]
+         --append-system-prompt <context> [<prompt>]
 ```
 
 in the project folder, in a terminal (`TERM=xterm-256color`, `COLORTERM=truecolor`, `SWITCHBOARD_NODE=<uuid>`).
@@ -857,7 +858,10 @@ on Linux (else `~/.cache/switchboard/sessions`). On Linux the folder is created 
 user owns it or it is a symlink, and each file is created new (0600), never overwritten. The file is deleted
 when the session's process exits and when the app quits; files a crash left behind are swept at the next start
 once they are a day old. A prompt that starts with `-` is passed after `--`, so it is
-never read as a flag. `--mcp-config` is left out until the MCP server ships.
+never read as a flag. While the hooks endpoint is up, the launch also writes `<uuid>.mcp.json` beside the
+settings file (created, swept and deleted the same way) and passes it as `--mcp-config`: it gives the session the
+[`switchboard` MCP server](#the-switchboard-mcp-server). With the endpoint down there is neither the file nor the
+flag. `--strict-mcp-config` is never passed, so your own MCP servers stay available.
 
 **On the canvas.** The session appears at once under its project as a child in the muted `starting` state, and
 turns `idle` on its first printable output (or its first poll row); the terminal's own start-up escape
@@ -1002,18 +1006,67 @@ every session goes back to the poll's rules, and a banner reads `hooks endpoint 
 **Diagnostics.** Settings (`ctrl+,`) → **Diagnostics** shows the endpoint (`127.0.0.1:<port>` or the bind
 error), hook events received, refused requests, session-id mismatches (an event whose `session_id` is not the
 token's session, nor one a `SessionStart` on that token announced, as after `/clear`; it still applies to the
-token's session) and poll overrides, refreshed every 2 s while open. A failed read shows next to the last
-counters read.
+token's session), poll overrides and **MCP refused requests** (below), refreshed every 2 s while open. Under
+the counters, **Recent MCP refusals** lists the last 20 refused `/mcp` requests newest first
+(`<time> /mcp — <reason>`: `missing token`, `unknown token`, `body too large` or `read timeout`; never any part
+of a token). A failed read shows next to the last counters read.
 
 **Limits worth knowing.**
 - The bearer token is written in the session's settings file, so the session's own processes (Claude, its
   tools, anything it runs) can read it and could post hook events for that session. It only ever changes that
   session's status on the canvas.
+- The same token (also in the session's `.mcp.json`) opens the [`switchboard` MCP server](#the-switchboard-mcp-server):
+  whatever can read it can **read the whole graph** through the read tools: every project path, every live
+  session's name, status and last line, the edges and their labels, and the session's own add-dirs. It cannot
+  change anything (there are no act tools yet).
 - On Windows the settings file is protected only by the per-user `%TEMP%` folder's permissions (on Linux it is
   0600 in a 0700 folder).
 - If one of your own `Stop` hooks blocks the stop (asks Claude to continue), Switchboard's `Stop` hook still
   fires in parallel, so the card may show `finished` and a toast may go out while Claude keeps working; the
   next hook event corrects the state.
+
+## The switchboard MCP server
+
+A session Switchboard starts (New, Resume, Fork) can see the graph it sits in through a `switchboard` MCP
+server inside the app. Sessions started elsewhere do not get it, and nothing is written under `~/.claude`.
+
+**Where.** `POST http://127.0.0.1:<port>/mcp` on the hooks endpoint (same port, 127.0.0.1 only). The launch
+writes `<session dir>/<uuid>.mcp.json`:
+
+```json
+{"mcpServers":{"switchboard":{"type":"http","url":"http://127.0.0.1:<port>/mcp","headers":{"Authorization":"Bearer <token>"}}}}
+```
+
+and passes it with `--mcp-config`. The token is the session's hooks token: it names the caller (no tool takes an
+identity argument) and dies when the session exits.
+
+**Transport.** Streamable HTTP in stateless JSON mode: each POST carries one JSON-RPC message and gets one
+`application/json` reply; no SSE stream, no session id. `initialize`, `ping`, `tools/list` and `tools/call` are
+answered; notifications get a 202 with no body; any other method is "method not found". Another HTTP method is
+405 (`Allow: POST`). A missing, wrong or expired token is a **401 with no body**; an authenticated body over
+1 MiB is a 413 and one that does not arrive within 10 s a 408. Each is counted in Diagnostics as an MCP refusal
+and closes the connection. A tool that fails unexpectedly is a JSON-RPC internal error (-32603); a panic is
+caught that way only in debug builds, as release builds abort on panic. `initialize`
+offers `2025-06-18` (or `2025-03-26` when the client asks for it). The `Origin`, `Accept` and
+`MCP-Protocol-Version` headers are not checked: the clients are not browsers, and every request needs the
+bearer token.
+
+**Read tools.** They never change anything, and the session's settings file allows each one
+(`permissions.allow: ["mcp__switchboard__my_node", …]`), so they never ask for permission. Each result is one
+`text` item holding compact JSON; an error is `isError: true` with a plain message (an unknown node or
+project, or a label two projects share). An unknown tool is such an `isError` result too, by design (the model
+reads it), not a protocol error.
+
+| Tool | Returns |
+|---|---|
+| `my_node()` | `{nodeId, name, path, project{id,label,path}, branch, worktree, cwd, peers[], addDirs[]}`. `path` is `<project>[:<branch>] / <name>`; `branch` is the branch the session was started on, else the branch of its folder; `worktree` is the linked worktree it runs in, else `null`; `addDirs` are the folders the launch was given (`via` `sheet` or `edge → <target>`) plus context edges applied live (`via` `/add-dir`). |
+| `workspace()` | `{projects[{id,label,path,sessions[{nodeId,name,status,lastLine}]}], edges[{id,kind,from,to,label}]}`: live sessions only; names, labels and last lines without control characters and cut to 120 characters; edge ends as `<type>:<id>` (`session:<id>`, `project:<id>`, …). No positions, viewport or historic sessions. It aims to stay under 8 KB: if it would not, the last lines are cut to 40 characters (`lastLinesCut: 40`), then left out (`lastLinesCut: "omitted"`), then the edge labels go too (`truncated: true`). |
+| `node(id)` | A project's `{id,label,path,branch}` or a session's `{nodeId,name,status,lastLine,project,branch}`. An edge end as `workspace()` lists it (`project:<id>`, `session:<id>`) works too; a `branch:` or `folder:` end is an error. |
+| `peers()` | `my_node().peers`: `[{nodeId,name,path,purpose}]` for each cooperate edge. |
+| `sessions(project)` | The project (by id, else label; a label two projects share is an error naming their ids) and its live and historic sessions: `{nodeId,name,status,lastActive}`, live first, then newest. `status` is the live state (`busy`, `idle`, …); `exited` for a session that ran this app run and has ended; `historic` for one known only from its transcript. `lastActive` is the newer of the transcript's last record and what the live map saw. |
+
+**Not yet verified with the real `claude`:** that a `--mcp-config` HTTP server connects without a trust prompt
+(`/mcp` should list `switchboard` as connected), and that calling the read tools asks for no permission.
 
 ## Settings
 

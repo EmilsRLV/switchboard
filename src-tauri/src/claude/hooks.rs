@@ -16,8 +16,13 @@
 //! closed. A failed bind (or a failed server) leaves launches working without hooks (the
 //! settings file is `{}`, as in Story 4.2), drops every token and hooked mark, and raises the
 //! banner `hooks endpoint unavailable: <cause>`.
+//!
+//! The same server answers `POST /mcp`, the `switchboard` MCP endpoint of Story 7.1
+//! (`crate::mcp`), on the same per-session tokens. A refused MCP request (no token, or one no
+//! running session holds) is a 401 counted in `mcp_refused` and kept in a ring of the last
+//! [`MCP_REFUSAL_RING`] refusals (time, path, reason; never the token).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{Ipv4Addr, TcpListener};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -28,7 +33,7 @@ use axum::body::Body;
 use axum::extract::{Path, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{any, post};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{AppHandle, Manager, Runtime};
@@ -60,7 +65,7 @@ pub const MAX_BODY: usize = 1024 * 1024;
 
 /// How much of a refused, over-long body is read and dropped before the reply, so the client
 /// sees the 413 instead of a reset connection.
-const DRAIN_CAP: usize = 16 * 1024 * 1024;
+pub(crate) const DRAIN_CAP: usize = 16 * 1024 * 1024;
 
 /// Each hook's `timeout`, in seconds.
 pub const HOOK_TIMEOUT_SECS: u64 = 5;
@@ -179,7 +184,9 @@ pub fn map_event(event: &str, payload: &Value) -> Option<HookSignal> {
 
 /// The per-session settings file's content while the endpoint is up on `port`: one `http`
 /// hook per wired event, POSTing to `http://127.0.0.1:<port>/hooks/<Event>` with the session's
-/// bearer token written literally (the file is per-user, 0600 on Unix) and a 5 s timeout.
+/// bearer token written literally (the file is per-user, 0600 on Unix) and a 5 s timeout; and
+/// (Story 7.1) `permissions.allow` naming exactly the `switchboard` read tools, so they never
+/// prompt.
 pub fn settings_json(port: u16, token: &str) -> Value {
     let mut hooks = serde_json::Map::new();
     for event in EVENTS {
@@ -195,7 +202,7 @@ pub fn settings_json(port: u16, token: &str) -> Value {
         }
         hooks.insert(event.to_string(), json!([group]));
     }
-    json!({ "hooks": hooks })
+    json!({ "hooks": hooks, "permissions": { "allow": crate::mcp::allowed_tools() } })
 }
 
 /// A fresh token: 32 random bytes (two v4 UUIDs' worth from the OS generator) in hex.
@@ -244,6 +251,36 @@ pub struct DiagnosticsSnapshot {
     pub session_mismatches: u64,
     /// Times the poll overrode a hooked session's state (`LiveMap::poll_overrides`).
     pub poll_overrides: u64,
+    /// `/mcp` requests refused (Story 7.1): 401, and 413 / 408 for an authenticated one.
+    pub mcp_refused: u64,
+    /// The last [`MCP_REFUSAL_RING`] of them, newest first.
+    pub mcp_refusals: Vec<McpRefusal>,
+}
+
+/// How many `/mcp` refusals the diagnostics keep.
+pub const MCP_REFUSAL_RING: usize = 20;
+
+/// Why an `/mcp` request was refused: no bearer token.
+pub const MISSING_TOKEN: &str = "missing token";
+
+/// Why an `/mcp` request was refused: a token no running session holds (wrong, or expired).
+pub const UNKNOWN_TOKEN: &str = "unknown token";
+
+/// Why an authenticated `/mcp` request was refused: its body is over [`MAX_BODY`] (413).
+pub const BODY_TOO_LARGE: &str = "body too large";
+
+/// Why an authenticated `/mcp` request was refused: its body did not arrive within
+/// [`READ_TIMEOUT`] (408).
+pub const READ_TIMED_OUT: &str = "read timeout";
+
+/// One refused `/mcp` request. Never any part of the token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct McpRefusal {
+    /// Milliseconds since the epoch.
+    pub at: i64,
+    pub path: String,
+    /// [`MISSING_TOKEN`], [`UNKNOWN_TOKEN`], [`BODY_TOO_LARGE`] or [`READ_TIMED_OUT`].
+    pub reason: String,
 }
 
 #[derive(Default)]
@@ -257,6 +294,8 @@ struct Inner {
     events: AtomicU64,
     refused: AtomicU64,
     mismatches: AtomicU64,
+    mcp_refused: AtomicU64,
+    mcp_refusals: Mutex<VecDeque<McpRefusal>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -358,6 +397,23 @@ impl Hooks {
             refused: self.inner.refused.load(Ordering::Relaxed),
             session_mismatches: self.inner.mismatches.load(Ordering::Relaxed),
             poll_overrides,
+            mcp_refused: self.inner.mcp_refused.load(Ordering::Relaxed),
+            mcp_refusals: lock(&self.inner.mcp_refusals).iter().rev().cloned().collect(),
+        }
+    }
+
+    /// Count a refused `/mcp` request and keep it in the ring (the oldest drops out past
+    /// [`MCP_REFUSAL_RING`]).
+    pub fn note_mcp_refusal(&self, path: &str, reason: &str) {
+        Self::count(&self.inner.mcp_refused);
+        let mut ring = lock(&self.inner.mcp_refusals);
+        ring.push_back(McpRefusal {
+            at: crate::claude::live::now_ms(),
+            path: path.to_string(),
+            reason: reason.to_string(),
+        });
+        while ring.len() > MCP_REFUSAL_RING {
+            ring.pop_front();
         }
     }
 
@@ -382,16 +438,19 @@ pub const MAX_CONNECTIONS: usize = 64;
 pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
-struct Ctx {
-    hooks: Hooks,
+pub(crate) struct Ctx {
+    pub(crate) hooks: Hooks,
     /// To the worker thread that applies accepted events (so the reply never waits for the
     /// live lock, the emit or the toast).
     applier: std::sync::mpsc::Sender<(String, HookSignal)>,
+    /// What answers the MCP tool calls (Story 7.1).
+    pub(crate) tools: crate::mcp::Tools,
 }
 
-/// The router: `POST /hooks/{event}`; everything else 404. Accepted events go to `apply` on a
-/// worker thread, one at a time in arrival order; the thread ends when the router is dropped.
-pub fn router(hooks: Hooks, apply: Apply) -> Router {
+/// The router: `POST /hooks/{event}` and `/mcp` (Story 7.1, `crate::mcp::handle`); everything
+/// else 404. Accepted events go to `apply` on a worker thread, one at a time in arrival order;
+/// the thread ends when the router is dropped. MCP tool calls go to `tools`.
+pub fn router(hooks: Hooks, apply: Apply, tools: crate::mcp::Tools) -> Router {
     let (applier, queue) = std::sync::mpsc::channel::<(String, HookSignal)>();
     let spawned = std::thread::Builder::new().name("hooks-apply".into()).spawn(move || {
         for (session, signal) in queue {
@@ -403,12 +462,13 @@ pub fn router(hooks: Hooks, apply: Apply) -> Router {
     }
     Router::new()
         .route("/hooks/{event}", post(receive).fallback(not_found))
+        .route("/mcp", any(crate::mcp::handle))
         .fallback(not_found)
-        .with_state(Ctx { hooks, applier })
+        .with_state(Ctx { hooks, applier, tools })
 }
 
 /// The bearer token in `Authorization`, if any.
-fn bearer(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(header::AUTHORIZATION)?
         .to_str()
@@ -417,13 +477,13 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .map(str::trim)
 }
 
-fn declared_length(headers: &HeaderMap) -> Option<u64> {
+pub(crate) fn declared_length(headers: &HeaderMap) -> Option<u64> {
     headers.get(header::CONTENT_LENGTH)?.to_str().ok()?.trim().parse().ok()
 }
 
 /// Why a body was not read.
 #[derive(Debug, PartialEq, Eq)]
-enum Unread {
+pub(crate) enum Unread {
     /// Over [`MAX_BODY`] (declared or as it arrived).
     TooLarge,
     /// Slower than [`READ_TIMEOUT`], or the connection failed.
@@ -447,7 +507,7 @@ async fn next_chunk(body: &mut Body) -> Option<Result<axum::body::Bytes, ()>> {
 
 /// Read and drop what is left of `body`, `seen` bytes in, up to [`DRAIN_CAP`] in all (never
 /// buffered), so the client is reading its reply when the connection closes.
-async fn discard(mut body: Body, mut seen: usize) {
+pub(crate) async fn discard(mut body: Body, mut seen: usize) {
     let drain = async {
         while seen <= DRAIN_CAP {
             match next_chunk(&mut body).await {
@@ -461,7 +521,7 @@ async fn discard(mut body: Body, mut seen: usize) {
 
 /// The body, at most [`MAX_BODY`] bytes, read within [`READ_TIMEOUT`]. A longer one (declared,
 /// or chunked and found out as it arrives) is not buffered: the rest is discarded.
-async fn read_body(mut body: Body, declared: Option<u64>) -> Result<Vec<u8>, Unread> {
+pub(crate) async fn read_body(mut body: Body, declared: Option<u64>) -> Result<Vec<u8>, Unread> {
     if let Some(len) = declared.filter(|len| *len > MAX_BODY as u64) {
         if len <= DRAIN_CAP as u64 {
             discard(body, 0).await;
@@ -492,7 +552,7 @@ fn empty(status: StatusCode) -> Response {
 
 /// A refusal: counted, the body (unread so far) discarded, and the connection closed after
 /// the reply.
-async fn refuse(ctx: &Ctx, status: StatusCode, body: Option<(Body, Option<u64>)>) -> Response {
+pub(crate) async fn refuse(ctx: &Ctx, status: StatusCode, body: Option<(Body, Option<u64>)>) -> Response {
     Hooks::count(&ctx.hooks.inner.refused);
     if let Some((body, declared)) = body
         && declared.is_none_or(|len| len <= DRAIN_CAP as u64)
@@ -661,7 +721,10 @@ pub fn start_on<R: Runtime>(app: &AppHandle<R>, bound: std::io::Result<TcpListen
     let apply: Apply = Arc::new(move |id, signal| {
         crate::claude::live::hook_and_emit(&apply_app, id, signal);
     });
-    let router = router(state.hooks.clone(), apply);
+    // MCP tool calls (Story 7.1) answer from the app's live state.
+    let tools_app = app.clone();
+    let tools: crate::mcp::Tools = Arc::new(move |session, tool, args| crate::mcp::call(&tools_app.state::<AppState>(), session, tool, args));
+    let router = router(state.hooks.clone(), apply, tools);
     let handle = app.clone();
     Some(tauri::async_runtime::spawn(async move {
         if let Err(err) = serve(listener, router).await {
@@ -765,7 +828,7 @@ pub mod tests {
         });
         let listener = bind().unwrap();
         let port = listener.local_addr().unwrap().port();
-        let app = router(hooks.clone(), apply);
+        let app = router(hooks.clone(), apply, Arc::new(|_, _, _| Err("no app state".into())));
         let task = tauri::async_runtime::spawn(async move {
             let _ = serve(listener, app).await;
         });
@@ -872,6 +935,18 @@ pub mod tests {
             }
         }
         assert!(hooks.get("PreToolUse").is_none());
+        // Story 7.1: exactly the read tools are allowed, so they never prompt.
+        assert_eq!(
+            value["permissions"]["allow"],
+            json!([
+                "mcp__switchboard__my_node",
+                "mcp__switchboard__workspace",
+                "mcp__switchboard__node",
+                "mcp__switchboard__peers",
+                "mcp__switchboard__sessions"
+            ])
+        );
+        assert_eq!(value.as_object().unwrap().len(), 2, "hooks and permissions only");
     }
 
     #[test]

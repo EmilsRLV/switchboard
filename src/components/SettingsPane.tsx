@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { runCommand } from "../commands/registry";
 import { diagnosticsGet, hasTauriRuntime, type Binary, type DiagnosticsSnapshot } from "../ipc";
-import { DIAGNOSTICS_REFRESH_MS, diagnosticsError, diagnosticsRows } from "./diagnostics";
+import { DIAGNOSTICS_REFRESH_MS, diagnosticsError, diagnosticsRows, mcpRefusalLines } from "./diagnostics";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
 
@@ -98,7 +98,8 @@ export function SettingsPane() {
 
 /**
  * Settings → Diagnostics (Story 4.3): the hooks endpoint and its counters, read through
- * `diagnostics_get` on open and every 2 s while the pane is open.
+ * `diagnostics_get` on open and every 2 s while the pane is open; below them (Story 7.1) the last
+ * refused `/mcp` requests, when there are any.
  */
 function Diagnostics() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot | null>(null);
@@ -148,6 +149,18 @@ function Diagnostics() {
             </div>
           ))}
         </dl>
+      )}
+      {diagnostics !== null && diagnostics.mcp_refusals.length > 0 && (
+        <>
+          <h4 className="diagnostics-caption" id="mcp-refusals-caption">
+            Recent MCP refusals
+          </h4>
+          <ul className="diagnostics-refusals" aria-labelledby="mcp-refusals-caption">
+            {mcpRefusalLines(diagnostics.mcp_refusals).map((line, i) => (
+              <li key={i}>{line}</li>
+            ))}
+          </ul>
+        </>
       )}
     </section>
   );

@@ -269,6 +269,28 @@
   overflow-wrap: anywhere;
 }
 
+/* Story 7.1: the last refused `/mcp` requests under the counters, one muted mono line each,
+   under a caption in the section-heading style. */
+.diagnostics-caption {
+  margin: 0.75rem 0 0.25rem;
+  font-size: var(--text-sm);
+  font-weight: 400;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.diagnostics-refusals {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.125rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
 /* --- import pane ---------------------------------------------------------------------- */
 
 .import-list {

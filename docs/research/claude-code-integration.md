@@ -64,9 +64,28 @@ Not covered by that pass: `StopFailure`, `Elicitation`, the `elicitation_*` / `a
 
 ## MCP
 
-`--mcp-config` accepts a JSON string or file with `{"mcpServers": {"<name>": {"type": "http", "url": "...", "headers": {...}}}}`. Streamable HTTP is supported for remote servers. **verify** in Story 7.1 that CLI-supplied HTTP servers need no interactive trust prompt (expected: `--mcp-config` is trusted).
+`--mcp-config` accepts a JSON string or file with `{"mcpServers": {"<name>": {"type": "http", "url": "...", "headers": {...}}}}`. Streamable HTTP is supported for remote servers.
 
-Rust MCP server crate: `rmcp` (official `modelcontextprotocol/rust-sdk`), streamable-HTTP transport feature. Confirm current version at implementation time.
+What Story 7.1 relies on (built, tested against a stub client only):
+- Every app-launched session (New, Resume, Fork) gets `--mcp-config <session dir>/<id>.mcp.json` while the
+  hooks endpoint is up: `{"mcpServers":{"switchboard":{"type":"http","url":"http://127.0.0.1:<port>/mcp","headers":{"Authorization":"Bearer <token>"}}}}`.
+  The token is the session's hooks token. `--strict-mcp-config` is not passed, so the operator's own servers stay.
+- The per-session `--settings` file gains `"permissions":{"allow":["mcp__switchboard__my_node","mcp__switchboard__workspace","mcp__switchboard__node","mcp__switchboard__peers","mcp__switchboard__sessions"]}`
+  so the read tools never prompt. **verify** that this allow rule format (`mcp__<server>__<tool>`) is honoured
+  for a server supplied by `--mcp-config`.
+- The server is hand-rolled (Emils' decision; no `rmcp`): streamable HTTP in stateless JSON mode. Each POST is
+  one JSON-RPC message with one `application/json` reply; notifications get 202; a GET (the client probing for
+  an SSE stream) gets 405, which the spec allows. `initialize` echoes the client's `protocolVersion` when it is
+  `2025-06-18` or `2025-03-26` (the streamable-HTTP versions), else offers `2025-06-18`. **verify** with the
+  real client that it accepts the 405 on GET and works without an `Mcp-Session-Id`.
+- `Origin`, `Accept` and `MCP-Protocol-Version` are not checked (the clients are not browsers, and every request
+  needs the bearer token). An unknown tool is an `isError` tool result by design, not a JSON-RPC error.
+- The token now also grants read access to the whole graph (project paths, other sessions' names and last
+  lines, edges), so anything that can read the session's settings or `.mcp.json` file can read it.
+
+**Pending, by hand with the real `claude` (Emils):** `/mcp` lists `switchboard` as connected with **no trust
+prompt** (expected: `--mcp-config` servers are trusted), and asking Claude to call `my_node` and `workspace`
+shows no permission prompt and the right data.
 
 ## Native session-to-session messaging
 

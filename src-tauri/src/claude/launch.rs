@@ -11,8 +11,11 @@
 //! `$XDG_RUNTIME_DIR` else the cache dir on Linux; on Unix the folder is 0700 and must be the
 //! user's own, and each file is created exclusively), deleted when the session's process exits
 //! and on app exit; at startup the folder is swept of files older than 24 h whose session is not
-//! running. `--mcp-config` stays out until the MCP server ships (Epic 7), and
-//! `bypassPermissions` / `--dangerously-skip-permissions` are never produced.
+//! running. While the endpoint is up, a launch also gets `<sessionId>.mcp.json` beside the
+//! settings file (Story 7.1: the `switchboard` MCP server with the session's bearer token,
+//! created the same way and deleted at the same points) and `--mcp-config <file>`; with the
+//! endpoint down there is neither. `--strict-mcp-config` is never passed (the operator's own MCP
+//! servers stay), and `bypassPermissions` / `--dangerously-skip-permissions` are never produced.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -61,6 +64,21 @@ pub const ID_IN_USE: &str = "that session id is already in use; open the sheet a
 
 /// The settings file's name after the session id.
 pub const SETTINGS_SUFFIX: &str = ".settings.json";
+
+/// The per-session MCP config's name after the session id (Story 7.1).
+pub const MCP_SUFFIX: &str = ".mcp.json";
+
+/// The flag that names the per-session MCP config.
+pub const MCP_CONFIG_FLAG: &str = "--mcp-config";
+
+/// Where a launch's add-dir came from (Story 7.1, `my_node().addDirs[].via`): typed on the
+/// launch sheet.
+pub const VIA_SHEET: &str = "sheet";
+
+/// The `via` of an add-dir a context edge granted at launch: `edge → <target label>`.
+pub fn via_edge(target: &str) -> String {
+    format!("edge → {target}")
+}
 
 /// The per-session settings file while the hooks endpoint is down (Story 4.3 writes the hooks
 /// block, `crate::claude::hooks::settings_json`, while it is up).
@@ -226,6 +244,14 @@ pub fn claude_worktree_path(top: &Path, name: &str) -> PathBuf {
 pub fn with_worktree_flag(mut args: Vec<String>, name: &str) -> Vec<String> {
     let at = args.iter().position(|a| a == "--settings").unwrap_or(args.len());
     args.splice(at..at, ["--worktree".to_string(), name.to_string()]);
+    args
+}
+
+/// `args` with `--mcp-config <path>` right after `--settings <file>` (Story 7.1), so a prompt
+/// stays last; appended when there is no `--settings`.
+pub fn with_mcp_config(mut args: Vec<String>, path: &Path) -> Vec<String> {
+    let at = args.iter().position(|a| a == "--settings").map_or(args.len(), |i| (i + 2).min(args.len()));
+    args.splice(at..at, [MCP_CONFIG_FLAG.to_string(), path.display().to_string()]);
     args
 }
 
@@ -710,12 +736,27 @@ pub fn write_settings_file(dir: &Path, session_id: &str) -> std::io::Result<Path
     write_settings_file_with(dir, session_id, SETTINGS_CONTENT)
 }
 
+/// `<dir>/<session_id>.mcp.json` (Story 7.1).
+pub fn mcp_path(dir: &Path, session_id: &str) -> PathBuf {
+    dir.join(format!("{session_id}{MCP_SUFFIX}"))
+}
+
 /// Write `content` to a new settings file for the session ([`prepare_dir`] first). The file is
 /// created exclusively (0600 on Unix): one already there is an `Err`, never overwritten.
 pub fn write_settings_file_with(dir: &Path, session_id: &str, content: &str) -> std::io::Result<PathBuf> {
+    write_exclusive(dir, settings_path(dir, session_id), content)
+}
+
+/// Write `content` to a new MCP config for the session, created as the settings file is
+/// ([`write_settings_file_with`]).
+pub fn write_mcp_file(dir: &Path, session_id: &str, content: &str) -> std::io::Result<PathBuf> {
+    write_exclusive(dir, mcp_path(dir, session_id), content)
+}
+
+/// [`prepare_dir`], then `content` into the new file `path` (exclusive, 0600 on Unix).
+fn write_exclusive(dir: &Path, path: PathBuf, content: &str) -> std::io::Result<PathBuf> {
     use std::io::Write;
     prepare_dir(dir)?;
-    let path = settings_path(dir, session_id);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -727,8 +768,9 @@ pub fn write_settings_file_with(dir: &Path, session_id: &str, content: &str) -> 
     Ok(path)
 }
 
-/// Delete every `*.settings.json` in `dir` last modified more than `max_age` before `now` whose
-/// session id is not in `running`. Returns what was deleted. A missing folder is nothing to do.
+/// Delete every `*.settings.json` and `*.mcp.json` in `dir` last modified more than `max_age`
+/// before `now` whose session id is not in `running`. Returns what was deleted. A missing folder
+/// is nothing to do.
 pub fn sweep(dir: &Path, running: &HashSet<String>, max_age: Duration, now: SystemTime) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -736,7 +778,11 @@ pub fn sweep(dir: &Path, running: &HashSet<String>, max_age: Duration, now: Syst
     let mut removed = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        let Some(id) = path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(SETTINGS_SUFFIX)) else {
+        let Some(id) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(SETTINGS_SUFFIX).or_else(|| n.strip_suffix(MCP_SUFFIX)))
+        else {
             continue;
         };
         if running.contains(id) {
@@ -767,6 +813,11 @@ pub struct Launcher {
     dir: Mutex<Option<PathBuf>>,
     /// Session ids whose settings file this run wrote and has not deleted.
     files: Mutex<HashSet<String>>,
+    /// Session ids whose MCP config (Story 7.1) this run wrote and has not deleted.
+    mcp_files: Mutex<HashSet<String>>,
+    /// Story 7.1: the add-dirs each running session was launched with, each with where it came
+    /// from ([`VIA_SHEET`] or [`via_edge`]). Memory only; dropped when the session exits.
+    add_dirs: Mutex<HashMap<String, Vec<graph::EdgeDir>>>,
     /// Project id → the session id its sheet's default name was made from.
     proposed: Mutex<HashMap<String, String>>,
     /// Forks under way (Story 4.4): original id → the new id. A second fork of the same
@@ -827,25 +878,57 @@ impl Launcher {
         Ok(path)
     }
 
-    /// Delete the session's settings file (its process exited, or never started), only when
-    /// this run wrote it.
+    /// Write the session's MCP config (Story 7.1) with `content` and remember it for deletion.
+    pub fn write_mcp(&self, session_id: &str, content: &str) -> Result<PathBuf, String> {
+        let dir = self.dir().ok_or_else(|| "no folder for session settings files".to_string())?;
+        let path = write_mcp_file(&dir, session_id, content).map_err(|err| format!("could not write session MCP config: {err}"))?;
+        lock(&self.mcp_files).insert(session_id.to_string());
+        Ok(path)
+    }
+
+    /// Delete the session's settings file and MCP config (its process exited, or never
+    /// started), each only when this run wrote it.
     pub fn remove_settings(&self, session_id: &str) {
-        if !lock(&self.files).remove(session_id) {
-            return;
-        }
+        let settings = lock(&self.files).remove(session_id);
+        let mcp = lock(&self.mcp_files).remove(session_id);
         if let Some(dir) = self.dir() {
-            let _ = std::fs::remove_file(settings_path(&dir, session_id));
+            if settings {
+                let _ = std::fs::remove_file(settings_path(&dir, session_id));
+            }
+            if mcp {
+                let _ = std::fs::remove_file(mcp_path(&dir, session_id));
+            }
         }
     }
 
-    /// Delete every settings file this run wrote (app exit).
+    /// Delete every settings file and MCP config this run wrote (app exit).
     pub fn remove_all(&self) {
         let ids: Vec<String> = lock(&self.files).drain().collect();
+        let mcp: Vec<String> = lock(&self.mcp_files).drain().collect();
         if let Some(dir) = self.dir() {
             for id in ids {
                 let _ = std::fs::remove_file(settings_path(&dir, &id));
             }
+            for id in mcp {
+                let _ = std::fs::remove_file(mcp_path(&dir, &id));
+            }
         }
+    }
+
+    /// Record the add-dirs session `session_id` was launched with (Story 7.1), replacing any
+    /// earlier run's.
+    pub fn record_add_dirs(&self, session_id: &str, dirs: Vec<graph::EdgeDir>) {
+        lock(&self.add_dirs).insert(session_id.to_string(), dirs);
+    }
+
+    /// The add-dirs the session's current run was launched with.
+    pub fn add_dirs_of(&self, session_id: &str) -> Vec<graph::EdgeDir> {
+        lock(&self.add_dirs).get(session_id).cloned().unwrap_or_default()
+    }
+
+    /// Forget the session's launch add-dirs (it exited, or its launch failed).
+    pub fn forget_add_dirs(&self, session_id: &str) {
+        lock(&self.add_dirs).remove(session_id);
     }
 
     /// Session ids whose settings file is still kept.
@@ -922,7 +1005,36 @@ mod tests {
                 "ctx"
             ]
         );
-        assert!(!args.iter().any(|a| a == "--mcp-config" || a == "--dangerously-skip-permissions"));
+        assert!(!args.iter().any(|a| a == "--dangerously-skip-permissions" || a == "--strict-mcp-config"));
+        // Story 7.1: with the endpoint up, `--mcp-config <file>` goes right after the settings
+        // file; the endpoint down leaves the recipe as above.
+        let mcp = Path::new("/tmp/s/x.mcp.json");
+        let with = with_mcp_config(args.clone(), mcp);
+        let settings = Path::new("/tmp/s/x.settings.json").display().to_string();
+        assert_eq!(
+            with,
+            [
+                "--session-id",
+                ID,
+                "--name",
+                "ide-3f2a",
+                "--settings",
+                &settings,
+                "--mcp-config",
+                &mcp.display().to_string(),
+                "--append-system-prompt",
+                "ctx"
+            ]
+        );
+        assert!(!with.iter().any(|a| a == "--strict-mcp-config"));
+        // The prompt stays last, and `--worktree` still goes before `--settings`.
+        let req = LaunchRequest { prompt: Some("hi".into()), ..request() };
+        let args = with_mcp_config(with_worktree_flag(build_args(&LaunchKind::New, &req, ID, Path::new("s.json"), "ctx").unwrap(), "w"), Path::new("m.json"));
+        assert_eq!(
+            &args[4..],
+            ["--worktree", "w", "--settings", "s.json", "--mcp-config", "m.json", "--append-system-prompt", "ctx", "hi"]
+        );
+        assert_eq!(with_mcp_config(vec!["a".into()], Path::new("m.json")), ["a", "--mcp-config", "m.json"]);
     }
 
     #[test]
@@ -1444,6 +1556,61 @@ mod tests {
         assert!(!old.exists());
         assert!(young.exists() && running.exists() && other.exists());
         assert!(sweep(&temp.path().join("missing"), &set, SWEEP_AGE, now).is_empty());
+    }
+
+    #[test]
+    fn mcp_configs_are_written_beside_the_settings_file_and_go_with_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("switchboard").join("sessions");
+        let launcher = Launcher::default();
+        assert!(launcher.write_mcp("a", "{}").is_err(), "no folder set");
+        launcher.set_dir(dir.clone());
+        let settings = launcher.write_settings("a").unwrap();
+        let mcp = launcher.write_mcp("a", "{\"mcpServers\":{}}").unwrap();
+        assert_eq!(mcp, dir.join("a.mcp.json"));
+        assert_eq!(mcp, mcp_path(&dir, "a"));
+        assert_eq!(std::fs::read_to_string(&mcp).unwrap(), "{\"mcpServers\":{}}");
+        // Exclusive, like the settings file: a second write is refused and changes nothing.
+        assert!(launcher.write_mcp("a", "x").unwrap_err().starts_with("could not write session MCP config"));
+        assert_eq!(std::fs::read_to_string(&mcp).unwrap(), "{\"mcpServers\":{}}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(std::fs::metadata(&mcp).unwrap().mode() & 0o777, 0o600);
+        }
+        launcher.remove_settings("a");
+        assert!(!settings.exists() && !mcp.exists(), "both go when the session exits");
+        // A planted config this run did not write is left alone.
+        std::fs::write(mcp_path(&dir, "p"), "planted").unwrap();
+        launcher.write_settings("p").unwrap();
+        launcher.remove_settings("p");
+        assert!(mcp_path(&dir, "p").exists());
+        // App exit takes every one this run wrote.
+        launcher.write_settings("b").unwrap();
+        let b = launcher.write_mcp("b", "{}").unwrap();
+        launcher.remove_all();
+        assert!(!b.exists());
+        // The sweep takes old configs as it takes old settings files.
+        let now = SystemTime::now();
+        let old = write_mcp_file(&dir, "old", "{}").unwrap();
+        std::fs::File::options().write(true).open(&old).unwrap().set_modified(now - SWEEP_AGE - Duration::from_secs(60)).unwrap();
+        assert_eq!(sweep(&dir, &HashSet::new(), SWEEP_AGE, now), vec![old.clone()]);
+        std::fs::remove_file(mcp_path(&dir, "p")).unwrap();
+    }
+
+    #[test]
+    fn launch_add_dirs_are_recorded_per_session_and_forgotten() {
+        let launcher = Launcher::default();
+        assert!(launcher.add_dirs_of("s").is_empty());
+        let dirs = vec![
+            graph::EdgeDir { path: "/w/ui".into(), via: via_edge("ui") },
+            graph::EdgeDir { path: "/w/x".into(), via: VIA_SHEET.into() },
+        ];
+        launcher.record_add_dirs("s", dirs.clone());
+        assert_eq!(launcher.add_dirs_of("s"), dirs);
+        assert_eq!(dirs[0].via, "edge → ui");
+        launcher.forget_add_dirs("s");
+        assert!(launcher.add_dirs_of("s").is_empty());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import type { DiagnosticsSnapshot } from "../ipc";
+import type { DiagnosticsSnapshot, McpRefusal } from "../ipc";
 
 /** How often Settings → Diagnostics re-reads `diagnostics_get` while the pane is open. */
 export const DIAGNOSTICS_REFRESH_MS = 2_000;
@@ -17,7 +17,7 @@ export function diagnosticsError(error: string | null, hasCounters: boolean): st
 
 /**
  * The Diagnostics section's rows (Story 4.3): the hooks endpoint (`127.0.0.1:<port>`, the
- * bind error, or `not started`), then the four counters.
+ * bind error, or `not started`), then the four counters, then (Story 7.1) the `/mcp` refusals.
  */
 export function diagnosticsRows(d: DiagnosticsSnapshot): DiagnosticsRow[] {
   const endpoint =
@@ -32,5 +32,21 @@ export function diagnosticsRows(d: DiagnosticsSnapshot): DiagnosticsRow[] {
     { label: "refused requests", value: String(d.refused), attention: false },
     { label: "session-id mismatches", value: String(d.session_mismatches), attention: false },
     { label: "poll overrides", value: String(d.poll_overrides), attention: false },
+    { label: "MCP refused requests", value: String(d.mcp_refused), attention: false },
   ];
+}
+
+/** A time of day as the refusal list shows it (local time, `HH:MM:SS`). */
+export function clockTime(ms: number): string {
+  const d = new Date(ms);
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
+}
+
+/**
+ * The last `/mcp` refusals (Story 7.1), newest first, one line each:
+ * `<time> <path> — <reason>`. Never any part of a token (Rust does not keep one).
+ */
+export function mcpRefusalLines(refusals: McpRefusal[], time: (ms: number) => string = clockTime): string[] {
+  return refusals.map((r) => `${time(r.at)} ${r.path} — ${r.reason}`);
 }

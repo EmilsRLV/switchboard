@@ -362,6 +362,19 @@ export type DiagnosticsSnapshot = {
   refused: number;
   session_mismatches: number;
   poll_overrides: number;
+  /** `/mcp` requests refused with a 401 (Story 7.1). */
+  mcp_refused: number;
+  /** The last 20 of them, newest first. */
+  mcp_refusals: McpRefusal[];
+};
+
+/** Mirrors `hooks::McpRefusal`: one refused `/mcp` request (never any part of the token). */
+export type McpRefusal = {
+  /** Milliseconds since the epoch. */
+  at: number;
+  path: string;
+  /** `missing token` or `unknown token`. */
+  reason: string;
 };
 
 /** Mirrors `live::ElsewhereRow`: a live session in a folder that is not on the canvas. */

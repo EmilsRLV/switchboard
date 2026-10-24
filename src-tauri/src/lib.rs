@@ -5,6 +5,7 @@ pub mod claude;
 pub mod git;
 pub mod graph;
 pub mod ipc;
+pub mod mcp;
 pub mod notify;
 pub mod persist;
 pub mod process;
@@ -1730,6 +1731,137 @@ mod tests {
         super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
     }
 
+    /// Story 7.1: with the endpoint up, a launch writes `<id>.mcp.json` beside its settings file
+    /// and passes `--mcp-config`; `/mcp` answers `my_node` on the session's token, refuses a bad
+    /// one into the diagnostics, and refuses the token once the session exits (the file goes).
+    /// The fixture program stands in for `claude`.
+    #[test]
+    fn a_launched_session_reaches_the_mcp_endpoint_on_its_token_until_it_exits() {
+        use super::claude::hooks::{self, tests::http};
+        use super::claude::live::SessionState;
+        use serde_json::json;
+        let (app, webview, _dir, folder, sessions) = launch_fixture();
+        let state = app.state::<super::AppState>();
+        let server = hooks::start_on(app.handle(), hooks::bind()).expect("the endpoint starts");
+        let port = state.hooks.port().expect("up");
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        let extra = tempfile::tempdir().unwrap();
+        let prefill = call("launch_defaults", json!({ "projectId": "ide" })).unwrap();
+        let request = json!({
+            "projectId": "ide", "sessionId": prefill["sessionId"], "name": prefill["name"],
+            "addDirs": [extra.path().display().to_string()]
+        });
+        let reply = call("session_launch", json!({ "request": request, "cols": 1000, "rows": 30 })).expect("session_launch");
+        let id = reply["session_id"].as_str().unwrap().to_string();
+        let term_id = format!("session:{id}");
+
+        // The token is in the settings file; the MCP config carries the same one.
+        let settings_file = sessions.join(format!("{id}.settings.json"));
+        let mcp_file = sessions.join(format!("{id}.mcp.json"));
+        let settings: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&settings_file).unwrap()).unwrap();
+        let auth = settings["hooks"]["Stop"][0]["hooks"][0]["headers"]["Authorization"].as_str().unwrap().to_string();
+        let token = auth.strip_prefix("Bearer ").unwrap().to_string();
+        let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&mcp_file).unwrap()).unwrap();
+        assert_eq!(config, super::mcp::config_json(port, &token));
+        assert_eq!(settings["permissions"]["allow"], json!(super::mcp::allowed_tools()));
+
+        let rpc = |token: Option<&str>, body: serde_json::Value| http(port, "POST", "/mcp", token, body.to_string().as_bytes());
+        let (status, body) = rpc(Some(&token), json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-06-18" } }));
+        assert_eq!(status, 200);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["result"]["serverInfo"]["name"], "switchboard");
+        let my_node = |token: &str| rpc(Some(token), json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "my_node", "arguments": {} } }));
+        let (status, body) = my_node(&token);
+        assert_eq!(status, 200);
+        let reply: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(reply["result"]["isError"], false);
+        let me: serde_json::Value = serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        let project_path = dunce::canonicalize(folder.path()).unwrap().display().to_string();
+        let extra_dir = dunce::canonicalize(extra.path()).unwrap().display().to_string();
+        assert_eq!(me["nodeId"], id.as_str());
+        assert_eq!(me["name"], prefill["name"]);
+        assert_eq!(me["project"], json!({ "id": "ide", "label": "ide", "path": project_path }));
+        assert_eq!(me["cwd"], project_path.as_str());
+        assert_eq!(me["worktree"], serde_json::Value::Null);
+        assert_eq!(me["peers"], json!([]));
+        assert_eq!(me["addDirs"], json!([{ "path": extra_dir, "via": "sheet" }]));
+
+        // A wrong token: 401, counted, the ring names the reason and never the token.
+        assert_eq!(my_node("nope"), (401, String::new()));
+        let diagnostics = call("diagnostics_get", json!({})).expect("diagnostics_get");
+        assert_eq!(diagnostics["mcp_refused"], 1);
+        assert_eq!(diagnostics["mcp_refusals"][0]["reason"], "unknown token");
+        assert_eq!(diagnostics["mcp_refusals"][0]["path"], "/mcp");
+        assert!(!diagnostics.to_string().contains(&token));
+
+        // Let the fixture print its argv and exit.
+        state.terms.write(&term_id, b"\r").unwrap();
+        let output = || super::pty::tests::strip_escapes(&state.terms.buffer(&term_id).unwrap().data);
+        wait_until(&app, &term_id, "the exit", || state.read_sessions_live().sessions[&id].state == SessionState::Exited);
+        wait_until(&app, &term_id, "the files to go", || !settings_file.exists() && !mcp_file.exists());
+        let text = output();
+        let (settings_arg, mcp_arg) = (settings_file.display().to_string(), mcp_file.display().to_string());
+        if cfg!(windows) {
+            let flat = text.replace(['\r', '\n'], "");
+            let part = format!("--settings {settings_arg} --mcp-config {mcp_arg} --append-system-prompt");
+            assert!(flat.contains(&part), "{part:?} missing from {flat:?}");
+        } else {
+            let part = ["--settings", &settings_arg, "--mcp-config", &mcp_arg, "--append-system-prompt"].map(|a| format!("[{a}]")).join("\r\n");
+            assert!(text.contains(&part), "argv not as built:\n{text}");
+        }
+        assert!(!text.contains("--strict-mcp-config"));
+
+        // The token died with the session: refused as unknown; the add-dirs record is gone.
+        assert_eq!(my_node(&token).0, 401);
+        assert!(state.launcher.add_dirs_of(&id).is_empty());
+        let diagnostics = call("diagnostics_get", json!({})).expect("diagnostics_get");
+        assert_eq!(diagnostics["mcp_refused"], 2);
+        assert_eq!(diagnostics["mcp_refusals"][0]["reason"], "unknown token");
+        server.abort();
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
+    }
+
+    /// Story 7.1: a Resume with the endpoint up and an `<id>.mcp.json` left by an earlier run (a
+    /// crash) starts, writes a fresh config on its new token and passes it after `--settings`.
+    #[test]
+    fn a_resume_replaces_a_leftover_mcp_config() {
+        use super::claude::hooks;
+        use serde_json::json;
+        let (app, webview, _dir, folder, sessions) = launch_fixture();
+        let state = app.state::<super::AppState>();
+        let server = hooks::start_on(app.handle(), hooks::bind()).expect("up");
+        let port = state.hooks.port().unwrap();
+        *state.launcher.program.lock().unwrap() = Some(echo_program());
+        let orig = "7b3e1e3f-5b7d-4e8f-9a0b-1c2d3e4f5a6b";
+        let ide = dunce::canonicalize(folder.path()).unwrap().display().to_string();
+        discover(&app, orig, "ide-7b3e", &ide);
+        std::fs::create_dir_all(&sessions).unwrap();
+        let (settings_file, mcp_file) = (sessions.join(format!("{orig}.settings.json")), sessions.join(format!("{orig}.mcp.json")));
+        std::fs::write(&settings_file, "stale").unwrap();
+        std::fs::write(&mcp_file, "stale").unwrap();
+        invoke_with(&webview, "session_resume", InvokeBody::Json(json!({ "projectId": "ide", "sessionId": orig, "cols": 1000, "rows": 40 })))
+            .expect("session_resume");
+        let settings: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&settings_file).unwrap()).unwrap();
+        let token = settings["hooks"]["Stop"][0]["hooks"][0]["headers"]["Authorization"].as_str().unwrap().strip_prefix("Bearer ").unwrap().to_string();
+        let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&mcp_file).unwrap()).unwrap();
+        assert_eq!(config, super::mcp::config_json(port, &token));
+        let term_id = format!("session:{orig}");
+        state.terms.write(&term_id, b"go\r").unwrap();
+        let output = || super::pty::tests::strip_escapes(&state.terms.buffer(&term_id).unwrap().data);
+        wait_until(&app, &term_id, "the resume's exit", || !mcp_file.exists() && output().contains("got=go"));
+        let text = output();
+        let (s, m) = (settings_file.display().to_string(), mcp_file.display().to_string());
+        if cfg!(windows) {
+            let flat = text.replace(['\r', '\n'], "");
+            assert!(flat.contains(&format!("--settings {s} --mcp-config {m}")), "{flat}");
+        } else {
+            assert!(text.contains(&format!("[--settings]\r\n[{s}]\r\n[--mcp-config]\r\n[{m}]")), "{text}");
+        }
+        server.abort();
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
+    }
+
     /// With the endpoint up, a launch that fails after its token was issued (the settings file
     /// cannot be written, or the program cannot start) leaves no token and no hooked mark.
     #[test]
@@ -1753,6 +1885,19 @@ mod tests {
         assert!(err.as_str().unwrap().starts_with("could not write session settings"), "{err}");
         assert_eq!(state.hooks.token_count(), 0);
         assert!(state.read_sessions_live().hooked.is_empty());
+        std::fs::remove_file(&planted).unwrap();
+
+        // Story 7.1: the MCP config is already there (planted): refused; the settings file this
+        // launch wrote goes, the planted config stays.
+        let planted = sessions.join(format!("{id}.mcp.json"));
+        std::fs::write(&planted, "planted").unwrap();
+        let err = call("session_launch", json!({ "request": request })).expect_err("the config exists");
+        assert!(err.as_str().unwrap().starts_with("could not write session MCP config"), "{err}");
+        assert_eq!(state.hooks.token_count(), 0);
+        assert!(!sessions.join(format!("{id}.settings.json")).exists());
+        assert_eq!(std::fs::read_to_string(&planted).unwrap(), "planted");
+        assert!(state.launcher.add_dirs_of(&id).is_empty());
+        assert!(state.terms.list().is_empty());
         std::fs::remove_file(&planted).unwrap();
 
         // The program cannot start: refused (the id was given back, so the same sheet retries).
@@ -2078,6 +2223,9 @@ mod tests {
         use serde_json::json;
         let (app, webview, _dir, folder, _sessions) = launch_fixture();
         let state = app.state::<super::AppState>();
+        // The endpoint up, so each launch records its add-dirs for `my_node()` (Story 7.1).
+        let server = super::claude::hooks::start_on(app.handle(), super::claude::hooks::bind()).expect("up");
+        let recorded = |id: &str| -> Vec<(String, String)> { state.launcher.add_dirs_of(id).into_iter().map(|d| (d.path, d.via)).collect() };
         let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
             invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
         };
@@ -2127,6 +2275,7 @@ mod tests {
         assert_eq!(reply["skipped"], json!([]));
         let id = reply["session_id"].as_str().unwrap().to_string();
         let term_id = format!("session:{id}");
+        assert_eq!(recorded(&id), [(ui.clone(), "edge → ui".to_string())]);
         state.terms.write(&term_id, b"go\r").unwrap();
         let output = |term: &str| super::pty::tests::strip_escapes(&state.terms.buffer(term).unwrap().data);
         wait_until(&app, &term_id, "the launch's exit", || {
@@ -2148,6 +2297,8 @@ mod tests {
         let reply = call("session_resume", json!({ "projectId": "ide", "sessionId": orig, "cols": 1000, "rows": 40 })).expect("session_resume");
         assert_eq!(reply["skipped"], json!([{ "label": "lost", "reason": "folder missing" }]));
         let term_id = format!("session:{orig}");
+        let edge_dirs = [(docs.clone(), "edge → docs".to_string()), (ui.clone(), "edge → ui".to_string())];
+        assert_eq!(recorded(orig), edge_dirs);
         state.terms.write(&term_id, b"go\r").unwrap();
         wait_until(&app, &term_id, "the resume's exit", || {
             state.read_sessions_live().sessions[orig].state == SessionState::Exited
@@ -2162,11 +2313,13 @@ mod tests {
         assert_eq!(reply["skipped"], json!([{ "label": "lost", "reason": "folder missing" }]));
         let fork = reply["session_id"].as_str().unwrap().to_string();
         let fork_term = format!("session:{fork}");
+        assert_eq!(recorded(&fork), edge_dirs, "the original's edges, labelled");
         state.terms.write(&fork_term, b"go\r").unwrap();
         wait_until(&app, &fork_term, "the fork's exit", || {
             state.read_sessions_live().sessions[&fork].state == SessionState::Exited
         });
         assert_add_dirs(&output(&fork_term), &[&docs, &ui]);
+        assert!(recorded(&fork).is_empty(), "forgotten at exit");
 
         // Branches off (no list): an edge to the branch checked out in a project's folder (from
         // the status poll) grants that folder; a detached HEAD checks out no branch.
@@ -2213,6 +2366,7 @@ mod tests {
         assert_eq!(prefill["addDirs"], json!([{ "path": ide, "via": "ide:main" }]));
         assert_eq!(prefill["skipped"], json!([]));
 
+        server.abort();
         super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
     }
 

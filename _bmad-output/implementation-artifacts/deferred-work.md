@@ -95,3 +95,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-6-4-cooperation-edges.md`
   summary: Story 6.4 (`f796d37`) has not run on CI. It was closed on local Windows verification because GitHub Actions is suspended until the end of the month.
   evidence: The Linux build and tests have not run for 6.4. When Actions resumes, confirm the CI run on both runners for the latest commit.
+- source_spec: `_bmad-output/implementation-artifacts/spec-7-1-mcp-server-with-read-tools.md`
+  summary: No render test for the Settings → Diagnostics MCP refusal list.
+  evidence: There is no DOM test environment. The 2026-10-24 GUI pass showed the list; only the pure helpers are unit-tested.

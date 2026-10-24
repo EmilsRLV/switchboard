@@ -256,6 +256,8 @@ describe("workspace command wrappers", () => {
       refused: 1,
       session_mismatches: 0,
       poll_overrides: 0,
+      mcp_refused: 1,
+      mcp_refusals: [{ at: 1, path: "/mcp", reason: "unknown token" }],
     };
     const invoke = vi.fn().mockResolvedValue(diagnostics);
     vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
