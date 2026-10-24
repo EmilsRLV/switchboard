@@ -13,6 +13,7 @@ import { sameTarget, sendAcknowledge, useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 import { notify, revealTarget } from "./navigation";
 import { setExpanded } from "./nodes";
+import { openReview } from "./review";
 
 /** The notice when `attention.next` could not reveal its session. */
 export function revealFailedNotice(sessionId: string): string {
@@ -91,9 +92,15 @@ export async function goToNextAttention(): Promise<boolean> {
  * A toast was clicked (Rust already focused the window): when its session still needs
  * attention, reveal and select it on the canvas, or open the Elsewhere tray for an Elsewhere
  * session (opening it acknowledges what it lists). Resolves whether anything was revealed.
+ * A review request's toast (Story 7.4) opens that session's review, and reveals and selects the
+ * session too when it is on the canvas.
  */
 export async function revealToastSession(request: RevealRequest): Promise<boolean> {
   const id = request.session_id;
+  if (request.review === true) {
+    if (placement(id) !== null) await revealSession(id);
+    return openReview(id);
+  }
   if (!needsAttention(sessionState(id))) return false;
   if (placement(id) !== null) return revealSession(id);
   if (useLiveStore.getState().snapshot.elsewhere.some((row) => row.session_id === id)) {

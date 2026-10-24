@@ -137,6 +137,7 @@ mod tests {
         assert!(json["poll"].get("git_ms").is_some());
         assert!(json["notifications"].get("finished").is_some());
         assert!(json["notifications"].get("waiting").is_some());
+        assert!(json["notifications"].get("review").is_some());
     }
 
     #[test]

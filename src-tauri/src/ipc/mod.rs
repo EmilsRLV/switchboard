@@ -472,6 +472,30 @@ pub fn inbox_unread_get(state: State<'_, AppState>) -> std::collections::BTreeMa
     state.inbox.unread()
 }
 
+/// Story 7.4: every session's review request, `{sessionId: request}` (whether it is still
+/// flagged, its summary and paths); `review://requests` carries the same map on every change.
+/// Memory only.
+#[tauri::command]
+pub fn review_requests_get(state: State<'_, AppState>) -> std::collections::BTreeMap<String, crate::review::ReviewRequest> {
+    state.review.snapshot()
+}
+
+/// Story 7.4: the operator opens session `session_id`'s review, request `seq` (the one the UI
+/// showed): its flag goes, the `missing` marks are checked again, and the request comes back for
+/// the Review pane. `Err` for a session with no request, or a request replaced since.
+#[tauri::command]
+pub fn review_open<R: Runtime>(app: AppHandle<R>, session_id: String, seq: u64) -> Result<crate::review::ReviewRequest, String> {
+    crate::review::open(&app, &session_id, seq)
+}
+
+/// Story 7.4: "Clear review flag" -- session `session_id`'s flag goes when `seq` is still its
+/// request (a replacement keeps its flag); the pane is not opened. `Err` for a session with no
+/// request.
+#[tauri::command]
+pub fn review_clear<R: Runtime>(app: AppHandle<R>, session_id: String, seq: u64) -> Result<(), String> {
+    crate::review::clear(&app, &session_id, seq)
+}
+
 /// Retry (Story 6.3): run the `/add-dir` injection of a context edge from a running session
 /// again (the operator says the prompt is clear). For a cooperate edge (Story 6.4) it sends the
 /// peer line again to the side of `session_id`, which must be one of its ends and must have

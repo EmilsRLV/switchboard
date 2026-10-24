@@ -26,8 +26,11 @@ export type Settings = {
   shell: string | null;
   theme: string;
   poll: { agents_ms: number; git_ms: number };
-  /** Which attention states send an OS toast while the window is unfocused (Story 3.3). */
-  notifications: { finished: boolean; waiting: boolean };
+  /**
+   * Which attention states send an OS toast while the window is unfocused (Story 3.3); `review`
+   * (Story 7.4): a session's review request.
+   */
+  notifications: { finished: boolean; waiting: boolean; review: boolean };
   /** Peer messaging (Story 7.3): nudge a session with new messages once it is idle. */
   peers: { nudge: boolean };
 };
@@ -169,6 +172,39 @@ export type InboxUnreadMap = Record<string, number>;
 
 /** Event name Rust emits with the whole `InboxUnreadMap` whenever an inbox changes. */
 export const INBOX_UNREAD_EVENT = "inbox://unread";
+
+/** Mirrors `review::ReviewPath` (Story 7.4): one path a review request lists. */
+export type ReviewPath = {
+  /** The resolved absolute path. */
+  path: string;
+  /** What the pane shows: relative to the session's folder (with `/`), else the absolute path. */
+  display: string;
+  /** Nothing exists at the path (checked at the request and at each open). */
+  missing: boolean;
+};
+
+/** Mirrors `review::ReviewRequest` (Story 7.4): a session's last review request. */
+export type ReviewRequest = {
+  sessionId: string;
+  /** The session's name at the time of the request. */
+  name: string;
+  summary: string;
+  /** The session's folder (its cwd). */
+  root: string;
+  paths: ReviewPath[];
+  /** ISO 8601 UTC. */
+  at: string;
+  /** Rises with every request (any session): tells a replacement from a dismissed toast's request. */
+  seq: number;
+  /** The node shows the `review` flag (until the review is opened or the flag cleared). */
+  flagged: boolean;
+};
+
+/** What `review_requests_get` returns and `review://requests` carries: each session's request by session id. */
+export type ReviewMap = Record<string, ReviewRequest>;
+
+/** Event name Rust emits with the whole `ReviewMap` whenever a request or flag changes. */
+export const REVIEW_REQUESTS_EVENT = "review://requests";
 
 /** Mirrors `graph::Workspace`: the on-disk `workspace.json` schema, version 1. */
 export type Workspace = {
@@ -426,6 +462,8 @@ export type RevealRequest = {
   session_id: string;
   /** The session's project; `null` for an Elsewhere session. */
   project_id: string | null;
+  /** Story 7.4: a review request's toast -- open the session's review. */
+  review?: boolean;
 };
 
 /** Event name Rust emits with a `RevealRequest` when a toast was clicked (the window is already focused). */
@@ -678,6 +716,9 @@ type Commands = {
   edge_remove: WorkspaceSnapshot;
   edges_live_get: EdgesLiveMap;
   inbox_unread_get: InboxUnreadMap;
+  review_requests_get: ReviewMap;
+  review_open: ReviewRequest;
+  review_clear: void;
   edge_live_retry: void;
   edge_restart_with_flags: LaunchResult;
   claude_projects_list: ClaudeProject[];
@@ -901,6 +942,28 @@ export function edgesLiveGet(): Promise<EdgesLiveMap> {
 /** `ipc::inbox_unread_get` (Story 7.3) -- each session's unread peer-message count. */
 export function inboxUnreadGet(): Promise<InboxUnreadMap> {
   return call("inbox_unread_get");
+}
+
+/** `ipc::review_requests_get` (Story 7.4) -- every session's review request. */
+export function reviewRequestsGet(): Promise<ReviewMap> {
+  return call("review_requests_get");
+}
+
+/**
+ * `ipc::review_open` (Story 7.4) -- open session `sessionId`'s review, request `seq` (the one the
+ * UI showed): its flag goes and the request comes back (its `missing` marks checked again).
+ * Rejects for a session with no request, or a request replaced since.
+ */
+export function reviewOpen(sessionId: string, seq: number): Promise<ReviewRequest> {
+  return call("review_open", { sessionId, seq });
+}
+
+/**
+ * `ipc::review_clear` (Story 7.4) -- lower session `sessionId`'s review flag without opening it,
+ * when `seq` is still its request (a replacement keeps its flag).
+ */
+export function reviewClear(sessionId: string, seq: number): Promise<void> {
+  return call("review_clear", { sessionId, seq });
 }
 
 /**
@@ -1175,6 +1238,14 @@ export async function onInboxUnread(callback: (unread: InboxUnreadMap) => void):
     return () => {};
   }
   return listen<InboxUnreadMap>(INBOX_UNREAD_EVENT, (event) => callback(event.payload));
+}
+
+/** Subscribe to `review://requests` (Story 7.4); same contract as {@link onSettingsChanged}. */
+export async function onReviewRequests(callback: (requests: ReviewMap) => void): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return listen<ReviewMap>(REVIEW_REQUESTS_EVENT, (event) => callback(event.payload));
 }
 
 /** Subscribe to `notify://reveal` (a toast was clicked); same contract as {@link onSettingsChanged}. */

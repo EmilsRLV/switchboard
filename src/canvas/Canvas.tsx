@@ -38,6 +38,7 @@ import {
 import { HOME_VIEWPORT, clientToFlow, useCanvasStore, type CanvasElement } from "../state/canvas";
 import { useEdgesLiveStore } from "../state/edgesLive";
 import { useInboxStore } from "../state/inbox";
+import { flaggedIds, useReviewStore } from "../state/review";
 import { useLiveStore } from "../state/live";
 import { useStatusStore } from "../state/status";
 import { stoppingSessionIds, useTerminalStore } from "../state/terminals";
@@ -252,6 +253,9 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
   const branchErrors = useWorkspaceStore((s) => s.snapshot?.branchErrors ?? NO_BRANCH_ERRORS);
   // Story 7.3: unread peer messages per session, for the `N new` badge.
   const unread = useInboxStore((s) => s.unread);
+  // Story 7.4: the flagged sessions, for the `review` flag.
+  const reviewRequests = useReviewStore((s) => s.requests);
+  const review = useMemo(() => flaggedIds(reviewRequests), [reviewRequests]);
   const storedEdges = useWorkspaceStore((s) => s.snapshot?.workspace.edges ?? NO_EDGES);
   const edgesLive = useEdgesLiveStore((s) => s.entries);
   const statuses = useStatusStore((s) => s.statuses);
@@ -272,12 +276,12 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
   const previousRef = useRef<CanvasFlowNode[]>([]);
   const nodes = useMemo(() => {
     const next = toFlowNodes(
-      { projects, statuses, flashed, children, selection, dragging, showAll, showAllBranches, live, stopping, branchErrors, unread },
+      { projects, statuses, flashed, children, selection, dragging, showAll, showAllBranches, live, stopping, branchErrors, unread, review },
       previousRef.current,
     );
     previousRef.current = next;
     return next;
-  }, [projects, statuses, flashed, children, selection, dragging, showAll, showAllBranches, live, stopping, branchErrors, unread]);
+  }, [projects, statuses, flashed, children, selection, dragging, showAll, showAllBranches, live, stopping, branchErrors, unread, review]);
 
   // The "forked from" lines between drawn cards (Story 4.4), inert; then the stored edges whose
   // two ends are drawn (Story 6.1).

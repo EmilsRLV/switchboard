@@ -12,10 +12,12 @@ import {
   onInboxUnread,
   onLiveSessions,
   onNotifyReveal,
+  onReviewRequests,
   onProjectsStatus,
   onSettingsChanged,
   onWorkspaceChanged,
   projectsStatusGet,
+  reviewRequestsGet,
   settingsGet,
   workspaceGet,
 } from "./ipc";
@@ -28,6 +30,7 @@ import { forgetTerminal } from "./commands/terminal";
 import { useApprovalsStore } from "./state/approvals";
 import { useEdgesLiveStore } from "./state/edgesLive";
 import { useInboxStore } from "./state/inbox";
+import { useReviewStore } from "./state/review";
 import { useTerminalStore } from "./state/terminals";
 import { useLiveStore } from "./state/live";
 import { useSettingsStore } from "./state/settings";
@@ -44,6 +47,7 @@ import { ImportPane } from "./components/ImportPane";
 import { LaunchPane } from "./components/LaunchPane";
 import { WorktreePane } from "./components/WorktreePane";
 import { RemoveWorktreePane } from "./components/RemoveWorktreePane";
+import { ReviewPane } from "./components/ReviewPane";
 import { Notice } from "./components/Notice";
 import { Palette } from "./components/Palette";
 import { SettingsPane } from "./components/SettingsPane";
@@ -57,7 +61,7 @@ registerBuiltins();
 /**
  * The shell: banner strip on top, the canvas filling the rest with the transient notice laid
  * over its top edge, the Elsewhere tray at its bottom-left and the agent approval toasts (Story
- * 7.2) at its bottom-right, one pane (settings, import, terminal, the launch sheet, the worktree sheet, the remove-worktree sheet or the edge inspector) on the right when open,
+ * 7.2) at its bottom-right, one pane (settings, import, terminal, the launch sheet, the worktree sheet, the remove-worktree sheet, the edge inspector or the Review pane of Story 7.4) on the right when open,
  * the hidden holder that keeps every terminal's view alive while the terminal pane is not showing it, the command
  * palette over everything when open, the node context menu at the pointer when open. Every
  * key goes through the command registry's dispatcher (`useKeybindings`).
@@ -78,6 +82,8 @@ export default function App() {
   const setApprovalsLoadError = useApprovalsStore((s) => s.setLoadError);
   const applyInbox = useInboxStore((s) => s.applySnapshot);
   const setInboxLoadError = useInboxStore((s) => s.setLoadError);
+  const applyReview = useReviewStore((s) => s.applySnapshot);
+  const setReviewLoadError = useReviewStore((s) => s.setLoadError);
 
   // Rust is the source of truth for all four; `mirror` subscribes, then reads.
   useEffect(() => {
@@ -164,6 +170,19 @@ export default function App() {
     });
   }, [applyInbox, setInboxLoadError]);
 
+  // Story 7.4: each session's review request and flag (runtime only).
+  useEffect(() => {
+    if (!hasTauriRuntime()) return;
+    return mirror({
+      listen: onReviewRequests,
+      get: reviewRequestsGet,
+      apply: applyReview,
+      hasSnapshot: () => useReviewStore.getState().received,
+      // No flags or review toasts then: the banner says so.
+      fail: (message) => setReviewLoadError(`review requests load failed: ${message}`),
+    });
+  }, [applyReview, setReviewLoadError]);
+
   // Story 7.2: an act that ran without a toast says so in the notice; a session an agent started
   // is known to the terminal store at once, in the background (nothing is focused).
   useEffect(() => {
@@ -183,7 +202,7 @@ export default function App() {
   }, []);
 
   // A click on an OS toast: Rust has focused the window; reveal and select its session
-  // (Story 3.3).
+  // (Story 3.3), or open its review (Story 7.4).
   useEffect(() => {
     if (!hasTauriRuntime()) return;
     let unlisten: (() => void) | null = null;
@@ -223,6 +242,7 @@ export default function App() {
         {pane === "worktree" && <WorktreePane />}
         {pane === "removeWorktree" && <RemoveWorktreePane />}
         {pane === "edge" && <EdgePane />}
+        {pane === "review" && <ReviewPane />}
         {pane === "terminal" && <TerminalPane />}
         <TerminalHolder />
         <Palette />

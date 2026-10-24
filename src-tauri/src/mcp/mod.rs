@@ -31,6 +31,11 @@
 //! (`crate::approvals`) unless the workspace allows all or the edge joining the caller and the
 //! target is "Always"; `set_status` never asks.
 //!
+//! **Review** (Story 7.4, `crate::review`): `request_review({summary, paths?})` flags the caller's
+//! node and shows the operator a review toast. It never asks (Emils' decision) and is in
+//! `permissions.allow`. `my_node`, `node` and `sessions` add `reviewRequested: true` while a
+//! session is flagged.
+//!
 //! **Peer tools** (Story 7.3, `crate::inbox`): `send` and `inbox`, between sessions joined by a
 //! cooperate edge only. They never ask (the edge is the permission) and are in `permissions.allow`.
 //!
@@ -62,14 +67,18 @@ pub const SERVER_NAME: &str = "switchboard";
 /// The read tools, in the order `tools/list` gives them; they never prompt.
 pub const READ_TOOLS: [&str; 5] = ["my_node", "workspace", "node", "peers", "sessions"];
 
-/// The act tools (Story 7.2), listed after the read tools.
-pub const ACT_TOOLS: [&str; 4] = ["start_session", "link", "unlink", "set_status"];
+/// The act tools (Story 7.2; `request_review`, Story 7.4), listed after the read tools.
+pub const ACT_TOOLS: [&str; 5] = ["start_session", "link", "unlink", "set_status", "request_review"];
+
+/// The act tools that never ask and are in `permissions.allow` (Story 7.4, Emils' decision):
+/// `request_review` only flags the caller's own node.
+pub const ALLOWED_ACT_TOOLS: [&str; 1] = ["request_review"];
 
 /// The peer tools (Story 7.3), listed last; they never prompt.
 pub const PEER_TOOLS: [&str; 2] = ["send", "inbox"];
 
 /// Every tool, in the order `tools/list` gives them.
-pub const TOOLS: [&str; 11] = [
+pub const TOOLS: [&str; 12] = [
     "my_node",
     "workspace",
     "node",
@@ -79,6 +88,7 @@ pub const TOOLS: [&str; 11] = [
     "link",
     "unlink",
     "set_status",
+    "request_review",
     "send",
     "inbox",
 ];
@@ -129,9 +139,15 @@ impl Drop for CallGuard {
 }
 
 /// `permissions.allow` for the per-session settings file: `mcp__switchboard__<tool>` for exactly
-/// the read tools and the peer tools of Story 7.3 (never the act tools of Story 7.2).
+/// the read tools, the peer tools of Story 7.3 and `request_review` (Story 7.4); never the gated
+/// act tools of Story 7.2.
 pub fn allowed_tools() -> Vec<String> {
-    READ_TOOLS.iter().chain(PEER_TOOLS.iter()).map(|tool| format!("mcp__{SERVER_NAME}__{tool}")).collect()
+    READ_TOOLS
+        .iter()
+        .chain(PEER_TOOLS.iter())
+        .chain(ALLOWED_ACT_TOOLS.iter())
+        .map(|tool| format!("mcp__{SERVER_NAME}__{tool}"))
+        .collect()
 }
 
 /// The per-session `--mcp-config` content while the endpoint is up on `port`.
@@ -282,7 +298,7 @@ fn initialize(params: &Value) -> Value {
         "protocolVersion": version,
         "capabilities": { "tools": { "listChanged": false } },
         "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") },
-        "instructions": "Switchboard's view of the workspace this session runs in: call my_node first, then workspace, node, peers or sessions (read-only, never prompt). To act: start_session, link and unlink wait for the operator's approval; set_status posts a short status line on your card. To reach a cooperate peer when SendMessage does not: send({peer, text}) and inbox() (never prompt).",
+        "instructions": "Switchboard's view of the workspace this session runs in: call my_node first, then workspace, node, peers or sessions (read-only, never prompt). To act: start_session, link and unlink wait for the operator's approval; set_status posts a short status line on your card; request_review({summary, paths}) asks the operator to look at your work when it is ready (never prompts). To reach a cooperate peer when SendMessage does not: send({peer, text}) and inbox() (never prompt).",
     })
 }
 
@@ -389,6 +405,25 @@ pub fn tool_list() -> Vec<Value> {
             false,
         ),
         act(
+            "request_review",
+            "Ask the operator to review your work when it is ready: your card shows a review flag and the operator gets a toast that opens a Review pane listing the summary and paths. Paths (at most 50; relative ones resolve against your cwd) must lie within your cwd, worktree, project folder or add-dirs, else the whole call is refused; a path that does not exist is listed as missing. A new request replaces your earlier one. Never asks the operator. Returns {flagged, paths}.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "summary": text("What is ready and what to look at (at most 500 characters)."),
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "maxItems": crate::review::MAX_PATHS,
+                        "description": "The files or folders to look at.",
+                    },
+                },
+                "required": ["summary"],
+                "additionalProperties": false,
+            }),
+            false,
+        ),
+        act(
             "send",
             "Send a message to a cooperate peer (a session joined to this one by a cooperate edge; see peers()). It lands in the peer's inbox and the peer is nudged to read it once idle; a peer not running in a Switchboard terminal gets it when resumed there. Never asks the operator. Returns {delivered, to, unread} (running: false when the peer is not running in a Switchboard terminal; dropped: N when older unread messages were pushed out).",
             json!({
@@ -420,6 +455,7 @@ pub fn call_app<R: Runtime>(app: &AppHandle<R>, session: &str, tool: &str, args:
         "link" => act::link(app, session, args),
         "unlink" => act::unlink(app, session, args),
         "set_status" => act::set_status(app, session, args),
+        "request_review" => crate::review::request_review(app, session, args),
         "send" => crate::inbox::send(app, session, args),
         "inbox" => crate::inbox::inbox(app, session),
         _ => call(&app.state::<AppState>(), session, tool, args),
@@ -534,6 +570,30 @@ pub(crate) struct SessionFacts {
     status_text: Option<String>,
 }
 
+impl SessionFacts {
+    /// The session's cwd (live, else the transcript's).
+    pub(crate) fn cwd(&self) -> Option<String> {
+        self.cwd.clone()
+    }
+
+    /// The linked worktree its cwd lies in.
+    pub(crate) fn worktree_path(&self) -> Option<String> {
+        self.worktree.clone()
+    }
+
+    /// Its project's folder.
+    pub(crate) fn project_path(&self) -> Option<String> {
+        self.project.as_ref().map(|p| p.path.clone())
+    }
+}
+
+/// Story 7.4: `reviewRequested: true` on `value` while session `id` is flagged.
+fn mark_review(state: &AppState, id: &str, value: &mut Value) {
+    if state.review.flagged(id) {
+        value["reviewRequested"] = json!(true);
+    }
+}
+
 /// Session `id` as the live map (`live`), the workspace and the status poll's `heads` know it;
 /// `None` when none of the live map, the session refs and the discovered transcripts has it.
 /// The name follows the peers' rule: the live name, else the transcript title, else the
@@ -623,7 +683,7 @@ pub(crate) fn node_path(facts: &SessionFacts) -> String {
 /// `my_node()`: the caller's own node.
 pub fn my_node(state: &AppState, session: &str) -> Result<Value, String> {
     let me = session_facts(state, session).ok_or_else(|| "this session is not on the canvas".to_string())?;
-    Ok(json!({
+    let mut value = json!({
         "nodeId": me.id,
         "name": me.name,
         "path": node_path(&me),
@@ -634,7 +694,9 @@ pub fn my_node(state: &AppState, session: &str) -> Result<Value, String> {
         "statusText": me.status_text,
         "peers": peers(state, session),
         "addDirs": add_dirs(state, session),
-    }))
+    });
+    mark_review(state, session, &mut value);
+    Ok(value)
 }
 
 /// `peers()`: the sessions at the other end of the caller's cooperate edges, named as the system
@@ -651,10 +713,20 @@ pub fn peers(state: &AppState, session: &str) -> Value {
     )
 }
 
+/// The caller's add-dirs as [`add_dir_list`] lists them.
+fn add_dirs(state: &AppState, session: &str) -> Value {
+    Value::Array(add_dir_list(state, session).into_iter().map(|d| json!({ "path": d.path, "via": d.via })).collect())
+}
+
+/// The folders of the caller's add-dirs (Story 7.4's path check).
+pub(crate) fn add_dir_paths(state: &AppState, session: &str) -> Vec<String> {
+    add_dir_list(state, session).into_iter().map(|d| d.path).collect()
+}
+
 /// The caller's add-dirs: those its launch was given (recorded at launch, `sheet` or
 /// `edge → <target>`), then the context edges applied to it live (Story 6.3, `/add-dir`); a
 /// folder listed once.
-fn add_dirs(state: &AppState, session: &str) -> Value {
+fn add_dir_list(state: &AppState, session: &str) -> Vec<graph::EdgeDir> {
     let mut dirs = state.launcher.add_dirs_of(session);
     let applied: Vec<(String, String)> = state
         .live_edges
@@ -676,7 +748,7 @@ fn add_dirs(state: &AppState, session: &str) -> Value {
             dirs.push(graph::EdgeDir { path, via: "/add-dir".to_string() });
         }
     }
-    Value::Array(dirs.into_iter().map(|d| json!({ "path": d.path, "via": d.via })).collect())
+    dirs
 }
 
 /// What [`workspace`] aims to stay under, in bytes of compact JSON.
@@ -800,7 +872,7 @@ pub fn node(state: &AppState, id: &str) -> Result<Value, String> {
         return Ok(json!({ "id": project.id, "label": project.label, "path": project.path, "branch": branch }));
     }
     let facts = session_facts(state, id).ok_or_else(|| format!("unknown node: {id}"))?;
-    Ok(json!({
+    let mut value = json!({
         "nodeId": facts.id,
         "name": facts.name,
         "status": facts.status,
@@ -808,7 +880,9 @@ pub fn node(state: &AppState, id: &str) -> Result<Value, String> {
         "project": facts.project.as_ref().map(project_json),
         "branch": facts.branch,
         "statusText": facts.status_text,
-    }))
+    });
+    mark_review(state, &facts.id, &mut value);
+    Ok(value)
 }
 
 /// The project `wanted` names: by id, else by label (exact, else ignoring case). An unknown
@@ -854,7 +928,11 @@ pub fn sessions(state: &AppState, wanted: &str) -> Result<Value, String> {
     list.sort_by(|a, b| b.live.cmp(&a.live).then_with(|| b.last_active_ms.cmp(&a.last_active_ms)).then_with(|| a.id.cmp(&b.id)));
     let sessions: Vec<Value> = list
         .into_iter()
-        .map(|f| json!({ "nodeId": f.id, "name": f.name, "status": f.status, "lastActive": f.last_active, "statusText": f.status_text }))
+        .map(|f| {
+            let mut value = json!({ "nodeId": f.id, "name": f.name, "status": f.status, "lastActive": f.last_active, "statusText": f.status_text });
+            mark_review(state, &f.id, &mut value);
+            value
+        })
         .collect();
     let mut out = Map::new();
     out.insert("project".into(), project_json(project));

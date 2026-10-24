@@ -128,8 +128,8 @@ impl Default for PollSettings {
     }
 }
 
-/// The OS toast toggles, one per attention state; both on by default. A missing key takes its
-/// default like every other settings key.
+/// The OS toast toggles, one per attention state and (Story 7.4) one for review requests; all on
+/// by default. A missing key takes its default like every other settings key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NotificationSettings {
@@ -137,6 +137,8 @@ pub struct NotificationSettings {
     pub finished: bool,
     /// A session waits for input (hooks, Story 4.3).
     pub waiting: bool,
+    /// A session asks for review (`request_review`, Story 7.4).
+    pub review: bool,
 }
 
 impl Default for NotificationSettings {
@@ -144,6 +146,7 @@ impl Default for NotificationSettings {
         Self {
             finished: true,
             waiting: true,
+            review: true,
         }
     }
 }
@@ -403,6 +406,8 @@ pub struct AppState {
     /// Each session's unread peer messages and its nudge job (`crate::inbox`, Story 7.3). Memory
     /// only.
     pub inbox: crate::inbox::Inboxes,
+    /// Each session's review request and flag (`crate::review`, Story 7.4). Memory only.
+    pub review: crate::review::Reviews,
 }
 
 impl AppState {
@@ -703,6 +708,7 @@ mod tests {
         assert_eq!(s.poll.git_ms, 5_000);
         assert!(s.notifications.finished);
         assert!(s.notifications.waiting);
+        assert!(s.notifications.review);
         assert!(s.peers.nudge);
     }
 
@@ -716,9 +722,11 @@ mod tests {
     #[test]
     fn notification_toggles_parse_tolerantly_and_default_on() {
         let s = store::parse(r#"{ "notifications": { "finished": false } }"#).unwrap();
-        assert_eq!(s.notifications, NotificationSettings { finished: false, waiting: true });
+        assert_eq!(s.notifications, NotificationSettings { finished: false, waiting: true, review: true });
         let s = store::parse(r#"{ "notifications": { "waiting": false, "sound": true } }"#).unwrap();
-        assert_eq!(s.notifications, NotificationSettings { finished: true, waiting: false });
+        assert_eq!(s.notifications, NotificationSettings { finished: true, waiting: false, review: true });
+        let s = store::parse(r#"{ "notifications": { "review": false } }"#).unwrap();
+        assert_eq!(s.notifications, NotificationSettings { finished: true, waiting: true, review: false });
         assert_eq!(store::parse("{}").unwrap().notifications, NotificationSettings::default());
     }
 
@@ -813,7 +821,7 @@ mod tests {
                     "shell": null,
                     "theme": "dark",
                     "poll": { "agents_ms": 2000, "git_ms": 5000 },
-                    "notifications": { "finished": true, "waiting": true },
+                    "notifications": { "finished": true, "waiting": true, "review": true },
                     "peers": { "nudge": true }
                 },
                 "binaries": {

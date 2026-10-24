@@ -12,6 +12,7 @@ pub mod notify;
 pub mod persist;
 pub mod process;
 pub mod pty;
+pub mod review;
 pub mod settings;
 pub mod windows;
 
@@ -45,6 +46,9 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::edge_remove,
             ipc::edges_live_get,
             ipc::inbox_unread_get,
+            ipc::review_requests_get,
+            ipc::review_open,
+            ipc::review_clear,
             ipc::edge_live_retry,
             ipc::edge_restart_with_flags,
             ipc::claude_projects_list,

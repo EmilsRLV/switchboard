@@ -1,6 +1,7 @@
 import { memo, useSyncExternalStore } from "react";
 import type { NodeProps } from "@xyflow/react";
 import type { ChildKind } from "../ipc";
+import { openReview } from "../commands/review";
 import { unreadBadge } from "../state/inbox";
 import { ForkHandles, LinkHandles } from "./LinkHandles";
 import {
@@ -28,7 +29,9 @@ import {
  * and cut with an ellipsis; a `waiting` card's tooltip leads with the hook's reason (Story 4.3). A
  * session's `set_status` text (Story 7.2) takes the place of branch, count and age until its state
  * changes. A session with unread peer messages (Story 7.3) shows a muted `N new` badge after its
- * title (the count badge's look, never the accent). The
+ * title (the count badge's look, never the accent). A session that asks for review (Story 7.4)
+ * shows a plain `review` flag beside it, in the same look; a click on the flag opens the Review
+ * pane on that session (and lowers the flag). The
  * full title and exact times are on hover. Stubs and branches show the label and a muted
  * detail on one row. A live session whose Switchboard terminal is being stopped reads `stopping`
  * (muted, Story 4.4), and a fork's tooltip and label say what it was forked from; a session card
@@ -73,14 +76,34 @@ function SessionCard({ className, ariaLabel, data }: { className: string; ariaLa
   const tail = parts.age === null ? parts.count : `${parts.count} · ${parts.age}`;
   // Story 7.3: unread peer messages, a plain muted `N new` after the title (never the accent).
   const badge = unreadBadge(data.unread ?? 0);
+  // Story 7.4: the session asks for review: a plain `review` flag; a click opens the review.
+  const review = data.review === true;
   return (
     <div className={className} role="group" aria-label={ariaLabel} title={sessionCardTitle(data, meta)}>
-      {badge === null ? (
+      {badge === null && !review ? (
         <span className="child-node-label">{child.label}</span>
       ) : (
         <span className="session-name-row">
           <span className="child-node-label">{child.label}</span>
-          <span className="session-unread">{badge}</span>
+          {badge !== null && <span className="session-unread">{badge}</span>}
+          {review && (
+            <button
+              type="button"
+              className="session-review nodrag"
+              title="Open review request"
+              aria-label={`Open review request of ${child.label}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                void openReview(child.id);
+              }}
+              onKeyDown={(event) => {
+                // The button's own key: never also the canvas's Enter (or a palette key).
+                if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+              }}
+            >
+              review
+            </button>
+          )}
         </span>
       )}
       <span className="child-node-meta">

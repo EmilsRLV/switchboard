@@ -66,6 +66,8 @@ export type ChildNodeData = {
   statusText?: string | null;
   /** The session's unread peer messages (Story 7.3): the `N new` badge on line 1 above 0. Absent: none. */
   unread?: number;
+  /** The session asks for review (Story 7.4): the plain `review` flag on line 1. Absent: no flag. */
+  review?: boolean;
   /** A Stop of the session's Switchboard terminal is under way (Story 4.4): the word reads `stopping`. */
   stopping: boolean;
   /** The title of the session this one was forked from, when that session is listed (Story 4.4). */
@@ -403,6 +405,8 @@ export type FlowInputs = {
   stopping?: readonly string[];
   /** Unread peer messages by session id (Story 7.3, the inbox store); absent means none. */
   unread?: Readonly<Record<string, number>>;
+  /** Flagged sessions (Story 7.4, the review store): `{sessionId: true}`; absent means none. */
+  review?: Readonly<Record<string, boolean>>;
   /** Why a project's last branch read failed (Story 5.1), by project id; absent means none. */
   branchErrors?: Readonly<Record<string, string>>;
 };
@@ -451,6 +455,9 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
   // Story 7.3: a session's unread peer messages (the `N new` badge), live or not.
   const unread = inputs.unread ?? NO_UNREAD;
   const unreadOf = (child: ChildNode): number => (child.kind === "session" ? unreadIn(unread, child.id) : 0);
+  // Story 7.4: a flagged session's `review` flag, live or not.
+  const review = inputs.review ?? NO_REVIEW;
+  const reviewOf = (child: ChildNode): boolean => child.kind === "session" && Object.hasOwn(review, child.id) && review[child.id] === true;
   const branchErrors = inputs.branchErrors ?? NO_ERRORS;
   const stoppingOf = (child: ChildNode): boolean => {
     const state = stateOf(child);
@@ -520,6 +527,7 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
           detail: detailOf(child),
           statusText: statusTextOf(child),
           unread: unreadOf(child),
+          review: reviewOf(child),
           stopping: stoppingOf(child),
           forkedFromTitle: forkedFromTitleOf(child),
         },
@@ -553,6 +561,7 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
 const NO_LIVE: Readonly<Record<string, LiveSession>> = Object.freeze({});
 const NO_ERRORS: Readonly<Record<string, string>> = Object.freeze({});
 const NO_UNREAD: Readonly<Record<string, number>> = Object.freeze({});
+const NO_REVIEW: Readonly<Record<string, boolean>> = Object.freeze({});
 
 /** A node's `zIndex`: {@link ELEVATED_Z} + 1 while dragged, {@link ELEVATED_Z} while selected, else 0. */
 function layer(selected: boolean, drag: Position | undefined): number {
@@ -598,6 +607,7 @@ function sameNode(a: CanvasFlowNode, b: CanvasFlowNode): boolean {
       a.data.detail === b.data.detail &&
       (a.data.statusText ?? null) === (b.data.statusText ?? null) &&
       (a.data.unread ?? 0) === (b.data.unread ?? 0) &&
+      (a.data.review ?? false) === (b.data.review ?? false) &&
       a.data.stopping === b.data.stopping &&
       a.data.forkedFromTitle === b.data.forkedFromTitle &&
       sameState(a.data.state, b.data.state) &&
@@ -864,10 +874,11 @@ export function sessionStateTone(state: SessionState | null): SessionStateTone |
 export function childAriaLabel(
   kind: ChildKind,
   data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine"> &
-    Partial<Pick<ChildNodeData, "stopping" | "forkedFromTitle" | "statusText" | "unread">>,
+    Partial<Pick<ChildNodeData, "stopping" | "forkedFromTitle" | "statusText" | "unread" | "review">>,
 ): string {
   if (kind === "branch") return branchAriaLabel(data.child.label, data.child.branch ?? null);
   const parts = [`Session ${data.child.label}`];
+  if (data.review === true) parts.push(REVIEW_TEXT);
   const unread = unreadText(data.unread ?? 0);
   if (unread !== null) parts.push(unread);
   if (data.forkedFromTitle !== null && data.forkedFromTitle !== undefined) parts.push(forkedFromText(data.forkedFromTitle));
@@ -886,10 +897,11 @@ export function childAriaLabel(
  */
 export function sessionCardTitle(
   data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine"> &
-    Partial<Pick<ChildNodeData, "forkedFromTitle" | "statusText" | "unread">>,
+    Partial<Pick<ChildNodeData, "forkedFromTitle" | "statusText" | "unread" | "review">>,
   meta: SessionMeta,
 ): string {
   const lines: string[] = [];
+  if (data.review === true) lines.push(REVIEW_TEXT);
   const unread = unreadText(data.unread ?? 0);
   if (unread !== null) lines.push(unread);
   if (data.detail !== null && data.detail !== "") lines.push(data.detail);
@@ -900,6 +912,9 @@ export function sessionCardTitle(
   if (data.attention) lines.push("needs you");
   return lines.join("\n");
 }
+
+/** A flagged session in words (Story 7.4), for its accessible name and tooltip. */
+export const REVIEW_TEXT = "asks for review";
 
 /**
  * A session's unread peer messages in words (Story 7.3), for its accessible name and tooltip:

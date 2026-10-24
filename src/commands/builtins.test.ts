@@ -53,7 +53,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the sixty-one commands with the spec's keybindings", () => {
+  it("register the sixty-three commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -95,6 +95,8 @@ describe("built-in commands", () => {
       "project.terminal",
       "project.toggleBranches",
       "project.toggleShowAll",
+      "review.clear",
+      "review.open",
       "selection.activate",
       "selection.clear",
       "selection.move.down",
@@ -179,7 +181,7 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the forty-nine actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the fifty-one actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -216,6 +218,8 @@ describe("built-in commands", () => {
       "project.terminal",
       "project.toggleBranches",
       "project.toggleShowAll",
+      "review.clear",
+      "review.open",
       "session.attach",
       "session.fork",
       "session.resume",
@@ -269,7 +273,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(61);
+    expect(listCommands()).toHaveLength(63);
   });
 
   const PROJECT_ACTIONS = [
@@ -1221,7 +1225,7 @@ function fixtureSnapshot(): SettingsSnapshot {
       shell: null,
       theme: "dark",
       poll: { agents_ms: 2000, git_ms: 5000 },
-      notifications: { finished: true, waiting: true },
+      notifications: { finished: true, waiting: true, review: true },
       peers: { nudge: true },
     },
     binaries: {

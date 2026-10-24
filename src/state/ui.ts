@@ -29,9 +29,9 @@ import { useWorkspaceStore } from "./workspace";
 /**
  * The right-hand panes; `launch` is the new-session sheet (Story 4.2), `worktree` the new-worktree sheet (Story 5.2),
  * `removeWorktree` the remove-worktree confirmation (Story 5.4), `edge` the edge inspector of the
- * selected edge (Story 6.1).
+ * selected edge (Story 6.1), `review` a session's review request (Story 7.4).
  */
-export type Pane = "settings" | "import" | "terminal" | "launch" | "worktree" | "removeWorktree" | "edge";
+export type Pane = "settings" | "import" | "terminal" | "launch" | "worktree" | "removeWorktree" | "edge" | "review";
 
 /** The terminal pane's narrowest width, in CSS pixels. */
 export const TERMINAL_MIN_WIDTH = 360;

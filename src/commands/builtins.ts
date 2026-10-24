@@ -74,6 +74,7 @@ import {
   stopSelectedSession,
 } from "./sessions";
 import { closeOpenPane, openPane, togglePane } from "./panes";
+import { canClearReview, canOpenReview, clearReviewFromPalette, openReviewFromPalette } from "./review";
 import { canNewWorktree, canNewWorktreeOnBranch, openWorktreeSheet, openWorktreeSheetForBranch } from "./worktree";
 import { canRemoveWorktree, openRemoveWorktreeSheet } from "./removeWorktree";
 import { addProjectFromPicker, isPickerIdle } from "./projects";
@@ -607,6 +608,24 @@ export function builtinCommands(): Command[] {
       when: hasPendingRequest,
       run: async () => {
         await answerOldest("deny");
+      },
+    },
+    {
+      // Story 7.4: the selected flagged session's review request, else the newest one.
+      id: "review.open",
+      title: "Open review request",
+      when: canOpenReview,
+      run: async () => {
+        await openReviewFromPalette();
+      },
+    },
+    {
+      // Story 7.4: lower the selected (else the newest) flagged session's review flag, no pane.
+      id: "review.clear",
+      title: "Clear review flag",
+      when: canClearReview,
+      run: async () => {
+        await clearReviewFromPalette();
       },
     },
     {

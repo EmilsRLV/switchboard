@@ -986,6 +986,24 @@ describe("formatAge / sessionMetaLine", () => {
     expect(sessionCardTitle({ child, attention: false, detail: null, lastLine: null, unread: 1 }, meta)).toBe("1 unread message\nui-2");
   });
 
+  it("a review flag reaches the session's data, name and title, and re-renders that card only (Story 7.4)", () => {
+    const expanded = [project("a", "/p/a", 0, 0, true)];
+    const children = [stub(1, "a"), stub(2, "a")];
+    const reviewOf = (node: (typeof none)[number] | undefined) => (node?.type === "session" ? node.data.review : undefined);
+    const none = toFlowNodes(inputs({ projects: expanded, children }));
+    expect(reviewOf(none[2])).toBe(false);
+    const one = toFlowNodes(inputs({ projects: expanded, children, review: { "stub-2-a": true } }), none);
+    expect(reviewOf(one[2])).toBe(true);
+    expect(reviewOf(one[1])).toBe(false);
+    expect(one[1]).toBe(none[1]);
+    expect(one[2]).not.toBe(none[2]);
+    expect(toFlowNodes(inputs({ projects: expanded, children, review: { "stub-2-a": true } }), one)[2]).toBe(one[2]);
+    const child = { ...stub(1, "a"), label: "ui-2" };
+    expect(childAriaLabel("session", { child, attention: false, detail: null, lastLine: null, review: true })).toBe("Session ui-2, asks for review");
+    const meta: SessionMeta = { startedAt: "", lastActive: "", branch: null, messages: 0 };
+    expect(sessionCardTitle({ child, attention: false, detail: null, lastLine: null, review: true }, meta)).toBe("asks for review\nui-2");
+  });
+
   it("the meta line starts with the state word when the session is live or exited", () => {
     const meta: SessionMeta = { startedAt: ago(0), lastActive: ago(0), branch: "master", messages: 12 };
     expect(sessionMetaLine(meta, now, { kind: "busy" })).toBe("busy · master · 12 msgs · now");

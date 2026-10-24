@@ -57,16 +57,19 @@ fn initialize_ping_and_tools_list() {
         let read = READ_TOOLS.contains(&tool["name"].as_str().unwrap());
         assert_eq!(tool["annotations"]["readOnlyHint"], read, "{tool}");
     }
-    // Story 7.2: the act tools follow the read tools.
-    assert_eq!(&names[5..9], ACT_TOOLS);
+    // Story 7.2: the act tools follow the read tools (Story 7.4: request_review last of them).
+    assert_eq!(&names[5..10], ACT_TOOLS);
     // Story 7.3: then the peer tools.
-    assert_eq!(&names[9..], PEER_TOOLS);
-    for peer in &listed[9..] {
-        assert_eq!(peer["annotations"]["readOnlyHint"], false, "{peer}");
-        assert_eq!(peer["annotations"]["destructiveHint"], false, "{peer}");
+    assert_eq!(&names[10..], PEER_TOOLS);
+    // request_review and the peer tools change something but never destroy anything.
+    for tool in &listed[9..] {
+        assert_eq!(tool["annotations"]["readOnlyHint"], false, "{tool}");
+        assert_eq!(tool["annotations"]["destructiveHint"], false, "{tool}");
     }
-    assert_eq!(listed[9]["inputSchema"]["required"], json!(["peer", "text"]));
-    assert_eq!(listed[10]["inputSchema"]["properties"], json!({}), "inbox takes no argument");
+    assert_eq!(listed[9]["inputSchema"]["required"], json!(["summary"]));
+    assert_eq!(listed[9]["inputSchema"]["properties"]["paths"]["maxItems"], 50);
+    assert_eq!(listed[10]["inputSchema"]["required"], json!(["peer", "text"]));
+    assert_eq!(listed[11]["inputSchema"]["properties"], json!({}), "inbox takes no argument");
     assert_eq!(listed[6]["inputSchema"]["required"], json!(["from", "to", "kind"]));
     assert_eq!(listed[7]["inputSchema"]["required"], json!(["edgeId"]));
     assert_eq!(listed[7]["annotations"]["destructiveHint"], true);
@@ -127,7 +130,7 @@ fn a_panicking_tool_is_an_internal_error_with_the_request_id() {
 }
 
 #[test]
-fn the_config_names_the_endpoint_and_the_bearer_and_the_read_and_peer_tools_are_allowed() {
+fn the_config_names_the_endpoint_and_the_bearer_and_the_read_peer_and_review_tools_are_allowed() {
     assert_eq!(
         config_json(4242, "t0k"),
         json!({ "mcpServers": { "switchboard": { "type": "http", "url": "http://127.0.0.1:4242/mcp", "headers": { "Authorization": "Bearer t0k" } } } })
@@ -141,7 +144,8 @@ fn the_config_names_the_endpoint_and_the_bearer_and_the_read_and_peer_tools_are_
             "mcp__switchboard__peers",
             "mcp__switchboard__sessions",
             "mcp__switchboard__send",
-            "mcp__switchboard__inbox"
+            "mcp__switchboard__inbox",
+            "mcp__switchboard__request_review"
         ]
     );
 }
@@ -1034,4 +1038,135 @@ fn the_nudge_line_counts_messages_and_senders() {
     let line = nudge_line([&evil]).unwrap();
     assert_eq!(line.chars().filter(|c| c.is_control()).collect::<String>(), "\r");
     assert_eq!(notice_text("ui-2", "API shape"), "Linked to \"ui-2\" (API shape).");
+}
+
+/// Story 7.4: `request_review` never asks; it flags the caller's node (the read tools say
+/// `reviewRequested: true`), lists the paths relative to the cwd with `missing` marks, emits the
+/// map and sends the OS toast (unfocused, `notifications.review` on). A second request replaces
+/// the first; opening lowers the flag and keeps the request; Clear lowers it; a path outside the
+/// session's folders refuses the whole call and flags nothing; a removed session loses its request.
+#[test]
+fn request_review_flags_the_node_lists_the_paths_and_refuses_outside_ones() {
+    use crate::review::{self, MAX_PATHS, OUTSIDE};
+    use tauri::Listener;
+    let app = fixture();
+    let state = app.state::<AppState>();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    let cwd = root.join("web");
+    std::fs::create_dir_all(cwd.join("src")).unwrap();
+    std::fs::write(cwd.join("src").join("present.ts"), "x").unwrap();
+    let cwd_text = cwd.display().to_string();
+    let docs = root.join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    state.write_workspace().workspace.projects.push(project("web", "web", &cwd_text));
+    state.write_sessions_live().sessions.insert("r1".into(), live("web", &cwd_text, "web-1", SessionState::Busy, None));
+    state.write_sessions_live().sessions.insert("r2".into(), live("web", &cwd_text, "web-2", SessionState::Idle, None));
+    state.launcher.record_add_dirs("r1", vec![graph::EdgeDir { path: docs.display().to_string(), via: "sheet".into() }]);
+    let recorder = Arc::new(crate::notify::fixtures::Recorder::default());
+    *state.notifier.lock().unwrap() = Some(recorder.clone());
+    let events = Arc::new(std::sync::Mutex::new(0usize));
+    let seen = events.clone();
+    app.listen_any(review::EVENT, move |_| *seen.lock().unwrap() += 1);
+    let request = |who: &str, args: Value| call_app(app.handle(), who, "request_review", &args);
+
+    // The spec's request: one path, inside the cwd, not on disk.
+    let reply = request("r1", json!({ "summary": "token refresh done", "paths": ["src/auth/refresh.ts"] })).unwrap();
+    assert_eq!(reply, json!({ "flagged": true, "paths": 1 }));
+    assert!(state.approvals.list().is_empty(), "never asks");
+    assert!(state.review.flagged("r1"));
+    let stored = state.review.get("r1").unwrap();
+    assert_eq!((stored.name.as_str(), stored.summary.as_str(), stored.root.as_str()), ("web-1", "token refresh done", cwd_text.as_str()));
+    assert_eq!(stored.paths.len(), 1);
+    assert_eq!(stored.paths[0].display, "src/auth/refresh.ts");
+    assert!(stored.paths[0].missing);
+    assert_eq!(*events.lock().unwrap(), 1);
+    let toasts = recorder.toasts.lock().unwrap().clone();
+    assert_eq!(toasts.len(), 1, "unfocused (the mock app has no window): one OS toast");
+    assert_eq!((toasts[0].title.as_str(), toasts[0].body.as_str(), toasts[0].review), ("web-1 asks for review", "token refresh done", true));
+    assert_eq!(toasts[0].session_id, "r1");
+    // The read tools say so while it is flagged.
+    assert_eq!(call(&state, "r1", "my_node", &json!({})).unwrap()["reviewRequested"], true);
+    assert_eq!(call(&state, "s1", "node", &json!({ "id": "r1" })).unwrap()["reviewRequested"], true);
+    let listed = call(&state, "s1", "sessions", &json!({ "project": "web" })).unwrap();
+    let flags: Vec<(String, Value)> = listed["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["nodeId"].as_str().unwrap().to_string(), s.get("reviewRequested").cloned().unwrap_or(Value::Null)))
+        .collect();
+    assert!(flags.contains(&("r1".to_string(), json!(true))) && flags.contains(&("r2".to_string(), Value::Null)), "{flags:?}");
+
+    // A second request replaces the summary and the paths: an existing file, an add-dir's file,
+    // an absolute path in the cwd and a path listed twice.
+    let present = cwd.join("src").join("present.ts").display().to_string();
+    let notes = docs.join("notes.md").display().to_string();
+    let reply = request("r1", json!({ "summary": "  second\u{2028} pass\n", "paths": ["src/present.ts", notes, present, "./src/../src/present.ts"] })).unwrap();
+    assert_eq!(reply, json!({ "flagged": true, "paths": 2 }));
+    let replaced = state.review.get("r1").unwrap();
+    assert_eq!(replaced.summary, "second pass");
+    assert!(replaced.seq > stored.seq);
+    assert_eq!(replaced.paths[0].display, "src/present.ts");
+    assert!(!replaced.paths[0].missing);
+    assert_eq!(replaced.paths[1].display, notes, "outside the cwd: the absolute path");
+    assert!(replaced.paths[1].missing);
+    assert_eq!(state.review.snapshot().len(), 1, "one request per session");
+
+    // Open: the flag goes, the request stays (the pane lists it); a file made since is no longer missing.
+    std::fs::write(docs.join("notes.md"), "n").unwrap();
+    // A stale seq (a replacement the operator never saw) changes nothing.
+    assert_eq!(review::open(app.handle(), "r1", stored.seq), Err(review::REPLACED.to_string()));
+    review::clear(app.handle(), "r1", stored.seq).unwrap();
+    assert!(state.review.flagged("r1"), "a stale clear keeps the flag");
+    let opened = review::open(app.handle(), "r1", replaced.seq).unwrap();
+    assert!(!opened.flagged && !opened.paths[1].missing);
+    assert!(!state.review.flagged("r1"));
+    assert!(call(&state, "r1", "my_node", &json!({})).unwrap().get("reviewRequested").is_none());
+    assert_eq!(state.review.get("r1").unwrap().summary, "second pass");
+    // Clear: the flag goes without opening.
+    request("r1", json!({ "summary": "third" })).unwrap();
+    assert!(state.review.flagged("r1"));
+    let third = state.review.get("r1").unwrap().seq;
+    review::clear(app.handle(), "r1", third).unwrap();
+    assert!(!state.review.flagged("r1"));
+    assert_eq!(review::clear(app.handle(), "r2", 1), Err(review::NO_REQUEST.to_string()));
+    assert!(review::open(app.handle(), "r2", 1).is_err());
+
+    // Outside paths refuse the whole call; nothing is flagged.
+    let outside = root.join("elsewhere.txt").display().to_string();
+    let err = request("r2", json!({ "summary": "x", "paths": ["src/a.ts", outside, "../../up.txt"] })).unwrap_err();
+    assert_eq!(err, format!("{OUTSIDE}: {outside}, ../../up.txt"));
+    assert!(state.review.get("r2").is_none());
+    // r2 has no add-dir: the docs folder is outside for it.
+    assert!(request("r2", json!({ "summary": "x", "paths": [docs.display().to_string()] })).unwrap_err().starts_with(OUTSIDE));
+    // Bad arguments.
+    assert_eq!(request("r2", json!({ "paths": [] })), Err("summary is required".to_string()));
+    assert_eq!(request("r2", json!({ "summary": " \n " })), Err("summary is required".to_string()));
+    assert_eq!(request("r2", json!({ "summary": "x", "paths": "a.ts" })), Err("paths must be an array of strings".to_string()));
+    assert_eq!(request("r2", json!({ "summary": "x", "paths": [1] })), Err("paths must be non-empty strings".to_string()));
+    let many: Vec<String> = (0..=MAX_PATHS).map(|i| format!("f{i}.ts")).collect();
+    assert_eq!(request("r2", json!({ "summary": "x", "paths": many })), Err(format!("at most {MAX_PATHS} paths")));
+    assert!(request("nope", json!({ "summary": "x" })).is_err(), "a session the app does not know");
+    // A summary-only request needs no folder: a session whose cwd is unknown can make one.
+    state.write_sessions_live().sessions.insert("r3".into(), live("web", "", "web-3", SessionState::Busy, None));
+    assert_eq!(request("r3", json!({ "summary": "done" })).unwrap(), json!({ "flagged": true, "paths": 0 }));
+    assert!(request("r3", json!({ "summary": "done", "paths": ["a.ts"] })).unwrap_err().contains("not known"));
+    assert!(state.review.get("r2").is_none());
+    // Exactly 50 is fine; a summary is cut to 500.
+    let fifty: Vec<String> = (0..MAX_PATHS).map(|i| format!("f{i}.ts")).collect();
+    assert_eq!(request("r2", json!({ "summary": "y".repeat(800), "paths": fifty })).unwrap()["paths"], 50);
+    assert_eq!(state.review.get("r2").unwrap().summary.chars().count(), review::MAX_SUMMARY_CHARS + 1);
+
+    // notifications.review off: no toast.
+    state.write().settings.notifications.review = false;
+    let before = recorder.toasts.lock().unwrap().len();
+    request("r1", json!({ "summary": "quiet" })).unwrap();
+    assert_eq!(recorder.toasts.lock().unwrap().len(), before);
+
+    // Removing the project drops its sessions' requests.
+    for id in ["r1", "r2", "r3"] {
+        state.write_workspace().workspace.sessions.push(graph::SessionRef { session_id: id.into(), project_id: "web".into(), ..Default::default() });
+    }
+    graph::remove_project(app.handle(), "web").unwrap();
+    assert!(state.review.snapshot().is_empty());
 }

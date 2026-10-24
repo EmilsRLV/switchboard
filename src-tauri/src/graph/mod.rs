@@ -1515,6 +1515,8 @@ pub fn remove_project<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Resul
     };
     // Story 7.3: the removed sessions' inboxes (and nudge jobs) go with them.
     crate::inbox::forget_sessions(app, removed.iter().map(String::as_str));
+    // Story 7.4: and their review requests.
+    crate::review::forget_sessions(app, removed.iter().map(String::as_str));
     Ok(persist_and_emit(app, target, &workspace))
 }
 
@@ -1791,6 +1793,7 @@ pub fn remove_session_ref<R: Runtime>(app: &AppHandle<R>, session_id: &str, proj
     };
     // Story 7.3: its inbox (and nudge job) goes with it.
     crate::inbox::forget_sessions(app, [session_id]);
+    crate::review::forget_sessions(app, [session_id]);
     persist_and_emit(app, target, &workspace);
 }
 

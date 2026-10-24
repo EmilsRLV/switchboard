@@ -298,6 +298,34 @@
   white-space: nowrap;
 }
 
+/* Story 7.4: the plain `review` flag of a session that asks for review, beside the unread badge
+   in the same look; a button (a click opens the Review pane). `--fg` text and a `--fg-muted`
+   border on hover, the usual focus outline. Never the accent. */
+.session-review {
+  flex: none;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: inherit;
+  color: var(--fg-muted);
+  background: transparent;
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 0.3rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.session-review:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.session-review:focus-visible {
+  outline: var(--line) solid var(--focus);
+  outline-offset: 1px;
+}
+
 /* --- branch cards (Story 5.1): the name (ellipsis) then `*` for the checked-out branch, over a
    muted meta line: `↑n ↓m`, `upstream gone`, the worktree chip. Tokens only, no accent. --- */
 

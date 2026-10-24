@@ -11,6 +11,11 @@
 //! `extra` payload. A click on it (`tap`, reported by `Notification::on_action`; on Windows
 //! only while the toast is on screen) focuses the main window and emits `notify://reveal`,
 //! and the frontend reveals and selects that session as `ctrl+j` does.
+//!
+//! **Review requests** (Story 7.4, [`on_review`]): a session's `request_review` sends one toast
+//! `<name> asks for review` while the window is not focused and `notifications.review` is on. Its
+//! `extra` also carries `review: true`, so the click's `notify://reveal` says `review: true` and
+//! the frontend opens that session's review.
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -25,6 +30,8 @@ pub const REVEAL_EVENT: &str = "notify://reveal";
 /// The `extra` keys a toast carries its session and project ids under.
 pub const EXTRA_SESSION_ID: &str = "sessionId";
 pub const EXTRA_PROJECT_ID: &str = "projectId";
+/// The `extra` key a review toast (Story 7.4) carries `true` under: a click opens the review.
+pub const EXTRA_REVIEW: &str = "review";
 
 /// One toast to send.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +40,8 @@ pub struct Toast {
     pub project_id: Option<String>,
     pub title: String,
     pub body: String,
+    /// A review toast (Story 7.4): a click opens the session's review.
+    pub review: bool,
 }
 
 /// What a click on a toast asks the frontend to reveal (`notify://reveal`).
@@ -41,6 +50,9 @@ pub struct RevealRequest {
     pub session_id: String,
     /// The session's project; `None` for an Elsewhere session.
     pub project_id: Option<String>,
+    /// Story 7.4: the toast was a review request's: open the session's review.
+    #[serde(default)]
+    pub review: bool,
 }
 
 /// Something that shows an OS toast. The app uses the notification plugin
@@ -68,6 +80,9 @@ impl<R: Runtime> Notifier for PluginNotifier<R> {
         if let Some(project_id) = &toast.project_id {
             builder = builder.extra(EXTRA_PROJECT_ID, project_id);
         }
+        if toast.review {
+            builder = builder.extra(EXTRA_REVIEW, true);
+        }
         builder.show().map_err(|err| err.to_string())
     }
 }
@@ -93,6 +108,7 @@ pub fn decide(transitions: &[Transition], settings: &NotificationSettings, focus
                 project_id: t.project_id.clone(),
                 title: format!("{} — {word}", place_label(t)),
                 body: session_label(t),
+                review: false,
             })
         })
         .collect()
@@ -174,6 +190,38 @@ pub fn on_approval<R: Runtime>(app: &AppHandle<R>, caller: &str, title: &str) {
         project_id,
         title: title.to_string(),
         body: APPROVAL_BODY.to_string(),
+        review: false,
+    };
+    if let Err(err) = sender.send(&toast) {
+        eprintln!("notifications: could not show \"{}\": {err}", toast.title);
+    }
+}
+
+/// The title of a review request's toast (Story 7.4): `<name> asks for review`.
+pub fn review_title(name: &str) -> String {
+    format!("{} asks for review", crate::claude::launch::peer_value(name))
+}
+
+/// Story 7.4: session `caller` (named `name`) asks for review. While the main window is not
+/// focused and `notifications.review` is on, one toast says `<name> asks for review` with the
+/// summary as its body; it carries the session id and `review: true`, so a click brings the app
+/// forward and opens the review. A send failure is logged only.
+pub fn on_review<R: Runtime>(app: &AppHandle<R>, caller: &str, name: &str, summary: &str) {
+    let state = app.state::<AppState>();
+    if !state.read().settings.notifications.review || main_window_focused(app) {
+        return;
+    }
+    let project_id = state.read_sessions_live().sessions.get(caller).and_then(|s| s.project_id.clone());
+    let Some(sender) = notifier(app) else {
+        eprintln!("notifications: no sender registered; the review request toast is dropped");
+        return;
+    };
+    let toast = Toast {
+        session_id: caller.to_string(),
+        project_id,
+        title: review_title(name),
+        body: crate::claude::hooks::cut(summary, crate::claude::hooks::LAST_LINE_MAX),
+        review: true,
     };
     if let Err(err) = sender.send(&toast) {
         eprintln!("notifications: could not show \"{}\": {err}", toast.title);
@@ -181,7 +229,8 @@ pub fn on_approval<R: Runtime>(app: &AppHandle<R>, caller: &str, title: &str) {
 }
 
 /// What a toast action asks for: a click on the toast itself (`tap`) whose `extra` names a
-/// session reveals it; anything else (another action, a toast of no session) nothing.
+/// session reveals it (and, for a review toast, opens its review); anything else (another action,
+/// a toast of no session) nothing.
 pub fn reveal_for_action(action: &ActionPerformed) -> Option<RevealRequest> {
     if action.action_id() != "tap" {
         return None;
@@ -191,6 +240,7 @@ pub fn reveal_for_action(action: &ActionPerformed) -> Option<RevealRequest> {
     Some(RevealRequest {
         session_id: text(EXTRA_SESSION_ID)?,
         project_id: text(EXTRA_PROJECT_ID),
+        review: extra.get(EXTRA_REVIEW).and_then(|v| v.as_bool()) == Some(true),
     })
 }
 
@@ -223,10 +273,12 @@ pub mod fixtures {
     use super::{Notifier, Toast};
     use std::sync::Mutex;
 
-    /// A [`Notifier`] that records what it was asked to show (title, body), or fails every send.
+    /// A [`Notifier`] that records what it was asked to show (title, body; and every whole toast),
+    /// or fails every send.
     #[derive(Default)]
     pub struct Recorder {
         pub sent: Mutex<Vec<(String, String)>>,
+        pub toasts: Mutex<Vec<Toast>>,
         pub fail: bool,
     }
 
@@ -236,6 +288,7 @@ pub mod fixtures {
                 return Err("toast server unavailable".into());
             }
             self.sent.lock().unwrap().push((toast.title.clone(), toast.body.clone()));
+            self.toasts.lock().unwrap().push(toast.clone());
             Ok(())
         }
     }
@@ -289,11 +342,11 @@ mod tests {
             transition("s1", SessionState::Finished, Some(("ide", "ide"))),
             transition("s2", SessionState::Waiting, Some(("ide", "ide"))),
         ];
-        let off = NotificationSettings { finished: false, waiting: true };
+        let off = NotificationSettings { finished: false, waiting: true, review: true };
         let toasts = decide(&t, &off, false);
         assert_eq!(toasts.len(), 1);
         assert_eq!(toasts[0].title, "ide — waiting");
-        let none = NotificationSettings { finished: false, waiting: false };
+        let none = NotificationSettings { finished: false, waiting: false, review: true };
         assert!(decide(&t, &none, false).is_empty());
     }
 
@@ -332,10 +385,13 @@ mod tests {
         let tap = action("tap", serde_json::json!({ "sessionId": "s1", "projectId": "ide" }));
         assert_eq!(
             reveal_for_action(&tap),
-            Some(RevealRequest { session_id: "s1".into(), project_id: Some("ide".into()) })
+            Some(RevealRequest { session_id: "s1".into(), project_id: Some("ide".into()), review: false })
         );
+        // Story 7.4: a review toast's click opens the review.
+        let review = action("tap", serde_json::json!({ "sessionId": "s1", "projectId": "ide", "review": true }));
+        assert!(reveal_for_action(&review).unwrap().review);
         let elsewhere = action("tap", serde_json::json!({ "sessionId": "e1" }));
-        assert_eq!(reveal_for_action(&elsewhere), Some(RevealRequest { session_id: "e1".into(), project_id: None }));
+        assert_eq!(reveal_for_action(&elsewhere), Some(RevealRequest { session_id: "e1".into(), project_id: None, review: false }));
         assert_eq!(reveal_for_action(&action("snooze", serde_json::json!({ "sessionId": "s1" }))), None);
         assert_eq!(reveal_for_action(&action("tap", serde_json::json!({}))), None, "not one of ours");
         let unreadable: ActionPerformed =
@@ -366,7 +422,12 @@ mod tests {
         handle_action(app.handle(), &action("snooze", serde_json::json!({ "sessionId": "s1" })));
         assert!(rx.try_recv().is_err());
         handle_action(app.handle(), &action("tap", serde_json::json!({ "sessionId": "s1", "projectId": "ide" })));
-        assert_eq!(rx.try_recv().unwrap(), RevealRequest { session_id: "s1".into(), project_id: Some("ide".into()) });
+        assert_eq!(rx.try_recv().unwrap(), RevealRequest { session_id: "s1".into(), project_id: Some("ide".into()), review: false });
+        // Story 7.4: a review toast's click says so on the wire.
+        handle_action(app.handle(), &action("tap", serde_json::json!({ "sessionId": "s1", "review": true })));
+        let request = rx.try_recv().unwrap();
+        assert!(request.review);
+        assert_eq!(serde_json::to_value(&request).unwrap()["review"], true);
         // Without the plugin there is nothing to listen to; this must not panic.
         listen_for_clicks(app.handle());
     }

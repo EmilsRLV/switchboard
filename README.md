@@ -96,7 +96,7 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | Enter | The selected node's default action (with an edge selected, it opens the edge inspector): a project with children expands or collapses (persisted); a `show all (N)` / `show fewer` row toggles the column (see [Sessions](#sessions)); a childless project or a child card does nothing (Resume, Fork and Stop are menu and palette commands; see [Resume, fork, stop](#resume-fork-stop)). Same condition as the arrows. |
 | `e` | Link to…: with a session or project card selected, the palette becomes a pick list of the nodes it can be linked to; Enter draws the edge, Esc cancels (see [Edges](#edges)). Also in the node menu and the palette. Not while focus is in a text field or a select, nor while the context menu is open. |
 | Delete | Delete edge: only while an edge is selected (a click on its line), deletes it at once, no confirmation (see [Edges](#edges)). With no edge selected Delete does nothing; in a text field it is the field's. |
-| Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings, import, terminal, the launch sheet, the worktree sheet, the remove-worktree sheet or the edge inspector), else clears the selected node or edge. With all of them open, five presses. With focus in a terminal Esc is the terminal's (see [Terminal](#terminal)). |
+| Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings, import, terminal, the launch sheet, the worktree sheet, the remove-worktree sheet, the edge inspector or the Review pane), else clears the selected node or edge. With all of them open, five presses. With focus in a terminal Esc is the terminal's (see [Terminal](#terminal)). |
 
 `/` is reserved for a later epic and deliberately unbound. Delete is bound only to deleting a selected edge;
 removing a project stays a menu action.
@@ -126,7 +126,8 @@ edge, and Delete edge and Inspect edge while an edge is selected (Inspect edge o
 Restart with flags while a context edge from a session is selected, and Retry edge while that edge failed or
 a draft holds it back, and Retry edge while a selected cooperate edge has a side that failed or that a draft
 holds back (see [Context edges on live sessions](#context-edges-on-live-sessions) and [Cooperation
-edges](#cooperation-edges)). The palette sorts by title. The key-only
+edges](#cooperation-edges)); Open review request while any session has a review request, and Clear review
+flag while a session is flagged (see [Review requests](#review-requests-request_review)). The palette sorts by title. The key-only
 carriers (the `ctrl+,` toggle, the palette's second binding `ctrl+shift+k`, the five Esc commands, the four
 arrows and Enter) are registered but hidden from
 the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron on a card runs
@@ -1023,7 +1024,9 @@ of a token). A failed read shows next to the last counters read.
   ask for the act tools (Story 7.2: start a session, link, unlink), which run only after the operator's approval
   (or under a policy the operator set), and post the session's status line. And it can use `send` and `inbox`
   (Story 7.3), which never ask: it can message that session's cooperate peers, whose nudge then **types a line
-  into each peer's terminal** (at most 20 an hour per peer), and read and clear that session's inbox.
+  into each peer's terminal** (at most 20 an hour per peer), and read and clear that session's inbox. And it can
+  call `request_review` (Story 7.4), which never asks: it flags that session's own card and shows a review toast
+  (and, unfocused, an OS notification), listing paths within that session's own folders only.
 - On Windows the settings file is protected only by the per-user `%TEMP%` folder's permissions (on Linux it is
   0600 in a 0700 folder).
 - If one of your own `Stop` hooks blocks the stop (asks Claude to continue), Switchboard's `Stop` hook still
@@ -1071,7 +1074,8 @@ reads it), not a protocol error.
 | `sessions(project)` | The project (by id, else label; a label two projects share is an error naming their ids) and its live and historic sessions: `{nodeId,name,status,lastActive,statusText}`, live first, then newest. `status` is the live state (`busy`, `idle`, …); `exited` for a session that ran this app run and has ended; `historic` for one known only from its transcript. `lastActive` is the newer of the transcript's last record and what the live map saw. |
 
 `statusText` (Story 7.2) is what the session last posted with `set_status`, until its state changes; `null`
-otherwise.
+otherwise. `my_node()`, `node(id)` and each `sessions(project)` row add `reviewRequested: true` while the session's
+card shows the review flag (Story 7.4; left out otherwise).
 
 **Act tools (Story 7.2).** `start_session`, `link` and `unlink` change the workspace, so each waits for the
 operator unless a policy covers it; `set_status` never asks. They are **not** in the session's
@@ -1155,6 +1159,45 @@ falls below 20.
 **Not yet verified with the real `claude`:** that two linked sessions coordinate through `send` / `inbox` after a
 nudge (a manual check, together with Story 6.4's `SendMessage` check).
 
+### Review requests: request_review
+
+**Review tool (Story 7.4).** A session says "this is ready, look here". It never asks the operator (a decision:
+it only flags the caller's own card), and it is in the session's `permissions.allow`, so Claude Code does not
+prompt either.
+
+| Tool | Does |
+|---|---|
+| `request_review({summary, paths?})` | `summary` is required: control characters, U+2028/U+2029 and the bidi embeddings, overrides and isolates are stripped, it is trimmed and kept to 500 characters (a longer one is cut there and ends in `…`). `paths` is at most 50 strings, each cleaned the same way. A relative path resolves against the caller's cwd, and `.` and `..` are resolved on the text. Every path must lie within the caller's cwd, its worktree, its project folder or one of its add-dirs (as `my_node().addDirs` lists them), judged by where it really is: the deepest existing part of the path and each of those folders are canonicalised (symlinks and junctions followed), so a link inside the cwd that points elsewhere counts as outside. Any path outside refuses the **whole call** with `outside this session's folders: <paths>` and nothing is flagged. A path that does not exist is accepted and listed as `missing`; a path given twice is listed once. Existence is checked; contents are never read. A request with no paths needs no folder (it works even when the session's cwd is not known). Returns `{flagged: true, paths: N}`. |
+
+**The flag.** The caller's session card shows a plain `review` flag on its first line (beside the `N new` badge;
+see `docs/DESIGN.md`) until the operator opens the review or runs **Clear review flag**. A new request from the
+same session replaces the summary and paths (one toast, one flag). Rust keeps each session's last request in
+memory only: the app quitting drops them, and removing a session's ref or its project drops its request.
+`review://requests` carries `{sessionId: request}` to the UI.
+
+**The toast.** A review toast joins the agent approval toasts at the bottom right: `<name> asks for review:
+<summary>`, with **Open** and **Dismiss**. It does not wait or expire; Dismiss closes the toast and keeps the
+flag. While Switchboard is not the focused window, the request also sends an OS notification `<name> asks for
+review` (the summary, cut to 200 characters, as its body), following `notifications.review`; clicking it brings the app forward and opens
+the review.
+
+**The Review pane.** Clicking the flag, the toast's **Open**, the notification, or **Open review request** in the
+palette (the selected session when it is flagged, else the newest request) opens a pane on the right titled with
+the session's name: the summary, then one row per path, relative to the session's folder (an add-dir's path in
+full; the full path on hover), marked `missing` where nothing is there (checked again on each open), and when the
+review was requested. Opening it clears the flag. Until Epic 8 builds the diff and file views, this list is all it
+shows: existence is checked; contents are never read. A new request from the session whose pane is open counts as
+seen: the pane shows it and no flag or toast rises.
+
+**Opening and clearing are tied to what the operator saw.** The UI names the request it showed (`review_open` /
+`review_clear` take the session id and the request's `seq`). If the session asked again meanwhile, opening is
+refused with `the review request was replaced; open the new one` and clearing does nothing, so a replacement the
+operator never saw keeps its flag. Either call for a session with no request is refused with `no review request
+for this session` (the notice says so).
+
+**Not yet verified with the real `claude`:** that a session asked to request review when done calls the tool
+without a permission prompt, and that the flag, toast, notification and pane all appear.
+
 ## Settings
 
 One human-editable JSON file, written with every key present on first launch and never rewritten after
@@ -1186,6 +1229,7 @@ The location is `dirs::config_dir()/switchboard`, so it also resolves on macOS
 | `poll.git_ms` | `5000` | Git status poll interval. |
 | `notifications.finished` | `true` | Send an OS toast when a session finishes its turn while the window is unfocused (see [Needs you](#needs-you)). |
 | `notifications.waiting` | `true` | Same for a session waiting for input (hooks, Story 4.3). |
+| `notifications.review` | `true` | Send an OS toast when a session asks for review (`request_review`) while the window is unfocused; clicking it opens the review (see [Review requests](#review-requests-request_review)). |
 | `peers.nudge` | `true` | Nudge a session that has new peer messages with one injected line once it is idle (see [Peer messages](#peer-messages-send-and-inbox)); `false` shows the `N new` badge only. |
 
 Binary detection: `claude` is searched on PATH, then `~/.local/bin`; `git` on PATH. Each one found is run

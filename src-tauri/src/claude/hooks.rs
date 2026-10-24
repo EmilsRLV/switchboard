@@ -186,8 +186,8 @@ pub fn map_event(event: &str, payload: &Value) -> Option<HookSignal> {
 /// The per-session settings file's content while the endpoint is up on `port`: one `http`
 /// hook per wired event, POSTing to `http://127.0.0.1:<port>/hooks/<Event>` with the session's
 /// bearer token written literally (the file is per-user, 0600 on Unix) and a 5 s timeout; and
-/// (Story 7.1) `permissions.allow` naming exactly the `switchboard` read tools and (Story 7.3) the
-/// peer tools `send` / `inbox`, so they never prompt.
+/// (Story 7.1) `permissions.allow` naming exactly the `switchboard` read tools, (Story 7.3) the
+/// peer tools `send` / `inbox` and (Story 7.4) `request_review`, so they never prompt.
 pub fn settings_json(port: u16, token: &str) -> Value {
     let mut hooks = serde_json::Map::new();
     for event in EVENTS {
@@ -1052,7 +1052,8 @@ pub mod tests {
                 "mcp__switchboard__peers",
                 "mcp__switchboard__sessions",
                 "mcp__switchboard__send",
-                "mcp__switchboard__inbox"
+                "mcp__switchboard__inbox",
+                "mcp__switchboard__request_review"
             ])
         );
         assert_eq!(value.as_object().unwrap().len(), 2, "hooks and permissions only");

@@ -119,7 +119,8 @@ That is: a banner's left border and mark, error text in a pane (`.pane-error`), 
 edge with a failed side, Story 6.4), the attention states of Story 3.3: a session card in `finished` / `waiting` (its border,
 `.session-attention`, and its state word, `.session-attention-word`) and the glow of its project card
 (`.project-glow`), and (Story 7.2) the border of an agent approval toast (`.approval-toast`): a request waits on
-the operator. Inline styles never use the accent.
+the operator; a review toast (Story 7.4) is an `.approval-toast` too: a session asks the operator to look. The
+review flag on a card never uses it. Inline styles never use the accent.
 
 **Terminal content is not chrome.** What a program prints in a terminal is drawn in its own colours (the
 ANSI palette below, 256-colour and truecolour escapes included), which may well be orange; the accent rule
@@ -256,6 +257,19 @@ drag handle) follows every rule here.
   N s`. The buttons turn disabled while an answer is on its way. It never takes the focus; the palette answers
   the oldest. No colour marks Deny or Always: the words do. It appears and goes without animation. This is the
   one exception to "status stays ambient": an attention surface with inline buttons.
+- **Review toasts** (Story 7.4) join the same stack, after the approval toasts, in their look (`.approval-toast`,
+  the accent border: a session asks the operator to look): one per flagged session, `<name> asks for review:
+  <summary>` in `--text-md` (the name 500), wrapping anywhere, then the ordinary buttons **Open** and **Dismiss**.
+  No command block and no countdown: it does not wait or expire. Dismiss closes it and keeps the flag; a new
+  request from the session shows it again. It never takes the focus and appears and goes without animation.
+- **The Review pane** (Story 7.4, before Epic 8's diff view) is a pane at the settings pane's width: the title is
+  the session's name (`--text-lg` / 500, one line, ellipsis), then a `Summary` section heading over the summary
+  (`--text-md`, wrapping anywhere, selectable) with `Requested <time>` under it (`--text-xs` `--fg-muted`; the
+  local time today, else the date and time) and a `Paths` section heading over a bordered list (1-px `--border`,
+  `--radius-sm`), one row per path split by 1-px `--border` lines: the path in mono `--text-xs`, relative to the
+  session's folder (an add-dir's in full), wrapping anywhere, the full path on hover, and at the right a muted
+  `missing` (`--fg-muted`) where nothing is there. No paths: a muted `No paths listed.` line. Tokens only, no
+  accent, no new motion; it never takes the focus on opening. Epic 8 replaces the list.
 - **Settings → Agent actions** (Story 7.2) is one muted line under the section heading: `Ask: …` or, while the
   workspace allows all, `Allow all: …`, each naming the palette command that switches it.
 - **The context menu** is the palette's row look at the pointer: `--bg-raised`, 1-px border,
@@ -321,6 +335,13 @@ session and branch children; the size is fixed like the project card's.
   accent (messages are information, not attention). The title shrinks with its ellipsis; the badge never does.
   It goes when the session reads its inbox. Its accessible name and tooltip add `N unread messages`. Live or not
   (a message waits for a stopped peer), it shows whenever Rust counts unread messages.
+
+  Story 7.4: while a session asks for review, line 1 ends in a plain **review flag**, `review`, after the title and
+  the unread badge: the unread badge's look (mono `--text-xs`, 1-px `--border`, `--radius-sm`, `--fg-muted`), never
+  the accent. It is a button: `--fg` text and a `--fg-muted` border on hover, the 1-px `--focus` outline on keyboard
+  focus; a click opens the Review pane on that session (and the flag goes) without selecting the card. Its
+  accessible name and the card's tooltip add `asks for review`. It goes when the review is opened or the flag is
+  cleared.
 
   A live session with no transcript yet has the same card: its `name` from the poll (or `new session`) as
   the title and `0 msgs`, with no age (no activity is known) and only the start time on hover (none
@@ -440,7 +461,7 @@ Only six motions exist; every one is instant (or static) under `prefers-reduced-
 | Attention pulse (the accent dot before `finished` / `waiting`: the busy pulse) | 1.2 s |
 | Project glow (the accent outline around a project needing you: opacity 1 → 0.4, ease-in-out, alternating, looping; opacity only) | 1.2 s |
 
-Panes (the terminal pane, the launch, worktree and remove-worktree sheets and the edge inspector too), terminal tabs and pop-out windows, banners, the notice, the menu, the Elsewhere tray and the agent approval toasts appear without animation. Edges appear and go without animation.
+Panes (the terminal pane, the launch, worktree and remove-worktree sheets, the edge inspector and the Review pane too), terminal tabs and pop-out windows, banners, the notice, the menu, the Elsewhere tray, the agent approval toasts and the review toasts appear without animation. Edges appear and go without animation.
 
 ## Icons
 

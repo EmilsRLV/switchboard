@@ -1116,6 +1116,64 @@
   color: var(--fg-muted);
 }
 
+/* --- the Review pane (Story 7.4, before Epic 8): the summary, then one row per path (mono,
+   relative to the session's folder, the full path on hover) with a muted `missing` mark. Tokens
+   only, no accent. A review toast is an `.approval-toast` (its look, above). ------------------- */
+
+.review-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-summary {
+  margin: 0;
+  font-size: var(--text-md);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.review-at {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+
+.review-paths {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.review-path {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.review-path + .review-path {
+  border-top: var(--line) solid var(--border);
+}
+
+.review-path-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.review-missing {
+  flex: none;
+  color: var(--fg-muted);
+}
+
 /* The edge inspector's policy row (Story 7.2). */
 .edge-policy {
   display: flex;

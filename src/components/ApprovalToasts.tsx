@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { answerRequest } from "../commands/approvals";
 import type { PendingRequest } from "../ipc";
 import { alwaysTitle, requestTitle, secondsLeft, useApprovalsStore } from "../state/approvals";
+import { showsToastStack } from "../commands/review";
+import { ReviewToasts, useReviewToasts } from "./ReviewToasts";
 
 /**
  * The agent approval toasts (Story 7.2): one per request an agent's act tool is waiting on,
@@ -10,19 +12,22 @@ import { alwaysTitle, requestTitle, secondsLeft, useApprovalsStore } from "../st
  * a stored edge joins the caller and the target, Always for this edge. The toast is the one
  * attention surface with inline buttons: its border is the accent. It never takes the focus; the
  * palette's "Allow agent request" / "Deny agent request" answer the oldest from the keyboard.
- * Unanswered, Rust denies it at its deadline (the countdown) and it goes.
+ * Unanswered, Rust denies it at its deadline (the countdown) and it goes. Story 7.4's review
+ * toasts (`ReviewToasts`) join the same stack after them.
  */
 export function ApprovalToasts() {
   const pending = useApprovalsStore((s) => s.pending);
   const answering = useApprovalsStore((s) => s.answering);
+  const reviews = useReviewToasts();
   const now = useSecond(pending.length > 0);
-  if (pending.length === 0) return null;
+  if (!showsToastStack(pending.length, reviews.length)) return null;
   return (
     // Only new requests are announced: the countdown is hidden from assistive technology.
-    <section className="approvals" aria-label="Agent requests" aria-live="polite" aria-relevant="additions">
+    <section className="approvals" aria-label="Agent requests and reviews" aria-live="polite" aria-relevant="additions">
       {pending.map((request) => (
         <ApprovalToast key={request.id} request={request} now={now} busy={answering.includes(request.id)} />
       ))}
+      <ReviewToasts />
     </section>
   );
 }
