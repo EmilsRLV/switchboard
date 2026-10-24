@@ -635,7 +635,7 @@ started on is known), then ` / <name>`. Its **purpose** is the edge's label, or 
 ```
 Peer sessions (cooperate edges):
 - "ui-2" (ui / ui-2): API shape for auth refresh
-Prefer SendMessage to a peer by its name to coordinate.
+Prefer SendMessage to a peer by its name to coordinate; if that does not reach it, use switchboard send and inbox.
 ```
 
 At most five peers are listed, then `- … and N more`. Control characters and the Unicode line and paragraph
@@ -649,13 +649,15 @@ plain line, with the same idle wait, draft rule and one-injection-per-session ru
 [Context edges on live sessions](#context-edges-on-live-sessions)):
 
 ```
-A new peer session "<other name>" is linked to you (<purpose>). Use SendMessage to coordinate.
+A new peer session "<other name>" is linked to you (<purpose>). Use SendMessage or switchboard.inbox to coordinate.
 ```
 
 followed by Enter, with the same value cleaning as the prompt. The line is a user prompt, so a side counts as
 `notified` when its session goes busy within 3 s of the write. An end that is not running gets nothing now: the peer is in its prompt at its next resume.
 Because an edge starts without a label, the line usually says `no stated purpose`; the label you set later is
-in the prompt at the next resume.
+in the prompt at the next resume. When both ends run, each also finds a notice from `switchboard` in its
+[inbox](#peer-messages-send-and-inbox), `Linked to "<other name>" (<purpose>).`, which counts toward its `N new`
+badge but does not nudge on its own (the line above already told it).
 
 The edge inspector shows one **Now:** line per side:
 
@@ -678,8 +680,8 @@ Restart with flags: the next resume carries the peer anyway. On the canvas the e
 is pending and in the attention accent when a side failed. The state lives in memory only, on `edges://live`,
 keyed `<edgeId>#<sessionId>` per side; the session exiting or the edge being deleted drops it.
 
-Only `SendMessage` is named for now; the `switchboard` MCP `send` / `inbox` tools and an inbox link notice
-come with Epic 7. **Not yet verified:** that `SendMessage` from one session by the peer's name reaches the
+`SendMessage` is named first; the `switchboard` MCP server's `send` / `inbox` tools (Story 7.3, see
+[Peer messages](#peer-messages-send-and-inbox)) are the fallback. **Not yet verified:** that `SendMessage` from one session by the peer's name reaches the
 other while it is idle. That check is done by hand with the real `claude`; if it does not deliver, the inbox
 nudge of Story 7.3 becomes the primary channel. See
 [`docs/research/claude-code-integration.md`](docs/research/claude-code-integration.md).
@@ -1017,8 +1019,11 @@ of a token). A failed read shows next to the last counters read.
   session's status on the canvas.
 - The same token (also in the session's `.mcp.json`) opens the [`switchboard` MCP server](#the-switchboard-mcp-server):
   whatever can read it can **read the whole graph** through the read tools: every project path, every live
-  session's name, status and last line, the edges and their labels, and the session's own add-dirs. It cannot
-  change anything (there are no act tools yet).
+  session's name, status and last line, the edges and their labels, and the session's own add-dirs. It can also
+  ask for the act tools (Story 7.2: start a session, link, unlink), which run only after the operator's approval
+  (or under a policy the operator set), and post the session's status line. And it can use `send` and `inbox`
+  (Story 7.3), which never ask: it can message that session's cooperate peers, whose nudge then **types a line
+  into each peer's terminal** (at most 20 an hour per peer), and read and clear that session's inbox.
 - On Windows the settings file is protected only by the per-user `%TEMP%` folder's permissions (on Linux it is
   0600 in a 0700 folder).
 - If one of your own `Stop` hooks blocks the stop (asks Claude to continue), Switchboard's `Stop` hook still
@@ -1107,6 +1112,49 @@ either way, shows a one-line notice (`ide-1a2b started ui-3c4d on ui`). Older wo
 Claude Code asks its own permission before an act tool, and that a long wait at the toast does not time out the
 tool call on Claude Code's side.
 
+### Peer messages: send and inbox
+
+**Peer tools (Story 7.3).** Two sessions joined by a cooperate edge can message each other through the server.
+Neither tool ever asks: the cooperate edge is the permission, and both are in the session's `permissions.allow`
+(with the read tools).
+
+| Tool | Does |
+|---|---|
+| `send({peer, text})` | `peer` is one of the caller's cooperate peers (Story 6.4's rule): its session id or `session:<id>`, else its name as `peers()` gives it, exact first, then ignoring case. No match is `not a peer: <peer>`; two peers with that name are an error naming both node ids. The text keeps its line breaks (U+2028 and U+2029 become line breaks too); every other control character and the bidi embeddings, overrides and isolates (U+202A–U+202E, U+2066–U+2069) are stripped. A blank text, or one over 4,000 characters once cleaned, is refused. The message lands in the peer's inbox. Returns `{delivered: true, to: "<name>", unread: <the peer's count>}`, plus `running: false` when the peer is not running in a Switchboard terminal (historic, stopped, or in a terminal outside the app): the message waits for it (see below), and `dropped: N` when it pushed N older unread messages out. |
+| `inbox()` | The caller's unread messages, oldest first: `[{from, fromNodeId, text, at}]` (`at` in ISO 8601 UTC; a notice is `from: "switchboard"`, `fromNodeId: null`). Each message is returned once: reading clears the inbox and the badge. |
+
+**The inbox.** Rust keeps each session's unread messages in memory, at most 100 (the oldest go first, and the
+inbox then starts with a notice from `switchboard`, `N older messages were dropped`). The app quitting drops them
+all, and removing a session's ref or its project drops that session's inbox. A session's card shows `N new` on its first line while it has any (see
+`docs/DESIGN.md`); `inbox://unread` carries `{sessionId: count}` to the UI. A message to a peer that is not running in a Switchboard
+terminal (historic, stopped, or running in a terminal outside the app, which gets no nudge) is kept for it: the inbox survives the session's exit within this app run, and once the
+session is resumed it shows the badge and is nudged.
+
+**The nudge** (`peers.nudge`, on by default). When messages land for a session running in a Switchboard terminal,
+it is sent one line once it is idle (`idle` or `finished`), with no draft in its prompt, through the same
+one-injection-per-session slot as `/add-dir` and the peer line:
+
+```
+You have 1 message from "api-1". Call switchboard.inbox.
+```
+
+then Enter. With more than one message it reads `You have N messages from "api-1". Call switchboard.inbox.` (one
+sender) or `You have N messages from M peers. Call switchboard.inbox.`; the link notice is not counted. The line is
+built when it is written, from what is unread then, and nothing is written if the messages were already read. A
+busy session is nudged at its next idle, however long that takes (no 60 s give-up); a draft holds the nudge until
+an idle with no draft. There is one nudge per arrival of new messages: a later idle with the same unread messages
+writes nothing. An arrival counts as nudged only once its line was written, so a failed write is tried again at the
+next arrival or resume. With `peers.nudge: false` the badge is all; turning it back on nudges the running sessions
+that got messages meanwhile.
+
+**The loop guard.** Two agents answering each other could nudge each other forever, so a session gets at most 20
+nudges in any rolling hour. Past that its messages still arrive and its badge still counts, but no nudge is typed,
+and a one-line notice says `nudges paused for <name>: 20 in the last hour`. Nudges resume once the hour's count
+falls below 20.
+
+**Not yet verified with the real `claude`:** that two linked sessions coordinate through `send` / `inbox` after a
+nudge (a manual check, together with Story 6.4's `SendMessage` check).
+
 ## Settings
 
 One human-editable JSON file, written with every key present on first launch and never rewritten after
@@ -1138,6 +1186,7 @@ The location is `dirs::config_dir()/switchboard`, so it also resolves on macOS
 | `poll.git_ms` | `5000` | Git status poll interval. |
 | `notifications.finished` | `true` | Send an OS toast when a session finishes its turn while the window is unfocused (see [Needs you](#needs-you)). |
 | `notifications.waiting` | `true` | Same for a session waiting for input (hooks, Story 4.3). |
+| `peers.nudge` | `true` | Nudge a session that has new peer messages with one injected line once it is idle (see [Peer messages](#peer-messages-send-and-inbox)); `false` shows the `N new` badge only. |
 
 Binary detection: `claude` is searched on PATH, then `~/.local/bin`; `git` on PATH. Each one found is run
 with `--version` (5 s timeout) and its version recorded. A configured `*.path` may be absolute, start with

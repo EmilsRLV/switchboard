@@ -111,13 +111,16 @@ Claude Code's `ListAgents` tool lists "other local Claude sessions on this machi
 Story 6.4 relies on it: a session started from Switchboard (Resume; New has no edges yet; a fork inherits
 none) gets its cooperate peers in `--append-system-prompt` (`Peer sessions (cooperate edges):`, then
 `- "<name>" (<node path>): <purpose>` per peer, at most 5 and `- … and N more`, then `Prefer SendMessage
-to a peer by its name to coordinate.`), and an idle live session is sent one line when it is linked:
-`A new peer session "<name>" is linked to you (<purpose>). Use SendMessage to coordinate.` + Enter. That
-line is a user prompt, so the session going busy within 3 s confirms it was taken. Until Epic 7 only
-`SendMessage` is named, never the MCP `send`/`inbox`.
+to a peer by its name to coordinate; if that does not reach it, use switchboard send and inbox.`), and an
+idle live session is sent one line when it is linked: `A new peer session "<name>" is linked to you
+(<purpose>). Use SendMessage or switchboard.inbox to coordinate.` + Enter. That line is a user prompt, so the
+session going busy within 3 s confirms it was taken. Story 7.3 named the fallback in both: the `switchboard`
+MCP server's `send({peer, text})` and `inbox()` between cooperate peers, with an injected nudge
+(`You have 1 message from "<peer>". Call switchboard.inbox.` + Enter) once the recipient is idle.
 
 **Pending, by hand with the real `claude` (Emils):** session A sends `SendMessage` to B by name while B is
 idle; record whether it is delivered. If it is not, Story 7.3's inbox nudge becomes the primary channel.
+Also by hand: two linked sessions coordinate through `send` / `inbox` after a nudge.
 
 ## Slash commands used by injection
 

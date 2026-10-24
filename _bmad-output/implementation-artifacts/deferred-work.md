@@ -104,3 +104,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-7-2-act-tools-with-approval.md`
   summary: Story 7.2 (`419d432`) has not run on CI. It was closed on local Windows verification because GitHub Actions is suspended until the end of the month.
   evidence: The Linux build and tests have not run. When Actions resumes, confirm the latest commit on both runners.
+- source_spec: `_bmad-output/implementation-artifacts/spec-7-3-peer-inbox-and-nudge.md`
+  summary: The operator has no way to read peer message text, which lives only in memory and is gone once `inbox()` drains it.
+  evidence: The review found that text one agent writes becomes another agent's input with no human-visible record. Emils deferred the viewer (Epic 8 or 9).
+- source_spec: `_bmad-output/implementation-artifacts/spec-7-3-peer-inbox-and-nudge.md`
+  summary: No render test for the session card's `N new` badge wiring (Canvas input, memo deps, ChildNode).
+  evidence: There is no DOM test environment. The 2026-10-24 GUI pass showed the badge.

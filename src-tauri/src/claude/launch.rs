@@ -378,7 +378,8 @@ pub const NO_STATED_PURPOSE: &str = "no stated purpose";
 /// The heading of the system prompt's peer block.
 pub const PEERS_HEADING: &str = "Peer sessions (cooperate edges):";
 /// The system prompt's last line when it lists peers.
-pub const PEERS_INSTRUCTION: &str = "Prefer SendMessage to a peer by its name to coordinate.";
+/// Story 7.3 names the `switchboard` fallback.
+pub const PEERS_INSTRUCTION: &str = "Prefer SendMessage to a peer by its name to coordinate; if that does not reach it, use switchboard send and inbox.";
 
 /// A session at the other end of a cooperate edge (Story 6.4): its name (`--name`, else its
 /// transcript title, else its project's label), its node path (`<project>[:<branch>] / <name>`)
@@ -1329,7 +1330,7 @@ mod tests {
             [
                 PEERS_HEADING,
                 "- \"ui-2\" (ui / ui-2): API shape for auth refresh",
-                "Prefer SendMessage to a peer by its name to coordinate.",
+                "Prefer SendMessage to a peer by its name to coordinate; if that does not reach it, use switchboard send and inbox.",
             ]
         );
 

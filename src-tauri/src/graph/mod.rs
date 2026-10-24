@@ -1463,7 +1463,7 @@ pub fn relayout_children<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Re
 /// and nothing changes. The live git status is pruned by the caller (`git::poll::forget`).
 pub fn remove_project<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Result<WorkspaceSnapshot, String> {
     let state = app.state::<AppState>();
-    let (target, workspace) = {
+    let (target, workspace, removed) = {
         let mut st = state.write_workspace();
         if !st.workspace.projects.iter().any(|p| p.id == project_id) {
             return Err("unknown project".to_string());
@@ -1511,8 +1511,10 @@ pub fn remove_project<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Resul
         st.branch_errors.remove(project_id);
         st.worktrees.remove(project_id);
         st.revision += 1;
-        (st.write_target(), st.workspace.clone())
+        (st.write_target(), st.workspace.clone(), session_ids)
     };
+    // Story 7.3: the removed sessions' inboxes (and nudge jobs) go with them.
+    crate::inbox::forget_sessions(app, removed.iter().map(String::as_str));
     Ok(persist_and_emit(app, target, &workspace))
 }
 
@@ -1787,6 +1789,8 @@ pub fn remove_session_ref<R: Runtime>(app: &AppHandle<R>, session_id: &str, proj
         st.revision += 1;
         (st.write_target(), st.workspace.clone())
     };
+    // Story 7.3: its inbox (and nudge job) goes with it.
+    crate::inbox::forget_sessions(app, [session_id]);
     persist_and_emit(app, target, &workspace);
 }
 

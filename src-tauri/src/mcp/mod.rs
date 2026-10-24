@@ -31,6 +31,9 @@
 //! (`crate::approvals`) unless the workspace allows all or the edge joining the caller and the
 //! target is "Always"; `set_status` never asks.
 //!
+//! **Peer tools** (Story 7.3, `crate::inbox`): `send` and `inbox`, between sessions joined by a
+//! cooperate edge only. They never ask (the edge is the permission) and are in `permissions.allow`.
+//!
 //! A result is a single `text` content item holding compact JSON; an error is `isError: true`
 //! with a plain message. An unknown tool is such an error too, by design (the model reads it),
 //! not a protocol error.
@@ -62,8 +65,23 @@ pub const READ_TOOLS: [&str; 5] = ["my_node", "workspace", "node", "peers", "ses
 /// The act tools (Story 7.2), listed after the read tools.
 pub const ACT_TOOLS: [&str; 4] = ["start_session", "link", "unlink", "set_status"];
 
+/// The peer tools (Story 7.3), listed last; they never prompt.
+pub const PEER_TOOLS: [&str; 2] = ["send", "inbox"];
+
 /// Every tool, in the order `tools/list` gives them.
-pub const TOOLS: [&str; 9] = ["my_node", "workspace", "node", "peers", "sessions", "start_session", "link", "unlink", "set_status"];
+pub const TOOLS: [&str; 11] = [
+    "my_node",
+    "workspace",
+    "node",
+    "peers",
+    "sessions",
+    "start_session",
+    "link",
+    "unlink",
+    "set_status",
+    "send",
+    "inbox",
+];
 
 /// A session's `lastLine` in [`workspace`] and [`node`] is cut to this many characters (then `…`).
 pub const LAST_LINE_MAX: usize = 120;
@@ -111,9 +129,9 @@ impl Drop for CallGuard {
 }
 
 /// `permissions.allow` for the per-session settings file: `mcp__switchboard__<tool>` for exactly
-/// the read tools (never the act tools of Story 7.2).
+/// the read tools and the peer tools of Story 7.3 (never the act tools of Story 7.2).
 pub fn allowed_tools() -> Vec<String> {
-    READ_TOOLS.iter().map(|tool| format!("mcp__{SERVER_NAME}__{tool}")).collect()
+    READ_TOOLS.iter().chain(PEER_TOOLS.iter()).map(|tool| format!("mcp__{SERVER_NAME}__{tool}")).collect()
 }
 
 /// The per-session `--mcp-config` content while the endpoint is up on `port`.
@@ -264,7 +282,7 @@ fn initialize(params: &Value) -> Value {
         "protocolVersion": version,
         "capabilities": { "tools": { "listChanged": false } },
         "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") },
-        "instructions": "Switchboard's view of the workspace this session runs in: call my_node first, then workspace, node, peers or sessions (read-only, never prompt). To act: start_session, link and unlink wait for the operator's approval; set_status posts a short status line on your card.",
+        "instructions": "Switchboard's view of the workspace this session runs in: call my_node first, then workspace, node, peers or sessions (read-only, never prompt). To act: start_session, link and unlink wait for the operator's approval; set_status posts a short status line on your card. To reach a cooperate peer when SendMessage does not: send({peer, text}) and inbox() (never prompt).",
     })
 }
 
@@ -370,6 +388,26 @@ pub fn tool_list() -> Vec<Value> {
             one("text", "The status line; empty clears it."),
             false,
         ),
+        act(
+            "send",
+            "Send a message to a cooperate peer (a session joined to this one by a cooperate edge; see peers()). It lands in the peer's inbox and the peer is nudged to read it once idle; a peer not running in a Switchboard terminal gets it when resumed there. Never asks the operator. Returns {delivered, to, unread} (running: false when the peer is not running in a Switchboard terminal; dropped: N when older unread messages were pushed out).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "peer": text("The peer's node id (or session:<id>) or its name, as peers() lists it."),
+                    "text": text("The message, at most 4000 characters; line breaks are kept."),
+                },
+                "required": ["peer", "text"],
+                "additionalProperties": false,
+            }),
+            false,
+        ),
+        act(
+            "inbox",
+            "This session's unread messages from its peers, oldest first, as [{from, fromNodeId, text, at}]. Each message is returned once: reading clears exactly the messages returned. Never asks the operator.",
+            none(),
+            false,
+        ),
     ]
 }
 
@@ -382,6 +420,8 @@ pub fn call_app<R: Runtime>(app: &AppHandle<R>, session: &str, tool: &str, args:
         "link" => act::link(app, session, args),
         "unlink" => act::unlink(app, session, args),
         "set_status" => act::set_status(app, session, args),
+        "send" => crate::inbox::send(app, session, args),
+        "inbox" => crate::inbox::inbox(app, session),
         _ => call(&app.state::<AppState>(), session, tool, args),
     }
 }

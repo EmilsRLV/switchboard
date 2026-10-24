@@ -64,6 +64,8 @@ pub struct Settings {
     pub poll: PollSettings,
     /// Which attention states send an OS toast while the window is unfocused (Story 3.3).
     pub notifications: NotificationSettings,
+    /// Peer messaging (Story 7.3).
+    pub peers: PeerSettings,
 }
 
 impl Default for Settings {
@@ -79,6 +81,7 @@ impl Default for Settings {
             theme: "dark".to_string(),
             poll: PollSettings::default(),
             notifications: NotificationSettings::default(),
+            peers: PeerSettings::default(),
         }
     }
 }
@@ -142,6 +145,20 @@ impl Default for NotificationSettings {
             finished: true,
             waiting: true,
         }
+    }
+}
+
+/// Peer messaging (Story 7.3). A missing key takes its default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PeerSettings {
+    /// Nudge a session that has new peer messages, once it is idle, with one injected line.
+    pub nudge: bool,
+}
+
+impl Default for PeerSettings {
+    fn default() -> Self {
+        Self { nudge: true }
     }
 }
 
@@ -383,6 +400,9 @@ pub struct AppState {
     /// The agents' act-tool requests waiting on the operator (`crate::approvals`, Story 7.2).
     /// Memory only.
     pub approvals: crate::approvals::Approvals,
+    /// Each session's unread peer messages and its nudge job (`crate::inbox`, Story 7.3). Memory
+    /// only.
+    pub inbox: crate::inbox::Inboxes,
 }
 
 impl AppState {
@@ -525,8 +545,9 @@ pub fn reload<R: Runtime>(app: &AppHandle<R>) -> bool {
         }
     };
 
-    let (snapshot, binaries_changed) = {
+    let (snapshot, binaries_changed, nudge_on) = {
         let mut st = state.write();
+        let was_on = st.settings.peers.nudge;
         let changed = match store::parse(&text) {
             Ok(settings) => {
                 let changed = st.settings.binary_config() != settings.binary_config();
@@ -538,9 +559,13 @@ pub fn reload<R: Runtime>(app: &AppHandle<R>) -> bool {
                 false
             }
         };
-        (st.snapshot(), changed)
+        (st.snapshot(), changed, !was_on && st.settings.peers.nudge)
     };
     emit(app, &snapshot);
+    // Story 7.3: arrivals while the nudge was off are nudged now that it is on.
+    if nudge_on {
+        crate::inbox::nudge_turned_on(app);
+    }
     binaries_changed
 }
 
@@ -678,6 +703,14 @@ mod tests {
         assert_eq!(s.poll.git_ms, 5_000);
         assert!(s.notifications.finished);
         assert!(s.notifications.waiting);
+        assert!(s.peers.nudge);
+    }
+
+    #[test]
+    fn the_peer_nudge_parses_tolerantly_and_defaults_on() {
+        assert!(!store::parse(r#"{ "peers": { "nudge": false } }"#).unwrap().peers.nudge);
+        assert!(store::parse(r#"{ "peers": {} }"#).unwrap().peers.nudge);
+        assert_eq!(store::parse("{}").unwrap().peers, PeerSettings::default());
     }
 
     #[test]
@@ -780,7 +813,8 @@ mod tests {
                     "shell": null,
                     "theme": "dark",
                     "poll": { "agents_ms": 2000, "git_ms": 5000 },
-                    "notifications": { "finished": true, "waiting": true }
+                    "notifications": { "finished": true, "waiting": true },
+                    "peers": { "nudge": true }
                 },
                 "binaries": {
                     "claude": {

@@ -3,11 +3,13 @@ import {
   approvalsGet,
   edgesLiveGet,
   hasTauriRuntime,
+  inboxUnreadGet,
   liveSessionsGet,
   onAgentStarted,
   onApprovalNotice,
   onApprovals,
   onEdgesLive,
+  onInboxUnread,
   onLiveSessions,
   onNotifyReveal,
   onProjectsStatus,
@@ -25,6 +27,7 @@ import { useKeybindings } from "./commands/keybindings";
 import { forgetTerminal } from "./commands/terminal";
 import { useApprovalsStore } from "./state/approvals";
 import { useEdgesLiveStore } from "./state/edgesLive";
+import { useInboxStore } from "./state/inbox";
 import { useTerminalStore } from "./state/terminals";
 import { useLiveStore } from "./state/live";
 import { useSettingsStore } from "./state/settings";
@@ -73,6 +76,8 @@ export default function App() {
   const setEdgesLiveLoadError = useEdgesLiveStore((s) => s.setLoadError);
   const applyApprovals = useApprovalsStore((s) => s.applySnapshot);
   const setApprovalsLoadError = useApprovalsStore((s) => s.setLoadError);
+  const applyInbox = useInboxStore((s) => s.applySnapshot);
+  const setInboxLoadError = useInboxStore((s) => s.setLoadError);
 
   // Rust is the source of truth for all four; `mirror` subscribes, then reads.
   useEffect(() => {
@@ -145,6 +150,19 @@ export default function App() {
       fail: (message) => setApprovalsLoadError(`approvals load failed: ${message}`),
     });
   }, [applyApprovals, setApprovalsLoadError]);
+
+  // Story 7.3: each session's unread peer-message count, for the `N new` badge (runtime only).
+  useEffect(() => {
+    if (!hasTauriRuntime()) return;
+    return mirror({
+      listen: onInboxUnread,
+      get: inboxUnreadGet,
+      apply: applyInbox,
+      hasSnapshot: () => useInboxStore.getState().received,
+      // No badges then; the agents still read their inbox.
+      fail: (message) => setInboxLoadError(`inbox load failed: ${message}`),
+    });
+  }, [applyInbox, setInboxLoadError]);
 
   // Story 7.2: an act that ran without a toast says so in the notice; a session an agent started
   // is known to the terminal store at once, in the background (nothing is focused).

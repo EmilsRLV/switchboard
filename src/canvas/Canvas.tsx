@@ -37,6 +37,7 @@ import {
 } from "../ipc";
 import { HOME_VIEWPORT, clientToFlow, useCanvasStore, type CanvasElement } from "../state/canvas";
 import { useEdgesLiveStore } from "../state/edgesLive";
+import { useInboxStore } from "../state/inbox";
 import { useLiveStore } from "../state/live";
 import { useStatusStore } from "../state/status";
 import { stoppingSessionIds, useTerminalStore } from "../state/terminals";
@@ -249,6 +250,8 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
   const projects = useWorkspaceStore((s) => s.snapshot?.workspace.projects ?? NO_PROJECTS);
   const children = useWorkspaceStore((s) => s.snapshot?.children ?? NO_CHILDREN);
   const branchErrors = useWorkspaceStore((s) => s.snapshot?.branchErrors ?? NO_BRANCH_ERRORS);
+  // Story 7.3: unread peer messages per session, for the `N new` badge.
+  const unread = useInboxStore((s) => s.unread);
   const storedEdges = useWorkspaceStore((s) => s.snapshot?.workspace.edges ?? NO_EDGES);
   const edgesLive = useEdgesLiveStore((s) => s.entries);
   const statuses = useStatusStore((s) => s.statuses);
@@ -269,12 +272,12 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
   const previousRef = useRef<CanvasFlowNode[]>([]);
   const nodes = useMemo(() => {
     const next = toFlowNodes(
-      { projects, statuses, flashed, children, selection, dragging, showAll, showAllBranches, live, stopping, branchErrors },
+      { projects, statuses, flashed, children, selection, dragging, showAll, showAllBranches, live, stopping, branchErrors, unread },
       previousRef.current,
     );
     previousRef.current = next;
     return next;
-  }, [projects, statuses, flashed, children, selection, dragging, showAll, showAllBranches, live, stopping, branchErrors]);
+  }, [projects, statuses, flashed, children, selection, dragging, showAll, showAllBranches, live, stopping, branchErrors, unread]);
 
   // The "forked from" lines between drawn cards (Story 4.4), inert; then the stored edges whose
   // two ends are drawn (Story 6.1).

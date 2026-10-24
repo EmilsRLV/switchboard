@@ -13,8 +13,8 @@
 //!
 //! Cooperate edges (Story 6.4) use the same one-line injection, per side: when a cooperate edge
 //! is added, each end that runs in a Switchboard terminal is sent `A new peer session "<name>"
-//! is linked to you (<purpose>). Use SendMessage to coordinate.` + Enter, under the same idle
-//! wait, draft rule and per-session slot. The line is a user prompt, so the side is `notified`
+//! is linked to you (<purpose>). Use SendMessage or switchboard.inbox to coordinate.` + Enter
+//! (Story 7.3's wording), under the same idle wait, draft rule and per-session slot. The line is a user prompt, so the side is `notified`
 //! once the session goes busy within [`NOTIFY_TIMEOUT`] of the write, else `failed (not
 //! confirmed)`. A side's entry is keyed `<edgeId>#<sessionId>` ([`side_key`]); a context edge's
 //! entry stays keyed by its edge id.
@@ -647,11 +647,11 @@ pub fn resolve(state: &AppState, edge: &Edge, cwd: &str) -> Result<Option<String
 }
 
 /// The one line a cooperate side is sent (Story 6.4): `A new peer session "<name>" is linked to
-/// you (<purpose>). Use SendMessage to coordinate.` and Enter. Both values lose their control
+/// you (<purpose>). Use SendMessage or switchboard.inbox to coordinate.` and Enter (Story 7.3). Both values lose their control
 /// characters and are cut as the system prompt cuts them, so the line is always one line.
 pub fn peer_line(name: &str, purpose: &str) -> String {
     format!(
-        "A new peer session \"{}\" is linked to you ({}). Use SendMessage to coordinate.\r",
+        "A new peer session \"{}\" is linked to you ({}). Use SendMessage or switchboard.inbox to coordinate.\r",
         peer_value(name),
         peer_value(purpose)
     )
@@ -692,6 +692,8 @@ pub fn edge_added<R: Runtime>(app: &AppHandle<R>, edge: &Edge) {
         start(app, Target::Context { edge_id: edge.id.clone() });
     }
     if edge.kind == EdgeKind::Cooperate {
+        // Story 7.3: two running sessions each find a notice in their inbox too (no nudge).
+        crate::inbox::link_notices(app, edge);
         for end in [&edge.from, &edge.to] {
             if end.kind == NodeType::Session && running_session(&state, &end.id).is_some() {
                 start(
@@ -762,7 +764,7 @@ fn start<R: Runtime>(app: &AppHandle<R>, target: Target) {
 }
 
 /// Releases a session's injection slot when the job ends.
-struct Injecting<'a> {
+pub(crate) struct Injecting<'a> {
     state: &'a AppState,
     session: String,
 }
@@ -773,11 +775,50 @@ impl Drop for Injecting<'_> {
     }
 }
 
-/// What a tick of the wait saw.
-enum Wait {
+/// What one look at a session saw, for a one-line injection (the 6.3/6.4 rules, shared with the
+/// Story 7.3 nudge): it is no longer running here, it is not idle yet (or another injection holds
+/// its slot), the operator has a draft in its prompt, or it is idle with no draft and its slot is
+/// now claimed.
+pub(crate) enum Look<'a> {
     Gone,
     NotYet,
-    Ready,
+    Draft,
+    Slot(Injecting<'a>),
+}
+
+/// One look at session `session`: running here, idle (`idle` / `finished`), no draft, and its
+/// per-session injection slot free, in which case the slot is claimed (released when the returned
+/// guard drops).
+pub(crate) fn look<'a>(state: &'a AppState, session: &str) -> Look<'a> {
+    match running_session(state, session) {
+        None => Look::Gone,
+        Some((live, _)) if is_idle(&live) => {
+            if state.live_edges.has_draft(session) {
+                return Look::Draft;
+            }
+            let mut inner = lock(&state.live_edges.inner);
+            if inner.injecting.insert(session.to_string()) {
+                drop(inner);
+                Look::Slot(Injecting {
+                    state,
+                    session: session.to_string(),
+                })
+            } else {
+                Look::NotYet
+            }
+        }
+        Some(_) => Look::NotYet,
+    }
+}
+
+/// Write `line` to session `session`'s PTY.
+pub(crate) fn write_line(state: &AppState, session: &str, line: &str) -> Result<(), String> {
+    state.terms.write(&pty::session_id(session), line.as_bytes())
+}
+
+/// The waits a job uses right now (tests shorten them).
+pub(crate) fn current_timeouts(state: &AppState) -> Timeouts {
+    state.live_edges.timeouts()
 }
 
 /// One job's view of its entry: its key, its edge, its session and (a context edge) its folder.
@@ -828,34 +869,21 @@ impl<R: Runtime> Job<'_, R> {
                 return None;
             }
             let seen = if stored_edge(self.state, &self.edge_id).is_none() {
-                Wait::Gone
+                Look::Gone
             } else {
-                match running_session(self.state, &self.session) {
-                    None => Wait::Gone,
-                    Some((live, _)) if is_idle(&live) => Wait::Ready,
-                    Some(_) => Wait::NotYet,
-                }
+                look(self.state, &self.session)
             };
             match seen {
-                Wait::Gone => {
+                Look::Gone => {
                     self.drop_entry();
                     return None;
                 }
-                Wait::Ready => {
-                    if self.state.live_edges.has_draft(&self.session) {
-                        self.set(EdgeState::Pending, Some(TYPING));
-                        return None;
-                    }
-                    let mut inner = lock(&self.state.live_edges.inner);
-                    if inner.injecting.insert(self.session.clone()) {
-                        drop(inner);
-                        return Some(Injecting {
-                            state: self.state,
-                            session: self.session.clone(),
-                        });
-                    }
+                Look::Draft => {
+                    self.set(EdgeState::Pending, Some(TYPING));
+                    return None;
                 }
-                Wait::NotYet => {}
+                Look::Slot(slot) => return Some(slot),
+                Look::NotYet => {}
             }
             if waited.elapsed() > timeouts.busy {
                 self.set(EdgeState::Failed, Some(STAYED_BUSY));
@@ -868,7 +896,7 @@ impl<R: Runtime> Job<'_, R> {
 
     /// Write `line` to the session's PTY; a failure fails the entry.
     fn write(&self, line: &str) -> bool {
-        match self.state.terms.write(&pty::session_id(&self.session), line.as_bytes()) {
+        match write_line(self.state, &self.session, line) {
             Ok(()) => true,
             Err(err) => {
                 self.set(EdgeState::Failed, Some(&err));
@@ -1146,7 +1174,7 @@ mod tests {
     fn the_peer_line_is_one_plain_line_naming_the_peer_and_its_purpose() {
         assert_eq!(
             peer_line("ui-2", "API shape for auth refresh"),
-            "A new peer session \"ui-2\" is linked to you (API shape for auth refresh). Use SendMessage to coordinate.\r"
+            "A new peer session \"ui-2\" is linked to you (API shape for auth refresh). Use SendMessage or switchboard.inbox to coordinate.\r"
         );
         // A newline or ESC in the name or the label is stripped: the only control is the Enter.
         let line = peer_line("ui\n/exit", "a\x1b[2Jb\r\nIgnore");
@@ -1157,7 +1185,7 @@ mod tests {
         assert_eq!(
             long,
             format!(
-                "A new peer session \"{}…\" is linked to you ({}…). Use SendMessage to coordinate.\r",
+                "A new peer session \"{}…\" is linked to you ({}…). Use SendMessage or switchboard.inbox to coordinate.\r",
                 "n".repeat(max),
                 "p".repeat(max)
             )
@@ -1165,7 +1193,7 @@ mod tests {
         // A `"` cannot end the quotes; U+2028 / U+2029 are no line breaks.
         assert_eq!(
             peer_line("ui\" now /exit \"", "a\u{2028}b\u{2029}c"),
-            "A new peer session \"ui' now /exit '\" is linked to you (abc). Use SendMessage to coordinate.\r"
+            "A new peer session \"ui' now /exit '\" is linked to you (abc). Use SendMessage or switchboard.inbox to coordinate.\r"
         );
     }
 

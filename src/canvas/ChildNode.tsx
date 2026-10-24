@@ -1,6 +1,7 @@
 import { memo, useSyncExternalStore } from "react";
 import type { NodeProps } from "@xyflow/react";
 import type { ChildKind } from "../ipc";
+import { unreadBadge } from "../state/inbox";
 import { ForkHandles, LinkHandles } from "./LinkHandles";
 import {
   branchCardParts,
@@ -26,7 +27,8 @@ import {
  * `finished` card from a hook shows the turn's last assistant line after the state word, muted
  * and cut with an ellipsis; a `waiting` card's tooltip leads with the hook's reason (Story 4.3). A
  * session's `set_status` text (Story 7.2) takes the place of branch, count and age until its state
- * changes. The
+ * changes. A session with unread peer messages (Story 7.3) shows a muted `N new` badge after its
+ * title (the count badge's look, never the accent). The
  * full title and exact times are on hover. Stubs and branches show the label and a muted
  * detail on one row. A live session whose Switchboard terminal is being stopped reads `stopping`
  * (muted, Story 4.4), and a fork's tooltip and label say what it was forked from; a session card
@@ -69,9 +71,18 @@ function SessionCard({ className, ariaLabel, data }: { className: string; ariaLa
   const parts = sessionCardMeta(meta, now, state, data.lastLine, data.stopping, data.statusText ?? null);
   // Only the branch shrinks (ellipsis); the state word, the count and the age never do.
   const tail = parts.age === null ? parts.count : `${parts.count} · ${parts.age}`;
+  // Story 7.3: unread peer messages, a plain muted `N new` after the title (never the accent).
+  const badge = unreadBadge(data.unread ?? 0);
   return (
     <div className={className} role="group" aria-label={ariaLabel} title={sessionCardTitle(data, meta)}>
-      <span className="child-node-label">{child.label}</span>
+      {badge === null ? (
+        <span className="child-node-label">{child.label}</span>
+      ) : (
+        <span className="session-name-row">
+          <span className="child-node-label">{child.label}</span>
+          <span className="session-unread">{badge}</span>
+        </span>
+      )}
       <span className="child-node-meta">
         {parts.state !== null && (
           <span className={parts.state.tone === "attention" ? "session-attention-word session-state" : `session-state session-state-${parts.state.tone}`}>

@@ -272,6 +272,32 @@
   color: var(--fg-muted);
 }
 
+/* Story 7.3: the title and the `N new` badge of a session with unread peer messages share line
+   1; the title shrinks (ellipsis), the badge never does. The badge has the count badge's look in
+   `--fg-muted`; never the accent. */
+.session-name-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35em;
+  min-width: 0;
+}
+
+.session-name-row > .child-node-label {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.session-unread {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 0.3rem;
+  white-space: nowrap;
+}
+
 /* --- branch cards (Story 5.1): the name (ellipsis) then `*` for the checked-out branch, over a
    muted meta line: `↑n ↓m`, `upstream gone`, the worktree chip. Tokens only, no accent. --- */
 

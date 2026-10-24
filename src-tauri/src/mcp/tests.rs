@@ -58,7 +58,15 @@ fn initialize_ping_and_tools_list() {
         assert_eq!(tool["annotations"]["readOnlyHint"], read, "{tool}");
     }
     // Story 7.2: the act tools follow the read tools.
-    assert_eq!(&names[5..], ACT_TOOLS);
+    assert_eq!(&names[5..9], ACT_TOOLS);
+    // Story 7.3: then the peer tools.
+    assert_eq!(&names[9..], PEER_TOOLS);
+    for peer in &listed[9..] {
+        assert_eq!(peer["annotations"]["readOnlyHint"], false, "{peer}");
+        assert_eq!(peer["annotations"]["destructiveHint"], false, "{peer}");
+    }
+    assert_eq!(listed[9]["inputSchema"]["required"], json!(["peer", "text"]));
+    assert_eq!(listed[10]["inputSchema"]["properties"], json!({}), "inbox takes no argument");
     assert_eq!(listed[6]["inputSchema"]["required"], json!(["from", "to", "kind"]));
     assert_eq!(listed[7]["inputSchema"]["required"], json!(["edgeId"]));
     assert_eq!(listed[7]["annotations"]["destructiveHint"], true);
@@ -119,14 +127,22 @@ fn a_panicking_tool_is_an_internal_error_with_the_request_id() {
 }
 
 #[test]
-fn the_config_names_the_endpoint_and_the_bearer_and_every_read_tool_is_allowed() {
+fn the_config_names_the_endpoint_and_the_bearer_and_the_read_and_peer_tools_are_allowed() {
     assert_eq!(
         config_json(4242, "t0k"),
         json!({ "mcpServers": { "switchboard": { "type": "http", "url": "http://127.0.0.1:4242/mcp", "headers": { "Authorization": "Bearer t0k" } } } })
     );
     assert_eq!(
         allowed_tools(),
-        ["mcp__switchboard__my_node", "mcp__switchboard__workspace", "mcp__switchboard__node", "mcp__switchboard__peers", "mcp__switchboard__sessions"]
+        [
+            "mcp__switchboard__my_node",
+            "mcp__switchboard__workspace",
+            "mcp__switchboard__node",
+            "mcp__switchboard__peers",
+            "mcp__switchboard__sessions",
+            "mcp__switchboard__send",
+            "mcp__switchboard__inbox"
+        ]
     );
 }
 
@@ -757,8 +773,8 @@ fn an_unanswered_link_is_denied_after_the_timeout() {
 }
 
 #[test]
-fn the_tool_list_is_the_read_tools_then_the_act_tools() {
-    assert_eq!(TOOLS.to_vec(), [READ_TOOLS.as_slice(), ACT_TOOLS.as_slice()].concat());
+fn the_tool_list_is_the_read_tools_then_the_act_tools_then_the_peer_tools() {
+    assert_eq!(TOOLS.to_vec(), [READ_TOOLS.as_slice(), ACT_TOOLS.as_slice(), PEER_TOOLS.as_slice()].concat());
 }
 
 #[test]
@@ -828,4 +844,194 @@ fn a_long_prompt_and_a_caller_off_the_canvas_are_refused_before_asking() {
         Err(crate::ipc::NOT_AN_EDGE_END.to_string())
     );
     assert!(state.approvals.list().is_empty());
+}
+
+/// Story 7.3: `send` reaches a cooperate peer (by id, `session:<id>` or name, exact then ignoring
+/// case) and nobody else; `inbox()` returns each message once, in arrival order, and clears the
+/// count; the text keeps its line breaks and loses other control characters; a blank or too long
+/// text is refused; an inbox holds at most 100; a peer not running is told `running: false` and
+/// no nudge waits for it.
+#[test]
+fn send_reaches_only_cooperate_peers_and_inbox_returns_each_message_once() {
+    use crate::inbox::{self, MAX_TEXT_CHARS, MAX_UNREAD, NOT_A_PEER};
+    let app = fixture();
+    let state = app.state::<AppState>();
+    let send = |from: &str, peer: &str, text: &str| call_app(app.handle(), from, "send", &json!({ "peer": peer, "text": text }));
+    let read = |who: &str| call_app(app.handle(), who, "inbox", &json!({})).unwrap();
+
+    let text = "endpoint is POST /auth/refresh, returns {token, expiresAt}";
+    assert_eq!(send("s1", "ui-2", text), Ok(json!({ "delivered": true, "to": "ui-2", "unread": 1, "running": false })));
+    assert_eq!(state.inbox.count("s2"), 1);
+    assert_eq!(state.inbox.unread(), std::collections::BTreeMap::from([("s2".to_string(), 1)]));
+    assert!(!state.inbox.nudge_pending("s2"), "a peer not running is not nudged now");
+    let first = read("s2");
+    let list = first.as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["from"], "api-1");
+    assert_eq!(list[0]["fromNodeId"], "s1");
+    assert_eq!(list[0]["text"], text);
+    assert!(list[0]["at"].as_str().unwrap().ends_with('Z'));
+    assert_eq!(read("s2"), json!([]), "each message once");
+    assert!(state.inbox.unread().is_empty(), "the badge clears");
+
+    // By id, by edge-end id, ignoring case; the other way round too.
+    send("s1", "s2", "one").unwrap();
+    send("s1", "session:s2", "two").unwrap();
+    assert_eq!(send("s1", "UI-2", "three").unwrap()["unread"], 3);
+    send("s2", "api-1", "back").unwrap();
+    let texts: Vec<Value> = read("s2").as_array().unwrap().iter().map(|m| m["text"].clone()).collect();
+    assert_eq!(texts, [json!("one"), json!("two"), json!("three")], "arrival order");
+    assert_eq!(read("s1")[0]["from"], "ui-2");
+
+    // Not a peer: a session with no cooperate edge to the caller, an unknown name, the caller.
+    {
+        let mut map = state.write_sessions_live();
+        map.sessions.insert("s3".into(), live("ui", "/w/ui", "ui-3", SessionState::Idle, None));
+    }
+    for peer in ["s3", "ui-3", "nobody", "s1", "api-1"] {
+        let err = send("s1", peer, "hi").unwrap_err();
+        assert!(err.starts_with(NOT_A_PEER), "{peer}: {err}");
+    }
+    assert_eq!(state.inbox.count("s3"), 0);
+
+    // The text: line breaks kept, other control characters gone; blank or too long refused.
+    send("s1", "ui-2", "line one\r\nline\ttwo\x1b[2J\rthree\n").unwrap();
+    assert_eq!(read("s2")[0]["text"], "line one\nlinetwo[2J\nthree");
+    assert_eq!(send("s1", "ui-2", "   \x07\n "), Err("text is empty".to_string()));
+    assert!(call_app(app.handle(), "s1", "send", &json!({ "peer": "ui-2" })).is_err());
+    assert!(call_app(app.handle(), "s1", "send", &json!({ "text": "x" })).is_err());
+    assert_eq!(send("s1", "ui-2", &"x".repeat(MAX_TEXT_CHARS + 1)), Err(format!("text is over {MAX_TEXT_CHARS} characters")));
+    assert_eq!(send("s1", "ui-2", &"x".repeat(MAX_TEXT_CHARS)).unwrap()["unread"], 1);
+    read("s2");
+    // The limit counts the cleaned text.
+    assert_eq!(send("s1", "ui-2", &format!("{}\x07\x07", "x".repeat(MAX_TEXT_CHARS))).unwrap()["unread"], 1);
+    read("s2");
+    // Bidi embeddings, overrides and isolates go; U+2028 / U+2029 are line breaks.
+    send("s1", "ui-2", "a\u{202E}b\u{2066}c\u{2069}\u{202A}d\u{2028}e\u{2029}f").unwrap();
+    assert_eq!(read("s2")[0]["text"], "abcd\ne\nf");
+
+    // At most 100: the oldest go first.
+    for i in 0..MAX_UNREAD {
+        assert!(send("s1", "ui-2", &format!("m{i}")).unwrap().get("dropped").is_none());
+    }
+    for i in MAX_UNREAD..MAX_UNREAD + 5 {
+        assert_eq!(send("s1", "ui-2", &format!("m{i}")).unwrap()["dropped"], 1, "this send pushed one out");
+    }
+    assert_eq!(state.inbox.count("s2"), MAX_UNREAD + 1, "the messages and the dropped notice");
+    let all = read("s2");
+    assert_eq!(all.as_array().unwrap().len(), MAX_UNREAD + 1);
+    assert_eq!(all[0]["from"], "switchboard");
+    assert_eq!(all[0]["text"], "5 older messages were dropped");
+    assert_eq!(all[1]["text"], "m5");
+    assert_eq!(inbox::dropped_text(1), "1 older message was dropped");
+
+    // Two peers sharing a name: the error names both node ids.
+    {
+        let mut map = state.write_sessions_live();
+        map.sessions.insert("s4".into(), live("ui", "/w/ui", "ui-1", SessionState::Idle, None));
+        map.sessions.insert("s5".into(), live("ui", "/w/ui", "ui-1", SessionState::Idle, None));
+        let mut ws = state.write_workspace();
+        ws.workspace.edges.push(edge("e-4", EdgeKind::Cooperate, (NodeType::Session, "s1"), (NodeType::Session, "s4"), None));
+        ws.workspace.edges.push(edge("e-5", EdgeKind::Cooperate, (NodeType::Session, "s5"), (NodeType::Session, "s1"), None));
+    }
+    let err = send("s1", "ui-1", "hi").unwrap_err();
+    assert!(err.contains("s4") && err.contains("s5") && err.contains("ambiguous"), "{err}");
+    assert_eq!(send("s1", "s5", "hi").unwrap()["to"], "ui-1", "the id still reaches one of them");
+    assert_eq!(inbox::find_peer(&state, "s1", "UI-2"), Ok(("s2".to_string(), "ui-2".to_string())));
+
+    // An exact name wins over a match ignoring case; two loose matches are ambiguous.
+    {
+        state.write_sessions_live().sessions.insert("s6".into(), live("ui", "/w/ui", "UI-2", SessionState::Idle, None));
+        let mut ws = state.write_workspace();
+        ws.workspace.edges.push(edge("e-6", EdgeKind::Cooperate, (NodeType::Session, "s1"), (NodeType::Session, "s6"), None));
+    }
+    assert_eq!(inbox::find_peer(&state, "s1", "UI-2"), Ok(("s6".to_string(), "UI-2".to_string())));
+    assert_eq!(inbox::find_peer(&state, "s1", "ui-2"), Ok(("s2".to_string(), "ui-2".to_string())));
+    assert!(inbox::find_peer(&state, "s1", "Ui-2").unwrap_err().contains("ambiguous"));
+}
+
+/// Story 7.3: an arrival is nudged only once its line is written (a failed write leaves it owed);
+/// the loop guard stops the nudges past its limit with one notice, and lets them through again
+/// once its window has passed; removing a session's project drops its inbox.
+#[test]
+fn a_failed_nudge_stays_owed_the_loop_guard_pauses_and_a_removed_session_loses_its_inbox() {
+    use crate::inbox::{self, Nudge, NudgeLimit, nudge_once};
+    use tauri::Listener;
+    let app = fixture();
+    let state = app.state::<AppState>();
+    let send = |text: &str| call_app(app.handle(), "s1", "send", &json!({ "peer": "ui-2", "text": text })).unwrap();
+    let one = "You have 1 message from \"api-1\". Call switchboard.inbox.\r";
+
+    send("a");
+    assert!(state.inbox.nudge_owed("s2"));
+    assert_eq!(nudge_once(app.handle(), "s2", |_| Err("pty gone".to_string())), Nudge::Failed("pty gone".to_string()));
+    assert!(state.inbox.nudge_owed("s2"), "a failed write is retried later");
+    let written = std::sync::Mutex::new(Vec::new());
+    let write = |line: &str| {
+        written.lock().unwrap().push(line.to_string());
+        Ok(())
+    };
+    assert_eq!(nudge_once(app.handle(), "s2", write), Nudge::Written);
+    assert!(!state.inbox.nudge_owed("s2"));
+    assert_eq!(nudge_once(app.handle(), "s2", write), Nudge::Nothing, "once per arrival");
+    assert_eq!(*written.lock().unwrap(), [one]);
+    call_app(app.handle(), "s2", "inbox", &json!({})).unwrap();
+
+    // The loop guard, at 2 a window.
+    let notices = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = notices.clone();
+    app.listen_any(crate::approvals::NOTICE_EVENT, move |event| {
+        seen.lock().unwrap().push(serde_json::from_str::<String>(event.payload()).unwrap());
+    });
+    *state.inbox.limit.lock().unwrap() = NudgeLimit { max: 2, window: std::time::Duration::from_millis(400) };
+    send("b");
+    assert_eq!(nudge_once(app.handle(), "s2", write), Nudge::Written);
+    send("c");
+    assert_eq!(nudge_once(app.handle(), "s2", write), Nudge::Paused, "two in the window already");
+    assert!(!state.inbox.nudge_owed("s2"), "a held-back arrival is not owed later");
+    send("d");
+    assert_eq!(nudge_once(app.handle(), "s2", write), Nudge::Paused);
+    assert_eq!(*notices.lock().unwrap(), [inbox::paused_text("ui-2", 2)], "one notice per pause");
+    assert_eq!(inbox::paused_text("ui-2", 20), "nudges paused for ui-2: 20 in the last hour");
+    assert_eq!(state.inbox.count("s2"), 3, "the messages and the badge go on");
+    std::thread::sleep(std::time::Duration::from_millis(450));
+    send("e");
+    assert_eq!(nudge_once(app.handle(), "s2", write), Nudge::Written, "the window passed");
+    assert_eq!(written.lock().unwrap().len(), 3);
+
+    // Removing the project of s2 (its session ref goes with it) drops its inbox.
+    state.write_workspace().workspace.sessions.push(crate::graph::SessionRef {
+        session_id: "s2".into(),
+        project_id: "ui".into(),
+        ..Default::default()
+    });
+    assert!(state.inbox.has_box("s2"));
+    crate::graph::remove_project(app.handle(), "ui").unwrap();
+    assert!(!state.inbox.has_box("s2"));
+    assert!(state.inbox.unread().is_empty());
+}
+
+/// Story 7.3: the nudge names one sender in quotes and the count, or the number of peers; the
+/// link notice never counts; a name cannot break the line.
+#[test]
+fn the_nudge_line_counts_messages_and_senders() {
+    use crate::inbox::{Message, SWITCHBOARD, notice_text, nudge_line};
+    let message = |from: &str, id: Option<&str>| Message {
+        from: from.into(),
+        from_node_id: id.map(str::to_string),
+        text: "x".into(),
+        at: "2026-10-24T10:00:00.000Z".into(),
+    };
+    let a = message("A", Some("a"));
+    let b = message("B", Some("b"));
+    let notice = message(SWITCHBOARD, None);
+    assert_eq!(nudge_line([&a]).as_deref(), Some("You have 1 message from \"A\". Call switchboard.inbox.\r"));
+    assert_eq!(nudge_line([&notice, &a, &a]).as_deref(), Some("You have 2 messages from \"A\". Call switchboard.inbox.\r"));
+    assert_eq!(nudge_line([&a, &b, &a]).as_deref(), Some("You have 3 messages from 2 peers. Call switchboard.inbox.\r"));
+    assert_eq!(nudge_line([&notice]), None, "a notice alone never nudges");
+    assert_eq!(nudge_line([]), None);
+    let evil = message("x\"\n/exit", Some("e"));
+    let line = nudge_line([&evil]).unwrap();
+    assert_eq!(line.chars().filter(|c| c.is_control()).collect::<String>(), "\r");
+    assert_eq!(notice_text("ui-2", "API shape"), "Linked to \"ui-2\" (API shape).");
 }

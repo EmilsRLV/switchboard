@@ -54,6 +54,9 @@ import {
   edgesLiveGet,
   EDGES_LIVE_EVENT,
   onEdgesLive,
+  inboxUnreadGet,
+  INBOX_UNREAD_EVENT,
+  onInboxUnread,
   workspaceRemoveProject,
   workspaceSetExpanded,
   workspaceSetViewport,
@@ -153,6 +156,14 @@ describe("workspace command wrappers", () => {
     expect(EDGES_LIVE_EVENT).toBe("edges://live");
   });
 
+  it("the 7.3 inbox wrapper invokes its wire name with {} and names its event", async () => {
+    const invoke = vi.fn().mockResolvedValue({ s1: 2 });
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await expect(inboxUnreadGet()).resolves.toEqual({ s1: 2 });
+    expect(invoke).toHaveBeenCalledWith("inbox_unread_get", {}, undefined);
+    expect(INBOX_UNREAD_EVENT).toBe("inbox://unread");
+  });
+
   it("the 7.2 approval wrappers invoke their wire names with {}, { id, answer }, { id, allowed } and { mode }", async () => {
     const invoke = vi.fn().mockResolvedValue(snapshot);
     vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
@@ -170,6 +181,13 @@ describe("workspace command wrappers", () => {
   it("onEdgesLive is a no-op without the Tauri runtime", async () => {
     const callback = vi.fn();
     const unlisten = await onEdgesLive(callback);
+    unlisten();
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  it("onInboxUnread is a no-op without the Tauri runtime", async () => {
+    const callback = vi.fn();
+    const unlisten = await onInboxUnread(callback);
     unlisten();
     expect(callback).not.toHaveBeenCalled();
   });

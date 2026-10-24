@@ -316,6 +316,12 @@ session and branch children; the size is fixed like the project card's.
   line, ellipsis, the full text on hover. It goes when the session's state changes or with an empty
   `set_status`. No accent: it is information.
 
+  Story 7.3: while a session has unread peer messages, line 1 ends in a plain **unread badge**, `N new`, after
+  the title: the count badge's look (mono `--text-xs`, 1-px `--border`, `--radius-sm`) in `--fg-muted`, never the
+  accent (messages are information, not attention). The title shrinks with its ellipsis; the badge never does.
+  It goes when the session reads its inbox. Its accessible name and tooltip add `N unread messages`. Live or not
+  (a message waits for a stopped peer), it shows whenever Rust counts unread messages.
+
   A live session with no transcript yet has the same card: its `name` from the poll (or `new session`) as
   the title and `0 msgs`, with no age (no activity is known) and only the start time on hover (none
   when the poll gave none).

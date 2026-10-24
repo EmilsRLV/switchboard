@@ -5,6 +5,7 @@ pub mod approvals;
 pub mod claude;
 pub mod git;
 pub mod graph;
+pub mod inbox;
 pub mod ipc;
 pub mod mcp;
 pub mod notify;
@@ -43,6 +44,7 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::edge_set_label,
             ipc::edge_remove,
             ipc::edges_live_get,
+            ipc::inbox_unread_get,
             ipc::edge_live_retry,
             ipc::edge_restart_with_flags,
             ipc::claude_projects_list,
@@ -1310,19 +1312,36 @@ mod tests {
         (app, webview, dir, folder, sessions)
     }
 
-    /// Wait (bounded) for `pred`, answering ConPTY's cursor query (`ESC[6n`) the way a view does.
+    /// The cursor queries answered so far, per terminal (each run of a session is a terminal of
+    /// its own), across every `wait_until` call: a query is answered once. Answering it again
+    /// types `ESC[1;1R` into the program, which a Windows console reads as F3 (recall the last
+    /// line).
+    static ANSWERED: std::sync::Mutex<Vec<(std::sync::Weak<super::pty::Term>, usize)>> = std::sync::Mutex::new(Vec::new());
+
+    /// Wait (bounded) for `pred`, answering ConPTY's cursor query (`ESC[6n`) the way a view does:
+    /// each query once.
     fn wait_until(app: &tauri::App<tauri::test::MockRuntime>, term: &str, what: &str, pred: impl Fn() -> bool) {
         let state = app.state::<super::AppState>();
         let started = std::time::Instant::now();
-        let mut answered = 0;
         loop {
             if pred() {
                 return;
             }
-            if let Ok(buffer) = state.terms.buffer(term) {
-                while answered < buffer.data.matches("\u{1b}[6n").count() {
+            if let (Some(handle), Ok(buffer)) = (state.terms.get(term), state.terms.buffer(term)) {
+                let seen = buffer.data.matches("\u{1b}[6n").count();
+                let me = std::sync::Arc::downgrade(&handle);
+                let mut answered = ANSWERED.lock().unwrap_or_else(|e| e.into_inner());
+                answered.retain(|(w, _)| w.strong_count() > 0);
+                let at = match answered.iter().position(|(w, _)| w.ptr_eq(&me)) {
+                    Some(at) => at,
+                    None => {
+                        answered.push((me, 0));
+                        answered.len() - 1
+                    }
+                };
+                while answered[at].1 < seen {
                     let _ = state.terms.write(term, b"\x1b[1;1R");
-                    answered += 1;
+                    answered[at].1 += 1;
                 }
             }
             assert!(started.elapsed() < std::time::Duration::from_secs(20), "timed out waiting for {what}");
@@ -3100,13 +3119,13 @@ mod tests {
         wait_until(&app, &term(web), "web's line", || !peer_lines(web).is_empty());
         assert_eq!(
             peer_lines(api),
-            ["got=A new peer session \"ui-2\" is linked to you (no stated purpose). Use SendMessage to coordinate."],
+            ["got=A new peer session \"ui-2\" is linked to you (no stated purpose). Use SendMessage or switchboard.inbox to coordinate."],
             "{}",
             output(api)
         );
         assert_eq!(
             peer_lines(web),
-            ["got=A new peer session \"api-1\" is linked to you (no stated purpose). Use SendMessage to coordinate."],
+            ["got=A new peer session \"api-1\" is linked to you (no stated purpose). Use SendMessage or switchboard.inbox to coordinate."],
             "{}",
             output(web)
         );
@@ -3185,6 +3204,188 @@ mod tests {
         // Deleting the edge drops both sides.
         call("edge_remove", json!({ "id": live })).unwrap();
         assert!(live_of(&api_side).is_none() && live_of(&web_side).is_none());
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
+    }
+
+    /// Story 7.3: `send` between two linked stub sessions lands in the peer's inbox and nudges it
+    /// with exactly one line once it is idle; a busy peer is nudged once at its next idle with the
+    /// count of what is unread then; a draft holds the nudge back; nothing is written once the
+    /// messages were read or with the nudge off; a peer that exited keeps its inbox and is nudged
+    /// after its resume; linking two running sessions leaves each a notice that does not nudge.
+    #[test]
+    fn peer_messages_land_in_the_inbox_and_nudge_an_idle_peer_once() {
+        use super::claude::live::SessionState;
+        use super::claude::live_edges;
+        use super::graph::Project;
+        use serde_json::json;
+        let (app, webview, dir, folder, _sessions) = launch_fixture();
+        let state = app.state::<super::AppState>();
+        *state.launcher.program.lock().unwrap() = Some(line_echo_program(dir.path()));
+        *state.live_edges.timeouts.lock().unwrap() = live_edges::Timeouts {
+            busy: std::time::Duration::from_millis(1500),
+            confirm: std::time::Duration::from_millis(1500),
+            notify: std::time::Duration::from_millis(600),
+            tick: std::time::Duration::from_millis(50),
+        };
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        let ui_dir = tempfile::tempdir().unwrap();
+        let ui = dunce::canonicalize(ui_dir.path()).unwrap().display().to_string();
+        state.write_workspace().workspace.projects.push(Project {
+            id: "ui".into(),
+            path: ui.clone(),
+            label: "ui".into(),
+            ..Project::default()
+        });
+        let ide = dunce::canonicalize(folder.path()).unwrap().display().to_string();
+        let (api, web) = ("a1a1a1a1-5b7d-4e8f-9a0b-1c2d3e4f5a6b", "b2b2b2b2-5b7d-4e8f-9a0b-1c2d3e4f5a6b");
+        let summary = |id: &str, title: &str, cwd: &str| super::claude::SessionSummary {
+            id: id.into(),
+            title: title.into(),
+            started_at: "2026-10-18T10:00:00.000Z".into(),
+            last_active: "2026-10-18T10:05:00.000Z".into(),
+            branch: None,
+            messages: 4,
+            cwd: Some(cwd.into()),
+        };
+        super::graph::set_discovered(
+            app.handle(),
+            std::collections::HashMap::from([
+                ("ide".to_string(), vec![summary(api, "api-1", &ide)]),
+                ("ui".to_string(), vec![summary(web, "ui-2", &ui)]),
+            ]),
+        );
+        let term = |id: &str| format!("session:{id}");
+        let output = |id: &str| super::pty::tests::strip_escapes(&state.terms.buffer(&term(id)).map(|b| b.data).unwrap_or_default());
+        let nudges = |id: &str| -> Vec<String> {
+            output(id)
+                .lines()
+                .filter(|l| l.starts_with("got=You have"))
+                .map(|l| l.trim_end().to_string())
+                .collect()
+        };
+        let set_state = |id: &str, s: SessionState| state.write_sessions_live().sessions.get_mut(id).unwrap().state = s;
+        let send = |from: &str, peer: &str, text: &str| super::mcp::call_app(app.handle(), from, "send", &json!({ "peer": peer, "text": text }));
+        let read = |who: &str| super::mcp::call_app(app.handle(), who, "inbox", &json!({})).unwrap();
+        let settle = || std::thread::sleep(std::time::Duration::from_millis(400));
+
+        // Linked while neither runs, then both resumed.
+        let edge = call("edge_add", json!({ "from": { "type": "session", "id": api }, "to": { "type": "session", "id": web } })).expect("edge_add");
+        let edge = edge["id"].as_str().unwrap().to_string();
+        for (project, id) in [("ide", api), ("ui", web)] {
+            call("session_resume", json!({ "projectId": project, "sessionId": id, "cols": 1000, "rows": 40 })).expect("resume");
+            wait_until(&app, &term(id), "the prompt", || output(id).contains("Switchboard node id"));
+        }
+        assert!(state.inbox.unread().is_empty(), "no notice for a link made before they ran");
+
+        // Idle: one line, exactly.
+        set_state(api, SessionState::Busy);
+        set_state(web, SessionState::Idle);
+        let sent = send(api, "ui-2", "endpoint is POST /auth/refresh, returns {token, expiresAt}").unwrap();
+        assert_eq!(sent, json!({ "delivered": true, "to": "ui-2", "unread": 1 }));
+        assert_eq!(call("inbox_unread_get", json!({})).unwrap(), json!({ web: 1 }));
+        wait_until(&app, &term(web), "the nudge", || !nudges(web).is_empty());
+        set_state(web, SessionState::Busy);
+        wait_until(&app, &term(web), "the nudge job to end", || !state.inbox.nudge_pending(web));
+        assert_eq!(nudges(web), ["got=You have 1 message from \"api-1\". Call switchboard.inbox."], "{}", output(web));
+        assert_eq!(read(web)[0]["text"], "endpoint is POST /auth/refresh, returns {token, expiresAt}");
+        assert_eq!(read(web), json!([]));
+        assert_eq!(call("inbox_unread_get", json!({})).unwrap(), json!({}));
+
+        // Busy: two messages, one nudge at the next idle, and not again at a later idle.
+        send(api, "ui-2", "a").unwrap();
+        send(api, web, "b").unwrap();
+        settle();
+        assert_eq!(nudges(web).len(), 1, "nothing while busy");
+        set_state(web, SessionState::Idle);
+        wait_until(&app, &term(web), "the second nudge", || nudges(web).len() == 2);
+        set_state(web, SessionState::Busy);
+        wait_until(&app, &term(web), "the nudge job to end", || !state.inbox.nudge_pending(web));
+        assert_eq!(nudges(web)[1], "got=You have 2 messages from \"api-1\". Call switchboard.inbox.", "{}", output(web));
+        set_state(web, SessionState::Idle);
+        settle();
+        assert_eq!(nudges(web).len(), 2, "the same unread messages do not nudge again");
+        assert!(!state.inbox.nudge_owed(web) && !state.inbox.nudge_pending(web), "nothing owed, no job");
+        read(web);
+
+        // Read before the idle: nothing is written.
+        set_state(web, SessionState::Busy);
+        send(api, "ui-2", "c").unwrap();
+        read(web);
+        set_state(web, SessionState::Idle);
+        settle();
+        assert_eq!(nudges(web).len(), 2, "already read");
+        assert!(!state.inbox.nudge_owed(web) && !state.inbox.nudge_pending(web), "nothing owed, no job");
+
+        // A draft holds it back until an idle with no draft.
+        live_edges::note_input(&state, web, "half a thought");
+        send(api, "ui-2", "d").unwrap();
+        settle();
+        assert_eq!(nudges(web).len(), 2, "not over a draft");
+        assert!(state.inbox.nudge_owed(web) && state.inbox.nudge_pending(web), "held back, still owed");
+        live_edges::note_input(&state, web, "\x15");
+        wait_until(&app, &term(web), "the nudge after the draft", || nudges(web).len() == 3);
+        set_state(web, SessionState::Busy);
+        wait_until(&app, &term(web), "the nudge job to end", || !state.inbox.nudge_pending(web));
+        read(web);
+
+        // The nudge off: the badge only. Turned on again, the owed arrival is nudged.
+        state.write().settings.peers.nudge = false;
+        set_state(web, SessionState::Idle);
+        assert_eq!(send(api, "ui-2", "e").unwrap()["unread"], 1);
+        settle();
+        assert_eq!(nudges(web).len(), 3, "no injection with the nudge off");
+        assert!(state.inbox.nudge_owed(web) && !state.inbox.nudge_pending(web), "owed, no job");
+        assert_eq!(state.inbox.count(web), 1);
+        state.write().settings.peers.nudge = true;
+        // What `settings::reload` calls when the file turns the nudge on.
+        super::inbox::nudge_turned_on(app.handle());
+        wait_until(&app, &term(web), "the nudge once it is on", || nudges(web).len() == 4);
+        set_state(web, SessionState::Busy);
+        wait_until(&app, &term(web), "the nudge job to end", || !state.inbox.nudge_pending(web));
+        assert_eq!(nudges(web)[3], "got=You have 1 message from \"api-1\". Call switchboard.inbox.");
+        read(web);
+
+        // Not a peer: refused, and nothing lands.
+        call("edge_remove", json!({ "id": edge })).unwrap();
+        assert!(send(api, "ui-2", "f").unwrap_err().starts_with(super::inbox::NOT_A_PEER));
+        assert!(state.inbox.unread().is_empty());
+
+        // Linked while both run, by an agent's labelled `link` (the workspace allows all): a
+        // notice with the purpose in each inbox, and no nudge for it.
+        set_state(api, SessionState::Busy);
+        set_state(web, SessionState::Busy);
+        state.write_workspace().workspace.agent_actions = super::graph::AgentActions::AllowAll;
+        let linked = super::mcp::call_app(
+            app.handle(),
+            api,
+            "link",
+            &json!({ "from": "self", "to": format!("session:{web}"), "kind": "cooperate", "label": "API shape" }),
+        );
+        assert!(linked.is_ok(), "{linked:?}");
+        assert_eq!(call("inbox_unread_get", json!({})).unwrap(), json!({ api: 1, web: 1 }));
+        let notice = read(web);
+        assert_eq!(notice[0]["from"], "switchboard");
+        assert_eq!(notice[0]["fromNodeId"], json!(null));
+        assert_eq!(notice[0]["text"], "Linked to \"api-1\" (API shape).");
+        assert_eq!(read(api)[0]["text"], "Linked to \"ui-2\" (API shape).");
+        assert!(!state.inbox.nudge_pending(api) && !state.inbox.nudge_pending(web), "a notice never nudges");
+
+        // A peer that exited keeps its inbox and is nudged once its resume is idle.
+        state.terms.write(&term(api), b"/exit\r").unwrap();
+        wait_until(&app, &term(api), "api to exit", || live_edges::running_session(&state, api).is_none());
+        let queued = send(web, "api-1", "while you were out").unwrap();
+        assert_eq!(queued, json!({ "delivered": true, "to": "api-1", "unread": 1, "running": false }));
+        call("session_resume", json!({ "projectId": "ide", "sessionId": api, "cols": 1000, "rows": 40 })).expect("resume api again");
+        wait_until(&app, &term(api), "api to run again", || live_edges::running_session(&state, api).is_some());
+        assert_eq!(state.inbox.count(api), 1, "the inbox outlived the exit");
+        set_state(api, SessionState::Idle);
+        wait_until(&app, &term(api), "api's nudge", || {
+            nudges(api).iter().any(|l| l == "got=You have 1 message from \"ui-2\". Call switchboard.inbox.")
+        });
+        set_state(api, SessionState::Busy);
+        assert_eq!(read(api)[0]["text"], "while you were out");
         super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
     }
 

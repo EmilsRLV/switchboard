@@ -15,6 +15,7 @@ const snapshot: SettingsSnapshot = {
     theme: "dark",
     poll: { agents_ms: 2000, git_ms: 5000 },
     notifications: { finished: true, waiting: true },
+    peers: { nudge: true },
   },
   binaries: {
     claude: {

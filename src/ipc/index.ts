@@ -28,6 +28,8 @@ export type Settings = {
   poll: { agents_ms: number; git_ms: number };
   /** Which attention states send an OS toast while the window is unfocused (Story 3.3). */
   notifications: { finished: boolean; waiting: boolean };
+  /** Peer messaging (Story 7.3): nudge a session with new messages once it is idle. */
+  peers: { nudge: boolean };
 };
 
 /** Mirrors `settings::BinaryStatus`. */
@@ -158,6 +160,15 @@ export type EdgesLiveMap = Record<string, EdgeLive>;
 
 /** Event name Rust emits with the whole `EdgesLiveMap` whenever an edge's live state changes. */
 export const EDGES_LIVE_EVENT = "edges://live";
+
+/**
+ * What `inbox_unread_get` returns and `inbox://unread` carries (Story 7.3): each session's
+ * unread peer-message count by session id; a session with none is left out. Runtime only.
+ */
+export type InboxUnreadMap = Record<string, number>;
+
+/** Event name Rust emits with the whole `InboxUnreadMap` whenever an inbox changes. */
+export const INBOX_UNREAD_EVENT = "inbox://unread";
 
 /** Mirrors `graph::Workspace`: the on-disk `workspace.json` schema, version 1. */
 export type Workspace = {
@@ -666,6 +677,7 @@ type Commands = {
   edge_set_label: WorkspaceSnapshot;
   edge_remove: WorkspaceSnapshot;
   edges_live_get: EdgesLiveMap;
+  inbox_unread_get: InboxUnreadMap;
   edge_live_retry: void;
   edge_restart_with_flags: LaunchResult;
   claude_projects_list: ClaudeProject[];
@@ -884,6 +896,11 @@ export function edgeRemove(id: string): Promise<WorkspaceSnapshot> {
 /** `ipc::edges_live_get` (Story 6.3) -- the live state of the context edges on running sessions. */
 export function edgesLiveGet(): Promise<EdgesLiveMap> {
   return call("edges_live_get");
+}
+
+/** `ipc::inbox_unread_get` (Story 7.3) -- each session's unread peer-message count. */
+export function inboxUnreadGet(): Promise<InboxUnreadMap> {
+  return call("inbox_unread_get");
 }
 
 /**
@@ -1150,6 +1167,14 @@ export async function onEdgesLive(callback: (entries: EdgesLiveMap) => void): Pr
     return () => {};
   }
   return listen<EdgesLiveMap>(EDGES_LIVE_EVENT, (event) => callback(event.payload));
+}
+
+/** Subscribe to `inbox://unread` (Story 7.3); same contract as {@link onSettingsChanged}. */
+export async function onInboxUnread(callback: (unread: InboxUnreadMap) => void): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return listen<InboxUnreadMap>(INBOX_UNREAD_EVENT, (event) => callback(event.payload));
 }
 
 /** Subscribe to `notify://reveal` (a toast was clicked); same contract as {@link onSettingsChanged}. */

@@ -19,6 +19,7 @@ import type {
   Viewport,
 } from "../ipc";
 import type { DragOverrides } from "../state/canvas";
+import { unreadIn } from "../state/inbox";
 import { isLiveState, needsAttention, sameState, stateWord } from "../state/live";
 
 /** What a `ProjectNode` renders from. */
@@ -63,6 +64,8 @@ export type ChildNodeData = {
   detail: string | null;
   /** The session's `set_status` text (Story 7.2), on its second line until its state changes; `null` for none. Absent: none. */
   statusText?: string | null;
+  /** The session's unread peer messages (Story 7.3): the `N new` badge on line 1 above 0. Absent: none. */
+  unread?: number;
   /** A Stop of the session's Switchboard terminal is under way (Story 4.4): the word reads `stopping`. */
   stopping: boolean;
   /** The title of the session this one was forked from, when that session is listed (Story 4.4). */
@@ -398,6 +401,8 @@ export type FlowInputs = {
   live?: Readonly<Record<string, LiveSession>>;
   /** Session ids whose Switchboard terminal is being stopped (Story 4.4); absent means none. */
   stopping?: readonly string[];
+  /** Unread peer messages by session id (Story 7.3, the inbox store); absent means none. */
+  unread?: Readonly<Record<string, number>>;
   /** Why a project's last branch read failed (Story 5.1), by project id; absent means none. */
   branchErrors?: Readonly<Record<string, string>>;
 };
@@ -443,6 +448,9 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
     return text !== null && text.trim() !== "" ? text : null;
   };
   const stopping = inputs.stopping ?? [];
+  // Story 7.3: a session's unread peer messages (the `N new` badge), live or not.
+  const unread = inputs.unread ?? NO_UNREAD;
+  const unreadOf = (child: ChildNode): number => (child.kind === "session" ? unreadIn(unread, child.id) : 0);
   const branchErrors = inputs.branchErrors ?? NO_ERRORS;
   const stoppingOf = (child: ChildNode): boolean => {
     const state = stateOf(child);
@@ -511,6 +519,7 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
           lastLine: lastLineOf(child),
           detail: detailOf(child),
           statusText: statusTextOf(child),
+          unread: unreadOf(child),
           stopping: stoppingOf(child),
           forkedFromTitle: forkedFromTitleOf(child),
         },
@@ -543,6 +552,7 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
 
 const NO_LIVE: Readonly<Record<string, LiveSession>> = Object.freeze({});
 const NO_ERRORS: Readonly<Record<string, string>> = Object.freeze({});
+const NO_UNREAD: Readonly<Record<string, number>> = Object.freeze({});
 
 /** A node's `zIndex`: {@link ELEVATED_Z} + 1 while dragged, {@link ELEVATED_Z} while selected, else 0. */
 function layer(selected: boolean, drag: Position | undefined): number {
@@ -587,6 +597,7 @@ function sameNode(a: CanvasFlowNode, b: CanvasFlowNode): boolean {
       a.data.lastLine === b.data.lastLine &&
       a.data.detail === b.data.detail &&
       (a.data.statusText ?? null) === (b.data.statusText ?? null) &&
+      (a.data.unread ?? 0) === (b.data.unread ?? 0) &&
       a.data.stopping === b.data.stopping &&
       a.data.forkedFromTitle === b.data.forkedFromTitle &&
       sameState(a.data.state, b.data.state) &&
@@ -852,10 +863,13 @@ export function sessionStateTone(state: SessionState | null): SessionStateTone |
  */
 export function childAriaLabel(
   kind: ChildKind,
-  data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine"> & Partial<Pick<ChildNodeData, "stopping" | "forkedFromTitle" | "statusText">>,
+  data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine"> &
+    Partial<Pick<ChildNodeData, "stopping" | "forkedFromTitle" | "statusText" | "unread">>,
 ): string {
   if (kind === "branch") return branchAriaLabel(data.child.label, data.child.branch ?? null);
   const parts = [`Session ${data.child.label}`];
+  const unread = unreadText(data.unread ?? 0);
+  if (unread !== null) parts.push(unread);
   if (data.forkedFromTitle !== null && data.forkedFromTitle !== undefined) parts.push(forkedFromText(data.forkedFromTitle));
   if (data.stopping === true) parts.push(STOPPING_WORD);
   if (data.statusText !== null && data.statusText !== undefined && data.statusText !== "") parts.push(`status: ${data.statusText}`);
@@ -871,10 +885,13 @@ export function childAriaLabel(
  * 200 characters, `…` when cut), then `needs you` while it needs attention.
  */
 export function sessionCardTitle(
-  data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine"> & Partial<Pick<ChildNodeData, "forkedFromTitle" | "statusText">>,
+  data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine"> &
+    Partial<Pick<ChildNodeData, "forkedFromTitle" | "statusText" | "unread">>,
   meta: SessionMeta,
 ): string {
   const lines: string[] = [];
+  const unread = unreadText(data.unread ?? 0);
+  if (unread !== null) lines.push(unread);
   if (data.detail !== null && data.detail !== "") lines.push(data.detail);
   if (data.statusText !== null && data.statusText !== undefined && data.statusText !== "") lines.push(data.statusText);
   lines.push(sessionHoverText(data.child.label, meta));
@@ -882,6 +899,15 @@ export function sessionCardTitle(
   if (data.lastLine !== null && data.lastLine !== "") lines.push(data.lastLine);
   if (data.attention) lines.push("needs you");
   return lines.join("\n");
+}
+
+/**
+ * A session's unread peer messages in words (Story 7.3), for its accessible name and tooltip:
+ * `1 unread message`, `N unread messages`; `null` at 0.
+ */
+export function unreadText(count: number): string | null {
+  if (count <= 0) return null;
+  return count === 1 ? "1 unread message" : `${count} unread messages`;
 }
 
 /** A fork's tooltip and accessible-name part (Story 4.4): `forked from <original title>`. */

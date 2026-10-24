@@ -465,6 +465,13 @@ pub fn edges_live_get(state: State<'_, AppState>) -> std::collections::BTreeMap<
     state.live_edges.snapshot()
 }
 
+/// Story 7.3: each session's unread peer-message count, `{sessionId: count}` (sessions with none
+/// left out); `inbox://unread` carries the same map on every change. Memory only.
+#[tauri::command]
+pub fn inbox_unread_get(state: State<'_, AppState>) -> std::collections::BTreeMap<String, usize> {
+    state.inbox.unread()
+}
+
 /// Retry (Story 6.3): run the `/add-dir` injection of a context edge from a running session
 /// again (the operator says the prompt is clear). For a cooperate edge (Story 6.4) it sends the
 /// peer line again to the side of `session_id`, which must be one of its ends and must have
@@ -1858,6 +1865,8 @@ fn run_launch<R: Runtime>(
                 // Its context edges' live state goes before the node shows `exited`, so a Restart
                 // with flags waiting for that exit marks the resumed run's edges after it (6.3).
                 live_edges::session_exited(&exit_app, &exit_id);
+                // Its pending nudge ends; its inbox stays for a later resume (Story 7.3).
+                crate::inbox::session_exited(&exit_app, &exit_id);
                 live::update_and_emit(&exit_app, |map| map.process_exited(&exit_id));
                 // Its agent requests still waiting on the operator go (Story 7.2), after it is
                 // marked exited: `approvals::ask` refuses an exited caller under the same lock.
@@ -1887,6 +1896,8 @@ fn run_launch<R: Runtime>(
     windows::return_to_pane(app, &term.id);
     // A `starting` child on the canvas now, before any poll.
     live::update_and_emit(app, |_| true);
+    // Peer messages that arrived while it was not running nudge it once idle (Story 7.3).
+    crate::inbox::session_started(app, &session_id);
     Ok(LaunchResult {
         session_id,
         term,

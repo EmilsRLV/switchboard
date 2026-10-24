@@ -120,6 +120,7 @@ mod tests {
                 "external_editor",
                 "git",
                 "notifications",
+                "peers",
                 "poll",
                 "shell",
                 "theme",

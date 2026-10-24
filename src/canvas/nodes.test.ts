@@ -13,6 +13,7 @@ import {
   REVEAL_MARGIN,
   REVEAL_PAN_MS,
   aheadBehind,
+  unreadText,
   cardTopLeft,
   chevronCommandId,
   childFlowId,
@@ -963,6 +964,26 @@ describe("formatAge / sessionMetaLine", () => {
     expect(withStatus[1]).toBe(next[1]);
     const exited = toFlowNodes(inputs({ projects: expanded, children, live: { ...busy, "stub-2-a": session({ kind: "exited" }, { status_text: "stale" }) } }));
     expect(statusOf(exited[2]), "not on an exited card").toBeNull();
+  });
+
+  it("unread peer messages reach the session's data, name and title, and re-render that card only (Story 7.3)", () => {
+    const expanded = [project("a", "/p/a", 0, 0, true)];
+    const children = [stub(1, "a"), stub(2, "a")];
+    const unreadOf = (node: (typeof none)[number] | undefined) => (node?.type === "session" ? node.data.unread : undefined);
+    const none = toFlowNodes(inputs({ projects: expanded, children }));
+    expect(unreadOf(none[1])).toBe(0);
+    const one = toFlowNodes(inputs({ projects: expanded, children, unread: { "stub-2-a": 3 } }), none);
+    expect(unreadOf(one[2])).toBe(3);
+    expect(one[1]).toBe(none[1]);
+    expect(one[2]).not.toBe(none[2]);
+    expect(toFlowNodes(inputs({ projects: expanded, children, unread: { "stub-2-a": 3 } }), one)[2]).toBe(one[2]);
+    expect(unreadText(0)).toBeNull();
+    expect(unreadText(1)).toBe("1 unread message");
+    expect(unreadText(4)).toBe("4 unread messages");
+    const child = { ...stub(1, "a"), label: "ui-2" };
+    expect(childAriaLabel("session", { child, attention: false, detail: null, lastLine: null, unread: 2 })).toBe("Session ui-2, 2 unread messages");
+    const meta: SessionMeta = { startedAt: "", lastActive: "", branch: null, messages: 0 };
+    expect(sessionCardTitle({ child, attention: false, detail: null, lastLine: null, unread: 1 }, meta)).toBe("1 unread message\nui-2");
   });
 
   it("the meta line starts with the state word when the session is live or exited", () => {
