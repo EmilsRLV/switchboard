@@ -2,7 +2,7 @@
 title: 'Story 7.3: Peer inbox and nudge'
 type: 'feature'
 created: '2026-10-24'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '285f0fe0ed07e174166758709fde3f28fd1b8721'
@@ -134,6 +134,8 @@ context:
   - B's first `inbox()` returned the link notice and the message, in arrival order with `from`/`fromNodeId`/`at`, and its badge cleared. The second call returned `[]`.
   - The stub never goes busy, so a nudge's effect cannot be seen on screen; the lib.rs end-to-end test covers it.
   - The orchestrator deleted the leftover session files.
+
+- 2026-10-24 Closed on local Windows verification (Emils' decision): cargo test (490), clippy, tsc, vitest (564), the debug build and one GUI pass; the GUI re-run was skipped because round 1 changed Rust only. **Linux CI is pending:** GitHub Actions is suspended. Check the run for `6bef4a8` or later on both runners when Actions resumes. Emils' checks with the real `claude` are still open: two linked sessions coordinating through `send`/`inbox` after a nudge, and the 6.4 native `SendMessage` check.
 
 ## Spec Change Log
 

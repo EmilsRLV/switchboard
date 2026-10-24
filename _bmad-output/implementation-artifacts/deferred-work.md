@@ -110,3 +110,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-7-3-peer-inbox-and-nudge.md`
   summary: No render test for the session card's `N new` badge wiring (Canvas input, memo deps, ChildNode).
   evidence: There is no DOM test environment. The 2026-10-24 GUI pass showed the badge.
+- source_spec: `_bmad-output/implementation-artifacts/spec-7-3-peer-inbox-and-nudge.md`
+  summary: Story 7.3 (`6bef4a8`) has not run on CI. It was closed on local Windows verification because GitHub Actions is suspended.
+  evidence: The Linux build and tests have not run. When Actions resumes, confirm the latest commit on both runners.
