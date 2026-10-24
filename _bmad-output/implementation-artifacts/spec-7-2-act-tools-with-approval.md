@@ -2,7 +2,7 @@
 title: 'Story 7.2: Act tools with approval'
 type: 'feature'
 created: '2026-10-24'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '3bc2281ece238ec4bd9f8848fafb90e6685ebaa4'
@@ -190,6 +190,8 @@ context:
   - The inspector showed `Agent actions: always allowed` with Revoke.
   - After palette "Revoke agent policy" the next request showed the toast again, and Deny returned `the operator denied: start a session on beta`.
   - Switchboard stayed focused throughout, so no OS notification was sent.
+
+- 2026-10-24 Closed on local Windows verification (Emils' decision): cargo test (485), clippy, tsc, vitest (559), the debug build and two GUI passes. **Linux CI is pending:** GitHub Actions is suspended until the end of the month. Check the run for `419d432` or later on both runners when Actions resumes. Emils' checks with the real `claude` are still open: whether Claude Code asks its own permission before an act tool, and whether its tool-call timeout cuts a long wait at the toast.
 
 ## Spec Change Log
 
