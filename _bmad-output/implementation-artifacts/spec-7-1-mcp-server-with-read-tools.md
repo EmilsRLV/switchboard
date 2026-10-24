@@ -2,7 +2,7 @@
 title: 'Story 7.1: MCP server with read tools'
 type: 'feature'
 created: '2026-10-24'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '8b1bd69fd8e355fdcb9dc1d4692560000a93e794'
@@ -168,6 +168,8 @@ context:
   - `sessions({project:"alpha"})` listed the live session `idle` with `lastActive`;
   - an authenticated GET got 405 and a bad token 401.
   Diagnostics showed `MCP refused requests 1`, with the hooks `refused requests` still 0, under the visible caption `RECENT MCP REFUSALS` and `17:43:02 /mcp — unknown token`. The orchestrator deleted the leftover session files after the forced kill.
+
+- 2026-10-24 Closed on local Windows verification (Emils' decision): cargo test (466), clippy, tsc, vitest (551), the debug build and two GUI passes. **Linux CI is pending:** GitHub Actions is suspended until the end of the month. Check the run for `c7590f8` or later on both runners when Actions resumes. Emils' checks with the real `claude` are still open: `/mcp` shows `switchboard` connected with no trust prompt, and the read tools run without a permission prompt.
 
 ## Spec Change Log
 

@@ -98,3 +98,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-7-1-mcp-server-with-read-tools.md`
   summary: No render test for the Settings → Diagnostics MCP refusal list.
   evidence: There is no DOM test environment. The 2026-10-24 GUI pass showed the list; only the pure helpers are unit-tested.
+- source_spec: `_bmad-output/implementation-artifacts/spec-7-1-mcp-server-with-read-tools.md`
+  summary: Story 7.1 (`c7590f8`) has not run on CI. It was closed on local Windows verification because GitHub Actions is suspended until the end of the month.
+  evidence: The Linux build and tests have not run (Unix-only branches: the 0600 mode check, the argv check). When Actions resumes, confirm the latest commit on both runners.
