@@ -13,7 +13,8 @@
 //! closes the connection. Every accepted request gets an **empty 200**, sent before the event is
 //! applied (on a worker thread, in arrival order), so a hook never approves, denies, blocks or
 //! waits on anything. At most 64 connections are served at once, and one silent for 10 s is
-//! closed. A failed bind (or a failed server) leaves launches working without hooks (the
+//! closed -- except while an `/mcp` request it sent is being answered (Story 7.2: an act tool may
+//! wait minutes for the operator), and the 10 s start again once the reply is out. A failed bind (or a failed server) leaves launches working without hooks (the
 //! settings file is `{}`, as in Story 4.2), drops every token and hooked mark, and raises the
 //! banner `hooks endpoint unavailable: <cause>`.
 //!
@@ -24,7 +25,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{Ipv4Addr, TcpListener};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -434,8 +435,71 @@ pub type Apply = Arc<dyn Fn(&str, HookSignal) + Send + Sync>;
 pub const MAX_CONNECTIONS: usize = 64;
 
 /// A connection that sends nothing for this long (headers or body) is closed, and a body read
-/// that takes longer fails.
+/// that takes longer fails. It does not run while the connection's `/mcp` reply is pending
+/// ([`Hold`]).
 pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Whether a connection is waiting for its own reply (Story 7.2): while an `/mcp` request it sent
+/// is being answered (an act tool waits for the operator), the idle timer does not apply; once the
+/// reply is out it starts afresh. Shared between the connection and its requests
+/// ([`ConnInfo`]).
+#[derive(Clone, Default)]
+pub(crate) struct Hold(Arc<HoldState>);
+
+#[derive(Default)]
+struct HoldState {
+    /// Requests of the connection being answered now.
+    held: AtomicUsize,
+    /// Bumped each time one is done, so the connection restarts its idle timer.
+    released: AtomicU64,
+    /// The connection's task, woken when a reply is done so its timer restarts from then.
+    waker: Mutex<Option<std::task::Waker>>,
+}
+
+impl Hold {
+    /// The connection's reply is pending until the guard drops.
+    pub(crate) fn hold(&self) -> HoldGuard {
+        self.0.held.fetch_add(1, Ordering::SeqCst);
+        HoldGuard(self.clone())
+    }
+
+    fn is_held(&self) -> bool {
+        self.0.held.load(Ordering::SeqCst) > 0
+    }
+
+    fn released(&self) -> u64 {
+        self.0.released.load(Ordering::SeqCst)
+    }
+
+    fn park(&self, waker: &std::task::Waker) {
+        *lock(&self.0.waker) = Some(waker.clone());
+    }
+}
+
+/// A pending reply ([`Hold::hold`]); dropping it lets the idle timer run again.
+pub(crate) struct HoldGuard(Hold);
+
+impl Drop for HoldGuard {
+    fn drop(&mut self) {
+        self.0.0.released.fetch_add(1, Ordering::SeqCst);
+        self.0.0.held.fetch_sub(1, Ordering::SeqCst);
+        if let Some(waker) = lock(&self.0.0.waker).take() {
+            waker.wake();
+        }
+    }
+}
+
+/// What a request knows of its connection (axum's `ConnectInfo`): its [`Hold`].
+#[derive(Clone)]
+pub(crate) struct ConnInfo {
+    pub(crate) hold: Hold,
+}
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, Limited>> for ConnInfo {
+    fn connect_info(stream: axum::serve::IncomingStream<'_, Limited>) -> Self {
+        ConnInfo { hold: stream.io().hold.clone() }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct Ctx {
@@ -445,12 +509,20 @@ pub(crate) struct Ctx {
     applier: std::sync::mpsc::Sender<(String, HookSignal)>,
     /// What answers the MCP tool calls (Story 7.1).
     pub(crate) tools: crate::mcp::Tools,
+    /// What withdraws a call's pending approval when its `/mcp` request goes away (Story 7.2).
+    pub(crate) cancel: crate::mcp::Cancel,
 }
 
 /// The router: `POST /hooks/{event}` and `/mcp` (Story 7.1, `crate::mcp::handle`); everything
 /// else 404. Accepted events go to `apply` on a worker thread, one at a time in arrival order;
 /// the thread ends when the router is dropped. MCP tool calls go to `tools`.
 pub fn router(hooks: Hooks, apply: Apply, tools: crate::mcp::Tools) -> Router {
+    router_with(hooks, apply, tools, Arc::new(|_| {}))
+}
+
+/// [`router`], with `cancel` told the id of every `/mcp` call that goes away before its reply
+/// (Story 7.2: its pending approval is withdrawn).
+pub fn router_with(hooks: Hooks, apply: Apply, tools: crate::mcp::Tools, cancel: crate::mcp::Cancel) -> Router {
     let (applier, queue) = std::sync::mpsc::channel::<(String, HookSignal)>();
     let spawned = std::thread::Builder::new().name("hooks-apply".into()).spawn(move || {
         for (session, signal) in queue {
@@ -464,7 +536,7 @@ pub fn router(hooks: Hooks, apply: Apply, tools: crate::mcp::Tools) -> Router {
         .route("/hooks/{event}", post(receive).fallback(not_found))
         .route("/mcp", any(crate::mcp::handle))
         .fallback(not_found)
-        .with_state(Ctx { hooks, applier, tools })
+        .with_state(Ctx { hooks, applier, tools, cancel })
 }
 
 /// The bearer token in `Authorization`, if any.
@@ -623,7 +695,16 @@ impl axum::serve::Listener for Limited {
         };
         let (io, addr) = axum::serve::Listener::accept(&mut self.inner).await;
         let idle = Box::pin(tokio::time::sleep(READ_TIMEOUT));
-        (Conn { io, idle, _permit: permit }, addr)
+        (
+            Conn {
+                io,
+                idle,
+                hold: Hold::default(),
+                seen_release: 0,
+                _permit: permit,
+            },
+            addr,
+        )
     }
 
     fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
@@ -631,10 +712,14 @@ impl axum::serve::Listener for Limited {
     }
 }
 
-/// One connection: its socket, the read deadline, and its share of [`MAX_CONNECTIONS`].
+/// One connection: its socket, the read deadline, whether a reply is pending (the deadline does
+/// not apply then), and its share of [`MAX_CONNECTIONS`].
 struct Conn {
     io: tokio::net::TcpStream,
     idle: std::pin::Pin<Box<tokio::time::Sleep>>,
+    hold: Hold,
+    /// The [`Hold`]'s release count the deadline was last reset for.
+    seen_release: u64,
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
@@ -652,10 +737,27 @@ impl tokio::io::AsyncRead for Conn {
                 this.idle.as_mut().reset(tokio::time::Instant::now() + READ_TIMEOUT);
                 Poll::Ready(result)
             }
-            Poll::Pending => match this.idle.as_mut().poll(cx) {
-                Poll::Ready(()) => Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "no input for 10 s"))),
-                Poll::Pending => Poll::Pending,
-            },
+            Poll::Pending => {
+                // A reply is pending (an act tool waits on the operator): the client is silent on
+                // purpose. The deadline restarts from now, and again once the reply is out.
+                if this.hold.is_held() {
+                    // Woken when the reply is done, to start the deadline from then.
+                    this.hold.park(cx.waker());
+                    if this.hold.is_held() {
+                        this.idle.as_mut().reset(tokio::time::Instant::now() + READ_TIMEOUT);
+                        return Poll::Pending;
+                    }
+                }
+                let released = this.hold.released();
+                if released != this.seen_release {
+                    this.seen_release = released;
+                    this.idle.as_mut().reset(tokio::time::Instant::now() + READ_TIMEOUT);
+                }
+                match this.idle.as_mut().poll(cx) {
+                    Poll::Ready(()) => Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "no input for 10 s"))),
+                    Poll::Pending => Poll::Pending,
+                }
+            }
         }
     }
 }
@@ -696,7 +798,7 @@ pub async fn serve(listener: TcpListener, router: Router) -> std::io::Result<()>
         inner: tokio::net::TcpListener::from_std(listener)?,
         permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS)),
     };
-    axum::serve(listener, router).await
+    axum::serve(listener, router.into_make_service_with_connect_info::<ConnInfo>()).await
 }
 
 /// Start the endpoint (once, from `setup`, before the settings snapshot first goes out).
@@ -723,8 +825,12 @@ pub fn start_on<R: Runtime>(app: &AppHandle<R>, bound: std::io::Result<TcpListen
     });
     // MCP tool calls (Story 7.1) answer from the app's live state.
     let tools_app = app.clone();
-    let tools: crate::mcp::Tools = Arc::new(move |session, tool, args| crate::mcp::call(&tools_app.state::<AppState>(), session, tool, args));
-    let router = router(state.hooks.clone(), apply, tools);
+    // Story 7.2: the act tools launch, link and ask the operator through the app handle.
+    let tools: crate::mcp::Tools = Arc::new(move |session, tool, args| crate::mcp::call_app(&tools_app, session, tool, args));
+    // A call that goes away while it waits for the operator withdraws its request (Story 7.2).
+    let cancel_app = app.clone();
+    let cancel: crate::mcp::Cancel = Arc::new(move |call| crate::approvals::cancel_call(&cancel_app, call));
+    let router = router_with(state.hooks.clone(), apply, tools, cancel);
     let handle = app.clone();
     Some(tauri::async_runtime::spawn(async move {
         if let Err(err) = serve(listener, router).await {
@@ -935,7 +1041,8 @@ pub mod tests {
             }
         }
         assert!(hooks.get("PreToolUse").is_none());
-        // Story 7.1: exactly the read tools are allowed, so they never prompt.
+        // Story 7.1: exactly the read tools are allowed, so they never prompt (Story 7.2: never
+        // the act tools).
         assert_eq!(
             value["permissions"]["allow"],
             json!([
@@ -1083,6 +1190,55 @@ pub mod tests {
         release.send(()).unwrap();
         eventually("both applied, in order", || s.seen.lock().unwrap().len() == 2);
         assert_eq!(s.seen.lock().unwrap()[0].1, HookSignal::Prompted);
+    }
+
+    /// Story 7.2: a tool that answers after 15 s (an operator slow at the toast) still gets its
+    /// reply through: the idle timer does not apply while the reply is pending; and the
+    /// connection, kept alive, is closed 10 s after the reply once it is silent again.
+    #[test]
+    fn a_pending_mcp_reply_outlives_the_read_timeout() {
+        let hooks = Hooks::default();
+        let listener = bind().unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let tools: crate::mcp::Tools = Arc::new(|_, _, _| {
+            std::thread::sleep(READ_TIMEOUT + Duration::from_secs(5));
+            Ok(json!({ "slow": true }))
+        });
+        let app = router(hooks.clone(), Arc::new(|_, _| {}), tools);
+        let task = tauri::async_runtime::spawn(async move {
+            let _ = serve(listener, app).await;
+        });
+        let token = hooks.register("s1");
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "my_node" } }).to_string();
+        let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+        // Keep-alive: the connection stays open after the reply.
+        let head = format!(
+            "POST /mcp HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(body.as_bytes()).unwrap();
+        let started = std::time::Instant::now();
+        let mut reply = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while !String::from_utf8_lossy(&reply).contains("slow") {
+            let n = stream.read(&mut chunk).expect("the reply arrives");
+            assert!(n > 0, "closed before the reply: {}", String::from_utf8_lossy(&reply));
+            reply.extend_from_slice(&chunk[..n]);
+        }
+        let waited = started.elapsed();
+        assert!(waited >= READ_TIMEOUT + Duration::from_secs(4), "replied after {waited:?}");
+        let text = String::from_utf8_lossy(&reply).to_string();
+        assert!(text.starts_with("HTTP/1.1 200"), "{text}");
+        // Silent again: closed after the read timeout, counted from the reply.
+        let after = std::time::Instant::now();
+        let mut rest = Vec::new();
+        let _ = stream.read_to_end(&mut rest);
+        let idle = after.elapsed();
+        assert!(idle >= READ_TIMEOUT - Duration::from_secs(1), "closed {idle:?} after the reply");
+        assert!(idle < READ_TIMEOUT + Duration::from_secs(8), "closed {idle:?} after the reply");
+        task.abort();
     }
 
     #[test]

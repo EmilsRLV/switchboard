@@ -1,8 +1,12 @@
 import { useEffect } from "react";
 import {
+  approvalsGet,
   edgesLiveGet,
   hasTauriRuntime,
   liveSessionsGet,
+  onAgentStarted,
+  onApprovalNotice,
+  onApprovals,
   onEdgesLive,
   onLiveSessions,
   onNotifyReveal,
@@ -15,16 +19,20 @@ import {
 } from "./ipc";
 import { mirror } from "./ipc/mirror";
 import { revealToastSession } from "./commands/attention";
+import { notify } from "./commands/navigation";
 import { registerBuiltins } from "./commands/builtins";
 import { useKeybindings } from "./commands/keybindings";
 import { forgetTerminal } from "./commands/terminal";
+import { useApprovalsStore } from "./state/approvals";
 import { useEdgesLiveStore } from "./state/edgesLive";
+import { useTerminalStore } from "./state/terminals";
 import { useLiveStore } from "./state/live";
 import { useSettingsStore } from "./state/settings";
 import { useStatusStore } from "./state/status";
 import { useUiStore } from "./state/ui";
 import { useWorkspaceStore } from "./state/workspace";
 import { Canvas } from "./canvas/Canvas";
+import { ApprovalToasts } from "./components/ApprovalToasts";
 import { Banners } from "./components/Banners";
 import { ContextMenu } from "./components/ContextMenu";
 import { EdgePane } from "./components/EdgePane";
@@ -45,7 +53,8 @@ registerBuiltins();
 
 /**
  * The shell: banner strip on top, the canvas filling the rest with the transient notice laid
- * over its top edge and the Elsewhere tray at its bottom-left, one pane (settings, import, terminal, the launch sheet, the worktree sheet, the remove-worktree sheet or the edge inspector) on the right when open,
+ * over its top edge, the Elsewhere tray at its bottom-left and the agent approval toasts (Story
+ * 7.2) at its bottom-right, one pane (settings, import, terminal, the launch sheet, the worktree sheet, the remove-worktree sheet or the edge inspector) on the right when open,
  * the hidden holder that keeps every terminal's view alive while the terminal pane is not showing it, the command
  * palette over everything when open, the node context menu at the pointer when open. Every
  * key goes through the command registry's dispatcher (`useKeybindings`).
@@ -62,6 +71,8 @@ export default function App() {
   const setLiveLoadError = useLiveStore((s) => s.setLoadError);
   const applyEdgesLive = useEdgesLiveStore((s) => s.applySnapshot);
   const setEdgesLiveLoadError = useEdgesLiveStore((s) => s.setLoadError);
+  const applyApprovals = useApprovalsStore((s) => s.applySnapshot);
+  const setApprovalsLoadError = useApprovalsStore((s) => s.setLoadError);
 
   // Rust is the source of truth for all four; `mirror` subscribes, then reads.
   useEffect(() => {
@@ -122,6 +133,37 @@ export default function App() {
     });
   }, [applyEdgesLive, setEdgesLiveLoadError]);
 
+  // Story 7.2: the agents' requests waiting on the operator (runtime only).
+  useEffect(() => {
+    if (!hasTauriRuntime()) return;
+    return mirror({
+      listen: onApprovals,
+      get: approvalsGet,
+      apply: applyApprovals,
+      hasSnapshot: () => useApprovalsStore.getState().received,
+      // No toasts then; a waiting agent is denied at its deadline.
+      fail: (message) => setApprovalsLoadError(`approvals load failed: ${message}`),
+    });
+  }, [applyApprovals, setApprovalsLoadError]);
+
+  // Story 7.2: an act that ran without a toast says so in the notice; a session an agent started
+  // is known to the terminal store at once, in the background (nothing is focused).
+  useEffect(() => {
+    if (!hasTauriRuntime()) return;
+    const unlisten: (() => void)[] = [];
+    let disposed = false;
+    const keep = (fn: () => void) => {
+      if (disposed) fn();
+      else unlisten.push(fn);
+    };
+    void onApprovalNotice((text) => notify(text)).then(keep);
+    void onAgentStarted((term) => useTerminalStore.getState().upsert(term)).then(keep);
+    return () => {
+      disposed = true;
+      for (const fn of unlisten) fn();
+    };
+  }, []);
+
   // A click on an OS toast: Rust has focused the window; reveal and select its session
   // (Story 3.3).
   useEffect(() => {
@@ -156,6 +198,7 @@ export default function App() {
         <Canvas />
         <ElsewhereTray />
         <Notice />
+        <ApprovalToasts />
         {pane === "settings" && <SettingsPane />}
         {pane === "import" && <ImportPane />}
         {pane === "launch" && <LaunchPane />}

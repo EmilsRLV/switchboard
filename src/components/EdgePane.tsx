@@ -1,5 +1,6 @@
 import { useEffect, useState, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { cooperateSides, edgeLiveIn, endText, type EndText } from "../canvas/edges";
+import { revokeEdgePolicy } from "../commands/approvals";
 import { restartEdge, retryEdge, saveEdgeLabel } from "../commands/edges";
 import { runCommand } from "../commands/registry";
 import type { ChildNode, Edge, EdgeLive, EdgesLiveMap, Project } from "../ipc";
@@ -15,7 +16,8 @@ const NO_CHILDREN: readonly ChildNode[] = [];
  * The edge inspector (Story 6.1): a small pane for the selected edge, opened by a click on its
  * line (or "Inspect edge"). It states the kind and both ends, holds the Label field (saved on
  * Enter or when it loses focus; blank clears it) and a Delete button (Del does the same while
- * focus is not in the field). Esc closes it; the edge stays selected. It never takes the focus
+ * focus is not in the field). Story 7.2: an edge whose "Always for this edge" is set says
+ * `Agent actions: always allowed`, with Revoke. Esc closes it; the edge stays selected. It never takes the focus
  * on opening, so Del right after the click deletes.
  */
 export function EdgePane() {
@@ -113,6 +115,17 @@ function EdgeInspector({ edge, from, to, live, entries }: { edge: Edge; from: En
             )}
           </div>
         ))}
+        {edge.agentAllowed === true && (
+          // Story 7.2: "Always for this edge" -- an agent at one end acts on the other without a toast.
+          <div className="edge-policy">
+            <p className="edge-now">
+              <span className="edge-now-term">Agent actions:</span> always allowed
+            </p>
+            <button type="button" className="btn" onClick={() => void revokeEdgePolicy(edge.id)} title="The next agent action across this edge asks again">
+              Revoke
+            </button>
+          </div>
+        )}
         <label className="launch-field">
           <span className="launch-label">Label</span>
           <input

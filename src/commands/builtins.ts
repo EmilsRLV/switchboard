@@ -36,6 +36,15 @@ import {
 } from "./navigation";
 import { canGoToAttention, goToNextAttention } from "./attention";
 import {
+  answerOldest,
+  canAllowAllAgentActions,
+  canAskAgentActions,
+  canRevokeEdgePolicy,
+  hasPendingRequest,
+  revokeSelectedEdgePolicy,
+  setAgentActions,
+} from "./approvals";
+import {
   canDeleteEdge,
   canInspectEdge,
   canLink,
@@ -572,6 +581,49 @@ export function builtinCommands(): Command[] {
       when: canRestartEdge,
       run: async () => {
         await restartSelectedEdge();
+      },
+    },
+    {
+      // Story 7.2: an edge's "Always for this edge" goes; the next agent action across it asks.
+      id: "edge.revokeAgentPolicy",
+      title: "Revoke agent policy",
+      when: canRevokeEdgePolicy,
+      run: async () => {
+        await revokeSelectedEdgePolicy();
+      },
+    },
+    {
+      // Story 7.2: the oldest agent request waiting on the operator (the toast's Allow / Deny).
+      id: "approval.allow",
+      title: "Allow agent request",
+      when: hasPendingRequest,
+      run: async () => {
+        await answerOldest("allow");
+      },
+    },
+    {
+      id: "approval.deny",
+      title: "Deny agent request",
+      when: hasPendingRequest,
+      run: async () => {
+        await answerOldest("deny");
+      },
+    },
+    {
+      // Story 7.2: the workspace's policy for the agents' act tools.
+      id: "agentActions.allowAll",
+      title: "Agent actions: allow all",
+      when: canAllowAllAgentActions,
+      run: async () => {
+        await setAgentActions("allowAll");
+      },
+    },
+    {
+      id: "agentActions.ask",
+      title: "Agent actions: ask",
+      when: canAskAgentActions,
+      run: async () => {
+        await setAgentActions("ask");
       },
     },
     {

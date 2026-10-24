@@ -61,6 +61,8 @@ export type ChildNodeData = {
   lastLine: string | null;
   /** A `waiting` session's reason, the card's tooltip (Story 4.3); `null` otherwise. */
   detail: string | null;
+  /** The session's `set_status` text (Story 7.2), on its second line until its state changes; `null` for none. Absent: none. */
+  statusText?: string | null;
   /** A Stop of the session's Switchboard terminal is under way (Story 4.4): the word reads `stopping`. */
   stopping: boolean;
   /** The title of the session this one was forked from, when that session is listed (Story 4.4). */
@@ -434,6 +436,12 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
     const session = liveOf(child);
     return session?.state.kind === "waiting" ? (session.detail ?? null) : null;
   };
+  // Story 7.2: what the session said through `set_status`, while it is live.
+  const statusTextOf = (child: ChildNode): string | null => {
+    const session = liveOf(child);
+    const text = session !== undefined && isLiveState(session.state) ? (session.status_text ?? null) : null;
+    return text !== null && text.trim() !== "" ? text : null;
+  };
   const stopping = inputs.stopping ?? [];
   const branchErrors = inputs.branchErrors ?? NO_ERRORS;
   const stoppingOf = (child: ChildNode): boolean => {
@@ -502,6 +510,7 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
           attention: needsAttention(stateOf(child)),
           lastLine: lastLineOf(child),
           detail: detailOf(child),
+          statusText: statusTextOf(child),
           stopping: stoppingOf(child),
           forkedFromTitle: forkedFromTitleOf(child),
         },
@@ -577,6 +586,7 @@ function sameNode(a: CanvasFlowNode, b: CanvasFlowNode): boolean {
       a.data.attention === b.data.attention &&
       a.data.lastLine === b.data.lastLine &&
       a.data.detail === b.data.detail &&
+      (a.data.statusText ?? null) === (b.data.statusText ?? null) &&
       a.data.stopping === b.data.stopping &&
       a.data.forkedFromTitle === b.data.forkedFromTitle &&
       sameState(a.data.state, b.data.state) &&
@@ -772,6 +782,11 @@ export type SessionCardMeta = {
    * the state word in place of branch, count and age (muted, one line, ellipsis).
    */
   lastLine: string | null;
+  /**
+   * The session's `set_status` text (Story 7.2): when set, the card shows it after the state word
+   * in place of branch, count and age (and of a last line), one line with an ellipsis.
+   */
+  statusText: string | null;
 };
 
 /** The state word of a session being stopped (Story 4.4): muted, until its process exits. */
@@ -790,12 +805,16 @@ export function sessionCardMeta(
   state: SessionState | null,
   lastLine: string | null = null,
   stopping = false,
+  statusText: string | null = null,
 ): SessionCardMeta {
   const halting = stopping && state !== null && isLiveState(state);
   const tone = halting ? "muted" : sessionStateTone(state);
   const line = lastLine?.trim() ?? "";
+  const status = statusText?.trim() ?? "";
+  const shown = !halting && state !== null && isLiveState(state) && status !== "" ? status : null;
   return {
-    lastLine: !halting && state?.kind === "finished" && line !== "" ? line : null,
+    statusText: shown,
+    lastLine: shown === null && !halting && state?.kind === "finished" && line !== "" ? line : null,
     state:
       state === null || tone === null
         ? null
@@ -833,12 +852,13 @@ export function sessionStateTone(state: SessionState | null): SessionStateTone |
  */
 export function childAriaLabel(
   kind: ChildKind,
-  data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine"> & Partial<Pick<ChildNodeData, "stopping" | "forkedFromTitle">>,
+  data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine"> & Partial<Pick<ChildNodeData, "stopping" | "forkedFromTitle" | "statusText">>,
 ): string {
   if (kind === "branch") return branchAriaLabel(data.child.label, data.child.branch ?? null);
   const parts = [`Session ${data.child.label}`];
   if (data.forkedFromTitle !== null && data.forkedFromTitle !== undefined) parts.push(forkedFromText(data.forkedFromTitle));
   if (data.stopping === true) parts.push(STOPPING_WORD);
+  if (data.statusText !== null && data.statusText !== undefined && data.statusText !== "") parts.push(`status: ${data.statusText}`);
   if (data.detail !== null && data.detail !== "") parts.push(`waiting: ${data.detail}`);
   if (data.lastLine !== null && data.lastLine !== "") parts.push(`last line: ${data.lastLine}`);
   if (data.attention) parts.push("needs you");
@@ -847,15 +867,16 @@ export function childAriaLabel(
 
 /**
  * A session card's `title` attribute: a `waiting` session's reason (`detail`, Story 4.3)
- * first, then the hover text, then a `finished` session's last line (as Rust cut it: at most
+ * first, then its `set_status` text (Story 7.2), then the hover text, then a `finished` session's last line (as Rust cut it: at most
  * 200 characters, `…` when cut), then `needs you` while it needs attention.
  */
 export function sessionCardTitle(
-  data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine"> & Partial<Pick<ChildNodeData, "forkedFromTitle">>,
+  data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine"> & Partial<Pick<ChildNodeData, "forkedFromTitle" | "statusText">>,
   meta: SessionMeta,
 ): string {
   const lines: string[] = [];
   if (data.detail !== null && data.detail !== "") lines.push(data.detail);
+  if (data.statusText !== null && data.statusText !== undefined && data.statusText !== "") lines.push(data.statusText);
   lines.push(sessionHoverText(data.child.label, meta));
   if (data.forkedFromTitle !== null && data.forkedFromTitle !== undefined) lines.push(forkedFromText(data.forkedFromTitle));
   if (data.lastLine !== null && data.lastLine !== "") lines.push(data.lastLine);

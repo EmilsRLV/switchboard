@@ -1,6 +1,7 @@
 //! Switchboard core. Rust is the source of truth; the webview talks to it only
 //! through the thin commands in [`ipc`].
 
+pub mod approvals;
 pub mod claude;
 pub mod git;
 pub mod graph;
@@ -70,6 +71,10 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::session_fork,
             ipc::session_stop,
             ipc::diagnostics_get,
+            ipc::approvals_get,
+            ipc::approval_answer,
+            ipc::edge_set_agent_allowed,
+            ipc::workspace_set_agent_actions,
         ])
 }
 
@@ -504,6 +509,23 @@ mod tests {
     }
 
     #[test]
+    fn the_agent_policy_commands_are_registered() {
+        use serde_json::json;
+        let (app, webview, _dir) = app_with_ide();
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        assert_eq!(call("approvals_get", json!({})).unwrap(), json!([]));
+        assert_eq!(call("approval_answer", json!({ "id": "a1", "answer": "allow" })), Err(json!(super::approvals::NOT_PENDING)));
+        let snapshot = call("workspace_set_agent_actions", json!({ "mode": "allowAll" })).unwrap();
+        assert_eq!(snapshot["workspace"]["agentActions"], "allowAll");
+        assert_eq!(app.state::<super::AppState>().read_workspace().workspace.agent_actions, super::graph::AgentActions::AllowAll);
+        let snapshot = call("workspace_set_agent_actions", json!({ "mode": "ask" })).unwrap();
+        assert!(snapshot["workspace"].get("agentActions").is_none(), "ask is the default, left out");
+        assert_eq!(call("edge_set_agent_allowed", json!({ "id": "nope", "allowed": false })), Err(json!("unknown edge")));
+    }
+
+    #[test]
     fn the_edge_commands_are_registered_take_camel_case_arguments_and_persist() {
         let (_app, webview, dir) = app_with_ide();
 
@@ -847,7 +869,7 @@ mod tests {
                 "sessions": { "s1": {
                     "state": { "kind": "busy" }, "source": "poll", "pid": 7, "kind": "interactive", "name": "n",
                     "project_id": null, "cwd": "/nowhere", "started_at": 1791553254656_i64,
-                    "attention_since": null, "last_line": null, "detail": null
+                    "attention_since": null, "last_line": null, "detail": null, "status_text": null
                 } },
                 "elsewhere": [{ "session_id": "s1", "state": { "kind": "busy" }, "name": "n", "cwd": "/nowhere", "started_at": 1791553254656_i64 }],
                 "banner": null
@@ -1818,6 +1840,298 @@ mod tests {
         let diagnostics = call("diagnostics_get", json!({})).expect("diagnostics_get");
         assert_eq!(diagnostics["mcp_refused"], 2);
         assert_eq!(diagnostics["mcp_refusals"][0]["reason"], "unknown token");
+        server.abort();
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
+    }
+
+    /// Story 7.2: session A (the fixture program, never `claude`) calls `start_session` over
+    /// `/mcp`. The toast's request carries the exact argv; Deny is a readable error; Allow starts the
+    /// session in `ui` with exactly that argv, a cooperate edge A ↔ new stored before its prompt
+    /// was built (the prompt names A), and returns `{nodeId, name}`. With an edge A → ui, Always is
+    /// offered; once chosen the next start runs without a toast (a notice says so) until Revoke.
+    /// `set_status` never asks; a branch without a worktree and `bypassPermissions` are refused with
+    /// no toast; A's exit drops its pending request.
+    #[test]
+    fn start_session_waits_for_the_operator_and_runs_the_argv_it_showed() {
+        use super::claude::hooks::{self, tests::http};
+        use serde_json::json;
+        use tauri::Listener;
+        let (app, webview, _dir, _folder, _sessions) = launch_fixture();
+        let state = app.state::<super::AppState>();
+        let server = hooks::start_on(app.handle(), hooks::bind()).expect("the endpoint starts");
+        let port = state.hooks.port().unwrap();
+        state.approvals.set_timeout(std::time::Duration::from_secs(30));
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        let ui_folder = tempfile::tempdir().unwrap();
+        let ui_path = dunce::canonicalize(ui_folder.path()).unwrap().display().to_string();
+        state.write_workspace().workspace.projects.push(super::graph::Project {
+            id: "ui".into(),
+            path: ui_path.clone(),
+            label: "ui".into(),
+            ..super::graph::Project::default()
+        });
+        let toasts = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let notices = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        {
+            let toasts = toasts.clone();
+            app.listen_any(super::approvals::EVENT, move |event| {
+                let list: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+                if !list.as_array().unwrap().is_empty() {
+                    *toasts.lock().unwrap() += 1;
+                }
+            });
+            let notices = notices.clone();
+            app.listen_any(super::approvals::NOTICE_EVENT, move |event| {
+                notices.lock().unwrap().push(serde_json::from_str(event.payload()).unwrap());
+            });
+        }
+
+        // Session A on `ide`.
+        let prefill = call("launch_defaults", json!({ "projectId": "ide" })).unwrap();
+        let request = json!({ "projectId": "ide", "sessionId": prefill["sessionId"], "name": prefill["name"] });
+        let a = call("session_launch", json!({ "request": request, "cols": 1000, "rows": 30 })).unwrap()["session_id"].as_str().unwrap().to_string();
+        let a_name = prefill["name"].as_str().unwrap().to_string();
+        let a_term = format!("session:{a}");
+        let settings: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(_sessions.join(format!("{a}.settings.json"))).unwrap()).unwrap();
+        let token = settings["hooks"]["Stop"][0]["hooks"][0]["headers"]["Authorization"].as_str().unwrap().strip_prefix("Bearer ").unwrap().to_string();
+        assert!(!settings["permissions"]["allow"].to_string().contains("start_session"), "act tools are not pre-allowed");
+        // One tool call over `/mcp` on A's token: the result's text and whether it is an error.
+        let tool = {
+            let token = token.clone();
+            move |name: &str, args: serde_json::Value| -> (String, bool) {
+                let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": name, "arguments": args } });
+                let (status, reply) = http(port, "POST", "/mcp", Some(&token), body.to_string().as_bytes());
+                assert_eq!(status, 200, "{reply}");
+                let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+                (reply["result"]["content"][0]["text"].as_str().unwrap().to_string(), reply["result"]["isError"].as_bool().unwrap())
+            }
+        };
+        let on_thread = |name: &'static str, args: serde_json::Value| {
+            let tool = tool.clone();
+            std::thread::spawn(move || tool(name, args))
+        };
+        let pending = |count: usize| -> Vec<serde_json::Value> {
+            let started = std::time::Instant::now();
+            loop {
+                let list = call("approvals_get", json!({})).unwrap();
+                if list.as_array().unwrap().len() == count {
+                    return list.as_array().unwrap().clone();
+                }
+                assert!(started.elapsed() < std::time::Duration::from_secs(20), "timed out waiting for {count} pending: {list}");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        let after = |argv: &[serde_json::Value], flag: &str| -> String {
+            let at = argv.iter().position(|a| a == flag).unwrap_or_else(|| panic!("{flag} missing"));
+            argv[at + 1].as_str().unwrap().to_string()
+        };
+
+        // Deny: a readable error, nothing started.
+        let asking = on_thread("start_session", json!({ "project": "ui", "prompt": "hello" }));
+        let request = pending(1).remove(0);
+        assert_eq!((request["caller"].as_str(), request["callerName"].as_str()), (Some(a.as_str()), Some(a_name.as_str())));
+        assert_eq!((request["tool"].as_str(), request["action"].as_str()), (Some("start_session"), Some("start a session on ui")));
+        assert_eq!(request["always"], false, "no edge joins A and ui");
+        call("approval_answer", json!({ "id": request["id"], "answer": "deny" })).unwrap();
+        assert_eq!(asking.join().unwrap(), ("the operator denied: start a session on ui".to_string(), true));
+        assert_eq!(state.terms.list().len(), 1, "nothing started");
+
+        // Allow, cooperating: the argv shown is the argv run.
+        let asking = on_thread("start_session", json!({ "project": "ui", "prompt": "hello", "cooperateWithMe": true }));
+        let request = pending(1).remove(0);
+        let argv = request["argv"].as_array().unwrap().clone();
+        let program = state.launcher.program.lock().unwrap().clone().unwrap();
+        assert_eq!(argv[0], program.0.display().to_string());
+        let strings: Vec<String> = argv.iter().map(|a| a.as_str().unwrap().to_string()).collect();
+        assert_eq!(request["detail"], super::approvals::argv_line(&strings));
+        let (new_id, new_name) = (after(&argv, "--session-id"), after(&argv, "--name"));
+        assert!(new_name.starts_with("ui-") && new_name.len() == 7, "{new_name}");
+        let mcp_file = _sessions.join(format!("{new_id}.mcp.json")).display().to_string();
+        assert_eq!(after(&argv, "--mcp-config"), mcp_file);
+        assert_eq!(argv.last().unwrap(), "hello", "the prompt last");
+        let prompt = after(&argv, "--append-system-prompt");
+        assert!(prompt.contains(super::claude::launch::PEERS_HEADING) && prompt.contains(&format!("\"{a_name}\"")), "{prompt}");
+        assert!(!strings.iter().any(|a| a.contains("bypassPermissions") || a == "--dangerously-skip-permissions"));
+        call("approval_answer", json!({ "id": request["id"], "answer": "allow" })).unwrap();
+        let (text, error) = asking.join().unwrap();
+        assert!(!error, "{text}");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap(), json!({ "nodeId": new_id, "name": new_name }));
+        let new_term = format!("session:{new_id}");
+        let info = state.terms.get(&new_term).expect("the new session runs").info();
+        assert_eq!((info.project_id.as_str(), info.cwd.as_str()), ("ui", ui_path.as_str()));
+        let joined = |x: &str, y: &str| {
+            state.read_workspace().workspace.edges.iter().any(|e| {
+                e.kind == super::graph::EdgeKind::Cooperate && ((e.from.id == x && e.to.id == y) || (e.from.id == y && e.to.id == x))
+            })
+        };
+        assert!(joined(&a, &new_id), "a cooperate edge A <-> new");
+        state.terms.write(&new_term, b"\r").unwrap();
+        let output = || super::pty::tests::strip_escapes(&state.terms.buffer(&new_term).unwrap().data);
+        // (cmd's `echo` stops at the system prompt's first newline; the rest of the argv is checked above.)
+        wait_until(&app, &new_term, "the new session's argv", || output().contains(&format!("node={new_id}")) && output().contains("--append-system-prompt"));
+        let printed = output();
+        if cfg!(windows) {
+            let flat = printed.replace(['\r', '\n'], "");
+            for part in [format!("--name {new_name}"), format!("--mcp-config {mcp_file}"), format!("--session-id {new_id}")] {
+                assert!(flat.contains(&part), "{part:?} missing from {flat:?}");
+            }
+        } else {
+            for part in [format!("[--name]\r\n[{new_name}]"), format!("[--mcp-config]\r\n[{mcp_file}]"), format!("[--session-id]\r\n[{new_id}]")] {
+                assert!(printed.contains(&part), "{part:?} missing from {printed}");
+            }
+        }
+        assert!(notices.lock().unwrap().is_empty(), "asked: no notice");
+
+        // An edge A -> ui: Always is offered; chosen, the next start runs without a toast.
+        let edge_id = "a-ui".to_string();
+        state.write_workspace().workspace.edges.push(super::graph::Edge {
+            id: edge_id.clone(),
+            from: super::graph::NodeRef { kind: super::graph::NodeType::Session, id: a.clone() },
+            to: super::graph::NodeRef { kind: super::graph::NodeType::Project, id: "ui".into() },
+            kind: super::graph::EdgeKind::Context,
+            ..super::graph::Edge::default()
+        });
+        let asking = on_thread("start_session", json!({ "project": "ui" }));
+        let request = pending(1).remove(0);
+        assert_eq!(request["always"], true);
+        call("approval_answer", json!({ "id": request["id"], "answer": "always" })).unwrap();
+        assert!(!asking.join().unwrap().1);
+        let allowed = || state.read_workspace().workspace.edges.iter().find(|e| e.id == edge_id).map(|e| e.agent_allowed);
+        assert_eq!(allowed(), Some(true));
+        let snapshot = call("workspace_get", json!({})).unwrap();
+        let stored = snapshot["workspace"]["edges"].as_array().unwrap().iter().find(|e| e["id"] == edge_id.as_str()).unwrap().clone();
+        assert_eq!(stored["agentAllowed"], true);
+        let toasts_before = *toasts.lock().unwrap();
+        let (text, error) = tool("start_session", json!({ "project": "ui", "name": "helper" }));
+        assert!(!error, "{text}");
+        assert_eq!(*toasts.lock().unwrap(), toasts_before, "no toast");
+        assert_eq!(*notices.lock().unwrap(), [format!("{a_name} started helper on ui")]);
+        // Revoke: asks again.
+        call("edge_set_agent_allowed", json!({ "id": edge_id, "allowed": false })).unwrap();
+        assert_eq!(allowed(), Some(false));
+        let asking = on_thread("start_session", json!({ "project": "ui" }));
+        let request = pending(1).remove(0);
+        call("approval_answer", json!({ "id": request["id"], "answer": "deny" })).unwrap();
+        assert!(asking.join().unwrap().1);
+
+        // set_status: no toast, on the card until the state changes.
+        let toasts_before = *toasts.lock().unwrap();
+        let (text, error) = tool("set_status", json!({ "text": "waiting on ui's endpoint" }));
+        assert!(!error, "{text}");
+        assert_eq!(state.read_sessions_live().sessions[&a].status_text.as_deref(), Some("waiting on ui's endpoint"));
+        assert_eq!(*toasts.lock().unwrap(), toasts_before);
+
+        // Refused before any toast: a branch without a worktree, bypassPermissions.
+        state.write_workspace().branches.insert(
+            "ide".into(),
+            vec![super::git::BranchInfo {
+                name: "old".into(),
+                head: false,
+                upstream: None,
+                ahead: 0,
+                behind: 0,
+                gone: false,
+                committed_at: 0,
+                worktree: None,
+            }],
+        );
+        assert_eq!(tool("start_session", json!({ "branch": "ide:old" })), (super::claude::launch::NO_WORKTREE.to_string(), true));
+        assert_eq!(
+            tool("start_session", json!({ "project": "ui", "permissionMode": "bypassPermissions" })),
+            (super::claude::launch::BYPASS_REFUSED.to_string(), true)
+        );
+        assert_eq!(*toasts.lock().unwrap(), toasts_before, "no toast for a refusal");
+
+        // The launch changed while the toast waited (A was renamed, so its peer line would differ):
+        // nothing starts, and the cooperate edge and the new session's ref are taken back.
+        let asking = on_thread("start_session", json!({ "project": "ui", "cooperateWithMe": true }));
+        let request = pending(1).remove(0);
+        let changed_id = after(request["argv"].as_array().unwrap(), "--session-id");
+        state.write_sessions_live().sessions.get_mut(&a).unwrap().name = Some("renamed".into());
+        call("approval_answer", json!({ "id": request["id"], "answer": "allow" })).unwrap();
+        assert_eq!(asking.join().unwrap(), (super::ipc::LAUNCH_CHANGED.to_string(), true));
+        assert!(!joined(&a, &changed_id), "the edge was taken back");
+        assert!(state.read_workspace().workspace.sessions.iter().all(|s| s.session_id != changed_id), "the ref was taken back");
+        assert!(state.terms.get(&format!("session:{changed_id}")).is_none());
+        state.write_sessions_live().sessions.get_mut(&a).unwrap().name = Some(a_name.clone());
+
+        // A branch with a worktree, with a model and an add-dir: runs in the worktree with those
+        // flags; an edge from A to the branch node offers Always.
+        let worktree = tempfile::tempdir().unwrap();
+        let worktree_path = dunce::canonicalize(worktree.path()).unwrap().display().to_string();
+        let extra = tempfile::tempdir().unwrap();
+        let extra_path = dunce::canonicalize(extra.path()).unwrap().display().to_string();
+        state.write_workspace().branches.insert(
+            "ui".into(),
+            vec![super::git::BranchInfo {
+                name: "feat".into(),
+                head: false,
+                upstream: None,
+                ahead: 0,
+                behind: 0,
+                gone: false,
+                committed_at: 0,
+                worktree: Some(super::git::WorktreeChip { path: worktree_path.clone(), missing: false }),
+            }],
+        );
+        state.write_workspace().workspace.edges.push(super::graph::Edge {
+            id: "a-feat".into(),
+            from: super::graph::NodeRef { kind: super::graph::NodeType::Session, id: a.clone() },
+            to: super::graph::NodeRef { kind: super::graph::NodeType::Branch, id: "ui:feat".into() },
+            kind: super::graph::EdgeKind::Context,
+            ..super::graph::Edge::default()
+        });
+        let asking = on_thread("start_session", json!({ "branch": "ui:feat", "model": "opus", "addDirs": [extra_path.clone()] }));
+        let request = pending(1).remove(0);
+        assert_eq!(request["action"], "start a session on ui:feat");
+        assert_eq!((request["always"].clone(), request["target"].clone()), (json!(true), json!("ui:feat")));
+        let argv = request["argv"].as_array().unwrap().clone();
+        assert_eq!(after(&argv, "--model"), "opus");
+        assert_eq!(after(&argv, "--add-dir"), extra_path);
+        call("approval_answer", json!({ "id": request["id"], "answer": "allow" })).unwrap();
+        let (text, error) = asking.join().unwrap();
+        assert!(!error, "{text}");
+        let branch_id = serde_json::from_str::<serde_json::Value>(&text).unwrap()["nodeId"].as_str().unwrap().to_string();
+        let info = state.terms.get(&format!("session:{branch_id}")).unwrap().info();
+        assert_eq!(info.cwd, worktree_path, "runs in the branch's worktree");
+
+        // Allow all: no toast, a notice.
+        call("workspace_set_agent_actions", json!({ "mode": "allowAll" })).unwrap();
+        let toasts_before = *toasts.lock().unwrap();
+        let (text, error) = tool("start_session", json!({ "project": "ui", "name": "quiet" }));
+        assert!(!error, "{text}");
+        assert_eq!(*toasts.lock().unwrap(), toasts_before, "no toast under allow all");
+        assert_eq!(notices.lock().unwrap().last().unwrap(), &format!("{a_name} started quiet on ui"));
+        call("workspace_set_agent_actions", json!({ "mode": "ask" })).unwrap();
+
+        // The client goes away while its request waits: the request is withdrawn, the toast goes,
+        // and a late answer finds nothing.
+        {
+            use std::io::Write;
+            let body = json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": { "name": "start_session", "arguments": { "project": "ui" } } }).to_string();
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let head = format!(
+                "POST /mcp HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(head.as_bytes()).unwrap();
+            stream.write_all(body.as_bytes()).unwrap();
+            let request = pending(1).remove(0);
+            drop(stream);
+            pending(0);
+            assert_eq!(call("approval_answer", json!({ "id": request["id"], "answer": "allow" })), Err(json!(super::approvals::NOT_PENDING)));
+        }
+
+        // A exits with a request pending: the toast goes.
+        let asking = on_thread("start_session", json!({ "project": "ui" }));
+        pending(1);
+        state.terms.write(&a_term, b"\r").unwrap();
+        wait_until(&app, &a_term, "A's exit", || state.approvals.list().is_empty());
+        let (text, error) = asking.join().unwrap();
+        assert!(error && text == super::approvals::CALLER_EXITED, "{text}");
         server.abort();
         super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
     }

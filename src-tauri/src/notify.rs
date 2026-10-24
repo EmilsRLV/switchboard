@@ -152,6 +152,34 @@ pub fn on_transitions<R: Runtime>(app: &AppHandle<R>, transitions: &[Transition]
     }
 }
 
+/// The body of an agent request's toast (Story 7.2).
+pub const APPROVAL_BODY: &str = "Allow or deny it in Switchboard";
+
+/// Story 7.2: an agent's act tool is waiting on the operator. While the main window is not
+/// focused and `notifications.waiting` is on, one toast says `<caller> wants to <action>`; it
+/// carries the caller's session id, so a click brings the app forward (and reveals the caller)
+/// as a 3.3 toast does. A send failure is logged only.
+pub fn on_approval<R: Runtime>(app: &AppHandle<R>, caller: &str, title: &str) {
+    let state = app.state::<AppState>();
+    if !state.read().settings.notifications.waiting || main_window_focused(app) {
+        return;
+    }
+    let project_id = state.read_sessions_live().sessions.get(caller).and_then(|s| s.project_id.clone());
+    let Some(sender) = notifier(app) else {
+        eprintln!("notifications: no sender registered; the agent request toast is dropped");
+        return;
+    };
+    let toast = Toast {
+        session_id: caller.to_string(),
+        project_id,
+        title: title.to_string(),
+        body: APPROVAL_BODY.to_string(),
+    };
+    if let Err(err) = sender.send(&toast) {
+        eprintln!("notifications: could not show \"{}\": {err}", toast.title);
+    }
+}
+
 /// What a toast action asks for: a click on the toast itself (`tap`) whose `extra` names a
 /// session reveals it; anything else (another action, a toast of no session) nothing.
 pub fn reveal_for_action(action: &ActionPerformed) -> Option<RevealRequest> {

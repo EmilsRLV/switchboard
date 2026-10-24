@@ -127,6 +127,8 @@ export type Edge = {
   kind: EdgeKind;
   label: string | null;
   createdAt: string;
+  /** Story 7.2: "Always for this edge": an agent at one end acts on the other without a toast. Absent: not set. */
+  agentAllowed?: boolean;
 };
 
 /** Mirrors `live_edges::EdgeState` (Story 6.3; `notified` is a cooperate side's, Story 6.4). */
@@ -166,7 +168,12 @@ export type Workspace = {
   sessions: SessionRef[];
   edges: Edge[];
   defaults: LaunchDefaults;
+  /** Story 7.2: the agents' act tools ask (`ask`, also when absent) or run without a toast (`allowAll`). */
+  agentActions?: AgentActions;
 };
+
+/** Mirrors `graph::AgentActions` (Story 7.2). */
+export type AgentActions = "ask" | "allowAll";
 
 /** Mirrors `graph::ChildKind`. */
 export type ChildKind = "session" | "branch";
@@ -350,6 +357,8 @@ export type LiveSession = {
   last_line: string | null;
   /** A `waiting` session's reason (the hook's message), the card's tooltip; `null` otherwise. */
   detail: string | null;
+  /** Story 7.2: the session's `set_status` text until its state changes; `null` (or absent) for none. */
+  status_text?: string | null;
 };
 
 /** Mirrors `hooks::DiagnosticsSnapshot`: what `diagnostics_get` returns (Settings → Diagnostics). */
@@ -597,6 +606,44 @@ export type RemoveWorktreeCheck = {
 /** Mirrors `ipc::WorktreeRemoved`: the snapshot once re-read, and how the branch delete went. */
 export type WorktreeRemoved = { snapshot: WorkspaceSnapshot; branchDeleted: boolean; deleteError: string | null };
 
+// --- agent approvals (`src-tauri/src/approvals/mod.rs`, Story 7.2) --------------------------
+
+/** Mirrors `approvals::PendingRequest`: an agent's act-tool call waiting on the operator. */
+export type PendingRequest = {
+  id: string;
+  /** The caller's session id. */
+  caller: string;
+  callerName: string;
+  /** `start_session`, `link` or `unlink`. */
+  tool: string;
+  /** What will happen, in words: `start a session on ui`. */
+  action: string;
+  /** The exact argv a start runs as one line, or the edge described (mono). */
+  detail: string;
+  /** A start's argv, one entry per argument; `null` for a link. */
+  argv: string[] | null;
+  /** "Always for this edge" is offered: a stored edge joins the caller and the target. */
+  always: boolean;
+  /** The other node of the pair Always is about, as the operator reads it (`ui`, `ui:feat`); `null` when none. */
+  target: string | null;
+  /** Milliseconds since the epoch. */
+  createdAt: number;
+  /** When it is denied unanswered (ms since the epoch). */
+  deadline: number;
+};
+
+/** Mirrors `approvals::Answer`. */
+export type ApprovalAnswer = "allow" | "deny" | "always";
+
+/** Event name Rust emits with every pending request (oldest first) whenever the list changes. */
+export const APPROVALS_EVENT = "approvals://pending";
+
+/** Event name Rust emits with the one-line notice of an act that ran without a toast. */
+export const APPROVAL_NOTICE_EVENT = "approvals://notice";
+
+/** Event name Rust emits with the `TermInfo` of a session an agent started (in the background). */
+export const AGENT_STARTED_EVENT = "approvals://started";
+
 /** Return type of every command, keyed by command name. */
 type Commands = {
   app_info: AppInfo;
@@ -647,6 +694,10 @@ type Commands = {
   term_return: void;
   term_popped: TermPopped[];
   diagnostics_get: DiagnosticsSnapshot;
+  approvals_get: PendingRequest[];
+  approval_answer: void;
+  edge_set_agent_allowed: WorkspaceSnapshot;
+  workspace_set_agent_actions: WorkspaceSnapshot;
 };
 
 declare global {
@@ -1030,6 +1081,30 @@ export function sessionStop(sessionId: string): Promise<TermInfo> {
   return call("session_stop", { sessionId });
 }
 
+/** `ipc::approvals_get` (Story 7.2) -- the agents' requests waiting on the operator, oldest first. */
+export function approvalsGet(): Promise<PendingRequest[]> {
+  return call("approvals_get");
+}
+
+/**
+ * `ipc::approval_answer` (Story 7.2) -- the operator's answer to a pending request; `always` also
+ * marks the edge joining the caller and the target. Rejects when the request is no longer
+ * pending, or `always` is not offered.
+ */
+export function approvalAnswer(id: string, answer: ApprovalAnswer): Promise<void> {
+  return call("approval_answer", { id, answer });
+}
+
+/** `ipc::edge_set_agent_allowed` (Story 7.2) -- set or clear (Revoke) an edge's "Always". Rejects with `"unknown edge"`. */
+export function edgeSetAgentAllowed(id: string, allowed: boolean): Promise<WorkspaceSnapshot> {
+  return call("edge_set_agent_allowed", { id, allowed });
+}
+
+/** `ipc::workspace_set_agent_actions` (Story 7.2) -- `ask`, or `allowAll` (act tools run without a toast). Persisted. */
+export function workspaceSetAgentActions(mode: AgentActions): Promise<WorkspaceSnapshot> {
+  return call("workspace_set_agent_actions", { mode });
+}
+
 /**
  * Subscribe to `settings://changed`. Resolves with the unlisten function; without a Tauri
  * runtime it resolves with a no-op so callers need no branch.
@@ -1149,4 +1224,28 @@ export async function onTermClosed(callback: (closed: TermClosed) => void): Prom
     return () => {};
   }
   return listen<TermClosed>(TERM_CLOSED_EVENT, (event) => callback(event.payload));
+}
+
+/** Subscribe to `approvals://pending` (Story 7.2); same contract as {@link onSettingsChanged}. */
+export async function onApprovals(callback: (pending: PendingRequest[]) => void): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return listen<PendingRequest[]>(APPROVALS_EVENT, (event) => callback(event.payload));
+}
+
+/** Subscribe to `approvals://notice` (Story 7.2); same contract as {@link onSettingsChanged}. */
+export async function onApprovalNotice(callback: (text: string) => void): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return listen<string>(APPROVAL_NOTICE_EVENT, (event) => callback(event.payload));
+}
+
+/** Subscribe to `approvals://started` (Story 7.2); same contract as {@link onSettingsChanged}. */
+export async function onAgentStarted(callback: (term: TermInfo) => void): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return listen<TermInfo>(AGENT_STARTED_EVENT, (event) => callback(event.payload));
 }

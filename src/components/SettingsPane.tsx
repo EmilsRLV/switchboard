@@ -4,6 +4,7 @@ import { diagnosticsGet, hasTauriRuntime, type Binary, type DiagnosticsSnapshot 
 import { DIAGNOSTICS_REFRESH_MS, diagnosticsError, diagnosticsRows, mcpRefusalLines } from "./diagnostics";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
+import { useWorkspaceStore } from "../state/workspace";
 
 /**
  * Read-only settings pane (`ctrl+,`; Esc closes). Shows where the file is, what was detected
@@ -17,6 +18,7 @@ export function SettingsPane() {
   const error = useSettingsStore((s) => s.actionError);
   const busy = useSettingsStore((s) => s.actionBusy);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const agentActions = useWorkspaceStore((s) => s.snapshot?.workspace.agentActions ?? "ask");
 
   // Take focus so Esc and Tab work inside the pane; give it back when the pane goes. Not when
   // the palette opened us (`ctrl+,` from inside it): its input keeps the focus.
@@ -79,6 +81,16 @@ export function SettingsPane() {
                 {busy ? "Detecting…" : "Re-detect"}
               </button>
             </div>
+          </section>
+
+          <section className="pane-section" aria-label="Agent actions">
+            <h3 className="pane-heading">Agent actions</h3>
+            {/* Story 7.2: the workspace's policy for the agents' act tools (palette: "Agent actions: …"). */}
+            <p className="muted">
+              {agentActions === "allowAll"
+                ? "Allow all: sessions start, link and unlink without asking (a notice says what ran). \"Agent actions: ask\" turns it off."
+                : "Ask: each start, link or unlink waits for your Allow or Deny. \"Agent actions: allow all\" skips asking."}
+            </p>
           </section>
 
           <section className="pane-section">

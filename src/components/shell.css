@@ -1048,3 +1048,81 @@
 .edge-now-side .btn {
   margin-top: 0.25rem;
 }
+
+/* --- agent approval toasts (Story 7.2) --------------------------------------------------- */
+/* Bottom right, over the canvas and any pane, below the palette and the menu. The toast is the
+   one attention surface with inline buttons: its border is the accent. */
+
+.approvals {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: min(28rem, calc(100% - 1.5rem));
+  max-height: calc(100% - 1.5rem);
+  overflow-y: auto;
+}
+
+.approval-toast {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg-raised);
+  border: var(--line) solid var(--accent);
+  border-radius: var(--radius-md);
+}
+
+.approval-title {
+  margin: 0;
+  font-size: var(--text-md);
+  overflow-wrap: anywhere;
+}
+
+.approval-caller {
+  font-weight: 500;
+}
+
+.approval-detail {
+  margin: 0;
+  max-height: 8rem;
+  overflow-y: auto;
+  padding: 0.35rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  background: var(--bg);
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.approval-left {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+
+/* The edge inspector's policy row (Story 7.2). */
+.edge-policy {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.edge-policy .edge-now {
+  flex: 1;
+}

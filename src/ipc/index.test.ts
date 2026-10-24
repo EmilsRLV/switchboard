@@ -44,6 +44,13 @@ import {
   edgeRemove,
   edgeRestartWithFlags,
   edgeSetLabel,
+  approvalAnswer,
+  approvalsGet,
+  edgeSetAgentAllowed,
+  workspaceSetAgentActions,
+  APPROVALS_EVENT,
+  APPROVAL_NOTICE_EVENT,
+  AGENT_STARTED_EVENT,
   edgesLiveGet,
   EDGES_LIVE_EVENT,
   onEdgesLive,
@@ -144,6 +151,20 @@ describe("workspace command wrappers", () => {
     await edgeRestartWithFlags("e1");
     expect(invoke).toHaveBeenCalledWith("edge_restart_with_flags", { edgeId: "e1" }, undefined);
     expect(EDGES_LIVE_EVENT).toBe("edges://live");
+  });
+
+  it("the 7.2 approval wrappers invoke their wire names with {}, { id, answer }, { id, allowed } and { mode }", async () => {
+    const invoke = vi.fn().mockResolvedValue(snapshot);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await approvalsGet();
+    expect(invoke).toHaveBeenCalledWith("approvals_get", {}, undefined);
+    await approvalAnswer("a1", "always");
+    expect(invoke).toHaveBeenCalledWith("approval_answer", { id: "a1", answer: "always" }, undefined);
+    await expect(edgeSetAgentAllowed("e1", false)).resolves.toBe(snapshot);
+    expect(invoke).toHaveBeenCalledWith("edge_set_agent_allowed", { id: "e1", allowed: false }, undefined);
+    await expect(workspaceSetAgentActions("allowAll")).resolves.toBe(snapshot);
+    expect(invoke).toHaveBeenCalledWith("workspace_set_agent_actions", { mode: "allowAll" }, undefined);
+    expect([APPROVALS_EVENT, APPROVAL_NOTICE_EVENT, AGENT_STARTED_EVENT]).toEqual(["approvals://pending", "approvals://notice", "approvals://started"]);
   });
 
   it("onEdgesLive is a no-op without the Tauri runtime", async () => {

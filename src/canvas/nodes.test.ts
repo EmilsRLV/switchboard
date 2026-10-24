@@ -868,16 +868,32 @@ describe("formatAge / sessionMetaLine", () => {
       count: "455 msgs",
       age: "now",
       lastLine: null,
+      statusText: null,
     });
     expect(sessionCardMeta(meta, now, { kind: "other", raw: "compacting" }).state).toEqual({ word: "compacting", tone: "muted", dot: false });
     expect(sessionCardMeta(meta, now, { kind: "exited" }).state).toEqual({ word: "exited", tone: "muted", dot: false });
-    expect(sessionCardMeta({ ...meta, branch: "", messages: 1 }, now, null)).toEqual({ state: null, branch: null, count: "1 msg", age: "now", lastLine: null });
+    expect(sessionCardMeta({ ...meta, branch: "", messages: 1 }, now, null)).toEqual({ state: null, branch: null, count: "1 msg", age: "now", lastLine: null, statusText: null });
     const liveOnly: SessionMeta = { startedAt: "", lastActive: "", branch: null, messages: 0 };
     expect(sessionCardMeta(liveOnly, now, { kind: "idle" }).age).toBeNull();
     expect(sessionMetaLine(liveOnly, now, { kind: "idle" })).toBe("idle · 0 msgs");
     expect(sessionHoverText("new session", liveOnly)).toBe("new session");
     const started = { ...liveOnly, startedAt: "2026-10-16T09:00:00.000Z" };
     expect(sessionHoverText("t", started)).toBe(`t\nstarted ${new Date("2026-10-16T09:00:00.000Z").toLocaleString()}`);
+  });
+
+  it("a set_status text takes the place of branch, count and age while the session is live (Story 7.2)", () => {
+    const meta: SessionMeta = { startedAt: ago(0), lastActive: ago(0), branch: "master", messages: 12 };
+    const parts = sessionCardMeta(meta, now, { kind: "busy" }, null, false, "waiting on ui's endpoint");
+    expect(parts.statusText).toBe("waiting on ui's endpoint");
+    expect(parts.state?.word).toBe("busy");
+    expect(sessionCardMeta(meta, now, { kind: "busy" }, null, false, "  ").statusText).toBeNull();
+    expect(sessionCardMeta(meta, now, { kind: "exited" }, null, false, "stale").statusText, "never on an exited card").toBeNull();
+    expect(sessionCardMeta(meta, now, null, null, false, "x").statusText, "never on a historic card").toBeNull();
+    expect(sessionCardMeta(meta, now, { kind: "busy" }, null, true, "x").statusText, "stopping wins").toBeNull();
+    const finished = sessionCardMeta(meta, now, { kind: "finished" }, "Done.", false, "status");
+    expect([finished.statusText, finished.lastLine]).toEqual(["status", null]);
+    const data = { child: { label: "ui-1" } as ChildNode, attention: false, detail: null, lastLine: null, statusText: "on it" };
+    expect(childAriaLabel("session", data)).toBe("Session ui-1, status: on it");
   });
 
   it("a finished card shows the last line in place of branch, count and age; only while finished", () => {
@@ -938,6 +954,15 @@ describe("formatAge / sessionMetaLine", () => {
     const next = toFlowNodes(inputs({ projects: expanded, children, live: { ...live, "stub-1-a": session({ kind: "finished" }, { last_line: "Next." }) } }), nodes);
     expect(next[1]).not.toBe(nodes[1]);
     expect(next[2]).toBe(nodes[2]);
+    // Story 7.2: a set_status text reaches the card's data and re-renders that card only.
+    const statusOf = (node: (typeof nodes)[number] | undefined) => (node?.type === "session" ? node.data.statusText : undefined);
+    const now1 = { ...live, "stub-1-a": session({ kind: "finished" }, { last_line: "Next." }) };
+    const busy = { ...now1, "stub-2-a": session({ kind: "busy" }, { status_text: "waiting on ui's endpoint" }) };
+    const withStatus = toFlowNodes(inputs({ projects: expanded, children, live: busy }), next);
+    expect(statusOf(withStatus[2])).toBe("waiting on ui's endpoint");
+    expect(withStatus[1]).toBe(next[1]);
+    const exited = toFlowNodes(inputs({ projects: expanded, children, live: { ...busy, "stub-2-a": session({ kind: "exited" }, { status_text: "stale" }) } }));
+    expect(statusOf(exited[2]), "not on an exited card").toBeNull();
   });
 
   it("the meta line starts with the state word when the session is live or exited", () => {

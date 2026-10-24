@@ -24,7 +24,9 @@ import {
  * border in the accent: `session-attention`, Story 3.3), `starting` (a session the app just
  * launched, Story 4.2), `idle`, `exited` and unrecognised states muted, historic sessions none. A
  * `finished` card from a hook shows the turn's last assistant line after the state word, muted
- * and cut with an ellipsis; a `waiting` card's tooltip leads with the hook's reason (Story 4.3). The
+ * and cut with an ellipsis; a `waiting` card's tooltip leads with the hook's reason (Story 4.3). A
+ * session's `set_status` text (Story 7.2) takes the place of branch, count and age until its state
+ * changes. The
  * full title and exact times are on hover. Stubs and branches show the label and a muted
  * detail on one row. A live session whose Switchboard terminal is being stopped reads `stopping`
  * (muted, Story 4.4), and a fork's tooltip and label say what it was forked from; a session card
@@ -64,7 +66,7 @@ function SessionCard({ className, ariaLabel, data }: { className: string; ariaLa
   const { child, state } = data;
   const meta = child.session;
   if (meta === null) return null;
-  const parts = sessionCardMeta(meta, now, state, data.lastLine, data.stopping);
+  const parts = sessionCardMeta(meta, now, state, data.lastLine, data.stopping, data.statusText ?? null);
   // Only the branch shrinks (ellipsis); the state word, the count and the age never do.
   const tail = parts.age === null ? parts.count : `${parts.count} · ${parts.age}`;
   return (
@@ -78,7 +80,10 @@ function SessionCard({ className, ariaLabel, data }: { className: string; ariaLa
           </span>
         )}
         {parts.state !== null && <span aria-hidden="true">·</span>}
-        {parts.lastLine !== null ? (
+        {parts.statusText !== null ? (
+          // What the session said through `set_status` (Story 7.2), until its state changes.
+          <span className="session-status-text">{parts.statusText}</span>
+        ) : parts.lastLine !== null ? (
           // A finished turn's last assistant line (Story 4.3), in place of branch, count, age.
           <span className="session-last-line">{parts.lastLine}</span>
         ) : (

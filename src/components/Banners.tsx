@@ -1,4 +1,5 @@
 import { selectBanners, useSettingsStore } from "../state/settings";
+import { selectApprovalsBanners, useApprovalsStore } from "../state/approvals";
 import { selectLiveBanners, useLiveStore } from "../state/live";
 import { selectStatusBanners, useStatusStore } from "../state/status";
 import { mergeBanners, selectWorkspaceBanners, useWorkspaceStore } from "../state/workspace";
@@ -18,7 +19,9 @@ export function Banners() {
   const workspaceBanners = useWorkspaceStore(selectWorkspaceBanners);
   const statusBanners = useStatusStore(selectStatusBanners);
   const liveBanners = useLiveStore(selectLiveBanners);
-  const banners = mergeBanners(mergeBanners(mergeBanners(settingsBanners, workspaceBanners), statusBanners), liveBanners);
+  // Story 7.2: a failed approvals load (an agent's request could wait unseen).
+  const approvalsBanners = useApprovalsStore(selectApprovalsBanners);
+  const banners = mergeBanners(mergeBanners(mergeBanners(mergeBanners(settingsBanners, workspaceBanners), statusBanners), liveBanners), approvalsBanners);
   if (banners.length === 0) return null;
   return (
     <div className="banners" role="status" aria-live="polite">

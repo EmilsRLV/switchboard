@@ -380,6 +380,9 @@ pub struct AppState {
     /// Context edges applied to live sessions (`crate::claude::live_edges`, Story 6.3): each
     /// edge's pending / applied / failed state, its job, the sessions with a draft. Memory only.
     pub live_edges: crate::claude::live_edges::LiveEdges,
+    /// The agents' act-tool requests waiting on the operator (`crate::approvals`, Story 7.2).
+    /// Memory only.
+    pub approvals: crate::approvals::Approvals,
 }
 
 impl AppState {

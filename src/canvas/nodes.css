@@ -262,6 +262,16 @@
   color: var(--fg-muted);
 }
 
+/* A session's `set_status` text (Story 7.2), in place of branch, count and age until its state
+   changes: plain muted text, one line, ellipsis. */
+.child-node-meta > .session-status-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-muted);
+}
+
 /* --- branch cards (Story 5.1): the name (ellipsis) then `*` for the checked-out branch, over a
    muted meta line: `↑n ↓m`, `upstream gone`, the worktree chip. Tokens only, no accent. --- */
 

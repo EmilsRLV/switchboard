@@ -22,12 +22,18 @@
 //! (413, `body too large`) or one that does not arrive in time (408, `read timeout`) is counted
 //! the same way. Every refusal closes the connection.
 //!
-//! **Tools** (read-only; the settings file allows each, so none prompts): [`my_node`],
-//! [`workspace`], [`node`], [`peers`] and [`sessions`]. A result is a single `text` content item
-//! holding compact JSON; an error is `isError: true` with a plain message. An unknown tool is
-//! such an error too, by design (the model reads it), not a protocol error. The tools read Rust's
-//! live state (the workspace, the live map, the status poll, the live edges, the launcher's
-//! record of add-dirs) and change nothing.
+//! **Read tools** (the settings file allows each, so none prompts): [`my_node`], [`workspace`],
+//! [`node`], [`peers`] and [`sessions`]. They read Rust's live state (the workspace, the live map,
+//! the status poll, the live edges, the launcher's record of add-dirs) and change nothing.
+//!
+//! **Act tools** (Story 7.2, [`act`]; not in `permissions.allow`, so Claude Code may ask its own
+//! permission first): `start_session`, `link` and `unlink` wait on the operator's approval toast
+//! (`crate::approvals`) unless the workspace allows all or the edge joining the caller and the
+//! target is "Always"; `set_status` never asks.
+//!
+//! A result is a single `text` content item holding compact JSON; an error is `isError: true`
+//! with a plain message. An unknown tool is such an error too, by design (the model reads it),
+//! not a protocol error.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,6 +44,9 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 
 use crate::claude::hooks::{self, Ctx, MISSING_TOKEN, UNKNOWN_TOKEN, Unread};
+use tauri::{AppHandle, Manager, Runtime};
+
+pub mod act;
 use crate::claude::live::{LiveSession, SessionState};
 use crate::claude::live_edges::{EdgeState, OWN_FOLDER};
 use crate::graph::{self, Project, WorkspaceState};
@@ -47,8 +56,14 @@ use crate::settings::AppState;
 /// (`mcp__switchboard__<tool>`).
 pub const SERVER_NAME: &str = "switchboard";
 
-/// The read tools, in the order `tools/list` gives them.
-pub const TOOLS: [&str; 5] = ["my_node", "workspace", "node", "peers", "sessions"];
+/// The read tools, in the order `tools/list` gives them; they never prompt.
+pub const READ_TOOLS: [&str; 5] = ["my_node", "workspace", "node", "peers", "sessions"];
+
+/// The act tools (Story 7.2), listed after the read tools.
+pub const ACT_TOOLS: [&str; 4] = ["start_session", "link", "unlink", "set_status"];
+
+/// Every tool, in the order `tools/list` gives them.
+pub const TOOLS: [&str; 9] = ["my_node", "workspace", "node", "peers", "sessions", "start_session", "link", "unlink", "set_status"];
 
 /// A session's `lastLine` in [`workspace`] and [`node`] is cut to this many characters (then `…`).
 pub const LAST_LINE_MAX: usize = 120;
@@ -72,10 +87,33 @@ const INTERNAL_ERROR: i64 = -32603;
 /// error message. The app's is [`call`] on its `AppState`; tests may put a stub in its place.
 pub type Tools = Arc<dyn Fn(&str, &str, &Value) -> Result<Value, String> + Send + Sync>;
 
+/// Told the id of a `/mcp` call that went away before its reply (Story 7.2): the app withdraws
+/// its pending approval (`crate::approvals::cancel_call`).
+pub type Cancel = Arc<dyn Fn(u64) + Send + Sync>;
+
+/// Ids for `/mcp` calls (see [`Cancel`]).
+static NEXT_CALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Withdraws its call's pending approval when the handler is dropped before the reply (the client
+/// timed out or disconnected).
+struct CallGuard {
+    call: u64,
+    cancel: Cancel,
+    done: bool,
+}
+
+impl Drop for CallGuard {
+    fn drop(&mut self) {
+        if !self.done {
+            (self.cancel)(self.call);
+        }
+    }
+}
+
 /// `permissions.allow` for the per-session settings file: `mcp__switchboard__<tool>` for exactly
-/// the read tools.
+/// the read tools (never the act tools of Story 7.2).
 pub fn allowed_tools() -> Vec<String> {
-    TOOLS.iter().map(|tool| format!("mcp__{SERVER_NAME}__{tool}")).collect()
+    READ_TOOLS.iter().map(|tool| format!("mcp__{SERVER_NAME}__{tool}")).collect()
 }
 
 /// The per-session `--mcp-config` content while the endpoint is up on `port`.
@@ -134,12 +172,21 @@ pub(crate) async fn handle(State(ctx): State<Ctx>, request: Request) -> Response
             return (status, [(header::CONNECTION, "close")]).into_response();
         }
     };
+    // Story 7.2: from here until the reply is out the connection waits for us (an act tool may
+    // wait minutes for the operator), so its idle timer does not apply.
+    let _pending = parts
+        .extensions
+        .get::<axum::extract::ConnectInfo<hooks::ConnInfo>>()
+        .map(|info| info.0.hold.hold());
     // The tools take the app's locks: off the async workers. A panic in a tool is caught inside
     // `dispatch` (a JSON-RPC internal error with the request's id); this fallback has no id.
     let tools = ctx.tools.clone();
-    let reply = tauri::async_runtime::spawn_blocking(move || dispatch(&tools, &session, &bytes))
+    let call = NEXT_CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut guard = CallGuard { call, cancel: ctx.cancel.clone(), done: false };
+    let reply = tauri::async_runtime::spawn_blocking(move || crate::approvals::within_call(call, || dispatch(&tools, &session, &bytes)))
         .await
         .unwrap_or_else(|_| Reply::Json(StatusCode::OK, error(Value::Null, INTERNAL_ERROR, "internal error")));
+    guard.done = true;
     match reply {
         Reply::Accepted => StatusCode::ACCEPTED.into_response(),
         Reply::Json(status, value) => (status, [(header::CONTENT_TYPE, "application/json")], value.to_string()).into_response(),
@@ -217,7 +264,7 @@ fn initialize(params: &Value) -> Value {
         "protocolVersion": version,
         "capabilities": { "tools": { "listChanged": false } },
         "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") },
-        "instructions": "Switchboard's view of the workspace this session runs in: call my_node first, then workspace, node, peers or sessions. Read-only.",
+        "instructions": "Switchboard's view of the workspace this session runs in: call my_node first, then workspace, node, peers or sessions (read-only, never prompt). To act: start_session, link and unlink wait for the operator's approval; set_status posts a short status line on your card.",
     })
 }
 
@@ -248,6 +295,15 @@ pub fn tool_list() -> Vec<Value> {
             "annotations": { "readOnlyHint": true, "openWorldHint": false },
         })
     };
+    let act = |name: &str, description: &str, schema: Value, destructive: bool| {
+        json!({
+            "name": name,
+            "description": description,
+            "inputSchema": schema,
+            "annotations": { "readOnlyHint": false, "destructiveHint": destructive, "openWorldHint": false },
+        })
+    };
+    let text = |description: &str| json!({ "type": "string", "description": description });
     vec![
         tool(
             "my_node",
@@ -266,7 +322,68 @@ pub fn tool_list() -> Vec<Value> {
             "A project's live and historic sessions (node id, name, status, last activity).",
             one("project", "The project's id or label."),
         ),
+        act(
+            "start_session",
+            "Start a new Claude Code session in another project (or on a branch that has a worktree), in the background. The operator approves the exact command first. Returns {nodeId, name}.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "project": text("The project's id or label (as workspace() lists them). Give this or branch."),
+                    "branch": text("<project id or label>:<branch>: a branch with a worktree (or checked out in the project's folder). Give this or project."),
+                    "prompt": text("The first prompt for the new session."),
+                    "name": text("The session's name; default <label>-<4 hex>."),
+                    "model": text("A model (opus, sonnet, haiku, fable, or a full name); default: the project's last choice."),
+                    "effort": { "type": "string", "enum": ["default", "low", "medium", "high", "xhigh", "max"] },
+                    "permissionMode": { "type": "string", "enum": ["default", "manual", "acceptEdits", "plan", "auto", "dontAsk"] },
+                    "addDirs": { "type": "array", "items": { "type": "string" }, "description": "Extra folders for --add-dir (existing folders)." },
+                    "cooperateWithMe": { "type": "boolean", "description": "Join the new session to this one by a cooperate edge, so each knows the other as a peer." },
+                },
+                "additionalProperties": false,
+            }),
+            false,
+        ),
+        act(
+            "link",
+            "Draw an edge between two nodes (after the operator approves). Ends as workspace() lists them (project:<id>, session:<id>, branch:<projectId>:<name>), or self. kind must be the one the app derives: cooperate between two sessions, context from a session or project to a project or branch. Returns {edgeId}.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "from": text("The source end, or self."),
+                    "to": text("The target end, or self."),
+                    "kind": { "type": "string", "enum": ["context", "cooperate"] },
+                    "label": text("What the link is for."),
+                },
+                "required": ["from", "to", "kind"],
+                "additionalProperties": false,
+            }),
+            false,
+        ),
+        act(
+            "unlink",
+            "Delete an edge by id (after the operator approves).",
+            one("edgeId", "The edge's id (as workspace() lists it)."),
+            true,
+        ),
+        act(
+            "set_status",
+            "Post a short status line (at most 120 characters) on this session's card, until its state changes or the next set_status; an empty text clears it. Never asks the operator.",
+            one("text", "The status line; empty clears it."),
+            false,
+        ),
     ]
+}
+
+/// Run tool `tool` for session `session` against the running app: the act tools (Story 7.2,
+/// [`act`]) need the app handle (launches, edges, approvals, emits); the read tools go to
+/// [`call`]. Blocking: an act tool may wait minutes for the operator.
+pub fn call_app<R: Runtime>(app: &AppHandle<R>, session: &str, tool: &str, args: &Value) -> Result<Value, String> {
+    match tool {
+        "start_session" => act::start_session(app, session, args),
+        "link" => act::link(app, session, args),
+        "unlink" => act::unlink(app, session, args),
+        "set_status" => act::set_status(app, session, args),
+        _ => call(&app.state::<AppState>(), session, tool, args),
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -359,7 +476,7 @@ fn place_of(ws: &WorkspaceState, heads: &HashMap<String, String>, project: &Proj
 
 /// What the tools know of one session.
 #[derive(Debug, Clone, Default)]
-struct SessionFacts {
+pub(crate) struct SessionFacts {
     id: String,
     name: String,
     status: String,
@@ -373,6 +490,8 @@ struct SessionFacts {
     last_active_ms: Option<i64>,
     /// ISO 8601 UTC.
     last_active: Option<String>,
+    /// Story 7.2: the `set_status` text while it lasts.
+    status_text: Option<String>,
 }
 
 /// Session `id` as the live map (`live`), the workspace and the status poll's `heads` know it;
@@ -439,11 +558,12 @@ fn facts(ws: &WorkspaceState, heads: &HashMap<String, String>, id: &str, live: O
         cwd,
         last_active_ms,
         last_active: last_active_ms.map(crate::claude::transcript::format_iso_ms).or(transcript_raw),
+        status_text: live.and_then(|l| l.status_text.clone()),
     })
 }
 
 /// [`facts`] for session `id`, taking the locks one at a time.
-fn session_facts(state: &AppState, id: &str) -> Option<SessionFacts> {
+pub(crate) fn session_facts(state: &AppState, id: &str) -> Option<SessionFacts> {
     let live = state.read_sessions_live().sessions.get(id).cloned();
     let heads = graph::checked_out_heads(state);
     let ws = state.read_workspace();
@@ -451,7 +571,7 @@ fn session_facts(state: &AppState, id: &str) -> Option<SessionFacts> {
 }
 
 /// A node path as the system prompt's peer block writes it: `<project>[:<branch>] / <name>`.
-fn node_path(facts: &SessionFacts) -> String {
+pub(crate) fn node_path(facts: &SessionFacts) -> String {
     let node = match (&facts.project, &facts.branch) {
         (Some(project), Some(branch)) => format!("{}:{branch}", project.label),
         (Some(project), None) => project.label.clone(),
@@ -471,6 +591,7 @@ pub fn my_node(state: &AppState, session: &str) -> Result<Value, String> {
         "branch": me.branch,
         "worktree": me.worktree,
         "cwd": me.cwd,
+        "statusText": me.status_text,
         "peers": peers(state, session),
         "addDirs": add_dirs(state, session),
     }))
@@ -605,7 +726,7 @@ pub fn workspace(state: &AppState) -> Value {
 
 /// An edge, its ends as `<type>:<id>` (`session:<id>`, `project:<id>`, `branch:<projectId>:<name>`,
 /// `folder:<path>`): the compact form keeps [`workspace`] small.
-fn edge_json(edge: &graph::Edge) -> Value {
+pub(crate) fn edge_json(edge: &graph::Edge) -> Value {
     let end = |node: &graph::NodeRef| {
         let kind = match node.kind {
             graph::NodeType::Project => "project",
@@ -646,7 +767,27 @@ pub fn node(state: &AppState, id: &str) -> Result<Value, String> {
         "lastLine": facts.last_line.as_deref().map(|l| hooks::cut(l, LAST_LINE_MAX)),
         "project": facts.project.as_ref().map(project_json),
         "branch": facts.branch,
+        "statusText": facts.status_text,
     }))
+}
+
+/// The project `wanted` names: by id, else by label (exact, else ignoring case). An unknown
+/// project is an error, and so is a label two projects share (the error names their ids).
+pub fn find_project<'a>(projects: &'a [Project], wanted: &str) -> Result<&'a Project, String> {
+    if let Some(project) = projects.iter().find(|p| p.id == wanted) {
+        return Ok(project);
+    }
+    let exact: Vec<&Project> = projects.iter().filter(|p| p.label == wanted).collect();
+    let loose: Vec<&Project> = projects.iter().filter(|p| p.label.eq_ignore_ascii_case(wanted)).collect();
+    let by_label = if exact.is_empty() { loose } else { exact };
+    match by_label.as_slice() {
+        [] => Err(format!("unknown project: {wanted}")),
+        [project] => Ok(project),
+        many => {
+            let ids: Vec<&str> = many.iter().map(|p| p.id.as_str()).collect();
+            Err(format!("ambiguous project label {wanted}: {}; give the id", ids.join(", ")))
+        }
+    }
 }
 
 /// `sessions(project)`: the project (by id, else by label; exact, else ignoring case) and its
@@ -658,21 +799,7 @@ pub fn sessions(state: &AppState, wanted: &str) -> Result<Value, String> {
     let live = state.read_sessions_live().sessions.clone();
     let heads = graph::checked_out_heads(state);
     let ws = state.read_workspace();
-    let projects = &ws.workspace.projects;
-    let exact: Vec<&Project> = projects.iter().filter(|p| p.label == wanted).collect();
-    let loose: Vec<&Project> = projects.iter().filter(|p| p.label.eq_ignore_ascii_case(wanted)).collect();
-    let by_label = if exact.is_empty() { loose } else { exact };
-    let project = match projects.iter().find(|p| p.id == wanted) {
-        Some(project) => project,
-        None => match by_label.as_slice() {
-            [] => return Err(format!("unknown project: {wanted}")),
-            [project] => project,
-            many => {
-                let ids: Vec<&str> = many.iter().map(|p| p.id.as_str()).collect();
-                return Err(format!("ambiguous project label {wanted}: {}; give the id", ids.join(", ")));
-            }
-        },
-    };
+    let project = find_project(&ws.workspace.projects, wanted)?;
     let mut ids: Vec<String> = live
         .iter()
         .filter(|(_, s)| s.project_id.as_deref() == Some(project.id.as_str()))
@@ -687,7 +814,7 @@ pub fn sessions(state: &AppState, wanted: &str) -> Result<Value, String> {
     list.sort_by(|a, b| b.live.cmp(&a.live).then_with(|| b.last_active_ms.cmp(&a.last_active_ms)).then_with(|| a.id.cmp(&b.id)));
     let sessions: Vec<Value> = list
         .into_iter()
-        .map(|f| json!({ "nodeId": f.id, "name": f.name, "status": f.status, "lastActive": f.last_active }))
+        .map(|f| json!({ "nodeId": f.id, "name": f.name, "status": f.status, "lastActive": f.last_active, "statusText": f.status_text }))
         .collect();
     let mut out = Map::new();
     out.insert("project".into(), project_json(project));

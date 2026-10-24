@@ -54,8 +54,20 @@ fn initialize_ping_and_tools_list() {
     assert_eq!(names, TOOLS);
     for tool in listed {
         assert_eq!(tool["inputSchema"]["type"], "object", "{tool}");
-        assert_eq!(tool["annotations"]["readOnlyHint"], true);
+        let read = READ_TOOLS.contains(&tool["name"].as_str().unwrap());
+        assert_eq!(tool["annotations"]["readOnlyHint"], read, "{tool}");
     }
+    // Story 7.2: the act tools follow the read tools.
+    assert_eq!(&names[5..], ACT_TOOLS);
+    assert_eq!(listed[6]["inputSchema"]["required"], json!(["from", "to", "kind"]));
+    assert_eq!(listed[7]["inputSchema"]["required"], json!(["edgeId"]));
+    assert_eq!(listed[7]["annotations"]["destructiveHint"], true);
+    assert_eq!(listed[8]["inputSchema"]["required"], json!(["text"]));
+    let start = &listed[5]["inputSchema"]["properties"];
+    for key in ["project", "branch", "prompt", "name", "model", "effort", "permissionMode", "addDirs", "cooperateWithMe"] {
+        assert!(start.get(key).is_some(), "start_session takes {key}");
+    }
+    assert!(!start["permissionMode"]["enum"].as_array().unwrap().contains(&json!("bypassPermissions")));
     assert_eq!(listed[0]["inputSchema"]["properties"], json!({}), "my_node takes no argument");
     assert_eq!(listed[2]["inputSchema"]["required"], json!(["id"]));
     assert_eq!(listed[4]["inputSchema"]["required"], json!(["project"]));
@@ -242,6 +254,7 @@ fn live(project: &str, cwd: &str, name: &str, state: SessionState, last_line: Op
         attention_since: None,
         last_line: last_line.map(str::to_string),
         detail: None,
+        status_text: None,
     }
 }
 
@@ -253,6 +266,7 @@ fn edge(id: &str, kind: EdgeKind, from: (NodeType, &str), to: (NodeType, &str), 
         kind,
         label: label.map(str::to_string),
         created_at: "2026-10-24T10:00:00.000Z".into(),
+        agent_allowed: false,
     }
 }
 
@@ -319,6 +333,7 @@ fn my_node_names_the_caller_its_place_its_peers_and_its_folders() {
             "branch": "feat",
             "worktree": "/w/api-feat",
             "cwd": "/w/api-feat",
+            "statusText": null,
             "peers": [{ "nodeId": "s2", "name": "ui-2", "path": "ui / ui-2", "purpose": "API shape for auth refresh" }],
             "addDirs": [{ "path": "/w/ui", "via": "edge → ui" }, { "path": "/w/docs", "via": "/add-dir" }],
         })
@@ -358,7 +373,7 @@ fn node_and_sessions_answer_by_id_and_refuse_the_unknown() {
     let old = call(&state, "s1", "node", &json!({ "id": "old" })).unwrap();
     assert_eq!(
         old,
-        json!({ "nodeId": "old", "name": "Fix the login bug", "status": "historic", "lastLine": null, "project": { "id": "api", "label": "api", "path": "/w/api" }, "branch": "main" })
+        json!({ "nodeId": "old", "name": "Fix the login bug", "status": "historic", "lastLine": null, "project": { "id": "api", "label": "api", "path": "/w/api" }, "branch": "main", "statusText": null })
     );
     assert_eq!(call(&state, "s1", "node", &json!({ "id": "nope" })), Err("unknown node: nope".to_string()));
     assert_eq!(call(&state, "s1", "node", &json!({})), Err("id is required".to_string()));
@@ -578,4 +593,239 @@ fn workspace_cleans_and_caps_names_and_labels_and_degrades_to_fit() {
     assert_eq!((ws["lastLinesCut"].clone(), ws["truncated"].clone()), (json!("omitted"), json!(true)));
     assert!(ws["edges"].as_array().unwrap().iter().all(|e| e["label"].is_null()));
     assert_eq!(ws["edges"].as_array().unwrap().len(), 83, "every edge still listed");
+}
+
+// ---------------------------------------------------------------------------------------
+// The act tools (Story 7.2): link, unlink and set_status against app state
+// ---------------------------------------------------------------------------------------
+
+/// [`fixture`] with its live sessions drawn as children, as the live poll draws them (an edge
+/// may end on them).
+fn act_fixture() -> tauri::App<tauri::test::MockRuntime> {
+    let app = fixture();
+    let children = app.state::<AppState>().read_sessions_live().live_children();
+    graph::set_live_children(app.handle(), children);
+    app
+}
+
+/// Run act tool `tool` for `session` on a thread (it may wait for the operator).
+fn act_on_thread(app: &tauri::App<tauri::test::MockRuntime>, session: &str, tool: &str, args: Value) -> std::thread::JoinHandle<Result<Value, String>> {
+    let handle = app.handle().clone();
+    let (session, tool) = (session.to_string(), tool.to_string());
+    std::thread::spawn(move || call_app(&handle, &session, &tool, &args))
+}
+
+/// The pending requests once there are `count` of them.
+fn pending(app: &tauri::App<tauri::test::MockRuntime>, count: usize) -> Vec<crate::approvals::PendingRequest> {
+    let state = app.state::<AppState>();
+    let started = std::time::Instant::now();
+    loop {
+        let list = state.approvals.list();
+        if list.len() == count {
+            return list;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "timed out waiting for {count} pending: {list:?}");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+fn notices(app: &tauri::App<tauri::test::MockRuntime>) -> Arc<std::sync::Mutex<Vec<String>>> {
+    use tauri::Listener;
+    let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let record = seen.clone();
+    app.listen_any(crate::approvals::NOTICE_EVENT, move |event| {
+        record.lock().unwrap().push(serde_json::from_str(event.payload()).unwrap());
+    });
+    seen
+}
+
+#[test]
+fn set_status_is_cleaned_shown_by_the_read_tools_and_cleared_by_a_state_change() {
+    let app = act_fixture();
+    let state = app.state::<AppState>();
+    let reply = call_app(app.handle(), "s1", "set_status", &json!({ "text": "  waiting on ui's endpoint\u{2028}\n " })).unwrap();
+    assert_eq!(reply, json!({ "statusText": "waiting on ui's endpoint" }));
+    assert!(state.approvals.list().is_empty(), "set_status never asks");
+    assert_eq!(state.read_sessions_live().sessions["s1"].status_text.as_deref(), Some("waiting on ui's endpoint"));
+    assert_eq!(call(&state, "s2", "node", &json!({ "id": "s1" })).unwrap()["statusText"], "waiting on ui's endpoint");
+    assert_eq!(call(&state, "s1", "my_node", &json!({})).unwrap()["statusText"], "waiting on ui's endpoint");
+    assert_eq!(call(&state, "s1", "sessions", &json!({ "project": "api" })).unwrap()["sessions"][0]["statusText"], "waiting on ui's endpoint");
+    // Cut to 120 characters like a peer value.
+    let long = call_app(app.handle(), "s1", "set_status", &json!({ "text": "x".repeat(300) })).unwrap();
+    assert_eq!(long["statusText"].as_str().unwrap().chars().count(), crate::claude::launch::MAX_PEER_VALUE_CHARS + 1);
+    // The same state again keeps it (a tool finishing while busy); a state change clears it.
+    call_app(app.handle(), "s1", "set_status", &json!({ "text": "on it" })).unwrap();
+    state.write_sessions_live().apply_hook("s1", &crate::claude::hooks::HookSignal::ToolDone, 1);
+    assert_eq!(state.read_sessions_live().sessions["s1"].status_text.as_deref(), Some("on it"));
+    state.write_sessions_live().apply_hook("s1", &crate::claude::hooks::HookSignal::Finished { last_line: None }, 2);
+    assert_eq!(state.read_sessions_live().sessions["s1"].status_text, None);
+    // An empty text clears it.
+    call_app(app.handle(), "s1", "set_status", &json!({ "text": "again" })).unwrap();
+    assert_eq!(call_app(app.handle(), "s1", "set_status", &json!({ "text": "" })).unwrap(), json!({ "statusText": null }));
+    assert_eq!(state.read_sessions_live().sessions["s1"].status_text, None);
+    // Not a running session.
+    assert_eq!(call_app(app.handle(), "nope", "set_status", &json!({ "text": "x" })), Err(act::NOT_RUNNING.to_string()));
+}
+
+#[test]
+fn a_bad_link_is_refused_with_the_reason_and_no_toast() {
+    let app = act_fixture();
+    let state = app.state::<AppState>();
+    let link = |args: Value| call_app(app.handle(), "s1", "link", &args);
+    assert_eq!(
+        link(json!({ "from": "self", "to": "session:s2", "kind": "context" })),
+        Err("kind context does not match: the app links these as cooperate".to_string())
+    );
+    assert_eq!(link(json!({ "from": "project:api", "to": "self", "kind": "context" })), Err(graph::REFUSE_PROJECT_TO_SESSION.to_string()));
+    assert_eq!(link(json!({ "from": "self", "to": "project:ui", "kind": "context" })), Err(graph::REFUSE_DUPLICATE.to_string()));
+    assert_eq!(link(json!({ "from": "self", "to": "project:nope", "kind": "context" })), Err("unknown project".to_string()));
+    assert!(link(json!({ "from": "api", "to": "self", "kind": "context" })).unwrap_err().starts_with("unknown end api"));
+    assert_eq!(link(json!({ "from": "self", "to": "project:api", "kind": "sideways" })), Err("unknown kind sideways: context or cooperate".to_string()));
+    assert_eq!(call_app(app.handle(), "s1", "unlink", &json!({ "edgeId": "nope" })), Err("unknown edge".to_string()));
+    assert!(state.approvals.list().is_empty(), "no toast for a refusal");
+    assert_eq!(state.read_workspace().workspace.edges.len(), 3, "nothing stored");
+}
+
+#[test]
+fn link_and_unlink_wait_for_the_operator_and_always_covers_the_edge_until_revoked() {
+    let app = act_fixture();
+    let state = app.state::<AppState>();
+    let seen = notices(&app);
+    // No edge joins s1 and api: Allow / Deny only.
+    let call = act_on_thread(&app, "s1", "link", json!({ "from": "self", "to": "project:api", "kind": "context", "label": "shared\nschema" }));
+    let request = pending(&app, 1).remove(0);
+    assert_eq!((request.caller.as_str(), request.caller_name.as_str(), request.tool.as_str()), ("s1", "api-1", "link"));
+    assert_eq!(request.action, "link api-1 → api (context) \"shared schema\"");
+    assert_eq!(request.detail, "session:s1 → project:api (context)");
+    assert!(!request.always);
+    crate::approvals::answer(app.handle(), &request.id, crate::approvals::Answer::Deny).unwrap();
+    assert_eq!(call.join().unwrap(), Err("the operator denied: link api-1 → api (context) \"shared schema\"".to_string()));
+    assert_eq!(state.read_workspace().workspace.edges.len(), 3);
+
+    let call = act_on_thread(&app, "s1", "link", json!({ "from": "self", "to": "project:api", "kind": "context", "label": "shared\nschema" }));
+    let request = pending(&app, 1).remove(0);
+    crate::approvals::answer(app.handle(), &request.id, crate::approvals::Answer::Allow).unwrap();
+    let edge_id = call.join().unwrap().unwrap()["edgeId"].as_str().unwrap().to_string();
+    let stored = state.read_workspace().workspace.edges.iter().find(|e| e.id == edge_id).cloned().unwrap();
+    assert_eq!((stored.kind, stored.label.as_deref(), stored.agent_allowed), (EdgeKind::Context, Some("shared schema"), false));
+    assert!(seen.lock().unwrap().is_empty(), "asked: no notice");
+
+    // s2 and api are joined by an edge (stored directly): Always is offered.
+    state.write_workspace().workspace.edges.push(edge("e-x", EdgeKind::Context, (NodeType::Project, "api"), (NodeType::Session, "s2"), None));
+    let call = act_on_thread(&app, "s2", "link", json!({ "from": "self", "to": "project:api", "kind": "context" }));
+    let request = pending(&app, 1).remove(0);
+    assert!(request.always);
+    crate::approvals::answer(app.handle(), &request.id, crate::approvals::Answer::Always).unwrap();
+    let linked = call.join().unwrap().unwrap()["edgeId"].as_str().unwrap().to_string();
+    let allowed = |id: &str| state.read_workspace().workspace.edges.iter().find(|e| e.id == id).map(|e| e.agent_allowed);
+    assert_eq!(allowed("e-x"), Some(true), "Always is stored on the joining edge");
+    // The next act of s2 on api runs without a toast, with a notice.
+    let reply = call_app(app.handle(), "s2", "unlink", &json!({ "edgeId": linked })).unwrap();
+    assert_eq!(reply["edgeId"], linked.as_str());
+    assert!(allowed(&linked).is_none(), "deleted");
+    assert_eq!(*seen.lock().unwrap(), ["ui-2 unlinked ui-2 → api (context)".to_string()]);
+    // Revoke: the next act asks again.
+    graph::set_edge_agent_allowed(app.handle(), "e-x", false).unwrap();
+    let call = act_on_thread(&app, "s2", "link", json!({ "from": "self", "to": "project:api", "kind": "context" }));
+    let request = pending(&app, 1).remove(0);
+    assert!(request.always);
+    crate::approvals::answer(app.handle(), &request.id, crate::approvals::Answer::Deny).unwrap();
+    assert!(call.join().unwrap().unwrap_err().starts_with(act::DENIED));
+
+    // Allow all: no toast at all, a notice each time; the edge's policy goes with the edge.
+    graph::set_agent_actions(app.handle(), graph::AgentActions::AllowAll);
+    let reply = call_app(app.handle(), "s1", "unlink", &json!({ "edgeId": edge_id })).unwrap();
+    assert_eq!(reply["edgeId"], edge_id.as_str());
+    assert_eq!(seen.lock().unwrap().last().unwrap(), "api-1 unlinked api-1 → api (context) \"shared schema\"");
+    graph::set_edge_agent_allowed(app.handle(), "e-x", true).unwrap();
+    call_app(app.handle(), "s1", "unlink", &json!({ "edgeId": "e-x" })).unwrap();
+    assert!(state.read_workspace().workspace.edges.iter().all(|e| e.id != "e-x"));
+    assert!(state.approvals.list().is_empty());
+}
+
+#[test]
+fn an_unanswered_link_is_denied_after_the_timeout() {
+    let app = act_fixture();
+    let state = app.state::<AppState>();
+    state.approvals.set_timeout(std::time::Duration::from_millis(300));
+    assert_eq!(
+        call_app(app.handle(), "s1", "link", &json!({ "from": "self", "to": "project:api", "kind": "context" })),
+        Err(crate::approvals::NO_ANSWER.to_string())
+    );
+    assert!(state.approvals.list().is_empty(), "the toast went");
+    assert_eq!(state.read_workspace().workspace.edges.len(), 3);
+}
+
+#[test]
+fn the_tool_list_is_the_read_tools_then_the_act_tools() {
+    assert_eq!(TOOLS.to_vec(), [READ_TOOLS.as_slice(), ACT_TOOLS.as_slice()].concat());
+}
+
+#[test]
+fn always_on_an_unlink_lands_on_the_surviving_edge_and_is_not_offered_for_the_deleted_one() {
+    let app = act_fixture();
+    let state = app.state::<AppState>();
+    let allowed = |id: &str| state.read_workspace().workspace.edges.iter().find(|e| e.id == id).map(|e| e.agent_allowed);
+    // e-ctx is the only edge joining s1 and ui: unlinking it offers no Always.
+    let call = act_on_thread(&app, "s1", "unlink", json!({ "edgeId": "e-ctx" }));
+    let request = pending(&app, 1).remove(0);
+    assert!(!request.always, "the deleted edge is never the one offered");
+    crate::approvals::answer(app.handle(), &request.id, crate::approvals::Answer::Deny).unwrap();
+    assert!(call.join().unwrap().is_err());
+    // A second edge joins them (stored directly): Always is offered and lands on it, after the unlink.
+    state.write_workspace().workspace.edges.push(edge("e-back", EdgeKind::Context, (NodeType::Project, "ui"), (NodeType::Session, "s1"), None));
+    let call = act_on_thread(&app, "s1", "unlink", json!({ "edgeId": "e-ctx" }));
+    let request = pending(&app, 1).remove(0);
+    assert!(request.always);
+    assert_eq!(request.target.as_deref(), Some("ui"));
+    crate::approvals::answer(app.handle(), &request.id, crate::approvals::Answer::Always).unwrap();
+    let reply = call.join().unwrap().unwrap();
+    assert!(reply.get("policyError").is_none(), "{reply}");
+    assert_eq!(allowed("e-ctx"), None, "deleted");
+    assert_eq!(allowed("e-back"), Some(true));
+}
+
+#[test]
+fn always_is_stored_only_when_the_act_succeeds_and_a_failed_store_is_reported() {
+    let app = act_fixture();
+    let state = app.state::<AppState>();
+    state.write_workspace().workspace.edges.push(edge("e-x", EdgeKind::Context, (NodeType::Project, "api"), (NodeType::Session, "s2"), None));
+    // The act fails after Always (the link became a duplicate meanwhile): no policy is stored.
+    let call = act_on_thread(&app, "s2", "link", json!({ "from": "self", "to": "project:api", "kind": "context" }));
+    let request = pending(&app, 1).remove(0);
+    state.write_workspace().workspace.edges.push(edge("dup", EdgeKind::Context, (NodeType::Session, "s2"), (NodeType::Project, "api"), None));
+    crate::approvals::answer(app.handle(), &request.id, crate::approvals::Answer::Always).unwrap();
+    assert_eq!(call.join().unwrap(), Err(graph::REFUSE_DUPLICATE.to_string()));
+    assert!(state.read_workspace().workspace.edges.iter().all(|e| !e.agent_allowed));
+    // The act succeeds but the edge went meanwhile: the result says the policy was not stored.
+    state.write_workspace().workspace.edges.retain(|e| e.id != "dup");
+    let call = act_on_thread(&app, "s2", "link", json!({ "from": "self", "to": "project:api", "kind": "context", "label": "x".repeat(150) }));
+    let request = pending(&app, 1).remove(0);
+    assert_eq!(request.action, format!("link ui-2 → api (context) \"{}\"", "x".repeat(150)), "the label as stored, not cut at 120");
+    state.write_workspace().workspace.edges.retain(|e| e.id != "e-x");
+    crate::approvals::answer(app.handle(), &request.id, crate::approvals::Answer::Always).unwrap();
+    let reply = call.join().unwrap().unwrap();
+    assert!(reply["policyError"].as_str().unwrap().contains("unknown edge"), "{reply}");
+    let id = reply["edgeId"].as_str().unwrap();
+    let stored = state.read_workspace().workspace.edges.iter().find(|e| e.id == id).cloned().unwrap();
+    assert_eq!(stored.label, Some("x".repeat(150)), "stored with its label");
+}
+
+#[test]
+fn a_long_prompt_and_a_caller_off_the_canvas_are_refused_before_asking() {
+    let app = act_fixture();
+    let state = app.state::<AppState>();
+    assert_eq!(
+        call_app(app.handle(), "s1", "start_session", &json!({ "project": "ui", "prompt": "p".repeat(act::MAX_PROMPT_CHARS + 1) })),
+        Err(format!("prompt is over {} characters", act::MAX_PROMPT_CHARS))
+    );
+    // A live session the canvas does not draw (no project): cooperateWithMe is refused at once.
+    state.write_sessions_live().sessions.insert("lost".into(), live("nowhere", "/x", "lost", SessionState::Busy, None));
+    *state.launcher.program.lock().unwrap() = Some((std::path::PathBuf::from("prog"), Vec::new()));
+    state.launcher.set_dir(std::env::temp_dir());
+    assert_eq!(
+        call_app(app.handle(), "lost", "start_session", &json!({ "project": "ui", "cooperateWithMe": true })),
+        Err(crate::ipc::NOT_AN_EDGE_END.to_string())
+    );
+    assert!(state.approvals.list().is_empty());
 }

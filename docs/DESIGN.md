@@ -111,13 +111,15 @@ styled, after the final combinator) starts with one of
 ```
 .banner  .banner-mark  .attention  .pane-error
 .session-attention  .session-attention-word  .project-glow
+.approval-toast
 ```
 
 That is: a banner's left border and mark, error text in a pane (`.pane-error`), attention text
 (`.attention`; also the line of a context edge whose live application failed, Story 6.3, or of a cooperate
-edge with a failed side, Story 6.4), and the attention states of Story 3.3: a session card in `finished` / `waiting` (its border,
+edge with a failed side, Story 6.4), the attention states of Story 3.3: a session card in `finished` / `waiting` (its border,
 `.session-attention`, and its state word, `.session-attention-word`) and the glow of its project card
-(`.project-glow`). Inline styles never use the accent.
+(`.project-glow`), and (Story 7.2) the border of an agent approval toast (`.approval-toast`): a request waits on
+the operator. Inline styles never use the accent.
 
 **Terminal content is not chrome.** What a program prints in a terminal is drawn in its own colours (the
 ANSI palette below, 256-colour and truecolour escapes included), which may well be orange; the accent rule
@@ -240,6 +242,22 @@ drag handle) follows every rule here.
   also make happen), `<name>: failed (not confirmed)`, `<name>: failed (session stayed busy)`, `<name>: failed
   (<error>)`, or `<name>: peer named at the next resume` with no live state. An ordinary **Retry** button sits
   under a side that failed or that a draft holds back. No Restart with flags for a cooperate edge.
+  Story 7.2: an edge whose "Always for this edge" is set adds, after the Now lines and before Label, the line
+  `Agent actions: always allowed` (the **Now:** line's look: the term in `--fg-muted`, the value in `--fg`) with
+  an ordinary **Revoke** button beside it. Revoked, the line goes.
+- **Agent approval toasts** (Story 7.2) stack at the canvas's bottom-right, oldest first, over the canvas and
+  any pane and below the palette and the menu: a column `min(28rem, 100% - 1.5rem)` wide, 0.5 rem apart,
+  scrolling past the canvas's height. Each toast is `--bg-raised` with a 1-px `--accent` border
+  (`.approval-toast`, attention: it waits on the operator) and `--radius-md`. Top to bottom: `<caller> wants to
+  <action>` in `--text-md` (the caller's name 500), wrapping anywhere; the argv or the edge in the command
+  preview look (a block on `--bg` with a 1-px `--border`, `--radius-sm`, mono `--text-xs` `--fg-muted`,
+  wrapping anywhere, at most 8 rem tall then scrolling, selectable); then ordinary buttons **Allow**, **Deny**
+  and, when offered, **Always for this edge**, and at the right the muted mono `--text-xs` countdown `denied in
+  N s`. The buttons turn disabled while an answer is on its way. It never takes the focus; the palette answers
+  the oldest. No colour marks Deny or Always: the words do. It appears and goes without animation. This is the
+  one exception to "status stays ambient": an attention surface with inline buttons.
+- **Settings → Agent actions** (Story 7.2) is one muted line under the section heading: `Ask: …` or, while the
+  workspace allows all, `Allow all: …`, each naming the palette command that switches it.
 - **The context menu** is the palette's row look at the pointer: `--bg-raised`, 1-px border,
   `--radius-md`, items in `--text-md`, groups split by a 1-px `--border` line. Project, session and branch cards
   have one; it lists only enabled entries and does not open when there are none.
@@ -292,6 +310,11 @@ session and branch children; the size is fixed like the project card's.
 
   The meta line's parts sit in a row: only the branch shrinks and ends in an ellipsis; the state word,
   the message count and the age always show whole.
+
+  Story 7.2: while a live session has posted a `set_status` text, the line is its state word, then that text
+  in place of branch, count and age (and of a finished card's last line): mono `--text-xs` `--fg-muted`, one
+  line, ellipsis, the full text on hover. It goes when the session's state changes or with an empty
+  `set_status`. No accent: it is information.
 
   A live session with no transcript yet has the same card: its `name` from the poll (or `new session`) as
   the title and `0 msgs`, with no age (no activity is known) and only the start time on hover (none
@@ -411,7 +434,7 @@ Only six motions exist; every one is instant (or static) under `prefers-reduced-
 | Attention pulse (the accent dot before `finished` / `waiting`: the busy pulse) | 1.2 s |
 | Project glow (the accent outline around a project needing you: opacity 1 → 0.4, ease-in-out, alternating, looping; opacity only) | 1.2 s |
 
-Panes (the terminal pane, the launch, worktree and remove-worktree sheets and the edge inspector too), terminal tabs and pop-out windows, banners, the notice, the menu and the Elsewhere tray appear without animation. Edges appear and go without animation.
+Panes (the terminal pane, the launch, worktree and remove-worktree sheets and the edge inspector too), terminal tabs and pop-out windows, banners, the notice, the menu, the Elsewhere tray and the agent approval toasts appear without animation. Edges appear and go without animation.
 
 ## Icons
 
@@ -443,7 +466,7 @@ fails, naming the file, line and rule, on:
 | `shadow` | `box-shadow`, `text-shadow` (vendor-prefixed too), `drop-shadow()` |
 | `font-size` | a `font-size` that is not `var(--text-*)`, or a length literal in a `font` shorthand |
 | `border-radius` | a radius that is not `var(--radius-*)`, `0` or `50%` |
-| `accent` | `var(--accent)` (with or without a fallback) in a rule where a selector's last compound does not start with an allow-listed class (`.banner`, `.banner-mark`, `.attention`, `.pane-error`, `.session-attention`, `.session-attention-word`, `.project-glow`); any accent in an inline style |
+| `accent` | `var(--accent)` (with or without a fallback) in a rule where a selector's last compound does not start with an allow-listed class (`.banner`, `.banner-mark`, `.attention`, `.pane-error`, `.session-attention`, `.session-attention-word`, `.project-glow`, `.approval-toast`); any accent in an inline style |
 
 Self-tests plant a bad snippet for each rule and prove it fires. Colours passed to xyflow as component
 props (the dot grid's `color="var(--fg-faint)"`) are not inline styles; keep them to tokens all the same.

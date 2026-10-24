@@ -87,6 +87,23 @@ What Story 7.1 relies on (built, tested against a stub client only):
 prompt** (expected: `--mcp-config` servers are trusted), and asking Claude to call `my_node` and `workspace`
 shows no permission prompt and the right data.
 
+What Story 7.2 relies on (built, tested against a stub program and HTTP client only):
+- The act tools `start_session`, `link`, `unlink` (`readOnlyHint: false`; `unlink` `destructiveHint: true`) and
+  `set_status` are listed after the read tools and are **not** in `permissions.allow`. **verify** whether Claude
+  Code then asks its own permission before calling them (expected: yes, an ordinary MCP tool prompt), on top of
+  Switchboard's toast for the first three.
+- An act tool's `tools/call` stays open while the operator decides (up to 120 s, then `isError` "the operator
+  did not answer"). The server keeps the connection: its 10 s idle timer is suspended while that connection's
+  `/mcp` reply is pending (tested with a 15 s tool). **verify** that Claude Code does not time out the tool call
+  first (its MCP tool-call timeout, `MCP_TOOL_TIMEOUT`, may be shorter than 120 s on some versions). If it does
+  and closes the request, the app withdraws the pending request when the `/mcp` call goes away: the toast goes,
+  nothing runs, and a late answer finds nothing (tested with a client that disconnects while pending). A client
+  that gives up but keeps the connection open is not detected.
+- The argv the toast shows is the argv `start_session` runs (program, every argument, `--mcp-config` included):
+  built once for the toast and again on Allow, and nothing starts if the two differ.
+- `--dangerously-skip-permissions` and `bypassPermissions` are never passed; an agent asking for
+  `bypassPermissions` is refused before any toast.
+
 ## Native session-to-session messaging
 
 Claude Code's `ListAgents` tool lists "other local Claude sessions on this machine" and `SendMessage` can address them by name. This is the preferred cooperation channel (Story 6.4); the `switchboard` inbox is the structured fallback (Epic 7). **verify** delivery semantics when the target is busy vs idle.

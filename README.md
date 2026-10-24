@@ -1059,14 +1059,53 @@ reads it), not a protocol error.
 
 | Tool | Returns |
 |---|---|
-| `my_node()` | `{nodeId, name, path, project{id,label,path}, branch, worktree, cwd, peers[], addDirs[]}`. `path` is `<project>[:<branch>] / <name>`; `branch` is the branch the session was started on, else the branch of its folder; `worktree` is the linked worktree it runs in, else `null`; `addDirs` are the folders the launch was given (`via` `sheet` or `edge → <target>`) plus context edges applied live (`via` `/add-dir`). |
+| `my_node()` | `{nodeId, name, path, project{id,label,path}, branch, worktree, cwd, statusText, peers[], addDirs[]}`. `path` is `<project>[:<branch>] / <name>`; `branch` is the branch the session was started on, else the branch of its folder; `worktree` is the linked worktree it runs in, else `null`; `addDirs` are the folders the launch was given (`via` `sheet` or `edge → <target>`) plus context edges applied live (`via` `/add-dir`). |
 | `workspace()` | `{projects[{id,label,path,sessions[{nodeId,name,status,lastLine}]}], edges[{id,kind,from,to,label}]}`: live sessions only; names, labels and last lines without control characters and cut to 120 characters; edge ends as `<type>:<id>` (`session:<id>`, `project:<id>`, …). No positions, viewport or historic sessions. It aims to stay under 8 KB: if it would not, the last lines are cut to 40 characters (`lastLinesCut: 40`), then left out (`lastLinesCut: "omitted"`), then the edge labels go too (`truncated: true`). |
-| `node(id)` | A project's `{id,label,path,branch}` or a session's `{nodeId,name,status,lastLine,project,branch}`. An edge end as `workspace()` lists it (`project:<id>`, `session:<id>`) works too; a `branch:` or `folder:` end is an error. |
+| `node(id)` | A project's `{id,label,path,branch}` or a session's `{nodeId,name,status,lastLine,project,branch,statusText}`. An edge end as `workspace()` lists it (`project:<id>`, `session:<id>`) works too; a `branch:` or `folder:` end is an error. |
 | `peers()` | `my_node().peers`: `[{nodeId,name,path,purpose}]` for each cooperate edge. |
-| `sessions(project)` | The project (by id, else label; a label two projects share is an error naming their ids) and its live and historic sessions: `{nodeId,name,status,lastActive}`, live first, then newest. `status` is the live state (`busy`, `idle`, …); `exited` for a session that ran this app run and has ended; `historic` for one known only from its transcript. `lastActive` is the newer of the transcript's last record and what the live map saw. |
+| `sessions(project)` | The project (by id, else label; a label two projects share is an error naming their ids) and its live and historic sessions: `{nodeId,name,status,lastActive,statusText}`, live first, then newest. `status` is the live state (`busy`, `idle`, …); `exited` for a session that ran this app run and has ended; `historic` for one known only from its transcript. `lastActive` is the newer of the transcript's last record and what the live map saw. |
+
+`statusText` (Story 7.2) is what the session last posted with `set_status`, until its state changes; `null`
+otherwise.
+
+**Act tools (Story 7.2).** `start_session`, `link` and `unlink` change the workspace, so each waits for the
+operator unless a policy covers it; `set_status` never asks. They are **not** in the session's
+`permissions.allow`, so Claude Code may also ask its own permission before calling them. Each is checked in full
+first: a refusal (an unknown or ambiguous project, a kind mismatch, one of 6.1's link refusals, a branch without a
+worktree, `bypassPermissions`, a missing add-dir) is an `isError` with the reason and **no toast**.
+
+| Tool | Does |
+|---|---|
+| `start_session({project\|branch, prompt?, name?, model?, effort?, permissionMode?, addDirs?, cooperateWithMe?})` | Starts a session the way the launch sheet does: `project` is an id or a label (a shared label is an error); `branch` is `<project id or label>:<branch>` and runs in that branch's worktree (or the project folder for the checked-out branch) -- a branch with no worktree is `branch has no worktree`, and no worktree is ever created. The name defaults to `<label>-<4 hex>`, the choices to the project's last ones, the add-dirs are the project's context-edge folders plus `addDirs`, and `bypassPermissions` is refused. The toast shows the **exact argv** (`claude --session-id … --name … --settings … --mcp-config … --append-system-prompt … <prompt>`); on Allow that argv runs (built again and compared; if anything changed meanwhile, nothing starts), in the background: the card appears, no terminal is focused. With `cooperateWithMe` a cooperate edge between the caller and the new session is stored first, so the new session's prompt names the caller as a peer. Returns `{nodeId, name}`; Deny returns `the operator denied: start a session on <target>`. |
+| `link({from, to, kind, label?})` | Ends as `workspace()` lists them (`project:<id>`, `session:<id>`, `branch:<projectId>:<name>`), or `self`. `kind` must be the one the app derives (`cooperate` between two sessions, `context` from a session or project to a project or branch). The toast reads `link <from> → <to> (<kind>) "<label>"`; Allow stores the edge with every 6.1–6.4 effect (live `/add-dir`, peer lines). Returns `{edgeId}`. |
+| `unlink({edgeId})` | The toast describes the edge; Allow deletes it as Delete does. An unknown edge is an error. Returns `{edgeId}`. |
+| `set_status({text})` | No approval. The text (control characters and U+2028/U+2029 stripped, cut to 120 characters) shows on the session's card in place of branch, count and age until its state changes or the next `set_status`; an empty text clears it. Runtime only. Returns `{statusText}`. |
+
+**Approval toasts.** Pending requests stack at the bottom right, oldest first: who asks, the action, and the
+argv or edge in mono, with **Allow**, **Deny** and -- when a stored edge (either kind, either direction) joins
+the caller and the target -- **Always for this edge**. The target is the project (or branch) a start goes to,
+the end of a link that is not the caller, or the deleted edge's end that is not the caller; a link or unlink with
+neither end the caller always asks. The palette's **Allow agent request** / **Deny agent request** answer the
+oldest. While Switchboard is not the focused window a new request also sends an OS notification (`<caller>
+wants to <action>`), following `notifications.waiting`; clicking it brings the app forward. A request nobody
+answers within 120 s is denied (`the operator did not answer`); one whose caller exits, or whose `/mcp` call goes
+away (the client timed out or disconnected), is dropped, so a late answer runs nothing. A caller may have at most
+3 requests waiting; a fourth is refused with `too many pending requests` and no toast. A start's prompt is at most
+8000 characters. The call keeps its HTTP request open meanwhile: the endpoint's 10 s idle timer does not apply to a
+connection whose `/mcp` reply is pending, and starts again once the reply is out.
+
+**Policies.** **Always for this edge** sets `agentAllowed: true` on that edge in `workspace.json`, once the act
+succeeded (never on the edge an `unlink` deletes; if it cannot be stored, the result's `policyError` says why): acts by the
+caller on that target then run without a toast, and the edge inspector shows `Agent actions: always allowed`
+with **Revoke** (also the palette's **Revoke agent policy**). It goes with the edge. **Agent actions: allow
+all** / **Agent actions: ask** in the palette set the workspace's `agentActions` (`ask` by default, left out of
+the file then); while it is `allowAll` Settings says so and no act tool asks. An act that ran without a toast,
+either way, shows a one-line notice (`ide-1a2b started ui-3c4d on ui`). Older workspace files load unchanged.
 
 **Not yet verified with the real `claude`:** that a `--mcp-config` HTTP server connects without a trust prompt
-(`/mcp` should list `switchboard` as connected), and that calling the read tools asks for no permission.
+(`/mcp` should list `switchboard` as connected), that calling the read tools asks for no permission, whether
+Claude Code asks its own permission before an act tool, and that a long wait at the toast does not time out the
+tool call on Claude Code's side.
 
 ## Settings
 

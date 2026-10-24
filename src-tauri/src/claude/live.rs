@@ -183,6 +183,11 @@ pub struct LiveSession {
     /// A `waiting` session's reason (the hook's message), the card's tooltip; `None` in every
     /// other state.
     pub detail: Option<String>,
+    /// Story 7.2: what the session last said through `set_status` (cleaned, at most 120
+    /// characters), shown on its card's second line in place of the meta. Runtime only; every
+    /// state change clears it, as does an empty `set_status`.
+    #[serde(default)]
+    pub status_text: Option<String>,
 }
 
 /// A session that has just entered `Finished` or `Waiting`: what [`LiveMap::apply_at`]
@@ -439,6 +444,8 @@ impl LiveMap {
                     title: None,
                 });
             }
+            // A `set_status` text lasts while the state does.
+            let status_text = previous.filter(|p| p.state == state).and_then(|p| p.status_text.clone());
             next.insert(
                 row.session_id.clone(),
                 LiveSession {
@@ -453,6 +460,7 @@ impl LiveMap {
                     attention_since,
                     last_line,
                     detail,
+                    status_text,
                 },
             );
         }
@@ -479,6 +487,7 @@ impl LiveMap {
             gone.attention_since = None;
             gone.last_line = None;
             gone.detail = None;
+            gone.status_text = None;
             gone.project_id = graph::project_for_cwd_in(workspace, known, &gone.cwd);
             next.insert(id.clone(), gone);
         }
@@ -514,6 +523,7 @@ impl LiveMap {
                 attention_since: None,
                 last_line: None,
                 detail: None,
+                status_text: None,
             },
         );
         self.exited_order.retain(|known| known != id);
@@ -611,6 +621,9 @@ impl LiveMap {
         if session.state != SessionState::Waiting {
             self.waits.remove(id);
         }
+        if session.state != before {
+            session.status_text = None;
+        }
         if session.state.needs_attention() && session.state != before {
             vec![Transition {
                 session_id: id.to_string(),
@@ -655,6 +668,7 @@ impl LiveMap {
         session.attention_since = None;
         session.detail = None;
         session.last_line = None;
+        session.status_text = None;
         self.waits.remove(id);
         self.answered.insert(id.to_string(), now);
         if let Some(count) = self.hooked.get_mut(id) {
@@ -671,6 +685,7 @@ impl LiveMap {
             Some(session) if session.state == SessionState::Starting => {
                 session.state = SessionState::Idle;
                 session.source = StateSource::App;
+                session.status_text = None;
                 true
             }
             _ => false,
@@ -700,6 +715,7 @@ impl LiveMap {
         session.attention_since = None;
         session.last_line = None;
         session.detail = None;
+        session.status_text = None;
         self.busy_seen.remove(id);
         self.forget_hooks(id);
         self.exited_order.push_back(id.to_string());
@@ -805,7 +821,20 @@ impl LiveMap {
                 session.attention_since = None;
                 session.last_line = None;
                 session.detail = None;
+                session.status_text = None;
                 self.waits.remove(id);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Story 7.2, `set_status`: session `id`'s status text (`None` clears it). Returns whether
+    /// anything changed; an unknown or exited session is left alone.
+    pub fn set_status_text(&mut self, id: &str, text: Option<String>) -> bool {
+        match self.sessions.get_mut(id) {
+            Some(session) if session.state.is_live() && session.status_text != text => {
+                session.status_text = text;
                 true
             }
             _ => false,
@@ -1181,6 +1210,29 @@ mod tests {
         graph::initialise_at(app.handle(), Some(cfg.path().join("workspace.json")));
         app.state::<AppState>().write_workspace().workspace = workspace_with_ide();
         (app, cfg)
+    }
+
+    /// Story 7.2: a `set_status` text survives a poll that leaves the state as it was, and goes
+    /// with a poll that changes it.
+    #[test]
+    fn a_status_text_lasts_while_the_polled_state_does() {
+        let ws = workspace_with_ide();
+        let rows = |status: &str| parse_rows(&Value::Array(vec![row("s1", ide_path(), status)]).to_string());
+        let mut map = LiveMap::default();
+        map.apply_at(rows("busy"), &ws, 1);
+        assert!(map.set_status_text("s1", Some("waiting on ui".into())));
+        assert!(!map.set_status_text("s1", Some("waiting on ui".into())), "the same text changes nothing");
+        assert!(!map.set_status_text("nope", Some("x".into())));
+        map.apply_at(rows("busy"), &ws, 2);
+        assert_eq!(map.sessions["s1"].status_text.as_deref(), Some("waiting on ui"));
+        map.apply_at(rows("idle"), &ws, 3);
+        assert_eq!(map.sessions["s1"].state, SessionState::Finished);
+        assert_eq!(map.sessions["s1"].status_text, None);
+        map.set_status_text("s1", Some("again".into()));
+        map.apply_at(Ok(Vec::new()), &ws, 4);
+        assert_eq!(map.sessions["s1"].state, SessionState::Exited);
+        assert_eq!(map.sessions["s1"].status_text, None);
+        assert!(!map.set_status_text("s1", Some("x".into())), "not on an exited session");
     }
 
     #[test]

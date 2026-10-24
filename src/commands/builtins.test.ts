@@ -53,9 +53,13 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the fifty-six commands with the spec's keybindings", () => {
+  it("register the sixty-one commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
+      "agentActions.allowAll",
+      "agentActions.ask",
       "app.quit",
+      "approval.allow",
+      "approval.deny",
       "attention.next",
       "binaries.redetect",
       "branch.copyName",
@@ -69,6 +73,7 @@ describe("built-in commands", () => {
       "edge.link",
       "edge.restartWithFlags",
       "edge.retry",
+      "edge.revokeAgentPolicy",
       "edge.select",
       "elsewhere.close",
       "elsewhere.toggle",
@@ -174,9 +179,13 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the forty-four actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the forty-nine actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
+      "agentActions.allowAll",
+      "agentActions.ask",
       "app.quit",
+      "approval.allow",
+      "approval.deny",
       "attention.next",
       "binaries.redetect",
       "branch.copyName",
@@ -189,6 +198,7 @@ describe("built-in commands", () => {
       "edge.link",
       "edge.restartWithFlags",
       "edge.retry",
+      "edge.revokeAgentPolicy",
       "edge.select",
       "elsewhere.toggle",
       "palette.toggle",
@@ -259,7 +269,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(56);
+    expect(listCommands()).toHaveLength(61);
   });
 
   const PROJECT_ACTIONS = [
@@ -291,6 +301,7 @@ describe("built-in commands", () => {
     useUiStore.getState().select({ kind: "project", id: "ide" });
     const titles = () => listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title);
     expect(titles()).toEqual([
+      "Agent actions: allow all",
       "Expand project",
       "Link to…",
       "New session…",

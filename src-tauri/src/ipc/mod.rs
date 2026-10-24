@@ -426,6 +426,37 @@ pub async fn edge_remove<R: Runtime>(app: AppHandle<R>, id: String) -> Result<Wo
     Ok(snapshot)
 }
 
+/// Story 7.2: set or clear an edge's `agentAllowed` (the inspector's Revoke clears it; the
+/// approval toast's "Always for this edge" sets it from Rust). Replies with the snapshot, or
+/// `Err("unknown edge")`.
+#[tauri::command]
+pub async fn edge_set_agent_allowed<R: Runtime>(app: AppHandle<R>, id: String, allowed: bool) -> Result<WorkspaceSnapshot, String> {
+    graph::set_edge_agent_allowed(&app, &id, allowed)
+}
+
+/// Story 7.2: the workspace's policy for the agents' act tools (`ask` / `allowAll`, the palette's
+/// "Agent actions: allow all" / "Agent actions: ask"). Persisted; replies with the snapshot.
+#[tauri::command]
+pub async fn workspace_set_agent_actions<R: Runtime>(app: AppHandle<R>, mode: graph::AgentActions) -> WorkspaceSnapshot {
+    graph::set_agent_actions(&app, mode)
+}
+
+/// Story 7.2: the agents' act-tool requests waiting on the operator, oldest first
+/// (`approvals://pending` carries the same list on every change). Memory only.
+#[tauri::command]
+pub fn approvals_get(state: State<'_, AppState>) -> Vec<crate::approvals::PendingRequest> {
+    state.approvals.list()
+}
+
+/// Story 7.2: the operator's answer to a pending request (`allow`, `deny`, or `always`, which
+/// also sets `agentAllowed` on the edge joining the caller and the target). The toast goes and
+/// the waiting tool call resumes. `Err` for a request no longer pending, or `always` where it is
+/// not offered.
+#[tauri::command]
+pub fn approval_answer<R: Runtime>(app: AppHandle<R>, id: String, answer: crate::approvals::Answer) -> Result<(), String> {
+    crate::approvals::answer(&app, &id, answer)
+}
+
 /// The live state of the context edges applied to running sessions (Story 6.3), by edge id, and
 /// of the cooperate sides (Story 6.4), by `<edgeId>#<sessionId>`;
 /// `edges://live` carries the same map on every change. Memory only.
@@ -1582,6 +1613,13 @@ pub fn fork_session<R: Runtime>(app: &AppHandle<R>, project_id: &str, from: &str
 /// The checks of a launch that have no side effects, and its program and argv: the claude
 /// binary (never a batch file on Windows), the session dir, the system prompt and the flags.
 fn prepare_launch(state: &AppState, launch: &Launch) -> Result<(PathBuf, Vec<String>), String> {
+    prepare_launch_with(state, launch, &[])
+}
+
+/// [`prepare_launch`] with `extra` peers in the system prompt after the stored ones: Story 7.2
+/// builds the argv a `start_session` with `cooperateWithMe` will run, before the operator allows
+/// it and so before its cooperate edge is stored.
+fn prepare_launch_with(state: &AppState, launch: &Launch, extra: &[launch::Peer]) -> Result<(PathBuf, Vec<String>), String> {
     let (program, leading) = launch_program(state)?;
     let extensions = if cfg!(windows) { settings::detect::platform_extensions() } else { Vec::new() };
     launch::refuse_batch(&launch::pathext_target(&program, &extensions), cfg!(windows))?;
@@ -1594,7 +1632,8 @@ fn prepare_launch(state: &AppState, launch: &Launch) -> Result<(PathBuf, Vec<Str
     };
     // Story 6.4: the launching id's own cooperate peers. A fork launches under its new id, which
     // no edge names, so it inherits none; a New session has no edges yet.
-    let peers = graph::session_peers(state, &launch.session_id);
+    let mut peers = graph::session_peers(state, &launch.session_id);
+    peers.extend(extra.iter().cloned());
     let context = launch::system_prompt(&launch.label, &launch.project_path, branch.as_deref(), &launch.name, &launch.session_id, &peers);
     let mut built = launch::build_args(
         &launch.kind,
@@ -1820,6 +1859,9 @@ fn run_launch<R: Runtime>(
                 // with flags waiting for that exit marks the resumed run's edges after it (6.3).
                 live_edges::session_exited(&exit_app, &exit_id);
                 live::update_and_emit(&exit_app, |map| map.process_exited(&exit_id));
+                // Its agent requests still waiting on the operator go (Story 7.2), after it is
+                // marked exited: `approvals::ask` refuses an exited caller under the same lock.
+                crate::approvals::caller_exited(&exit_app, &exit_id);
             }),
         }
     };
@@ -1851,6 +1893,200 @@ fn run_launch<R: Runtime>(
         choices: LaunchChoices::of(&launch.request),
         skipped: launch.skipped.clone(),
     })
+}
+
+// ---------------------------------------------------------------------------------------
+// Agent launches (Story 7.2): `start_session` from the `switchboard` MCP server
+// ---------------------------------------------------------------------------------------
+
+/// What an agent's `start_session` asks for, parsed (`crate::mcp::act`). `None` choices take the
+/// launch sheet's prefill (the project's last choices, else settings, else `default`).
+#[derive(Debug, Clone, Default)]
+pub struct AgentStart {
+    pub project_id: String,
+    /// A branch launch (Story 5.3): the branch must have a worktree (or be checked out in the
+    /// project's folder); none is ever created for an agent.
+    pub branch: Option<String>,
+    pub prompt: Option<String>,
+    pub name: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub permission_mode: Option<String>,
+    pub add_dirs: Vec<String>,
+    /// `cooperateWithMe`: the caller's session id, to be joined to the new session by a
+    /// cooperate edge before its system prompt is built.
+    pub cooperate_with: Option<String>,
+}
+
+/// An agent launch, built and checked but not started: the toast shows [`AgentLaunch::argv`],
+/// and [`start_agent_launch`] runs exactly that or nothing.
+pub struct AgentLaunch {
+    launch: Launch,
+    argv: Vec<String>,
+    cooperate_with: Option<String>,
+}
+
+impl AgentLaunch {
+    /// The exact argv the start runs: the program, then every argument (`--mcp-config` included
+    /// while the endpoint is up).
+    pub fn argv(&self) -> &[String] {
+        &self.argv
+    }
+
+    pub fn session_id(&self) -> &str {
+        &self.launch.session_id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.launch.name
+    }
+}
+
+/// The argv a launch with `program` and `args` runs: with the endpoint up, `run_launch` adds
+/// `--mcp-config <dir>/<id>.mcp.json` (Story 7.1).
+fn full_argv(state: &AppState, program: &Path, args: Vec<String>, session_id: &str) -> Vec<String> {
+    let args = match (state.hooks.port(), state.launcher.dir()) {
+        (Some(_), Some(dir)) => launch::with_mcp_config(args, &launch::mcp_path(&dir, session_id)),
+        _ => args,
+    };
+    std::iter::once(program.display().to_string()).chain(args).collect()
+}
+
+/// Build an agent's launch through the launch sheet's path (Story 7.2): a fresh session id, the
+/// default name `<label>-<4 hex>` unless one is given, the sheet's prefilled choices, the folders
+/// the project's context edges grant then the agent's add-dirs (normalised against the folder the
+/// session runs in), `bypassPermissions` refused, and the exact argv. A branch without a worktree
+/// is [`launch::NO_WORKTREE`]. Nothing is written or started. Blocking (folders are checked).
+pub fn plan_agent_launch(state: &AppState, start: AgentStart) -> Result<AgentLaunch, String> {
+    let (label, project_defaults) = {
+        let ws = state.read_workspace();
+        let project = ws
+            .workspace
+            .projects
+            .iter()
+            .find(|p| p.id == start.project_id)
+            .ok_or_else(|| "unknown project".to_string())?;
+        (project.label.clone(), project.launch_defaults.clone())
+    };
+    // `cooperateWithMe` needs the caller on the canvas (an edge must end on it): checked now, not
+    // after the operator allowed it.
+    if let Some(caller) = &start.cooperate_with {
+        let end = graph::NodeRef {
+            kind: graph::NodeType::Session,
+            id: caller.clone(),
+        };
+        if !graph::is_edge_end(&state.read_workspace(), &end) {
+            return Err(NOT_AN_EDGE_END.to_string());
+        }
+    }
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let name = start
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map_or_else(|| launch::default_name(&label, &session_id), str::to_string);
+    let settings = state.read().settings.defaults.clone();
+    let prefill = launch::prefill(project_defaults.as_ref(), &settings, session_id.clone(), name.clone());
+    let choice = |given: &Option<String>, prefilled: String| Some(given.clone().filter(|v| !v.trim().is_empty()).unwrap_or(prefilled));
+    let request = LaunchRequest {
+        project_id: start.project_id.clone(),
+        session_id: session_id.clone(),
+        name,
+        model: choice(&start.model, prefill.model),
+        effort: choice(&start.effort, prefill.effort),
+        permission_mode: choice(&start.permission_mode, prefill.permission_mode),
+        add_dirs: start.add_dirs.clone(),
+        prompt: start.prompt.clone().filter(|p| !p.trim().is_empty()),
+        background: true,
+        branch: start.branch.clone(),
+        create_worktree: false,
+        worktree_name: None,
+    };
+    let (mut launch, create) = new_launch(state, request)?;
+    if create.is_some() {
+        return Err(launch::NO_WORKTREE.to_string());
+    }
+    // The sheet prefills the folders the project's context edges grant: so does an agent's start.
+    let source = [graph::NodeRef {
+        kind: graph::NodeType::Project,
+        id: launch.project_id.clone(),
+    }];
+    let granted: Vec<String> = edge_add_dirs(state, &source, &launch.cwd).0.into_iter().map(|d| d.path).collect();
+    let wanted: Vec<String> = granted.into_iter().chain(launch.request.add_dirs.iter().cloned()).collect();
+    launch.request.add_dirs = launch::normalise_add_dirs(&wanted, &launch.cwd)?;
+    let extra = match &start.cooperate_with {
+        Some(caller) => graph::name_peers(state, vec![(caller.clone(), None)]),
+        None => Vec::new(),
+    };
+    let (program, args) = prepare_launch_with(state, &launch, &extra)?;
+    let argv = full_argv(state, &program, args, &launch.session_id);
+    Ok(AgentLaunch {
+        launch,
+        argv,
+        cooperate_with: start.cooperate_with,
+    })
+}
+
+/// Why `cooperateWithMe` is refused before any toast: the caller is not a node an edge can end on.
+pub const NOT_AN_EDGE_END: &str = "cooperateWithMe needs this session on the canvas; it is not";
+
+/// Why an allowed agent launch did not start: what it would run changed while the toast waited
+/// (the caller was renamed, an edge changed the add-dirs, ...).
+pub const LAUNCH_CHANGED: &str = "the launch changed while it waited for the operator; nothing was started";
+
+/// Start an allowed agent launch (Story 7.2), in the background (no terminal is focused). With
+/// `cooperateWithMe`, the new session's [`graph::SessionRef`] and the cooperate edge between the
+/// caller and it are stored first, so its system prompt names the caller as a peer. The argv is
+/// built again and must be the one the operator saw ([`LAUNCH_CHANGED`] otherwise); any failure
+/// takes the edge and the ref back. The project's choices are not remembered (they are the
+/// agent's, not the operator's). Blocking.
+pub fn start_agent_launch<R: Runtime>(app: &AppHandle<R>, plan: AgentLaunch, size: (u16, u16)) -> Result<LaunchResult, String> {
+    let state = app.state::<AppState>();
+    let AgentLaunch { launch, argv, cooperate_with } = plan;
+    let (project_id, session_id) = (launch.project_id.clone(), launch.session_id.clone());
+    let mut created_ref = false;
+    let mut edge_id: Option<String> = None;
+    if let Some(caller) = &cooperate_with {
+        created_ref = graph::add_session_ref(app, &session_id, &project_id, launch.branch_id.as_deref())?;
+        let caller_end = graph::NodeRef {
+            kind: graph::NodeType::Session,
+            id: caller.clone(),
+        };
+        let new_end = graph::NodeRef {
+            kind: graph::NodeType::Session,
+            id: session_id.clone(),
+        };
+        match graph::add_edge(app, &caller_end, &new_end) {
+            Ok(edge) => edge_id = Some(edge.id),
+            Err(message) => {
+                if created_ref {
+                    graph::remove_session_ref(app, &session_id, &project_id);
+                }
+                return Err(message);
+            }
+        }
+    }
+    let undo = || {
+        if let Some(id) = &edge_id {
+            let _ = graph::remove_edge(app, id);
+        }
+        if created_ref {
+            graph::remove_session_ref(app, &session_id, &project_id);
+        }
+    };
+    let (program, args) = match prepare_launch(&state, &launch) {
+        Ok(prepared) => prepared,
+        Err(message) => {
+            undo();
+            return Err(message);
+        }
+    };
+    if full_argv(&state, &program, args.clone(), &session_id) != argv {
+        undo();
+        return Err(LAUNCH_CHANGED.to_string());
+    }
+    run_launch(app, launch, program, args, size, &undo)
 }
 
 #[cfg(test)]

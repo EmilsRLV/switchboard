@@ -18,7 +18,8 @@ import { describe, expect, it } from "vitest";
 
 /**
  * The selectors (by their first class) that may use the accent: attention states only. Story
- * 3.3 adds the session card in attention (its border and state word) and the project glow.
+ * 3.3 adds the session card in attention (its border and state word) and the project glow; Story
+ * 7.2 the agent approval toast (its border: a request waits on the operator).
  */
 const ACCENT_ALLOW_LIST = [
   ".banner",
@@ -28,6 +29,7 @@ const ACCENT_ALLOW_LIST = [
   ".session-attention",
   ".session-attention-word",
   ".project-glow",
+  ".approval-toast",
 ] as const;
 
 /** The one file allowed to write colour values. */

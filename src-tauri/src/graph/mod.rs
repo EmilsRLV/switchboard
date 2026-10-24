@@ -61,6 +61,29 @@ pub struct Workspace {
     pub sessions: Vec<SessionRef>,
     pub edges: Vec<Edge>,
     pub defaults: LaunchDefaults,
+    /// Story 7.2: whether the agents' act tools ask the operator (`ask`, the default) or run
+    /// without a toast (`allowAll`). Left out of the file while it is `ask`, so older files load
+    /// and are written unchanged.
+    #[serde(skip_serializing_if = "AgentActions::is_ask")]
+    pub agent_actions: AgentActions,
+}
+
+/// The workspace's policy for the agents' act tools (Story 7.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentActions {
+    /// Every act tool but `set_status` waits on the operator's toast (unless an edge's Always
+    /// covers it).
+    #[default]
+    Ask,
+    /// Act tools run without a toast; each run shows a one-line notice.
+    AllowAll,
+}
+
+impl AgentActions {
+    pub fn is_ask(&self) -> bool {
+        *self == AgentActions::Ask
+    }
 }
 
 impl Default for Workspace {
@@ -73,6 +96,7 @@ impl Default for Workspace {
             sessions: Vec::new(),
             edges: Vec::new(),
             defaults: LaunchDefaults::default(),
+            agent_actions: AgentActions::Ask,
         }
     }
 }
@@ -178,6 +202,15 @@ pub struct Edge {
     pub kind: EdgeKind,
     pub label: Option<String>,
     pub created_at: String,
+    /// Story 7.2: the operator chose "Always for this edge": an agent session at one end acting
+    /// on the other end runs without a toast. Absent (false) in older files and left out while
+    /// false; it goes with the edge.
+    #[serde(skip_serializing_if = "is_false")]
+    pub agent_allowed: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1596,24 +1629,18 @@ fn edge_session_ids(workspace: &Workspace) -> HashSet<String> {
 /// The new edge gets a UUID v4, no label and `createdAt` now; it is written and emitted like any
 /// mutation. A refusal changes nothing.
 pub fn add_edge<R: Runtime>(app: &AppHandle<R>, from: &NodeRef, to: &NodeRef) -> Result<Edge, String> {
-    let kind = edge_kind(from, to).map_err(str::to_string)?;
+    add_edge_labelled(app, from, to, None)
+}
+
+/// [`add_edge`] with its label (normalised as [`set_edge_label`] stores it) in the same step
+/// (Story 7.2's `link`).
+pub fn add_edge_labelled<R: Runtime>(app: &AppHandle<R>, from: &NodeRef, to: &NodeRef, label: Option<&str>) -> Result<Edge, String> {
+    let label = normalise_edge_label(label);
     let state = app.state::<AppState>();
     let (target, workspace, edge) = {
         let mut st = state.write_workspace();
         let children = st.children();
-        let from = canonical_end(&st.workspace, &children, from);
-        let to = canonical_end(&st.workspace, &children, to);
-        if from == to {
-            return Err(REFUSE_SELF.to_string());
-        }
-        for end in [&from, &to] {
-            if !edge_end_exists(&st.workspace, &children, end) {
-                return Err(format!("unknown {}", node_type_word(end.kind)));
-            }
-        }
-        if is_duplicate_edge(&st.workspace.edges, kind, &from, &to) {
-            return Err(REFUSE_DUPLICATE.to_string());
-        }
+        let (kind, from, to) = check_edge_in(&st.workspace, &children, from, to)?;
         for end in [&from, &to] {
             if end.kind != NodeType::Session || st.workspace.sessions.iter().any(|s| s.session_id == end.id) {
                 continue;
@@ -1631,8 +1658,9 @@ pub fn add_edge<R: Runtime>(app: &AppHandle<R>, from: &NodeRef, to: &NodeRef) ->
             from,
             to,
             kind,
-            label: None,
+            label,
             created_at: format_iso_ms(crate::claude::live::now_ms()),
+            agent_allowed: false,
         };
         st.workspace.edges.push(edge.clone());
         st.revision += 1;
@@ -1640,6 +1668,126 @@ pub fn add_edge<R: Runtime>(app: &AppHandle<R>, from: &NodeRef, to: &NodeRef) ->
     };
     persist_and_emit(app, target, &workspace);
     Ok(edge)
+}
+
+/// What [`add_edge`] would store for `from` → `to`, without storing anything (Story 7.2's `link`
+/// checks before it asks the operator): the kind and both ends as stored, or the refusal
+/// [`add_edge`] would give (6.1's texts).
+pub fn check_edge(st: &WorkspaceState, from: &NodeRef, to: &NodeRef) -> Result<(EdgeKind, NodeRef, NodeRef), String> {
+    let children = st.children();
+    check_edge_in(&st.workspace, &children, from, to)
+}
+
+fn check_edge_in(workspace: &Workspace, children: &[ChildNode], from: &NodeRef, to: &NodeRef) -> Result<(EdgeKind, NodeRef, NodeRef), String> {
+    let kind = edge_kind(from, to).map_err(str::to_string)?;
+    let from = canonical_end(workspace, children, from);
+    let to = canonical_end(workspace, children, to);
+    if from == to {
+        return Err(REFUSE_SELF.to_string());
+    }
+    for end in [&from, &to] {
+        if !edge_end_exists(workspace, children, end) {
+            return Err(format!("unknown {}", node_type_word(end.kind)));
+        }
+    }
+    if is_duplicate_edge(&workspace.edges, kind, &from, &to) {
+        return Err(REFUSE_DUPLICATE.to_string());
+    }
+    Ok((kind, from, to))
+}
+
+/// Story 7.2: whether `node` is a node an edge may end on now (`start_session`'s
+/// `cooperateWithMe` checks the caller before asking).
+pub fn is_edge_end(st: &WorkspaceState, node: &NodeRef) -> bool {
+    let children = st.children();
+    edge_end_exists(&st.workspace, &children, node)
+}
+
+/// Story 7.2: whether stored edge `edge` joins `a` and `b` (either direction, either kind).
+pub fn edge_joins(edge: &Edge, a: &NodeRef, b: &NodeRef) -> bool {
+    (edge.from == *a && edge.to == *b) || (edge.from == *b && edge.to == *a)
+}
+
+/// Story 7.2: set or clear an edge's `agentAllowed` ("Always for this edge", and the
+/// inspector's Revoke). Written and emitted like any mutation; the same value again changes
+/// nothing. An unknown id is an `Err` and nothing changes.
+pub fn set_edge_agent_allowed<R: Runtime>(app: &AppHandle<R>, id: &str, allowed: bool) -> Result<WorkspaceSnapshot, String> {
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        let edge = st
+            .workspace
+            .edges
+            .iter_mut()
+            .find(|e| e.id == id)
+            .ok_or_else(|| "unknown edge".to_string())?;
+        if edge.agent_allowed == allowed {
+            return Ok(st.snapshot());
+        }
+        edge.agent_allowed = allowed;
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    Ok(persist_and_emit(app, target, &workspace))
+}
+
+/// Story 7.2: the workspace's `agentActions` (`ask` / `allowAll`), stored and emitted like any
+/// mutation; the same value again changes nothing.
+pub fn set_agent_actions<R: Runtime>(app: &AppHandle<R>, mode: AgentActions) -> WorkspaceSnapshot {
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        if st.workspace.agent_actions == mode {
+            return st.snapshot();
+        }
+        st.workspace.agent_actions = mode;
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    persist_and_emit(app, target, &workspace)
+}
+
+/// Story 7.2, `start_session` with `cooperateWithMe`: a [`SessionRef`] for the session about to
+/// start (`session_id` under `project_id`, on `branch_id` when given), so a cooperate edge can end
+/// on it before its system prompt is built. Written and emitted; `Ok(true)` when it was created
+/// (an existing ref is left alone: `Ok(false)`). An unknown project is an `Err`.
+pub fn add_session_ref<R: Runtime>(app: &AppHandle<R>, session_id: &str, project_id: &str, branch_id: Option<&str>) -> Result<bool, String> {
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        if !st.workspace.projects.iter().any(|p| p.id == project_id) {
+            return Err("unknown project".to_string());
+        }
+        if st.workspace.sessions.iter().any(|s| s.session_id == session_id) {
+            return Ok(false);
+        }
+        st.workspace.sessions.push(SessionRef {
+            session_id: session_id.to_string(),
+            project_id: project_id.to_string(),
+            branch_id: branch_id.map(str::to_string),
+            ..SessionRef::default()
+        });
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    persist_and_emit(app, target, &workspace);
+    Ok(true)
+}
+
+/// Take back a [`SessionRef`] [`add_session_ref`] created for a start that did not happen.
+pub fn remove_session_ref<R: Runtime>(app: &AppHandle<R>, session_id: &str, project_id: &str) {
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        let before = st.workspace.sessions.len();
+        st.workspace.sessions.retain(|s| !(s.session_id == session_id && s.project_id == project_id));
+        if st.workspace.sessions.len() == before {
+            return;
+        }
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    persist_and_emit(app, target, &workspace);
 }
 
 /// The longest label stored, in characters.
@@ -2346,6 +2494,7 @@ mod tests {
                 kind: EdgeKind::Cooperate,
                 label: Some("pairs".into()),
                 created_at: "2026-10-16T00:00:00Z".into(),
+                agent_allowed: false,
             }],
             ..Workspace::default()
         };
@@ -3645,6 +3794,52 @@ mod tests {
     fn an_older_file_without_show_branches_loads_with_branches_off() {
         let ws = store::parse(r#"{ "projects": [ { "id": "p", "path": "/p", "label": "p" } ] }"#).unwrap();
         assert!(!ws.projects[0].show_branches);
+    }
+
+    /// Story 7.2: an older file (no `agentAllowed`, no `agentActions`) loads as ask / not allowed
+    /// and is written back without either key; set, both round-trip.
+    #[test]
+    fn agent_policies_are_optional_on_disk_and_round_trip() {
+        let older = r#"{ "edges": [ { "id": "e", "from": { "type": "session", "id": "s" }, "to": { "type": "project", "id": "p" }, "kind": "context", "label": null, "createdAt": "x" } ] }"#;
+        let mut ws = store::parse(older).unwrap();
+        assert_eq!(ws.agent_actions, AgentActions::Ask);
+        assert!(!ws.edges[0].agent_allowed);
+        let text = store::to_json(&ws);
+        assert!(!text.contains("agentAllowed") && !text.contains("agentActions"), "{text}");
+        ws.edges[0].agent_allowed = true;
+        ws.agent_actions = AgentActions::AllowAll;
+        let text = store::to_json(&ws);
+        assert!(text.contains("\"agentAllowed\": true") && text.contains("\"agentActions\": \"allowAll\""), "{text}");
+        let back = store::parse(&text).unwrap();
+        assert!(back.edges[0].agent_allowed);
+        assert_eq!(back.agent_actions, AgentActions::AllowAll);
+    }
+
+    /// Story 7.2: the policy setters persist and emit; Revoke clears; an unknown edge is an `Err`.
+    #[test]
+    fn the_agent_policy_setters_persist() {
+        let (app, _cfg, path) = app_with_ide(0);
+        let a = NodeRef { kind: NodeType::Session, id: "s".into() };
+        let p = NodeRef { kind: NodeType::Project, id: "ide".into() };
+        app.state::<AppState>().write_workspace().workspace.edges.push(Edge {
+            id: "e".into(),
+            from: a.clone(),
+            to: p.clone(),
+            ..Edge::default()
+        });
+        set_edge_agent_allowed(app.handle(), "e", true).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("\"agentAllowed\": true"));
+        let edge = app.state::<AppState>().read_workspace().workspace.edges[0].clone();
+        assert!(edge_joins(&edge, &a, &p) && edge_joins(&edge, &p, &a));
+        assert!(!edge_joins(&edge, &a, &a));
+        set_edge_agent_allowed(app.handle(), "e", false).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("agentAllowed"));
+        assert_eq!(set_edge_agent_allowed(app.handle(), "nope", true), Err("unknown edge".to_string()));
+        let snapshot = set_agent_actions(app.handle(), AgentActions::AllowAll);
+        assert_eq!(snapshot.workspace.agent_actions, AgentActions::AllowAll);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("\"agentActions\": \"allowAll\""));
+        set_agent_actions(app.handle(), AgentActions::Ask);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("agentActions"));
     }
 
     #[test]
