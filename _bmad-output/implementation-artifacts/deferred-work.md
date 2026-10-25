@@ -119,3 +119,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-7-4-request-review.md`
   summary: Story 7.4 (`4e90cd4`) has not run on CI. It was closed on local Windows verification because GitHub Actions is suspended.
   evidence: The Linux build and tests have not run, including the Unix symlink branch of the containment test. When Actions resumes, confirm the latest commit on both runners.
+- source_spec: `_bmad-output/implementation-artifacts/spec-8-1-working-tree-diff-pane.md`
+  summary: No DOM render test for the Review pane: the 300 ms render target, the Diagnostics render-time wiring, and tree semantics (role=tree, arrow keys).
+  evidence: Vitest runs in node with no DOM. The 2026-10-25 GUI pass measured 21 ms for 3,000 lines with 40 hunks.
+- source_spec: `_bmad-output/implementation-artifacts/spec-8-1-working-tree-diff-pane.md`
+  summary: Story 8.1 has not run on CI. It was closed on local Windows verification while GitHub Actions is suspended.
+  evidence: The Linux build and tests have not run, including the Unix symlink branch of `read_disk`, which skipped on Windows. When Actions resumes, confirm the latest commit on both runners.

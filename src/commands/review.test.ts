@@ -44,7 +44,7 @@ function request(sessionId: string, seq: number, flagged = true, over: Partial<R
 
 describe("review requests (Story 7.4)", () => {
   beforeEach(() => {
-    useReviewStore.setState({ requests: EMPTY_REVIEWS, received: false, loadError: null, dismissed: {}, openId: null });
+    useReviewStore.setState({ requests: EMPTY_REVIEWS, received: false, loadError: null, dismissed: {}, target: null, requestId: null, selected: null, filter: "all", layout: "split" });
     useUiStore.setState({ pane: null, selection: null });
     reviewOpen.mockReset();
     reviewClear.mockReset();
@@ -85,10 +85,12 @@ describe("review requests (Story 7.4)", () => {
     await expect(openReview("s1")).resolves.toBe(true);
     expect(reviewOpen).toHaveBeenCalledWith("s1", 1);
     expect(useUiStore.getState().pane).toBe("review");
-    expect(useReviewStore.getState().openId).toBe("s1");
+    expect(useReviewStore.getState().target).toEqual({ kind: "session", sessionId: "s1" });
+    expect(useReviewStore.getState().requestId).toBe("s1");
     expect(isFlagged(useReviewStore.getState().requests, "s1")).toBe(false);
     closeOpenPane();
-    expect(useReviewStore.getState().openId).toBeNull();
+    expect(useReviewStore.getState().target).toBeNull();
+    expect(useReviewStore.getState().requestId).toBeNull();
     // A refusal is the notice; no pane.
     reviewOpen.mockRejectedValue(new Error("no review request for this session"));
     await expect(openReview("s9")).resolves.toBe(false);
@@ -155,10 +157,13 @@ describe("review requests (Story 7.4)", () => {
     useReviewStore.getState().applySnapshot({ s1: request("s1", 1) });
     reviewOpen.mockResolvedValueOnce(request("s1", 1, false));
     await openReview("s1");
+    const seq = useReviewStore.getState().refreshSeq;
     reviewOpen.mockResolvedValueOnce(request("s1", 2, false, { summary: "again" }));
     useReviewStore.getState().applySnapshot({ s1: request("s1", 2, true, { summary: "again" }) });
     expect(reviewOpen).toHaveBeenLastCalledWith("s1", 2);
     await vi.waitFor(() => expect(isFlagged(useReviewStore.getState().requests, "s1")).toBe(false));
+    // The repeat request may name other paths: the list is read again.
+    expect(useReviewStore.getState().refreshSeq).toBe(seq + 1);
     const { requests, dismissed } = useReviewStore.getState();
     expect(toastRequests(requests, dismissed)).toEqual([]);
     // With the pane closed a new request flags as usual.

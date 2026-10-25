@@ -49,12 +49,7 @@ pub struct Completed {
 impl Completed {
     /// The first non-empty line of stderr, trimmed: what a banner or error message quotes.
     pub fn stderr_summary(&self) -> String {
-        self.stderr
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty())
-            .unwrap_or("")
-            .to_string()
+        summary(&self.stderr)
     }
 
     /// `Ok(self)` on a zero exit, otherwise [`RunError::Failed`] with the stderr summary.
@@ -68,6 +63,11 @@ impl Completed {
             })
         }
     }
+}
+
+/// The first non-empty line of `stderr`, trimmed.
+fn summary(stderr: &str) -> String {
+    stderr.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").to_string()
 }
 
 /// `cmd.spawn()`, retried a few times on Linux's `ETXTBSY` ("Text file busy"): a program that
@@ -90,7 +90,48 @@ fn spawn_retrying(cmd: &mut Command) -> std::io::Result<std::process::Child> {
 /// Run `cmd` to completion. Stdin is closed, stdout/stderr are captured, no console window is
 /// opened on Windows, and a child still running at `timeout` is killed. A non-zero exit is
 /// *not* an error here: the caller reads `status` (git uses exit codes to mean things).
-pub fn run(mut cmd: Command, timeout: Duration) -> Result<Completed, RunError> {
+pub fn run(cmd: Command, timeout: Duration) -> Result<Completed, RunError> {
+    let raw = run_capped(cmd, timeout, None)?;
+    Ok(Completed {
+        status: raw.status,
+        stdout: String::from_utf8_lossy(&raw.stdout).into_owned(),
+        stderr: raw.stderr,
+    })
+}
+
+/// A finished child whose stdout is kept as bytes (Story 8.1: blob reads), at most the cap.
+#[derive(Debug, Clone)]
+pub struct CompletedBytes {
+    pub status: ExitStatus,
+    /// The first `cap` bytes of stdout, never decoded.
+    pub stdout: Vec<u8>,
+    /// Stdout held more than `cap` bytes: the rest was read and dropped.
+    pub over_cap: bool,
+    pub stderr: String,
+}
+
+impl CompletedBytes {
+    /// `Ok(self)` on a zero exit, otherwise [`RunError::Failed`] with the stderr summary.
+    pub fn success(self) -> Result<CompletedBytes, RunError> {
+        if self.status.success() {
+            Ok(self)
+        } else {
+            Err(RunError::Failed {
+                code: self.status.code(),
+                stderr: summary(&self.stderr),
+            })
+        }
+    }
+}
+
+/// [`run`], with stdout kept as bytes and capped at `cap` bytes: past the cap the output is
+/// drained and dropped (so the child never blocks on a full pipe) and `over_cap` is set. Nothing
+/// is decoded, so the caller can test for binary content and apply its size limit first.
+pub fn run_bytes(cmd: Command, timeout: Duration, cap: usize) -> Result<CompletedBytes, RunError> {
+    run_capped(cmd, timeout, Some(cap))
+}
+
+fn run_capped(mut cmd: Command, timeout: Duration, cap: Option<usize>) -> Result<CompletedBytes, RunError> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -99,8 +140,8 @@ pub fn run(mut cmd: Command, timeout: Duration) -> Result<Completed, RunError> {
 
     // Drain both pipes on their own threads so a chatty child can never block on a full pipe
     // while we wait for it.
-    let stdout = child.stdout.take().map(read_to_end_lossy);
-    let stderr = child.stderr.take().map(read_to_end_lossy);
+    let stdout = child.stdout.take().map(|r| read_to_end(r, cap));
+    let stderr = child.stderr.take().map(|r| read_to_end(r, None));
 
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -125,14 +166,19 @@ pub fn run(mut cmd: Command, timeout: Duration) -> Result<Completed, RunError> {
     let readers_deadline = deadline.max(Instant::now()) + READER_GRACE;
     let (stdout, stdout_cut) = collect(stdout, readers_deadline);
     let (stderr, stderr_cut) = collect(stderr, readers_deadline);
-    let mut stderr = stderr;
+    let mut stderr = String::from_utf8_lossy(&stderr.bytes).into_owned();
     if stdout_cut || stderr_cut {
         if !stderr.is_empty() && !stderr.ends_with('\n') {
             stderr.push('\n');
         }
         stderr.push_str(PIPES_HELD_NOTE);
     }
-    Ok(Completed { status, stdout, stderr })
+    Ok(CompletedBytes {
+        status,
+        stdout: stdout.bytes,
+        over_cap: stdout.over_cap,
+        stderr,
+    })
 }
 
 /// Start `cmd` and return at once, never waiting for it: stdin, stdout and stderr are closed
@@ -159,27 +205,49 @@ const READER_GRACE: Duration = Duration::from_millis(200);
 /// Appended to `stderr` when a reader was abandoned (its output may be incomplete).
 const PIPES_HELD_NOTE: &str = "[switchboard: output cut short; a process kept the pipes open]";
 
-/// What a reader delivered by `deadline`: `(text, cut_short)`.
-fn collect(reader: Option<mpsc::Receiver<String>>, deadline: Instant) -> (String, bool) {
+/// What one pipe reader captured.
+#[derive(Debug, Default)]
+struct Captured {
+    bytes: Vec<u8>,
+    over_cap: bool,
+}
+
+/// What a reader delivered by `deadline`: `(captured, cut_short)`.
+fn collect(reader: Option<mpsc::Receiver<Captured>>, deadline: Instant) -> (Captured, bool) {
     let Some(rx) = reader else {
-        return (String::new(), false);
+        return (Captured::default(), false);
     };
     match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-        Ok(text) => (text, false),
+        Ok(captured) => (captured, false),
         // Disconnected: the reader thread died without sending; nothing to show.
-        Err(mpsc::RecvTimeoutError::Disconnected) => (String::new(), false),
-        Err(mpsc::RecvTimeoutError::Timeout) => (String::new(), true),
+        Err(mpsc::RecvTimeoutError::Disconnected) => (Captured::default(), false),
+        Err(mpsc::RecvTimeoutError::Timeout) => (Captured::default(), true),
     }
 }
 
-/// Drain `reader` to EOF on its own thread and hand the text over a channel, so the caller
-/// can stop waiting for it (a thread `join` cannot be given a deadline).
-fn read_to_end_lossy<R: std::io::Read + Send + 'static>(mut reader: R) -> mpsc::Receiver<String> {
+/// Drain `reader` to EOF on its own thread and hand the bytes over a channel, so the caller
+/// can stop waiting for it (a thread `join` cannot be given a deadline). With a `cap`, only the
+/// first `cap` bytes are kept; the rest is still read (the child must not block) and dropped.
+fn read_to_end<R: std::io::Read + Send + 'static>(mut reader: R, cap: Option<usize>) -> mpsc::Receiver<Captured> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = reader.read_to_end(&mut buf);
-        let _ = tx.send(String::from_utf8_lossy(&buf).into_owned());
+        let mut out = Captured::default();
+        let mut chunk = [0u8; 64 * 1024];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let room = cap.map_or(n, |cap| cap.saturating_sub(out.bytes.len()).min(n));
+                    out.bytes.extend_from_slice(&chunk[..room]);
+                    if room < n {
+                        out.over_cap = true;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        let _ = tx.send(out);
     });
     rx
 }
@@ -248,6 +316,18 @@ mod tests {
         assert!(done.status.success());
         assert_eq!(done.stdout.trim(), "hello");
         assert!(done.success().is_ok());
+    }
+
+    #[test]
+    fn run_bytes_keeps_raw_bytes_up_to_the_cap_and_says_when_there_was_more() {
+        let dir = tempfile::tempdir().unwrap();
+        let ok = script(dir.path(), "ok", "@echo hello world\n", "echo hello world\n");
+        let done = run_bytes(Command::new(&ok), Duration::from_secs(5), 5).unwrap();
+        assert_eq!(done.stdout, b"hello");
+        assert!(done.over_cap);
+        let whole = run_bytes(Command::new(&ok), Duration::from_secs(5), 1024).unwrap().success().unwrap();
+        assert!(!whole.over_cap);
+        assert_eq!(String::from_utf8_lossy(&whole.stdout).trim(), "hello world");
     }
 
     #[test]

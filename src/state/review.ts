@@ -1,13 +1,16 @@
 // The review store mirrors Story 7.4's review requests (`review_requests_get`, then every
 // `review://requests`): each session's last `request_review` (its summary and paths) and whether
 // its node still shows the `review` flag. Rust owns the requests, the flags and the path checks;
-// the UI renders them. Two things are the UI's own: which requests' toasts the operator dismissed
+// the UI renders them. The rest is the UI's own: which requests' toasts the operator dismissed
 // (a toast does not wait or expire; Dismiss closes it and keeps the flag; a new request from the
-// same session shows a toast again) and which session's review the Review pane shows. Runtime
-// only, never persisted.
+// same session shows a toast again) and what the Review pane shows (Story 8.1): its target (a
+// project, a branch or a session; Rust finds the folder), the session whose request it shows on
+// top (if any), the filter, the layout, the selected file, and the last diff's render time for
+// Diagnostics. Runtime only, never persisted.
 
 import { create } from "zustand";
-import type { Banner, ReviewMap, ReviewRequest } from "../ipc";
+import type { Banner, DiffFilter, ReviewMap, ReviewRequest, ReviewTarget } from "../ipc";
+import type { DiffLayout } from "../review/model";
 
 export type ReviewStoreState = {
   requests: ReviewMap;
@@ -17,18 +20,43 @@ export type ReviewStoreState = {
   loadError: string | null;
   /** Session id → the `seq` of the request whose toast was dismissed. */
   dismissed: Readonly<Record<string, number>>;
-  /** The session whose review the Review pane shows, or `null`. */
-  openId: string | null;
+  /** What the Review pane reviews (Story 8.1), or `null` while it is closed. */
+  target: ReviewTarget | null;
+  /** The session whose review request the pane shows on top (opened from the request), or `null`. */
+  requestId: string | null;
+  filter: DiffFilter;
+  layout: DiffLayout;
+  /** The selected file (its path in the list), or `null`. */
+  selected: string | null;
+  /** The tree's selectable paths in display order (the pane sets it), for stepping through the files. */
+  order: readonly string[];
+  /** The folder the last list came from (Rust's), or `null`. */
+  root: string | null;
+  /** Rises on Refresh and when the target's status poll changes: the pane reads the list again. */
+  refreshSeq: number;
+  /** How long the last diff took to render after its text arrived, in ms (Diagnostics). */
+  lastRenderMs: number | null;
   applySnapshot: (requests: ReviewMap) => void;
   /** Put one request (the reply of `review_open`) into the map at once. */
   applyRequest: (request: ReviewRequest) => void;
   setLoadError: (error: string | null) => void;
   /** Close the toast of request `seq` of session `id` (the flag stays). */
   dismiss: (id: string, seq: number) => void;
-  setOpen: (id: string | null) => void;
+  /** Show `target` in the pane (a new target starts at the All filter with no file selected). */
+  openTarget: (target: ReviewTarget, requestId: string | null) => void;
+  /** The pane closed: nothing is reviewed. */
+  closeTarget: () => void;
+  setFilter: (filter: DiffFilter) => void;
+  setLayout: (layout: DiffLayout) => void;
+  select: (path: string | null) => void;
+  setOrder: (order: readonly string[]) => void;
+  setRoot: (root: string | null) => void;
+  refresh: () => void;
+  setRenderMs: (ms: number) => void;
 };
 
 export const EMPTY_REVIEWS: ReviewMap = Object.freeze({}) as ReviewMap;
+const NO_ORDER: readonly string[] = Object.freeze([]);
 const NO_DISMISSED: Readonly<Record<string, number>> = Object.freeze({});
 
 export const useReviewStore = create<ReviewStoreState>()((set) => ({
@@ -36,7 +64,15 @@ export const useReviewStore = create<ReviewStoreState>()((set) => ({
   received: false,
   loadError: null,
   dismissed: NO_DISMISSED,
-  openId: null,
+  target: null,
+  requestId: null,
+  filter: "all",
+  layout: "split",
+  selected: null,
+  order: NO_ORDER,
+  root: null,
+  refreshSeq: 0,
+  lastRenderMs: null,
   applySnapshot: (requests) =>
     set((s) => {
       // A request that went (its session was removed) takes its dismissal with it.
@@ -55,8 +91,34 @@ export const useReviewStore = create<ReviewStoreState>()((set) => ({
     }),
   setLoadError: (loadError) => set({ loadError }),
   dismiss: (id, seq) => set((s) => ({ dismissed: { ...s.dismissed, [id]: seq } })),
-  setOpen: (openId) => set((s) => (s.openId === openId ? {} : { openId })),
+  openTarget: (target, requestId) =>
+    set((s) =>
+      s.target !== null && sameReviewTarget(s.target, target) && s.requestId === requestId
+        ? { refreshSeq: s.refreshSeq + 1 }
+        : { target, requestId, filter: "all", selected: null, root: null, refreshSeq: s.refreshSeq + 1 },
+    ),
+  closeTarget: () =>
+    set((s) => (s.target === null && s.requestId === null ? {} : { target: null, requestId: null, selected: null, order: NO_ORDER, root: null })),
+  setFilter: (filter) => set((s) => (s.filter === filter ? {} : { filter })),
+  setLayout: (layout) => set((s) => (s.layout === layout ? {} : { layout })),
+  select: (selected) => set((s) => (s.selected === selected ? {} : { selected })),
+  setRoot: (root) => set((s) => (s.root === root ? {} : { root })),
+  setOrder: (order) => set((s) => (sameOrder(s.order, order) ? {} : { order })),
+  refresh: () => set((s) => ({ refreshSeq: s.refreshSeq + 1 })),
+  setRenderMs: (lastRenderMs) => set({ lastRenderMs }),
 }));
+
+function sameOrder(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((p, i) => p === b[i]);
+}
+
+/** True when both name the same node. */
+export function sameReviewTarget(a: ReviewTarget, b: ReviewTarget): boolean {
+  if (a.kind === "project" && b.kind === "project") return a.projectId === b.projectId;
+  if (a.kind === "branch" && b.kind === "branch") return a.projectId === b.projectId && a.branch === b.branch;
+  if (a.kind === "session" && b.kind === "session") return a.sessionId === b.sessionId;
+  return false;
+}
 
 /** Session `id`'s request in `requests`, or `null` (never a prototype key). */
 export function requestIn(requests: ReviewMap, id: string): ReviewRequest | null {

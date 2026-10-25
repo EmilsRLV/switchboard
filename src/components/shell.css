@@ -1116,15 +1116,62 @@
   color: var(--fg-muted);
 }
 
-/* --- the Review pane (Story 7.4, before Epic 8): the summary, then one row per path (mono,
-   relative to the session's folder, the full path on hover) with a muted `missing` mark. Tokens
-   only, no accent. A review toast is an `.approval-toast` (its look, above). ------------------- */
+/* --- the Review pane (Story 8.1; Story 7.4's request on top) ------------------------------
+   A wide pane like the terminal pane (width inline: min(1100px, 85vw) by default, dragged by its
+   left edge with the terminal pane's handle): a header row, the request's summary when opened from
+   one, a toolbar (the filter and layout toggles, the totals), then the changed-files tree beside
+   the merge view. Plain-text marks and +/- counts in mono. The diff's own colours are the
+   --diff-* tokens and the syntax colours the terminal palette, set on the CodeMirror view
+   (review/DiffView.tsx): diff content, never chrome. Tokens only, no accent. */
+
+.review-pane {
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+
+.review-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.5rem 0.75rem;
+  border-bottom: var(--line) solid var(--border);
+}
 
 .review-title {
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 45%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.review-root {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.review-header-actions {
+  flex: none;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.review-request {
+  flex: none;
+  max-height: 30%;
+  overflow-y: auto;
+  padding: 0.5rem 0.75rem;
+  border-bottom: var(--line) solid var(--border);
 }
 
 .review-summary {
@@ -1141,37 +1188,184 @@
   color: var(--fg-muted);
 }
 
-.review-paths {
+.review-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.4rem 0.75rem;
+  border-bottom: var(--line) solid var(--border);
+}
+
+.review-toggle {
+  flex: none;
+  display: flex;
+  gap: 0.25rem;
+}
+
+.review-toggle .btn {
+  color: var(--fg-muted);
+}
+
+/* The pressed position: --fg text and border, like the worktree sheet's mode toggle. */
+.review-toggle .btn[aria-pressed="true"] {
+  color: var(--fg);
+  border-color: var(--fg);
+}
+
+.review-totals {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.review-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.review-tree {
+  flex: none;
+  width: min(300px, 35%);
+  overflow: auto;
+  padding: 0.4rem 0;
+  border-right: var(--line) solid var(--border);
+}
+
+.review-tree .muted,
+.review-tree .pane-error {
+  padding: 0 0.75rem;
+}
+
+.review-group {
+  padding: 0.35rem 0.75rem 0.2rem;
+}
+
+.review-rows {
   margin: 0;
   padding: 0;
   list-style: none;
-  border: var(--line) solid var(--border);
-  border-radius: var(--radius-sm);
 }
 
-.review-path {
+/* A file row: the palette's row look (hover and selection in --bg-hover, the selected one with
+   the 2-px --fg-muted left border), mono --text-xs. */
+.review-row {
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
-  padding: 0.25rem 0.5rem;
+  width: 100%;
+  padding: 0.15rem 0.75rem;
+  font: inherit;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
+  color: var(--fg);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  cursor: pointer;
 }
 
-.review-path + .review-path {
-  border-top: var(--line) solid var(--border);
+.review-row:hover {
+  background: var(--bg-hover);
 }
 
-.review-path-text {
+.review-row[aria-current="true"] {
+  background: var(--bg-hover);
+  border-left-color: var(--fg-muted);
+}
+
+.review-row:focus-visible {
+  outline: var(--line) solid var(--focus);
+  outline-offset: -1px;
+}
+
+.review-mark,
+.review-counts,
+.review-from {
+  color: var(--fg-muted);
+}
+
+.review-mark {
+  flex: none;
+  width: 1ch;
+}
+
+.review-name {
   flex: 1;
   min-width: 0;
-  overflow-wrap: anywhere;
-  user-select: text;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.review-missing {
+.review-counts {
   flex: none;
+  white-space: nowrap;
+}
+
+.review-dir {
+  padding: 0.15rem 0.75rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
   color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.review-view {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.review-note {
+  padding: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.review-diff-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* `not UTF-8`: a muted line over the diff. */
+.review-mark-line {
+  flex: none;
+  margin: 0;
+  padding: 0.25rem 0.75rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  border-bottom: var(--line) solid var(--border);
+}
+
+.review-diff {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* The merge view scrolls as one (both sides together); the unified view is one editor. */
+.review-diff-split .cm-mergeView {
+  height: 100%;
+  overflow: auto;
+}
+
+.review-diff-unified .cm-editor {
+  height: 100%;
 }
 
 /* The edge inspector's policy row (Story 7.2). */

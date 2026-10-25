@@ -55,6 +55,14 @@
   --ansi-14: #79cbd5;
   --ansi-15: #ffffff;
 
+  /* Diff colours (Story 8.1): the Review pane's inserted and deleted lines, and the words that
+     changed within them. Diff content, like terminal content: never chrome, never the accent.
+     The terminal's green and red at low opacity, on --bg-raised. */
+  --diff-add-bg: #98c3791a;
+  --diff-del-bg: #e06c751a;
+  --diff-add-word: #98c37947;
+  --diff-del-word: #e06c7547;
+
   --font-sans:
     system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;
   --font-mono:

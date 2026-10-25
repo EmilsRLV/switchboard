@@ -1,15 +1,25 @@
-// The actions behind Story 7.4's review requests: opening a session's review (the card's
-// `review` flag, the toast's Open, a click on the OS notification, the palette's "Open review
-// request") and "Clear review flag". Rust owns the requests and the flags: opening asks Rust
-// (which lowers the flag and returns the request), then shows the Review pane on that session;
-// a refusal is the notice. Each call names the request the UI showed (its `seq`), so a
-// replacement the operator never saw keeps its flag. While the pane shows a session, a new
-// request from it counts as seen: it is opened at once.
+// The actions behind the Review pane. Story 8.1: "Review changes" (`r`, the palette, the node
+// menu) opens the pane on the selected project, branch or session: Rust resolves the node's folder
+// (a project's folder, a branch's linked worktree, a session's cwd) and lists its working-tree
+// changes; the pane's filter, layout, file stepping and refresh are palette commands too. While the
+// pane is open, a change in the target's project status (the status poll) reads the list again.
+//
+// Story 7.4's review requests open the same pane on the session's folder, the request on top:
+// opening a session's review (the card's `review` flag, the toast's Open, a click on the OS
+// notification, the palette's "Open review request") asks Rust (which lowers the flag and returns
+// the request), then shows the pane; a refusal is the notice. Each call names the request the UI
+// showed (its `seq`), so a replacement the operator never saw keeps its flag. While the pane shows
+// a session's request, a new request from it counts as seen: it is opened at once.
 
-import { reviewClear, reviewOpen } from "../ipc";
+import { reviewClear, reviewOpen, type DiffFilter, type ReviewTarget } from "../ipc";
+import { useLiveStore } from "../state/live";
 import { isFlagged, requestIn, requestList, useReviewStore } from "../state/review";
+import { useSettingsStore } from "../state/settings";
+import { useStatusStore } from "../state/status";
 import { useUiStore } from "../state/ui";
-import { notify } from "./navigation";
+import { useWorkspaceStore } from "../state/workspace";
+import { otherLayout, stepPath } from "../review/model";
+import { notify, selectedBranch } from "./navigation";
 import { openPane } from "./panes";
 
 function describe(err: unknown): string {
@@ -21,6 +31,147 @@ function selectedSessionId(): string | null {
   const selection = useUiStore.getState().selection;
   return selection !== null && selection.kind === "session" ? selection.id : null;
 }
+
+// -- Story 8.1: the diff pane ------------------------------------------------------------------
+
+/** What "Review changes" reviews for the selection: the selected project, branch or session; else `null`. */
+export function reviewTargetOfSelection(): ReviewTarget | null {
+  const selection = useUiStore.getState().selection;
+  if (selection === null) return null;
+  if (selection.kind === "project") {
+    const known = useWorkspaceStore.getState().snapshot?.workspace.projects.some((p) => p.id === selection.id) ?? false;
+    return known ? { kind: "project", projectId: selection.id } : null;
+  }
+  if (selection.kind === "session") return { kind: "session", sessionId: selection.id };
+  if (selection.kind === "branch") {
+    const branch = selectedBranch();
+    return branch === null ? null : { kind: "branch", projectId: branch.projectId, branch: branch.label };
+  }
+  return null;
+}
+
+/** The `when` of "Review changes": a project, branch or session is selected. */
+export function canReviewSelection(): boolean {
+  return reviewTargetOfSelection() !== null;
+}
+
+/** Whether the Review pane is open on a target: the `when` of the pane's own commands. */
+export function isReviewOpen(): boolean {
+  return useUiStore.getState().pane === "review" && useReviewStore.getState().target !== null;
+}
+
+/** Open the Review pane on `target` (no review request on top). */
+export function openReviewOf(target: ReviewTarget): void {
+  useReviewStore.getState().openTarget(target, null);
+  openPane("review");
+}
+
+/** "Review changes": the pane on the selected node. Resolves whether it opened. */
+export function reviewSelection(): boolean {
+  const target = reviewTargetOfSelection();
+  if (target === null) return false;
+  openReviewOf(target);
+  return true;
+}
+
+/** "Refresh": read the list (and the selected file) again. */
+export function refreshReview(): void {
+  if (isReviewOpen()) useReviewStore.getState().refresh();
+}
+
+/** The filter toggle: All, Staged or Unstaged. */
+export function setReviewFilter(filter: DiffFilter): void {
+  useReviewStore.getState().setFilter(filter);
+}
+
+/** The layout toggle: side by side ↔ unified. */
+export function toggleReviewLayout(): void {
+  const store = useReviewStore.getState();
+  store.setLayout(otherLayout(store.layout));
+}
+
+/** The toggle's palette title: what it switches to. */
+export function toggleLayoutTitle(): string {
+  return useReviewStore.getState().layout === "split" ? "Review: unified view" : "Review: side-by-side view";
+}
+
+/** Select the file `delta` places from the selected one in the tree's order (requested files first). */
+export function stepReviewFile(delta: number): void {
+  const store = useReviewStore.getState();
+  const next = stepPath(store.order, store.selected, delta);
+  if (next !== null) store.select(next);
+}
+
+/** The project `target` belongs to (whose status poll keeps the list fresh), or `null`. */
+export function projectOfTarget(target: ReviewTarget): string | null {
+  if (target.kind !== "session") return target.projectId;
+  const child = useWorkspaceStore.getState().snapshot?.children.find((c) => c.kind === "session" && c.id === target.sessionId);
+  if (child !== undefined) return child.projectId;
+  const sessions = useLiveStore.getState().snapshot.sessions;
+  return Object.hasOwn(sessions, target.sessionId) ? (sessions[target.sessionId]?.project_id ?? null) : null;
+}
+
+// While the pane is open, a change in its project's status (the dirty count, the branch) reads
+// the list again.
+useStatusStore.subscribe((state, previous) => {
+  if (state.statuses === previous.statuses || useUiStore.getState().pane !== "review") return;
+  const target = useReviewStore.getState().target;
+  const project = target === null ? null : projectOfTarget(target);
+  if (project === null) return;
+  const was = Object.hasOwn(previous.statuses, project) ? previous.statuses[project] : undefined;
+  const now = Object.hasOwn(state.statuses, project) ? state.statuses[project] : undefined;
+  if (JSON.stringify(was) !== JSON.stringify(now)) useReviewStore.getState().refresh();
+});
+
+/** The default of `poll.git_ms` when no settings arrived yet. */
+const DEFAULT_GIT_POLL_MS = 5000;
+
+/** A path compared loosely: `/` separators, no trailing one, case-folded on Windows-style paths. */
+function samePath(a: string, b: string): boolean {
+  const norm = (p: string) => {
+    const s = p.replace(/\\/g, "/").replace(/\/+$/, "");
+    return /^[a-zA-Z]:/.test(s) ? s.toLowerCase() : s;
+  };
+  return norm(a) === norm(b);
+}
+
+/**
+ * Whether the pane's target needs its own poll: its folder (`root`, as Rust reported it) is not its
+ * project's folder (a branch's worktree, a session in a linked worktree or elsewhere), so the
+ * project's status poll, which leaves linked worktrees out, never sees its changes.
+ */
+export function needsOwnPoll(target: ReviewTarget, root: string | null): boolean {
+  if (root === null) return false;
+  if (target.kind === "project") return false;
+  const project = projectOfTarget(target);
+  const path = project === null ? undefined : useWorkspaceStore.getState().snapshot?.workspace.projects.find((p) => p.id === project)?.path;
+  return path === undefined || !samePath(path, root);
+}
+
+/** The interval of the target's own poll: `poll.git_ms` from settings. */
+function gitPollMs(): number {
+  const ms = useSettingsStore.getState().snapshot?.settings.poll.git_ms;
+  return typeof ms === "number" && ms > 0 ? ms : DEFAULT_GIT_POLL_MS;
+}
+
+// While the pane is open on a target that needs its own poll, the list (and the selected file) is
+// read again every `poll.git_ms`; the pane keeps what it shows when nothing changed.
+let ownPoll: ReturnType<typeof setInterval> | null = null;
+let ownPollKey = "";
+function syncOwnPoll(): void {
+  const { target, root } = useReviewStore.getState();
+  const open = useUiStore.getState().pane === "review" && target !== null && needsOwnPoll(target, root);
+  const key = open ? `${JSON.stringify(target)}|${root}|${gitPollMs()}` : "";
+  if (key === ownPollKey) return;
+  ownPollKey = key;
+  if (ownPoll !== null) clearInterval(ownPoll);
+  ownPoll = open ? setInterval(() => useReviewStore.getState().refresh(), gitPollMs()) : null;
+}
+useReviewStore.subscribe(syncOwnPoll);
+useUiStore.subscribe(syncOwnPoll);
+useSettingsStore.subscribe(syncOwnPoll);
+
+// -- Story 7.4: review requests ----------------------------------------------------------------
 
 /**
  * The review "Open review request" opens: the selected session's whenever it has a request
@@ -62,8 +213,9 @@ export function showsToastStack(pending: number, reviews: number): boolean {
 
 /**
  * Open session `sessionId`'s review, request `seq` (default: the one the UI shows now): Rust
- * lowers the flag and returns the request, which the Review pane then shows. Resolves whether the
- * pane opened; a refusal (no request, or one replaced since) is the notice.
+ * lowers the flag and returns the request; the Review pane then shows the session's folder with
+ * the request on top. Resolves whether the pane opened; a refusal (no request, or one replaced
+ * since) is the notice.
  */
 export async function openReview(sessionId: string, seq?: number): Promise<boolean> {
   const shown = seq ?? requestIn(useReviewStore.getState().requests, sessionId)?.seq;
@@ -75,7 +227,7 @@ export async function openReview(sessionId: string, seq?: number): Promise<boole
     const request = await reviewOpen(sessionId, shown);
     const store = useReviewStore.getState();
     store.applyRequest(request);
-    store.setOpen(sessionId);
+    store.openTarget({ kind: "session", sessionId }, sessionId);
     openPane("review");
     return true;
   } catch (err) {
@@ -117,18 +269,22 @@ export function dismissReviewToast(sessionId: string, seq: number): void {
   useReviewStore.getState().dismiss(sessionId, seq);
 }
 
-// The pane shows a session that asks again: the new request is seen, so it is opened (its flag
-// and toast never rise). Once per `seq`.
+// The pane shows a session's request and the session asks again: the new request is seen, so it
+// is opened (its flag and toast never rise). Once per `seq`.
 let seenSeq: { id: string; seq: number } | null = null;
 useReviewStore.subscribe((state) => {
-  const id = state.openId;
+  const id = state.requestId;
   if (id === null || useUiStore.getState().pane !== "review") return;
   const request = requestIn(state.requests, id);
   if (request === null || !request.flagged) return;
   if (seenSeq !== null && seenSeq.id === id && seenSeq.seq === request.seq) return;
   seenSeq = { id, seq: request.seq };
   reviewOpen(id, request.seq).then(
-    (opened) => useReviewStore.getState().applyRequest(opened),
+    (opened) => {
+      useReviewStore.getState().applyRequest(opened);
+      // The new request's paths may name other files: read the list again.
+      if (useReviewStore.getState().requestId === id) useReviewStore.getState().refresh();
+    },
     (err: unknown) => console.warn(`review open failed: ${describe(err)}`),
   );
 });

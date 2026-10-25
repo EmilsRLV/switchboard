@@ -87,6 +87,24 @@ The rest of the terminal's theme is the app's: background `--bg-raised` (the pan
 cursor `--fg`, the text under the cursor `--bg-raised`, selection `--selection` with `--bg` text; the font is
 `--font-mono` at `--text-md`.
 
+### Diff colours
+
+The Review pane's diff (Story 8.1): inserted and deleted lines, and the words that changed within them. The
+terminal's green and red at low opacity, on `--bg-raised`. They are diff content, like terminal content (see
+[The accent](#the-accent)): nothing in the chrome uses them, and the diff never uses the accent.
+
+| Token | Value | Use |
+|---|---|---|
+| `--diff-add-bg` | `#98c3791a` | An inserted (or changed, new side) line. |
+| `--diff-del-bg` | `#e06c751a` | A deleted (or changed, old side) line; a deleted block in the unified view. |
+| `--diff-add-word` | `#98c37947` | The changed words within an inserted line; the new side's change gutter. |
+| `--diff-del-word` | `#e06c7547` | The changed words within a deleted line; the old side's change gutter. |
+
+The diff's syntax highlighting uses the terminal palette (`--ansi-*`: keywords magenta, strings green, numbers
+yellow, comments bright black, types cyan, functions blue), set on the CodeMirror view in
+`src/review/DiffView.tsx`. A collapsed stretch of unchanged lines is a `--bg-hover` row in mono `--text-xs`
+`--fg-muted`; the gutters are `--bg-raised` with `--fg-faint` line numbers and a 1-px `--border` line.
+
 ## Rules
 
 1. **Lines are 1 px** (`--line`) in `--border`. The only 2-px lines are the left indicators: the banner
@@ -125,7 +143,9 @@ review flag on a card never uses it. Inline styles never use the accent.
 **Terminal content is not chrome.** What a program prints in a terminal is drawn in its own colours (the
 ANSI palette below, 256-colour and truecolour escapes included), which may well be orange; the accent rule
 governs the app's chrome around it, never the terminal's content. The terminal pane's own chrome (header,
-drag handle) follows every rule here.
+drag handle) follows every rule here. **Diff content** (Story 8.1) is the same: the Review pane's inserted and
+deleted lines and words use the diff tokens and its syntax the ANSI palette, never the accent; the pane's own
+chrome follows every rule here.
 
 ### States
 
@@ -158,7 +178,7 @@ drag handle) follows every rule here.
   `--text-sm` upper case `--fg-muted`) heads a plain list of the last 20, newest first. Each is one mono
   `--text-sm` `--fg-muted` line, `HH:MM:SS /mcp — <reason>`, that wraps anywhere. There are no colours, icons or
   buttons, and a token is never shown.
-- **The terminal pane** is a pane, wider: `min(720px, 70vw)` by default, dragged between 360 px and 90vw by
+- **The terminal pane** is a pane, wider (the first wide pane; the Review pane is the second): `min(720px, 70vw)` by default, dragged between 360 px and 90vw by
   its left edge (a 6-px handle over the 1-px border, `--border` while hovered, `col-resize` cursor). A header
   row over a 1-px `--border` line holds the project label (`--text-md` / 500), its folder (mono `--text-xs`
   `--fg-muted`, ellipsis), the state (mono `--text-xs` `--fg-muted`: `running`, `stopping`, `exited N`; `could not start
@@ -262,14 +282,36 @@ drag handle) follows every rule here.
   <summary>` in `--text-md` (the name 500), wrapping anywhere, then the ordinary buttons **Open** and **Dismiss**.
   No command block and no countdown: it does not wait or expire. Dismiss closes it and keeps the flag; a new
   request from the session shows it again. It never takes the focus and appears and goes without animation.
-- **The Review pane** (Story 7.4, before Epic 8's diff view) is a pane at the settings pane's width: the title is
-  the session's name (`--text-lg` / 500, one line, ellipsis), then a `Summary` section heading over the summary
-  (`--text-md`, wrapping anywhere, selectable) with `Requested <time>` under it (`--text-xs` `--fg-muted`; the
-  local time today, else the date and time) and a `Paths` section heading over a bordered list (1-px `--border`,
-  `--radius-sm`), one row per path split by 1-px `--border` lines: the path in mono `--text-xs`, relative to the
-  session's folder (an add-dir's in full), wrapping anywhere, the full path on hover, and at the right a muted
-  `missing` (`--fg-muted`) where nothing is there. No paths: a muted `No paths listed.` line. Tokens only, no
-  accent, no new motion; it never takes the focus on opening. Epic 8 replaces the list.
+- **The Review pane** (Story 8.1, replacing Story 7.4's list) is the **second wide pane**, after the terminal
+  pane and on its model: `min(1100px, 85vw)` by default, dragged between 360 px and 90vw by its left edge (the
+  terminal pane's handle), the canvas visible beside it. Top to bottom, each row over a 1-px `--border` line:
+  - a **header row**: the title (the project's label, `<project>:<branch>`, or the session's name; `--text-lg` /
+    500, one line, ellipsis), the reviewed folder (mono `--text-xs` `--fg-muted`, ellipsis, full path on hover),
+    and the ordinary buttons **Refresh** and **Close**;
+  - opened from a review request (Story 7.4), the request: a `Summary` section heading over the summary
+    (`--text-md`, wrapping anywhere, selectable) and `Requested <time>` (`--text-xs` `--fg-muted`; the local
+    time today, else the date and time), at most 30% of the pane's height, then scrolling;
+  - a **toolbar**: the filter toggle (**All**, **Staged**, **Unstaged**) and, at the right, the layout toggle
+    (**Side by side**, **Unified**): ordinary buttons in `--fg-muted`, the pressed one (`aria-pressed`) in
+    `--fg` text with an `--fg` border, like the worktree sheet's mode toggle; between them the totals, `N files
+    +A −R` (mono `--text-xs` `--fg-muted`);
+  - the **body**: the changed-files tree (`min(300px, 35%)` wide, a 1-px `--border` line at its right,
+    scrolling) beside the diff. A folder row is mono `--text-xs` `--fg-muted` (`src/auth/`; a chain of single
+    folders on one row), its files indented under it. A file row is the palette's row look in mono `--text-xs`:
+    `--bg-hover` on hover, and when selected `--bg-hover` with a 2-px `--fg-muted` left border (transparent
+    otherwise, so the text never shifts); the 1-px `--focus` outline on keyboard focus. It holds a one-letter mark
+    (`M A D R U C`, `--fg-muted`, the word on hover), the name (ellipsis; a rename adds `renamed from <old>` in
+    `--fg-muted`) and at the right the counts `+N −M` (or `binary file`) in `--fg-muted`. A request's paths come
+    first under a `Requested` section heading, then `Other changes`; a requested path naming no changed file
+    shows `unchanged` or `missing` in the counts' place. `No changes` and `Reading changes…` are muted lines; a
+    refusal (`no worktree`, `not a git repository`) is `.pane-error` text.
+  - The **diff** fills the rest: CodeMirror's merge view with no chrome of its own beyond its gutters (see
+    [Diff colours](#diff-colours)), in `--font-mono` `--text-md`. `binary file`, `too large to show (+N −M)`,
+    `No file selected.` and `Reading <path>…` are muted lines in its place; a file that is not UTF-8 adds a muted
+    mono `--text-xs` line `not UTF-8 (shown lossily)` over the diff.
+
+  Tokens only; the accent appears only through `.pane-error`. It never takes the focus on opening and appears
+  without animation, like every pane.
 - **Settings → Agent actions** (Story 7.2) is one muted line under the section heading: `Ask: …` or, while the
   workspace allows all, `Allow all: …`, each naming the palette command that switches it.
 - **The context menu** is the palette's row look at the pointer: `--bg-raised`, 1-px border,

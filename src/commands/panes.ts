@@ -2,7 +2,7 @@
 // worktree, edge, review) with their side effects: the import pane loads its list when opened,
 // the settings pane drops a stale action error when closed, the import pane forgets its
 // selection, the launch, worktree and remove-worktree sheets their forms, the Review pane its
-// session. Commands call these; components never touch the ui store's pane directly.
+// target. Commands call these; components never touch the ui store's pane directly.
 
 import { useImportStore } from "../state/import";
 import { useLaunchStore } from "../state/launch";
@@ -41,5 +41,5 @@ function leave(pane: Pane): void {
   if (pane === "launch") useLaunchStore.getState().reset();
   if (pane === "worktree") useWorktreeStore.getState().reset();
   if (pane === "removeWorktree") useRemoveWorktreeStore.getState().reset();
-  if (pane === "review") useReviewStore.getState().setOpen(null);
+  if (pane === "review") useReviewStore.getState().closeTarget();
 }

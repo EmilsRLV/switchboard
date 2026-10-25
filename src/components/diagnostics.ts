@@ -17,9 +17,10 @@ export function diagnosticsError(error: string | null, hasCounters: boolean): st
 
 /**
  * The Diagnostics section's rows (Story 4.3): the hooks endpoint (`127.0.0.1:<port>`, the
- * bind error, or `not started`), then the four counters, then (Story 7.1) the `/mcp` refusals.
+ * bind error, or `not started`), then the four counters, then (Story 7.1) the `/mcp` refusals and,
+ * when given (Story 8.1), the last diff's render time.
  */
-export function diagnosticsRows(d: DiagnosticsSnapshot): DiagnosticsRow[] {
+export function diagnosticsRows(d: DiagnosticsSnapshot, lastDiffRenderMs?: number | null): DiagnosticsRow[] {
   const endpoint =
     d.endpoint !== null
       ? { value: d.endpoint, attention: false }
@@ -33,7 +34,15 @@ export function diagnosticsRows(d: DiagnosticsSnapshot): DiagnosticsRow[] {
     { label: "session-id mismatches", value: String(d.session_mismatches), attention: false },
     { label: "poll overrides", value: String(d.poll_overrides), attention: false },
     { label: "MCP refused requests", value: String(d.mcp_refused), attention: false },
+    // Story 8.1: how long the Review pane's last diff took to render after its text arrived (the
+    // UI's own measure, kept in the review store).
+    ...(lastDiffRenderMs === undefined ? [] : [{ label: "last diff render", value: renderTimeText(lastDiffRenderMs), attention: false }]),
   ];
+}
+
+/** The `last diff render` value: `N ms`, or `none yet` before any diff was shown. */
+export function renderTimeText(ms: number | null): string {
+  return ms === null ? "none yet" : `${Math.round(ms)} ms`;
 }
 
 /** A time of day as the refusal list shows it (local time, `HH:MM:SS`). */

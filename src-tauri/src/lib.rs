@@ -49,6 +49,8 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::review_requests_get,
             ipc::review_open,
             ipc::review_clear,
+            ipc::review_list,
+            ipc::review_file,
             ipc::edge_live_retry,
             ipc::edge_restart_with_flags,
             ipc::claude_projects_list,
@@ -3577,6 +3579,79 @@ mod tests {
         assert!(err.as_str().unwrap().contains("already checked out"), "{err}");
         let unknown = serde_json::json!({ "projectId": "nope", "request": request });
         assert_eq!(invoke_with(&webview, "worktree_preview", InvokeBody::Json(unknown)).unwrap_err(), serde_json::json!("unknown project"));
+        app.state::<super::AppState>().branch_watches.clear();
+    }
+
+    /// Story 8.1: `review_list` / `review_file` on a project and on a branch with a worktree; the
+    /// checked-out branch and a branch without a worktree are refused. Temp repo; read-only.
+    #[test]
+    fn review_list_and_file_read_a_project_and_a_branch_worktree() {
+        use serde_json::json;
+        let Some(git) = super::git::branches::tests::real_git() else {
+            eprintln!("git not on PATH; skipping");
+            return;
+        };
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let cfg = tempfile::tempdir().unwrap();
+        super::graph::initialise_at(app.handle(), Some(cfg.path().join("workspace.json")));
+        app.state::<super::AppState>().write().binaries.git.path = Some(git.display().to_string());
+        let repo = super::git::branches::tests::temp_repo(&git);
+        let top = dunce::canonicalize(repo.path()).unwrap();
+        let added = super::graph::add_projects(app.handle(), &[repo.path().display().to_string()], Default::default()).unwrap();
+        let id = added.added[0].clone();
+        std::fs::write(top.join("a.txt"), "a\nb\n").unwrap();
+
+        let project = json!({ "kind": "project", "projectId": id });
+        let body = invoke_with(&webview, "review_list", InvokeBody::Json(json!({ "target": project, "filter": "all" }))).expect("review_list");
+        let list: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(list["root"], top.display().to_string());
+        assert_eq!(
+            list["files"],
+            json!([{ "path": "a.txt", "oldPath": null, "status": "modified", "added": 2, "removed": 1, "binary": false,
+                "submodule": false, "unreadableName": false, "tooLarge": false, "onDisk": false }])
+        );
+        assert_eq!((list["more"].clone(), list["requested"].clone()), (json!(0), json!([])));
+
+        // A session is reviewed in its cwd; one whose folder is not known is refused.
+        app.state::<super::AppState>().write_sessions_live().launched("s-live", Some(id.clone()), &top.display().to_string(), "live", 1);
+        let session = json!({ "kind": "session", "sessionId": "s-live" });
+        let body = invoke_with(&webview, "review_list", InvokeBody::Json(json!({ "target": session, "filter": "all" }))).expect("session list");
+        assert_eq!(body.deserialize::<serde_json::Value>().unwrap()["root"], top.display().to_string());
+        let unknown = json!({ "kind": "session", "sessionId": "nobody" });
+        let err = invoke_with(&webview, "review_list", InvokeBody::Json(json!({ "target": unknown, "filter": "all" }))).unwrap_err();
+        assert_eq!(err, json!(super::review::NO_FOLDER));
+        app.state::<super::AppState>().write_sessions_live().forget("s-live");
+        let body = invoke_with(&webview, "review_file", InvokeBody::Json(json!({ "target": project, "path": "a.txt", "filter": "all" }))).expect("review_file");
+        let file: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(file["content"], json!({ "kind": "text", "old": "a", "new": "a\nb\n", "notUtf8": false }));
+        let staged = invoke_with(&webview, "review_list", InvokeBody::Json(json!({ "target": project, "filter": "staged" }))).unwrap();
+        assert_eq!(staged.deserialize::<serde_json::Value>().unwrap()["files"], json!([]));
+        let refused = invoke_with(&webview, "review_file", InvokeBody::Json(json!({ "target": project, "path": "../x", "filter": "all" })));
+        assert_eq!(refused.unwrap_err(), json!("unchanged"));
+
+        // A branch with a worktree is reviewed there; the checked-out one and a bare one are refused.
+        let request = json!({ "mode": "new", "branch": "feat", "base": "main" });
+        invoke_with(&webview, "worktree_add", InvokeBody::Json(json!({ "projectId": id, "request": request }))).expect("worktree_add");
+        let wt = top.join(".worktrees").join("feat");
+        std::fs::write(wt.join("f.txt"), "f\n").unwrap();
+        let branch = json!({ "kind": "branch", "projectId": id, "branch": "feat" });
+        let body = invoke_with(&webview, "review_list", InvokeBody::Json(json!({ "target": branch, "filter": "all" }))).expect("branch list");
+        let list: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(list["root"], wt.display().to_string());
+        assert_eq!(list["files"].as_array().unwrap().iter().map(|f| f["path"].clone()).collect::<Vec<_>>(), [json!("f.txt")]);
+        let main = json!({ "kind": "branch", "projectId": id, "branch": "main" });
+        let err = invoke_with(&webview, "review_list", InvokeBody::Json(json!({ "target": main, "filter": "all" }))).unwrap_err();
+        assert_eq!(err, json!(super::review::CHECKED_OUT));
+        super::git::branches::tests::git_ok(&git, &top, &["branch", "bare"]);
+        let _ = tauri::async_runtime::block_on(super::git::poll::refresh_ids(app.handle(), std::slice::from_ref(&id)));
+        let bare = json!({ "kind": "branch", "projectId": id, "branch": "bare" });
+        let err = invoke_with(&webview, "review_list", InvokeBody::Json(json!({ "target": bare, "filter": "all" }))).unwrap_err();
+        assert!(err == json!(super::review::NO_WORKTREE) || err == json!(super::claude::launch::BRANCH_NOT_FOUND), "{err}");
+        let gone = json!({ "kind": "project", "projectId": "nope" });
+        assert_eq!(invoke_with(&webview, "review_list", InvokeBody::Json(json!({ "target": gone, "filter": "all" }))).unwrap_err(), json!("unknown project"));
         app.state::<super::AppState>().branch_watches.clear();
     }
 

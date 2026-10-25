@@ -95,13 +95,15 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | `←` `→` `↑` `↓` | Move the selection to the nearest node in that direction (see [Keyboard navigation](#keyboard-navigation)); with nothing selected, select the node nearest the middle of the view. Only while no palette, pane, menu or Elsewhere list is open: those keep their own arrow handling. |
 | Enter | The selected node's default action (with an edge selected, it opens the edge inspector): a project with children expands or collapses (persisted); a `show all (N)` / `show fewer` row toggles the column (see [Sessions](#sessions)); a childless project or a child card does nothing (Resume, Fork and Stop are menu and palette commands; see [Resume, fork, stop](#resume-fork-stop)). Same condition as the arrows. |
 | `e` | Link to…: with a session or project card selected, the palette becomes a pick list of the nodes it can be linked to; Enter draws the edge, Esc cancels (see [Edges](#edges)). Also in the node menu and the palette. Not while focus is in a text field or a select, nor while the context menu is open. |
+| `r` | Review changes: with a project, branch or session card selected, open the Review pane on its working tree (see [Review](#review)). Also in the node menu and the palette. Only while no palette, pane, menu or Elsewhere list is open, and not while focus is in a text field or a select. |
+| `j` / `k` | Next / previous file in the Review pane's tree (the requested files first). Only while the Review pane is open, and not in a text field. |
 | Delete | Delete edge: only while an edge is selected (a click on its line), deletes it at once, no confirmation (see [Edges](#edges)). With no edge selected Delete does nothing; in a text field it is the field's. |
 | Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings, import, terminal, the launch sheet, the worktree sheet, the remove-worktree sheet, the edge inspector or the Review pane), else clears the selected node or edge. With all of them open, five presses. With focus in a terminal Esc is the terminal's (see [Terminal](#terminal)). |
 
 `/` is reserved for a later epic and deliberately unbound. Delete is bound only to deleting a selected edge;
 removing a project stays a menu action.
 
-The palette lists forty commands: Toggle command palette, Add project folder…, Import from Claude…, Open
+The palette lists fifty-nine commands: Toggle command palette, Add project folder…, Import from Claude…, Open
 settings, Reveal settings file (only when the file's location is known), Re-detect binaries (not while one
 runs), Fit view (once the canvas has mounted; the two project commands need it too), Quit, Toggle Elsewhere
 sessions (only while the Elsewhere tray has rows), Go to session that needs you (only while one does),
@@ -127,7 +129,10 @@ Restart with flags while a context edge from a session is selected, and Retry ed
 a draft holds it back, and Retry edge while a selected cooperate edge has a side that failed or that a draft
 holds back (see [Context edges on live sessions](#context-edges-on-live-sessions) and [Cooperation
 edges](#cooperation-edges)); Open review request while any session has a review request, and Clear review
-flag while a session is flagged (see [Review requests](#review-requests-request_review)). The palette sorts by title. The key-only
+flag while a session is flagged (see [Review requests](#review-requests-request_review)); Review changes while a
+project, branch or session card is selected and, while the Review pane is open, Review: refresh, Review: all /
+staged / unstaged changes, Review: unified view (or side-by-side view) and Review: next / previous file (see
+[Review](#review)). The palette sorts by title. The key-only
 carriers (the `ctrl+,` toggle, the palette's second binding `ctrl+shift+k`, the five Esc commands, the four
 arrows and Enter) are registered but hidden from
 the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron on a card runs
@@ -1033,6 +1038,64 @@ of a token). A failed read shows next to the last counters read.
   fires in parallel, so the card may show `finished` and a toast may go out while Claude keeps working; the
   next hook event corrects the state.
 
+## Review
+
+**Review changes** (`r`, the node menu or the palette, Story 8.1) opens the Review pane on the selected card's
+working tree, read-only: nothing is staged, committed or written.
+
+| Card | Reviews |
+|---|---|
+| Project | Its folder (a project in a subfolder of a repository sees only that subfolder's files). |
+| Branch | Its linked worktree, found from the branch list as a launch finds it. A branch without a worktree is refused with `no worktree`, and so is the branch checked out in the project's folder (review the project instead). |
+| Session | Its cwd (the live one, else its transcript's). |
+
+The UI only names the card; Rust finds the folder, runs git and reads the files. The pane is wide, like the terminal
+pane: `min(1100px, 85vw)` by default, dragged between 360 px and 90vw by its left edge (the width is remembered), with
+the canvas still visible beside it. Esc closes it.
+
+**The tree.** The changed files, with a plain mark (`M` modified, `A` added, `D` deleted, `R` renamed, with `renamed
+from <old>`, `U` untracked, `C` conflicted) and `+N −M` counts; folders first, a chain of single folders on one row.
+Linked worktrees inside the repository are left out, as in the status count. An untracked file counts all its
+lines as added. A clean tree says `No changes`.
+
+**The filter** (a three-way toggle, also palette commands): **All** compares HEAD with the working tree (the
+default), **Staged** HEAD with the index, **Unstaged** the index with the working tree. The tree and its counts
+follow it.
+
+**The diff.** The selected file opens in a CodeMirror 6 merge view: side by side by default, **Unified** with the
+toggle (or Review: unified view). Changed words are highlighted within changed lines, and unchanged stretches are
+collapsed to 3 lines of context (click one to open it). Syntax highlighting comes from language packs loaded on
+demand by extension: JS/TS/JSX/TSX, Rust, Python, JSON, CSS, HTML, Markdown and YAML; anything else is plain text.
+The pane, CodeMirror and each language pack are separate chunks, loaded the first time they are needed.
+
+| File | Shown as |
+|---|---|
+| Binary (holds a NUL byte, or `git diff --numstat` counts it `-`) | `binary file`, no text. |
+| A side over 2 MB or over 50,000 lines | `too large to show (+N −M)`. |
+| Text that is not valid UTF-8 | Decoded lossily, with a `not UTF-8` line over the diff. |
+| A symbolic link | Its target, as git stores it (never followed). |
+| A submodule | `submodule`, no text. |
+| A path that is not valid UTF-8 | Listed lossily as `unreadable name`, no text. |
+| An untracked file over 2 MB | `too large` in the tree, not counted. |
+| `git rm --cached` | One row: deleted from the index, still on disk. |
+
+CRLF line ends are shown as LF on both sides, so a file checked out with `core.autocrlf` is not
+changed on every line. The tree lists at most 5,000 files, then says `N more files not shown`. A review
+request's paths are matched by Rust against the reviewed folder; one outside it is marked `outside this
+folder`. A branch's worktree, or a session outside its project's folder, is not covered by the project's
+status poll, so while the pane shows one its list is read again every `poll.git_ms`.
+
+**Freshness.** The list is read when the pane opens and on **Refresh**; it is read again whenever the project's
+status poll changes while the pane is open. **Diagnostics** (Settings) shows `last diff render: N ms`: the time from
+the selected file's text arriving to the merge view's first frame (the budget is 300 ms for a 3,000-line file with
+40 hunks).
+
+**How it reads git.** `git status --porcelain=v2 -z --untracked-files=all` and `git diff --numstat -z -M` (against
+`HEAD`, `--cached`, or the index) list the files, limited to the folder; the old side is `git show HEAD:<path>` (or
+`:<path>`, the index), the new side the index or the file on disk. A file is read only when git listed it, and only
+inside the reviewed folder (its real location, links followed). Every call is prompt-less and takes no optional
+locks.
+
 ## The switchboard MCP server
 
 A session Switchboard starts (New, Resume, Fork) can see the graph it sits in through a `switchboard` MCP
@@ -1182,12 +1245,12 @@ review` (the summary, cut to 200 characters, as its body), following `notificati
 the review.
 
 **The Review pane.** Clicking the flag, the toast's **Open**, the notification, or **Open review request** in the
-palette (the selected session when it is flagged, else the newest request) opens a pane on the right titled with
-the session's name: the summary, then one row per path, relative to the session's folder (an add-dir's path in
-full; the full path on hover), marked `missing` where nothing is there (checked again on each open), and when the
-review was requested. Opening it clears the flag. Until Epic 8 builds the diff and file views, this list is all it
-shows: existence is checked; contents are never read. A new request from the session whose pane is open counts as
-seen: the pane shows it and no flag or toast rises.
+palette (the selected session when it is flagged, else the newest request) opens the [Review](#review) pane on the
+session's folder, titled with the session's name, with the request on top: the summary and when it was requested.
+The requested paths are listed first in the changed-files tree (relative to the session's folder) and selected in
+turn (`j` / `k`); a requested path that names no changed file is marked `unchanged`, or `missing` where nothing is
+there (checked again on each open). Opening it clears the flag. A new request from the session whose pane is open
+counts as seen: the pane shows it and no flag or toast rises.
 
 **Opening and clearing are tied to what the operator saw.** The UI names the request it showed (`review_open` /
 `review_clear` take the session id and the request's `seq`). If the session asked again meanwhile, opening is

@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
@@ -386,6 +386,103 @@ pub fn clear<R: Runtime>(app: &AppHandle<R>, id: &str, seq: u64) -> Result<(), S
     })
 }
 
+// -- Story 8.1: the diff pane's targets ------------------------------------------------------
+
+/// What the Review pane reviews (Story 8.1): a project's folder, a branch's linked worktree, or a
+/// session's cwd. The UI names the node; Rust finds the folder (never a path from the UI).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum ReviewTarget {
+    Project { project_id: String },
+    Branch { project_id: String, branch: String },
+    Session { session_id: String },
+}
+
+/// Why a branch cannot be reviewed: it has no linked worktree.
+pub const NO_WORKTREE: &str = "no worktree";
+
+/// Why the checked-out branch cannot be reviewed on its own: its folder is the project's.
+pub const CHECKED_OUT: &str = "no worktree: the branch is checked out in the project's folder; review the project";
+
+/// Why a session cannot be reviewed: its folder is not known.
+pub const NO_FOLDER: &str = "this session's folder is not known";
+
+/// Why a target cannot be reviewed: its folder is gone.
+pub const FOLDER_MISSING: &str = "folder missing";
+
+/// The folder a branch is reviewed in, from the project's latest branch list (Story 5.3's
+/// resolution): its linked worktree; the checked-out branch and a branch without a worktree are
+/// refused ([`CHECKED_OUT`], [`NO_WORKTREE`]), as is an unknown branch or a missing worktree.
+pub fn branch_folder(list: Option<&[crate::git::BranchInfo]>, branch: &str) -> Result<String, String> {
+    match crate::claude::launch::resolve_branch(list, branch)? {
+        crate::claude::launch::BranchTarget::Worktree(folder) => Ok(folder),
+        crate::claude::launch::BranchTarget::ProjectFolder => Err(CHECKED_OUT.to_string()),
+        crate::claude::launch::BranchTarget::NeedsWorktree => Err(NO_WORKTREE.to_string()),
+    }
+}
+
+/// The folder `target` reviews, canonical. `Err` for an unknown project, a refused branch, a
+/// session whose folder is not known, or a folder that is gone.
+pub fn target_folder(state: &AppState, target: &ReviewTarget) -> Result<PathBuf, String> {
+    let folder = match target {
+        ReviewTarget::Project { project_id } => state
+            .read_workspace()
+            .workspace
+            .projects
+            .iter()
+            .find(|p| &p.id == project_id)
+            .map(|p| p.path.clone())
+            .ok_or_else(|| "unknown project".to_string())?,
+        ReviewTarget::Branch { project_id, branch } => {
+            let list = state.read_workspace().branches.get(project_id).cloned();
+            branch_folder(list.as_deref(), branch)?
+        }
+        ReviewTarget::Session { session_id } => crate::mcp::session_facts(state, session_id)
+            .and_then(|facts| facts.cwd())
+            .filter(|cwd| !cwd.trim().is_empty())
+            .ok_or_else(|| NO_FOLDER.to_string())?,
+    };
+    let path = Path::new(folder.trim());
+    if !path.is_dir() {
+        return Err(FOLDER_MISSING.to_string());
+    }
+    Ok(dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
+}
+
+/// Whether `path` really lies inside `folder` (7.4's check): both at their real location, links
+/// and junctions followed, so a link inside the folder that points elsewhere is outside.
+pub fn within(path: &Path, folder: &Path) -> bool {
+    let real = real_location(&normalise(path)).display().to_string();
+    let root = real_location(&normalise(folder)).display().to_string();
+    graph::path_within(&real, &root)
+}
+
+/// A review request's paths keyed to the reviewed `folder` (Story 8.1): each path's real location
+/// relative to the folder's, with `/` (`""` for the folder itself), comparable with the list's
+/// paths; a path outside the folder has no key and is `outside`. `missing` is checked again.
+pub fn request_keys(folder: &Path, paths: &[ReviewPath]) -> Vec<crate::git::diff::RequestedKey> {
+    let root = real_location(&normalise(folder));
+    paths
+        .iter()
+        .map(|p| {
+            let real = real_location(&normalise(Path::new(&p.path)));
+            let key = graph::path_within(&real.display().to_string(), &root.display().to_string()).then(|| {
+                real.components()
+                    .skip(root.components().count())
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            });
+            crate::git::diff::RequestedKey {
+                display: p.display.clone(),
+                outside: key.is_none(),
+                key,
+                missing: !Path::new(&p.path).exists(),
+            }
+        })
+        .collect()
+}
+
 /// Sessions removed from the workspace (their ref, or their project): their requests go, and the
 /// map is emitted.
 pub fn forget_sessions<'a, R: Runtime>(app: &AppHandle<R>, ids: impl IntoIterator<Item = &'a str>) {
@@ -409,6 +506,83 @@ mod tests {
         assert_eq!(long.chars().count(), MAX_SUMMARY_CHARS + 1);
         assert!(long.ends_with('…'));
         assert_eq!(clean_summary(" \n\t "), "");
+    }
+
+    #[test]
+    fn a_review_target_names_a_node_never_a_path() {
+        let target: ReviewTarget = serde_json::from_value(json!({ "kind": "branch", "projectId": "p1", "branch": "feat" })).unwrap();
+        assert_eq!(target, ReviewTarget::Branch { project_id: "p1".into(), branch: "feat".into() });
+        let target: ReviewTarget = serde_json::from_value(json!({ "kind": "session", "sessionId": "s1" })).unwrap();
+        assert_eq!(target, ReviewTarget::Session { session_id: "s1".into() });
+        assert!(serde_json::from_value::<ReviewTarget>(json!({ "kind": "path", "path": "/etc" })).is_err());
+    }
+
+    #[test]
+    fn a_branch_is_reviewed_in_its_worktree_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = |name: &str, head: bool, worktree: Option<(String, bool)>| crate::git::BranchInfo {
+            name: name.into(),
+            head,
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            gone: false,
+            committed_at: 0,
+            worktree: worktree.map(|(path, missing)| crate::git::WorktreeChip { path, missing }),
+        };
+        let wt = dir.path().display().to_string();
+        let list = vec![
+            info("main", true, None),
+            info("feat", false, Some((wt.clone(), false))),
+            info("bare", false, None),
+            info("lost", false, Some((format!("{wt}/gone"), true))),
+        ];
+        assert_eq!(branch_folder(Some(&list), "feat"), Ok(dunce::canonicalize(dir.path()).unwrap().display().to_string()));
+        assert_eq!(branch_folder(Some(&list), "main"), Err(CHECKED_OUT.to_string()));
+        assert_eq!(branch_folder(Some(&list), "bare"), Err(NO_WORKTREE.to_string()));
+        assert_eq!(branch_folder(Some(&list), "lost"), Err(crate::claude::launch::WORKTREE_MISSING.to_string()));
+        assert_eq!(branch_folder(Some(&list), "nope"), Err(crate::claude::launch::BRANCH_NOT_FOUND.to_string()));
+    }
+
+    #[test]
+    fn within_checks_the_real_location() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(dir.path()).unwrap();
+        let folder = base.join("repo");
+        std::fs::create_dir_all(folder.join("src")).unwrap();
+        assert!(within(&folder.join("src/a.ts"), &folder));
+        assert!(within(&folder.join("src/../b.ts"), &folder));
+        assert!(!within(&folder.join("../other/x"), &folder));
+        assert!(!within(&base.join("repository/x"), &folder), "a sibling sharing the prefix");
+    }
+
+    #[test]
+    fn request_paths_are_keyed_to_the_reviewed_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(dir.path()).unwrap();
+        let folder = base.join("repo");
+        std::fs::create_dir_all(folder.join("src")).unwrap();
+        std::fs::write(folder.join("src").join("a.ts"), "a").unwrap();
+        let path = |p: &Path, display: &str| ReviewPath { path: p.display().to_string(), display: display.into(), missing: false };
+        let keys = request_keys(
+            &folder,
+            &[
+                path(&folder.join("src").join("a.ts"), "src/a.ts"),
+                path(&folder.join("src").join("gone.ts"), "src/gone.ts"),
+                path(&folder, "."),
+                path(&base.join("other").join("x.md"), "/elsewhere/x.md"),
+            ],
+        );
+        let got: Vec<_> = keys.iter().map(|k| (k.display.as_str(), k.key.as_deref(), k.missing, k.outside)).collect();
+        assert_eq!(
+            got,
+            [
+                ("src/a.ts", Some("src/a.ts"), false, false),
+                ("src/gone.ts", Some("src/gone.ts"), true, false),
+                (".", Some(""), false, false),
+                ("/elsewhere/x.md", None, true, true),
+            ]
+        );
     }
 
     #[test]

@@ -496,6 +496,52 @@ pub fn review_clear<R: Runtime>(app: AppHandle<R>, session_id: String, seq: u64)
     crate::review::clear(&app, &session_id, seq)
 }
 
+/// The git binary and the folder `target` reviews (Story 8.1).
+fn review_folder<R: Runtime>(app: &AppHandle<R>, target: &crate::review::ReviewTarget) -> Result<(PathBuf, PathBuf), String> {
+    let state = app.state::<AppState>();
+    let folder = crate::review::target_folder(&state, target)?;
+    Ok((git::poll::git_binary(&state.read()), folder))
+}
+
+/// Story 8.1: the changed files of `target`'s folder (a project's folder, a branch's worktree, a
+/// session's cwd; never a path from the UI) under `filter`, with their +/− counts. Read-only.
+#[tauri::command]
+pub async fn review_list<R: Runtime>(
+    app: AppHandle<R>,
+    target: crate::review::ReviewTarget,
+    filter: git::diff::Filter,
+) -> Result<git::diff::ChangeList, String> {
+    blocking(move || {
+        let (git_bin, folder) = review_folder(&app, &target)?;
+        let mut list = git::diff::list(&git_bin, &folder, filter)?;
+        // A session's review request: its paths keyed to this folder, so the pane matches them.
+        if let crate::review::ReviewTarget::Session { session_id } = &target
+            && let Some(request) = app.state::<AppState>().review.get(session_id)
+        {
+            list.requested = crate::review::request_keys(&folder, &request.paths);
+        }
+        Ok(list)
+    })
+    .await?
+}
+
+/// Story 8.1: the old and new text of `path` (as `review_list` named it) in `target`'s folder under
+/// `filter`, or why it is not shown (binary, too large). A path that is not in the list is refused
+/// (`unchanged`), and a file is read only inside the folder. Read-only.
+#[tauri::command]
+pub async fn review_file<R: Runtime>(
+    app: AppHandle<R>,
+    target: crate::review::ReviewTarget,
+    path: String,
+    filter: git::diff::Filter,
+) -> Result<git::diff::FileText, String> {
+    blocking(move || {
+        let (git_bin, folder) = review_folder(&app, &target)?;
+        git::diff::file_text(&git_bin, &folder, &path, filter)
+    })
+    .await?
+}
+
 /// Retry (Story 6.3): run the `/add-dir` injection of a context edge from a running session
 /// again (the operator says the prompt is clear). For a cooperate edge (Story 6.4) it sends the
 /// peer line again to the side of `session_id`, which must be one of its ends and must have

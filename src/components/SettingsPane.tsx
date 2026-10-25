@@ -3,6 +3,7 @@ import { runCommand } from "../commands/registry";
 import { diagnosticsGet, hasTauriRuntime, type Binary, type DiagnosticsSnapshot } from "../ipc";
 import { DIAGNOSTICS_REFRESH_MS, diagnosticsError, diagnosticsRows, mcpRefusalLines } from "./diagnostics";
 import { usePaletteStore } from "../state/palette";
+import { useReviewStore } from "../state/review";
 import { useSettingsStore } from "../state/settings";
 import { useWorkspaceStore } from "../state/workspace";
 
@@ -111,10 +112,11 @@ export function SettingsPane() {
 /**
  * Settings → Diagnostics (Story 4.3): the hooks endpoint and its counters, read through
  * `diagnostics_get` on open and every 2 s while the pane is open; below them (Story 7.1) the last
- * refused `/mcp` requests, when there are any.
+ * refused `/mcp` requests, when there are any; Story 8.1 adds `last diff render: N ms`.
  */
 function Diagnostics() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot | null>(null);
+  const lastDiffRenderMs = useReviewStore((s) => s.lastRenderMs);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -154,7 +156,7 @@ function Diagnostics() {
         <p className="muted">{failure ?? (hasTauriRuntime() ? "reading…" : "no Tauri runtime")}</p>
       ) : (
         <dl className="diagnostics">
-          {diagnosticsRows(diagnostics).map((row) => (
+          {diagnosticsRows(diagnostics, lastDiffRenderMs).map((row) => (
             <div key={row.label} className="diagnostics-row">
               <dt className="diagnostics-label">{row.label}</dt>
               <dd className={row.attention ? "diagnostics-value attention" : "diagnostics-value"}>{row.value}</dd>

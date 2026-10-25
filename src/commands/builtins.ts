@@ -74,7 +74,20 @@ import {
   stopSelectedSession,
 } from "./sessions";
 import { closeOpenPane, openPane, togglePane } from "./panes";
-import { canClearReview, canOpenReview, clearReviewFromPalette, openReviewFromPalette } from "./review";
+import {
+  canClearReview,
+  canOpenReview,
+  canReviewSelection,
+  clearReviewFromPalette,
+  isReviewOpen,
+  openReviewFromPalette,
+  refreshReview,
+  reviewSelection,
+  setReviewFilter,
+  stepReviewFile,
+  toggleLayoutTitle,
+  toggleReviewLayout,
+} from "./review";
 import { canNewWorktree, canNewWorktreeOnBranch, openWorktreeSheet, openWorktreeSheetForBranch } from "./worktree";
 import { canRemoveWorktree, openRemoveWorktreeSheet } from "./removeWorktree";
 import { addProjectFromPicker, isPickerIdle } from "./projects";
@@ -609,6 +622,68 @@ export function builtinCommands(): Command[] {
       run: async () => {
         await answerOldest("deny");
       },
+    },
+    {
+      // Story 8.1: the Review pane on the selected project, branch or session (its working-tree
+      // diff). The key is the canvas's (no palette, pane, menu or tray open); the palette and the
+      // node menu list it too, last, in a group of its own (bare keys never fire from those: the
+      // dispatcher leaves them be).
+      id: "review.changes",
+      title: "Review changes",
+      keybinding: "r",
+      menu: "node",
+      menuOrder: 60,
+      when: () => canReviewSelection() && (noSurfaceOpen() || isPaletteOpen() || isContextMenuOpen()),
+      run: () => {
+        reviewSelection();
+      },
+    },
+    {
+      id: "review.refresh",
+      title: "Review: refresh",
+      when: isReviewOpen,
+      run: refreshReview,
+    },
+    {
+      id: "review.filterAll",
+      title: "Review: all changes",
+      when: isReviewOpen,
+      run: () => setReviewFilter("all"),
+    },
+    {
+      id: "review.filterStaged",
+      title: "Review: staged changes",
+      when: isReviewOpen,
+      run: () => setReviewFilter("staged"),
+    },
+    {
+      id: "review.filterUnstaged",
+      title: "Review: unstaged changes",
+      when: isReviewOpen,
+      run: () => setReviewFilter("unstaged"),
+    },
+    {
+      // Side by side ↔ unified.
+      id: "review.toggleLayout",
+      title: "Review: unified view",
+      dynamicTitle: toggleLayoutTitle,
+      when: isReviewOpen,
+      run: toggleReviewLayout,
+    },
+    {
+      // The next file in the tree (the requested files first).
+      id: "review.nextFile",
+      title: "Review: next file",
+      keybinding: "j",
+      when: () => isReviewOpen() && !isPaletteOpen() && !isContextMenuOpen(),
+      run: () => stepReviewFile(1),
+    },
+    {
+      id: "review.prevFile",
+      title: "Review: previous file",
+      keybinding: "k",
+      when: () => isReviewOpen() && !isPaletteOpen() && !isContextMenuOpen(),
+      run: () => stepReviewFile(-1),
     },
     {
       // Story 7.4: the selected flagged session's review request, else the newest one.

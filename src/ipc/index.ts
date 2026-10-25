@@ -206,6 +206,74 @@ export type ReviewMap = Record<string, ReviewRequest>;
 /** Event name Rust emits with the whole `ReviewMap` whenever a request or flag changes. */
 export const REVIEW_REQUESTS_EVENT = "review://requests";
 
+/**
+ * Mirrors `review::ReviewTarget` (Story 8.1): what the Review pane reviews. The UI names the node;
+ * Rust finds its folder (a project's folder, a branch's linked worktree, a session's cwd).
+ */
+export type ReviewTarget =
+  | { kind: "project"; projectId: string }
+  | { kind: "branch"; projectId: string; branch: string }
+  | { kind: "session"; sessionId: string };
+
+/** Mirrors `git::diff::Filter`: HEAD vs the working tree, HEAD vs the index, the index vs the working tree. */
+export type DiffFilter = "all" | "staged" | "unstaged";
+
+/** Mirrors `git::diff::FileStatus`. */
+export type FileStatus = "modified" | "added" | "deleted" | "renamed" | "untracked" | "conflicted";
+
+/** Mirrors `git::diff::ChangedFile`: one row of the changed-files tree. */
+export type ChangedFile = {
+  /** Relative to the reviewed folder, `/`-separated. */
+  path: string;
+  /** A rename's old path. */
+  oldPath: string | null;
+  status: FileStatus;
+  added: number;
+  removed: number;
+  /** No counts and no text: a binary file. */
+  binary: boolean;
+  /** A submodule: no text. */
+  submodule: boolean;
+  /** The path is not valid UTF-8 (shown lossily): no text. */
+  unreadableName: boolean;
+  /** An untracked file over 2 MB: not counted, no text. */
+  tooLarge: boolean;
+  /** Deleted from the index (`git rm --cached`) and still on disk. */
+  onDisk: boolean;
+};
+
+/** Mirrors `git::diff::RequestedKey`: a review request's path as the reviewed folder sees it. */
+export type RequestedKey = {
+  /** As the request names it. */
+  display: string;
+  /** Relative to the reviewed folder (`""` for the folder itself), like the list's paths; `null` outside it. */
+  key: string | null;
+  missing: boolean;
+  outside: boolean;
+};
+
+/** Mirrors `git::diff::ChangeList`: what `review_list` returns. */
+export type ChangeList = {
+  root: string;
+  filter: DiffFilter;
+  files: ChangedFile[];
+  /** Changed files past the first 5,000, not sent. */
+  more: number;
+  /** A session target's review request paths, keyed to this folder (empty otherwise). */
+  requested: RequestedKey[];
+};
+
+/** Mirrors `git::diff::Content`: a file's two sides, or why they are not shown. `null` where a side does not exist. */
+export type DiffContent =
+  | { kind: "text"; old: string | null; new: string | null; notUtf8: boolean }
+  | { kind: "binary" }
+  | { kind: "too_large" }
+  | { kind: "submodule" }
+  | { kind: "unreadable_name" };
+
+/** Mirrors `git::diff::FileText`: what `review_file` returns. */
+export type FileText = { file: ChangedFile; content: DiffContent };
+
 /** Mirrors `graph::Workspace`: the on-disk `workspace.json` schema, version 1. */
 export type Workspace = {
   version: number;
@@ -719,6 +787,8 @@ type Commands = {
   review_requests_get: ReviewMap;
   review_open: ReviewRequest;
   review_clear: void;
+  review_list: ChangeList;
+  review_file: FileText;
   edge_live_retry: void;
   edge_restart_with_flags: LaunchResult;
   claude_projects_list: ClaudeProject[];
@@ -964,6 +1034,24 @@ export function reviewOpen(sessionId: string, seq: number): Promise<ReviewReques
  */
 export function reviewClear(sessionId: string, seq: number): Promise<void> {
   return call("review_clear", { sessionId, seq });
+}
+
+/**
+ * `ipc::review_list` (Story 8.1) -- read-only: the changed files of `target`'s folder under
+ * `filter`, with their +/- counts. Rejects for a target Rust refuses (`no worktree`, an unknown
+ * node, a folder that is gone) or a folder that is not a git repository.
+ */
+export function reviewList(target: ReviewTarget, filter: DiffFilter): Promise<ChangeList> {
+  return call("review_list", { target, filter });
+}
+
+/**
+ * `ipc::review_file` (Story 8.1) -- read-only: the old and new text of `path` (as `review_list`
+ * named it) under `filter`, or why it is not shown. Rejects with `unchanged` for a path that is
+ * not in the list.
+ */
+export function reviewFile(target: ReviewTarget, path: string, filter: DiffFilter): Promise<FileText> {
+  return call("review_file", { target, path, filter });
 }
 
 /**

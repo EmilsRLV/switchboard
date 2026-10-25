@@ -29,7 +29,8 @@ import { useWorkspaceStore } from "./workspace";
 /**
  * The right-hand panes; `launch` is the new-session sheet (Story 4.2), `worktree` the new-worktree sheet (Story 5.2),
  * `removeWorktree` the remove-worktree confirmation (Story 5.4), `edge` the edge inspector of the
- * selected edge (Story 6.1), `review` a session's review request (Story 7.4).
+ * selected edge (Story 6.1), `review` the Review pane: a node's working-tree diff (Story 8.1; Story
+ * 7.4's review request on top when opened from one).
  */
 export type Pane = "settings" | "import" | "terminal" | "launch" | "worktree" | "removeWorktree" | "edge" | "review";
 
@@ -50,9 +51,27 @@ export function defaultTerminalWidth(viewport: number): number {
  * window too narrow for both. A non-finite width is the default.
  */
 export function clampTerminalWidth(width: number, viewport: number): number {
-  if (!Number.isFinite(width)) return defaultTerminalWidth(viewport);
+  return clampWideWidth(width, viewport, defaultTerminalWidth(viewport));
+}
+
+/** Where the dragged Review pane width is remembered (a per-viewer convenience, Story 8.1). */
+export const REVIEW_WIDTH_KEY = "switchboard.reviewWidth";
+
+/** The default Review pane width for a window `viewport` px wide: `min(1100px, 85vw)` (Story 8.1). */
+export function defaultReviewWidth(viewport: number): number {
+  return Math.min(1100, Math.round(viewport * 0.85));
+}
+
+/** A Review pane width kept between 360 px and 90vw, like the terminal pane's; non-finite is the default. */
+export function clampReviewWidth(width: number, viewport: number): number {
+  return clampWideWidth(width, viewport, defaultReviewWidth(viewport));
+}
+
+/** A wide pane's width kept between 360 px and 90vw (90vw wins when the window is narrower); non-finite is `fallback`. */
+function clampWideWidth(width: number, viewport: number, fallback: number): number {
   const max = Math.floor(viewport * TERMINAL_MAX_FRACTION);
-  return Math.max(Math.min(TERMINAL_MIN_WIDTH, max), Math.min(Math.round(width), max));
+  const wanted = Number.isFinite(width) ? width : fallback;
+  return Math.max(Math.min(TERMINAL_MIN_WIDTH, max), Math.min(Math.round(wanted), max));
 }
 
 /** The minimal `Storage` slice the width uses; tests pass a fake. */
@@ -68,8 +87,13 @@ function browserStorage(): WidthStorage | null {
 
 /** The remembered terminal pane width, or `null` (none stored, unreadable storage). */
 export function loadTerminalWidth(storage: WidthStorage | null = browserStorage()): number | null {
+  return loadWidth(TERMINAL_WIDTH_KEY, storage);
+}
+
+/** The remembered width under `key`, or `null` (none stored, unreadable storage). */
+export function loadWidth(key: string, storage: WidthStorage | null = browserStorage()): number | null {
   try {
-    const raw = storage?.getItem(TERMINAL_WIDTH_KEY);
+    const raw = storage?.getItem(key);
     if (raw === null || raw === undefined) return null;
     const width = Number(raw);
     return Number.isFinite(width) && width > 0 ? width : null;
@@ -80,8 +104,13 @@ export function loadTerminalWidth(storage: WidthStorage | null = browserStorage(
 
 /** Remember the terminal pane width; storage that throws (private window) is ignored. */
 export function saveTerminalWidth(width: number, storage: WidthStorage | null = browserStorage()): void {
+  saveWidth(TERMINAL_WIDTH_KEY, width, storage);
+}
+
+/** Remember a width under `key`; storage that throws (private window) is ignored. */
+export function saveWidth(key: string, width: number, storage: WidthStorage | null = browserStorage()): void {
   try {
-    storage?.setItem(TERMINAL_WIDTH_KEY, String(Math.round(width)));
+    storage?.setItem(key, String(Math.round(width)));
   } catch {
     // A convenience only: the pane still works at its default width.
   }
@@ -139,6 +168,8 @@ export type UiState = {
   focusOnShow: boolean;
   /** The dragged terminal pane width in CSS pixels, or `null` for the default. */
   terminalWidth: number | null;
+  /** The dragged Review pane width in CSS pixels, or `null` for the default (Story 8.1). */
+  reviewWidth: number | null;
   openPane: (pane: Pane) => void;
   /** Close whichever pane is open (no-op when none is). */
   closePane: () => void;
@@ -172,6 +203,7 @@ export type UiState = {
   /** Terminal `id` is popped out into window `label`, or back in the pane (`null`). */
   setPopped: (id: string, label: string | null) => void;
   setTerminalWidth: (width: number | null) => void;
+  setReviewWidth: (width: number | null) => void;
 };
 
 const NO_IDS: readonly string[] = Object.freeze([]);
@@ -230,6 +262,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   poppedOut: NO_POPPED,
   focusOnShow: true,
   terminalWidth: loadTerminalWidth(),
+  reviewWidth: loadWidth(REVIEW_WIDTH_KEY),
   openPane: (pane) => set({ pane }),
   closePane: () => set({ pane: null }),
   togglePane: (pane) => set({ pane: get().pane === pane ? null : pane }),
@@ -298,6 +331,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
       return { poppedOut };
     }),
   setTerminalWidth: (width) => set((s) => (s.terminalWidth === width ? {} : { terminalWidth: width })),
+  setReviewWidth: (width) => set((s) => (s.reviewWidth === width ? {} : { reviewWidth: width })),
 }));
 
 // The tray's list closes for good when its last row leaves, so a later row shows the chip

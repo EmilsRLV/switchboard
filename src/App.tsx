@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { Suspense, lazy, useEffect } from "react";
 import {
   approvalsGet,
   edgesLiveGet,
@@ -42,12 +42,13 @@ import { ApprovalToasts } from "./components/ApprovalToasts";
 import { Banners } from "./components/Banners";
 import { ContextMenu } from "./components/ContextMenu";
 import { EdgePane } from "./components/EdgePane";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { runCommand } from "./commands/registry";
 import { ElsewhereTray } from "./components/ElsewhereTray";
 import { ImportPane } from "./components/ImportPane";
 import { LaunchPane } from "./components/LaunchPane";
 import { WorktreePane } from "./components/WorktreePane";
 import { RemoveWorktreePane } from "./components/RemoveWorktreePane";
-import { ReviewPane } from "./components/ReviewPane";
 import { Notice } from "./components/Notice";
 import { Palette } from "./components/Palette";
 import { SettingsPane } from "./components/SettingsPane";
@@ -55,13 +56,17 @@ import { connectTerminals } from "./terminal/registry";
 import { TerminalHolder, TerminalPane } from "./terminal/TerminalPane";
 import "./components/shell.css";
 
+// The Review pane (Story 8.1) and its CodeMirror diff view are their own chunks, loaded when the
+// pane first opens.
+const ReviewPane = lazy(() => import("./components/ReviewPane"));
+
 // Commands exist for the life of the module, not of a component: registered once here.
 registerBuiltins();
 
 /**
  * The shell: banner strip on top, the canvas filling the rest with the transient notice laid
  * over its top edge, the Elsewhere tray at its bottom-left and the agent approval toasts (Story
- * 7.2) at its bottom-right, one pane (settings, import, terminal, the launch sheet, the worktree sheet, the remove-worktree sheet, the edge inspector or the Review pane of Story 7.4) on the right when open,
+ * 7.2) at its bottom-right, one pane (settings, import, terminal, the launch sheet, the worktree sheet, the remove-worktree sheet, the edge inspector or the Review pane of Story 8.1, loaded lazily) on the right when open,
  * the hidden holder that keeps every terminal's view alive while the terminal pane is not showing it, the command
  * palette over everything when open, the node context menu at the pointer when open. Every
  * key goes through the command registry's dispatcher (`useKeybindings`).
@@ -242,12 +247,35 @@ export default function App() {
         {pane === "worktree" && <WorktreePane />}
         {pane === "removeWorktree" && <RemoveWorktreePane />}
         {pane === "edge" && <EdgePane />}
-        {pane === "review" && <ReviewPane />}
+        {pane === "review" && (
+          <ErrorBoundary label="review pane" fallback={(message) => <ReviewPaneFailed message={message} />}>
+            <Suspense fallback={null}>
+              <ReviewPane />
+            </Suspense>
+          </ErrorBoundary>
+        )}
         {pane === "terminal" && <TerminalPane />}
         <TerminalHolder />
         <Palette />
         <ContextMenu />
       </div>
     </div>
+  );
+}
+
+/** What the Review pane leaves when it failed: one error line and Close; the rest of the app stays. */
+function ReviewPaneFailed({ message }: { message: string }) {
+  return (
+    <aside className="pane" aria-label="Review">
+      <header className="pane-header">
+        <h2 className="pane-title">Review</h2>
+        <button type="button" className="btn" onClick={() => runCommand("pane.close")} title="Close (Esc)">
+          Close
+        </button>
+      </header>
+      <p className="pane-error" role="alert">
+        could not show the review: {message}
+      </p>
+    </aside>
   );
 }
