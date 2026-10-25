@@ -54,6 +54,9 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::review_range_list,
             ipc::review_range_file,
             ipc::review_commits,
+            ipc::review_dir,
+            ipc::review_view,
+            ipc::review_open_editor,
             ipc::edge_live_retry,
             ipc::edge_restart_with_flags,
             ipc::claude_projects_list,
@@ -3713,6 +3716,122 @@ mod tests {
         assert_eq!((log["branch"].clone(), log["base"].clone(), log["commits"].clone()), (json!("main"), json!("feat"), json!([])));
         let session = json!({ "kind": "session", "sessionId": "s1" });
         assert_eq!(invoke_with(&webview, "review_commits", InvokeBody::Json(json!({ "target": session }))).unwrap_err(), json!(super::review::NO_RANGE));
+        app.state::<super::AppState>().branch_watches.clear();
+    }
+
+    /// Story 8.3: Files mode (`review_dir`, `review_view`) and `o` (`review_open_editor`) through
+    /// an argv recorder, never a real editor: per mode, the file is the reviewed folder's or the
+    /// branch's checkout's; a missing file, an unchecked-out branch and no editor are refused.
+    #[test]
+    fn review_files_mode_and_open_in_editor() {
+        use serde_json::json;
+        let Some(git) = super::git::branches::tests::real_git() else {
+            eprintln!("git not on PATH; skipping");
+            return;
+        };
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let cfg = tempfile::tempdir().unwrap();
+        super::graph::initialise_at(app.handle(), Some(cfg.path().join("workspace.json")));
+        app.state::<super::AppState>().write().binaries.git.path = Some(git.display().to_string());
+        let repo = super::git::branches::tests::temp_repo(&git);
+        let top = dunce::canonicalize(repo.path()).unwrap();
+        std::fs::write(top.join(".gitignore"), "build/\n").unwrap();
+        std::fs::create_dir_all(top.join("build")).unwrap();
+        std::fs::create_dir_all(top.join("src")).unwrap();
+        std::fs::write(top.join("src").join("a.ts"), "one\r\ntwo\r\n").unwrap();
+        std::fs::write(top.join("src").join("a & b.ts"), "x\n").unwrap();
+        // A committed file in a subfolder, for a subfolder project's branch worktree below.
+        std::fs::create_dir_all(top.join("web")).unwrap();
+        std::fs::write(top.join("web").join("w.txt"), "w\n").unwrap();
+        super::git::branches::tests::git_ok(&git, &top, &["add", "web/w.txt"]);
+        super::git::branches::tests::git_ok(&git, &top, &["commit", "-q", "-m", "web"]);
+        let added = super::graph::add_projects(app.handle(), &[repo.path().display().to_string()], Default::default()).unwrap();
+        let id = added.added[0].clone();
+        let project = json!({ "kind": "project", "projectId": id });
+
+        // Files: the tree, lazily, and a file's text.
+        let body = invoke_with(&webview, "review_dir", InvokeBody::Json(json!({ "target": project, "path": "" }))).expect("review_dir");
+        let list: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(list["root"], top.display().to_string());
+        let entries: Vec<(String, bool)> = list["entries"].as_array().unwrap().iter().map(|e| (e["name"].as_str().unwrap().to_string(), e["ignored"].as_bool().unwrap())).collect();
+        assert_eq!(entries, [("build".into(), true), ("src".into(), false), ("web".into(), false), (".gitignore".into(), false), ("a.txt".into(), false)]);
+        // The wire format the UI reads.
+        assert_eq!(list["entries"][0], json!({ "name": "build", "path": "build", "kind": "dir", "ignored": true, "unreadableName": false }));
+        assert_eq!(list["entries"][4], json!({ "name": "a.txt", "path": "a.txt", "kind": "file", "ignored": false, "unreadableName": false }));
+        assert_eq!((list["path"].clone(), list["more"].clone()), (json!(""), json!(0)));
+        let body = invoke_with(&webview, "review_dir", InvokeBody::Json(json!({ "target": project, "path": "src" }))).expect("src");
+        assert_eq!(body.deserialize::<serde_json::Value>().unwrap()["entries"][1]["path"], json!("src/a.ts"));
+        let body = invoke_with(&webview, "review_view", InvokeBody::Json(json!({ "target": project, "path": "src/a.ts" }))).expect("review_view");
+        assert_eq!(body.deserialize::<serde_json::Value>().unwrap()["content"], json!({ "kind": "text", "old": null, "new": "one\ntwo\n", "notUtf8": false }));
+        assert_eq!(invoke_with(&webview, "review_view", InvokeBody::Json(json!({ "target": project, "path": "../x" }))).unwrap_err(), json!(super::git::files::BAD_PATH));
+
+        // No editor: the notice the UI answers by opening Settings.
+        let open = |mode: &str, target: &serde_json::Value, path: &str, line: u32| {
+            invoke_with(&webview, "review_open_editor", InvokeBody::Json(json!({ "target": target, "mode": mode, "path": path, "line": line })))
+        };
+        // The UI compares this exact text.
+        assert_eq!(open("changes", &project, "a.txt", 1).unwrap_err(), json!("No external editor set: add external_editor to settings"));
+        app.state::<super::AppState>().write().settings.external_editor = Some("  ".into());
+        assert_eq!(open("files", &project, "a.txt", 1).unwrap_err(), json!(super::ipc::NO_EDITOR_SET));
+        // A program naming the file would run it: refused.
+        app.state::<super::AppState>().write().settings.external_editor = Some("{file} --x".into());
+        assert_eq!(open("files", &project, "a.txt", 1).unwrap_err(), json!("the editor program cannot contain {file} or {line}"));
+
+        // A recorder in a folder with a space, quoted in the template.
+        let bin = cfg.path().join("Ed Dir");
+        std::fs::create_dir_all(&bin).unwrap();
+        let out = cfg.path().join("argv.txt");
+        let recorder = super::process::fixtures::argv_lines_recorder(&bin, "ed", &out);
+        app.state::<super::AppState>().write().settings.external_editor = Some(format!("\"{}\" -g {{file}}:{{line}}", recorder.display()));
+        let recorded = |out: &std::path::Path| {
+            let text = super::process::fixtures::wait_for_file(out, std::time::Duration::from_secs(5));
+            let _ = std::fs::remove_file(out);
+            text.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect::<Vec<_>>()
+        };
+        open("files", &project, "src/a.ts", 42).expect("o in Files");
+        assert_eq!(recorded(&out), ["-g".to_string(), format!("{}:42", top.join("src").join("a.ts").display())]);
+        open("changes", &project, "a.txt", 0).expect("o in Changes, line 0 is 1");
+        assert_eq!(recorded(&out), ["-g".to_string(), format!("{}:1", top.join("a.txt").display())]);
+        assert_eq!(open("changes", &project, "gone.txt", 3).unwrap_err(), json!("not on disk: gone.txt"));
+        assert_eq!(open("files", &project, "../secret", 3).unwrap_err(), json!(super::git::files::BAD_PATH));
+        // Every argument arrives whole: a path with a space and `&` (a `.cmd` editor on Windows).
+        open("files", &project, "src/a & b.ts", 7).expect("o on a path with a space and &");
+        assert_eq!(recorded(&out), ["-g".to_string(), format!("{}:7", top.join("src").join("a & b.ts").display())]);
+
+        // vs base on a branch with a worktree: the worktree's file.
+        let request = json!({ "mode": "new", "branch": "feat", "base": "main" });
+        invoke_with(&webview, "worktree_add", InvokeBody::Json(json!({ "projectId": id, "request": request }))).expect("worktree_add");
+        let wt = top.join(".worktrees").join("feat");
+        let feat = json!({ "kind": "branch", "projectId": id, "branch": "feat" });
+        open("base", &feat, "a.txt", 2).expect("o in vs base");
+        assert_eq!(recorded(&out), ["-g".to_string(), format!("{}:2", wt.join("a.txt").display())]);
+        // The branch checked out in the project's folder: the project's file.
+        let main = json!({ "kind": "branch", "projectId": id, "branch": "main" });
+        open("commits", &main, "a.txt", 5).expect("o in Commits on the checked-out branch");
+        assert_eq!(recorded(&out), ["-g".to_string(), format!("{}:5", top.join("a.txt").display())]);
+        // A branch with no worktree, not checked out (listed or not yet): refused.
+        super::git::branches::tests::git_ok(&git, &top, &["branch", "bare"]);
+        let bare = json!({ "kind": "branch", "projectId": id, "branch": "bare" });
+        assert_eq!(open("base", &bare, "a.txt", 1).unwrap_err(), json!(super::review::NOT_CHECKED_OUT));
+
+        // A subfolder project's branch worktree: the file at the same subfolder of the worktree.
+        let web = super::graph::add_projects(app.handle(), &[top.join("web").display().to_string()], Default::default()).unwrap().added[0].clone();
+        let request = json!({ "mode": "new", "branch": "wfeat", "base": "main" });
+        let body = invoke_with(&webview, "worktree_add", InvokeBody::Json(json!({ "projectId": web, "request": request }))).expect("web worktree_add");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        let card = value["snapshot"]["children"].as_array().unwrap().iter().find(|c| c["id"] == format!("{web}:wfeat")).cloned().expect("the wfeat card");
+        let wfeat_wt = std::path::PathBuf::from(card["branch"]["worktree"]["path"].as_str().unwrap());
+        let wfeat = json!({ "kind": "branch", "projectId": web, "branch": "wfeat" });
+        open("base", &wfeat, "w.txt", 3).expect("o in vs base of a subfolder project");
+        assert_eq!(recorded(&out), ["-g".to_string(), format!("{}:3", wfeat_wt.join("web").join("w.txt").display())]);
+
+        // A program that is not there is a notice.
+        let gone = cfg.path().join("Ed Dir").join("no-editor.exe");
+        app.state::<super::AppState>().write().settings.external_editor = Some(format!("\"{}\" --line {{line}} {{file}}", gone.display()));
+        assert_eq!(open("files", &project, "a.txt", 1).unwrap_err(), json!(format!("external editor {} does not exist", gone.display())));
         app.state::<super::AppState>().branch_watches.clear();
     }
 

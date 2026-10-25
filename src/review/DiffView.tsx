@@ -10,16 +10,23 @@
 // Every line of the view carries its place: the content element names the file and side
 // (`data-file`, `data-side`), each drawn line its number (`data-line`), so 8.3 (`o` to open in the
 // editor) and 8.4 (line comments) can find the file and line under the cursor.
+//
+// Story 8.3: while a view is mounted it tells `o` its line (`place.ts`): the line at the cursor the
+// operator last placed (a click in the text, or a selection change; an old-side line, or a deleted
+// line of the unified view until the cursor moves, mapped to the
+// nearest new line through the chunks), else the first visible line of the new side. `SourceView`
+// is the Files mode's single read-only view of one file, on the same setup.
 
 import { useEffect, useRef, useState } from "react";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { MergeView, getChunks, getOriginalDoc, unifiedMergeView } from "@codemirror/merge";
-import { Compartment, EditorState, RangeSetBuilder, type Extension } from "@codemirror/state";
+import { Compartment, EditorState, RangeSetBuilder, type Extension, type Text } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, lineNumbers, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
 import { loadLanguage, loadedLanguage } from "./languages";
 import { DIFF_CONFIG } from "./lineDiff";
-import { languageFor, type DiffLayout } from "./model";
+import { editorLine, languageFor, type CursorPlace, type DiffLayout, type LineChunk } from "./model";
+import { setLineProvider } from "./place";
 
 /** Lines of context kept around each change; shorter unchanged stretches are not collapsed. */
 export const COLLAPSE = { margin: 3, minSize: 4 } as const;
@@ -155,6 +162,70 @@ export function deletedLinePlaces(path: string): Extension {
   );
 }
 
+/** A merge chunk (document positions) as line numbers: 1-based, `to` exclusive. */
+export function lineChunk(chunk: { fromA: number; toA: number; fromB: number; toB: number }, docA: Text, docB: Text): LineChunk {
+  const span = (doc: Text, from: number, to: number): [number, number] => {
+    const start = doc.lineAt(Math.min(from, doc.length)).number;
+    return [start, to > from ? doc.lineAt(Math.min(to - 1, doc.length)).number + 1 : start];
+  };
+  const [fromA, toA] = span(docA, chunk.fromA, chunk.toA);
+  const [fromB, toB] = span(docB, chunk.fromB, chunk.toB);
+  return { fromA, toA, fromB, toB };
+}
+
+/** The first line of `view` visible inside `host` (the scrolling may be the view's or the merge view's). */
+function firstVisibleLine(view: EditorView, host: HTMLElement): number {
+  const top = Math.max(view.scrollDOM.getBoundingClientRect().top, host.getBoundingClientRect().top);
+  const block = view.lineBlockAtHeight(Math.max(0, top - view.documentTop));
+  return view.state.doc.lineAt(Math.min(block.from, view.state.doc.length)).number;
+}
+
+/** Where the operator last put a view's cursor, for `o` (Story 8.3). */
+class CursorTracker {
+  private place: { view: EditorView; side: "old" | "new"; deletedOld: number | null } | null = null;
+  /** A pointer went down on a deleted line: the selection change it causes keeps that line. */
+  private onDeleted = false;
+
+  /** The extension a view of `side` carries: a selection change the operator makes puts the place there. */
+  extension(side: "old" | "new"): Extension {
+    return EditorView.updateListener.of((update) => {
+      if (!update.selectionSet || !update.transactions.some((tr) => tr.isUserEvent("select"))) return;
+      const pointer = update.transactions.some((tr) => tr.isUserEvent("select.pointer"));
+      const keep = pointer && this.onDeleted;
+      this.onDeleted = false;
+      if (!keep) this.place = { view: update.view, side, deletedOld: null };
+    });
+  }
+
+  /** Pointer downs inside a view's text (never its gutters or scrollbars); a deleted line keeps its old number. Returns the remover. */
+  listen(host: HTMLElement, views: readonly { view: EditorView; side: "old" | "new" }[]): () => void {
+    const down = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target === null) return;
+      const hit = views.find((v) => v.view.contentDOM.contains(target));
+      if (hit === undefined) return;
+      const deleted = target.closest<HTMLElement>(".cm-deletedLine[data-line]");
+      const oldLine = deleted === null ? NaN : Number(deleted.dataset.line);
+      if (Number.isFinite(oldLine)) {
+        this.place = { view: hit.view, side: "old", deletedOld: oldLine };
+        this.onDeleted = true;
+      } else {
+        this.place = { view: hit.view, side: hit.side, deletedOld: null };
+        this.onDeleted = false;
+      }
+    };
+    host.addEventListener("pointerdown", down, true);
+    return () => host.removeEventListener("pointerdown", down, true);
+  }
+
+  /** The place as a side and that side's line, or `null` before any. */
+  cursor(): CursorPlace | null {
+    if (this.place === null) return null;
+    const { view, side, deletedOld } = this.place;
+    return deletedOld !== null ? { side: "old", line: deletedOld } : { side, line: view.state.doc.lineAt(view.state.selection.main.head).number };
+  }
+}
+
 export type DiffViewProps = {
   path: string;
   /** The old side's text (`""` when it does not exist). */
@@ -189,7 +260,9 @@ export default function DiffView({ path, oldText, newText, layout, arrivedAt, on
     const kind = languageFor(path);
     const language = new Compartment();
     const ready = kind === null ? [] : (loadedLanguage(kind) ?? []);
+    const tracker = new CursorTracker();
     const common = (side: "old" | "new"): Extension => [
+      tracker.extension(side),
       EditorState.readOnly.of(true),
       EditorView.editable.of(false),
       lineNumbers(),
@@ -200,6 +273,10 @@ export default function DiffView({ path, oldText, newText, layout, arrivedAt, on
     ];
     let views: EditorView[];
     let destroy: () => void;
+    // The new side's view and the chunks as lines, for `o`.
+    let newView: EditorView;
+    let sides: { view: EditorView; side: "old" | "new" }[];
+    let lineChunks: () => LineChunk[];
     // A failure inside CodeMirror is this diff's, never the app's: say so in the pane.
     try {
       if (layout === "split") {
@@ -214,6 +291,12 @@ export default function DiffView({ path, oldText, newText, layout, arrivedAt, on
         });
         views = [merge.a, merge.b];
         destroy = () => merge.destroy();
+        newView = merge.b;
+        sides = [
+          { view: merge.a, side: "old" },
+          { view: merge.b, side: "new" },
+        ];
+        lineChunks = () => merge.chunks.map((c) => lineChunk(c, merge.a.state.doc, merge.b.state.doc));
       } else {
         const view = new EditorView({
           parent,
@@ -228,6 +311,9 @@ export default function DiffView({ path, oldText, newText, layout, arrivedAt, on
         });
         views = [view];
         destroy = () => view.destroy();
+        newView = view;
+        sides = [{ view, side: "new" }];
+        lineChunks = () => (getChunks(view.state)?.chunks ?? []).map((c) => lineChunk(c, getOriginalDoc(view.state), view.state.doc));
       }
     } catch (err) {
       parent.replaceChildren();
@@ -237,6 +323,8 @@ export default function DiffView({ path, oldText, newText, layout, arrivedAt, on
     setError(null);
     const frame = requestAnimationFrame(() => rendered.current(performance.now() - started));
     let live = true;
+    const untrack = tracker.listen(parent, sides);
+    const unregister = setLineProvider(() => editorLine(tracker.cursor(), () => firstVisibleLine(newView, parent), lineChunks, newView.state.doc.lines));
     if (kind !== null && loadedLanguage(kind) === null) {
       loadLanguage(kind).then(
         (ext) => {
@@ -252,6 +340,8 @@ export default function DiffView({ path, oldText, newText, layout, arrivedAt, on
     }
     return () => {
       live = false;
+      untrack();
+      unregister();
       cancelAnimationFrame(frame);
       destroy();
     };
@@ -265,6 +355,86 @@ export default function DiffView({ path, oldText, newText, layout, arrivedAt, on
         </p>
       )}
       <div className={`review-diff review-diff-${layout}`} ref={host} data-file={path} hidden={error !== null} />
+    </>
+  );
+}
+
+export type SourceViewProps = {
+  path: string;
+  text: string;
+};
+
+/**
+ * Files mode (Story 8.3): one file, read-only, with line numbers and its language pack, on the
+ * diff's setup (theme, syntax colours, places). `o` opens the line at its cursor, else its first
+ * visible line.
+ */
+export function SourceView({ path, text }: SourceViewProps) {
+  const host = useRef<HTMLDivElement>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const parent = host.current;
+    if (parent === null) return;
+    const kind = languageFor(path);
+    const language = new Compartment();
+    let view: EditorView;
+    const tracker = new CursorTracker();
+    try {
+      view = new EditorView({
+        parent,
+        state: EditorState.create({
+          doc: text,
+          extensions: [
+            EditorState.readOnly.of(true),
+            EditorView.editable.of(false),
+            lineNumbers(),
+            language.of(kind === null ? [] : (loadedLanguage(kind) ?? [])),
+            syntaxHighlighting(diffHighlight),
+            diffTheme,
+            placeAttributes(path, "new"),
+            tracker.extension("new"),
+          ],
+        }),
+      });
+    } catch (err) {
+      parent.replaceChildren();
+      setError(describeError(err));
+      return;
+    }
+    setError(null);
+    let live = true;
+    const untrack = tracker.listen(parent, [{ view, side: "new" }]);
+    const unregister = setLineProvider(() => editorLine(tracker.cursor(), () => firstVisibleLine(view, parent), () => [], view.state.doc.lines));
+    if (kind !== null && loadedLanguage(kind) === null) {
+      loadLanguage(kind).then(
+        (ext) => {
+          if (!live) return;
+          try {
+            view.dispatch({ effects: language.reconfigure(ext) });
+          } catch (err) {
+            console.warn(`language pack ${kind} could not be applied: ${describeError(err)}`);
+          }
+        },
+        (err: unknown) => console.warn(`language pack ${kind} failed to load: ${describeError(err)}`),
+      );
+    }
+    return () => {
+      live = false;
+      untrack();
+      unregister();
+      view.destroy();
+    };
+  }, [path, text]);
+
+  return (
+    <>
+      {error !== null && (
+        <p className="pane-error review-note" role="alert">
+          could not show this file: {error}
+        </p>
+      )}
+      <div className="review-diff review-source" ref={host} data-file={path} hidden={error !== null} />
     </>
   );
 }

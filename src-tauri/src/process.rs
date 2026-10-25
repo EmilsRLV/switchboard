@@ -91,7 +91,7 @@ fn spawn_retrying(cmd: &mut Command) -> std::io::Result<std::process::Child> {
 /// opened on Windows, and a child still running at `timeout` is killed. A non-zero exit is
 /// *not* an error here: the caller reads `status` (git uses exit codes to mean things).
 pub fn run(cmd: Command, timeout: Duration) -> Result<Completed, RunError> {
-    let raw = run_capped(cmd, timeout, None)?;
+    let raw = run_capped(cmd, timeout, None, None)?;
     Ok(Completed {
         status: raw.status,
         stdout: String::from_utf8_lossy(&raw.stdout).into_owned(),
@@ -128,15 +128,29 @@ impl CompletedBytes {
 /// drained and dropped (so the child never blocks on a full pipe) and `over_cap` is set. Nothing
 /// is decoded, so the caller can test for binary content and apply its size limit first.
 pub fn run_bytes(cmd: Command, timeout: Duration, cap: usize) -> Result<CompletedBytes, RunError> {
-    run_capped(cmd, timeout, Some(cap))
+    run_capped(cmd, timeout, Some(cap), None)
 }
 
-fn run_capped(mut cmd: Command, timeout: Duration, cap: Option<usize>) -> Result<CompletedBytes, RunError> {
-    cmd.stdin(Stdio::null())
+/// [`run_bytes`] with `input` written to the child's stdin (on a thread of its own, then closed),
+/// for git's `--stdin` modes (Story 8.3: `git check-ignore --stdin -z`).
+pub fn run_bytes_with_input(cmd: Command, input: Vec<u8>, timeout: Duration, cap: usize) -> Result<CompletedBytes, RunError> {
+    run_capped(cmd, timeout, Some(cap), Some(input))
+}
+
+fn run_capped(mut cmd: Command, timeout: Duration, cap: Option<usize>, input: Option<Vec<u8>>) -> Result<CompletedBytes, RunError> {
+    cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     no_window(&mut cmd);
     let mut child = spawn_retrying(&mut cmd).map_err(|e| RunError::Spawn(e.to_string()))?;
+    // The input goes in on its own thread, so a child that writes before it has read everything
+    // never deadlocks against us; the pipe closes when the writer is dropped.
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let _ = stdin.write_all(&input);
+        });
+    }
 
     // Drain both pipes on their own threads so a chatty child can never block on a full pipe
     // while we wait for it.
@@ -273,6 +287,32 @@ pub(crate) mod fixtures {
         // The redirect comes first so a path ending in a digit cannot read as `1>`.
         let windows = format!("@>\"{}\" echo %~1\n", out.display());
         let unix = format!("printf '%s\\n' \"$1\" > '{}'\n", out.display());
+        script(dir, name, &windows, &unix)
+    }
+
+    /// A script fixture that writes each of its arguments (unquoted) on a line of its own to `out`
+    /// (written whole: to a side file, then renamed); what a test points the Review pane's `o` at
+    /// instead of a real editor (Story 8.3). On Windows each argument goes through a variable read
+    /// with delayed expansion, so `&` or a space in it is written, never run (a `!` is not kept).
+    pub(crate) fn argv_lines_recorder(dir: &Path, name: &str, out: &Path) -> PathBuf {
+        let side = out.with_extension("part");
+        let windows = format!(
+            concat!(
+                "@setlocal EnableDelayedExpansion\n",
+                "@type nul >\"{side}\"\n",
+                ":next\n",
+                "@if [%1]==[] goto done\n",
+                "@set \"arg=%~1\"\n",
+                "@>>\"{side}\" echo(!arg!\n",
+                "@shift\n",
+                "@goto next\n",
+                ":done\n",
+                "@move /y \"{side}\" \"{out}\" >nul\n",
+            ),
+            side = side.display(),
+            out = out.display()
+        );
+        let unix = format!("printf '%s\\n' \"$@\" > '{side}' && mv '{side}' '{out}'\n", side = side.display(), out = out.display());
         script(dir, name, &windows, &unix)
     }
 

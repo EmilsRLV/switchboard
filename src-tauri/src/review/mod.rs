@@ -477,6 +477,63 @@ pub fn range_target(state: &AppState, target: &ReviewTarget) -> Result<(PathBuf,
     Ok((dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()), branch))
 }
 
+// -- Story 8.3: Files mode and `o` -----------------------------------------------------------
+
+/// The Review pane's mode, as `o` (Open in editor) names it (Story 8.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewMode {
+    Changes,
+    Files,
+    Base,
+    Commits,
+}
+
+/// Why `o` is refused in vs base or Commits for a branch with no worktree, not checked out in the
+/// project's folder.
+pub const NOT_CHECKED_OUT: &str = "this branch is not checked out anywhere";
+
+/// Where `o` finds a vs base / Commits path for a branch (paths relative to the project's folder,
+/// which sits at `prefix` in its repository): its linked worktree (at the same `prefix`), else the
+/// project's folder when the branch is checked out there; else [`NOT_CHECKED_OUT`].
+pub fn branch_editor_folder(resolved: crate::claude::launch::BranchTarget, project_folder: &Path, prefix: &str) -> Result<PathBuf, String> {
+    match resolved {
+        crate::claude::launch::BranchTarget::Worktree(folder) => {
+            let mut path = PathBuf::from(folder);
+            for part in prefix.split('/').filter(|p| !p.is_empty()) {
+                path.push(part);
+            }
+            Ok(path)
+        }
+        crate::claude::launch::BranchTarget::ProjectFolder => Ok(project_folder.to_path_buf()),
+        crate::claude::launch::BranchTarget::NeedsWorktree => Err(NOT_CHECKED_OUT.to_string()),
+    }
+}
+
+/// The folder whose files `o` opens for `target` in `mode` (the paths the pane shows are relative
+/// to it): in Changes and Files the reviewed folder ([`target_folder`]); in vs base and Commits the
+/// file in the branch's checkout ([`branch_editor_folder`]; a project's branch is the one checked
+/// out in its folder).
+pub fn editor_folder(state: &AppState, git_bin: &Path, target: &ReviewTarget, mode: ReviewMode) -> Result<PathBuf, String> {
+    match (mode, target) {
+        (ReviewMode::Changes | ReviewMode::Files, _) | (_, ReviewTarget::Session { .. }) => target_folder(state, target),
+        (_, ReviewTarget::Project { .. }) => range_target(state, target).map(|(folder, _)| folder),
+        (_, ReviewTarget::Branch { project_id, branch }) => {
+            let (project_folder, _) = range_target(state, target)?;
+            let list = state.read_workspace().branches.get(project_id).cloned();
+            // A branch the last branch read does not list yet has no known checkout either.
+            let resolved = crate::claude::launch::resolve_branch(list.as_deref(), branch).map_err(|err| {
+                if err == crate::claude::launch::BRANCH_NOT_FOUND { NOT_CHECKED_OUT.to_string() } else { err }
+            })?;
+            let prefix = match &resolved {
+                crate::claude::launch::BranchTarget::Worktree(_) => crate::git::range::prefix(git_bin, &project_folder)?,
+                _ => String::new(),
+            };
+            branch_editor_folder(resolved, &project_folder, &prefix)
+        }
+    }
+}
+
 /// Whether `path` really lies inside `folder` (7.4's check): both at their real location, links
 /// and junctions followed, so a link inside the folder that points elsewhere is outside.
 pub fn within(path: &Path, folder: &Path) -> bool {
@@ -570,6 +627,24 @@ mod tests {
         assert_eq!(branch_folder(Some(&list), "bare"), Err(NO_WORKTREE.to_string()));
         assert_eq!(branch_folder(Some(&list), "lost"), Err(crate::claude::launch::WORKTREE_MISSING.to_string()));
         assert_eq!(branch_folder(Some(&list), "nope"), Err(crate::claude::launch::BRANCH_NOT_FOUND.to_string()));
+    }
+
+    #[test]
+    fn o_in_vs_base_opens_the_branch_checkout_or_is_refused() {
+        use crate::claude::launch::BranchTarget;
+        let project = if cfg!(windows) { "C:\\w\\api" } else { "/w/api" };
+        let wt = if cfg!(windows) { "C:\\w\\api-feat" } else { "/w/api-feat" };
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(branch_editor_folder(BranchTarget::Worktree(wt.into()), Path::new(project), ""), Ok(PathBuf::from(wt)));
+        assert_eq!(
+            branch_editor_folder(BranchTarget::Worktree(wt.into()), Path::new(project), "web/app/").unwrap().display().to_string(),
+            format!("{wt}{sep}web{sep}app")
+        );
+        assert_eq!(branch_editor_folder(BranchTarget::ProjectFolder, Path::new(project), "web/"), Ok(PathBuf::from(project)));
+        assert_eq!(branch_editor_folder(BranchTarget::NeedsWorktree, Path::new(project), ""), Err(NOT_CHECKED_OUT.to_string()));
+        let mode: ReviewMode = serde_json::from_value(json!("files")).unwrap();
+        assert_eq!(mode, ReviewMode::Files);
+        assert_eq!(serde_json::from_value::<ReviewMode>(json!("base")).unwrap(), ReviewMode::Base);
     }
 
     #[test]

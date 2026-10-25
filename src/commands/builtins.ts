@@ -80,6 +80,8 @@ import {
   canReviewSelection,
   canSetReviewFilter,
   canSwitchReviewMode,
+  canOpenInEditor,
+  openInEditor,
   clearReviewFromPalette,
   isReviewOpen,
   openReviewFromPalette,
@@ -684,6 +686,24 @@ export function builtinCommands(): Command[] {
       title: reviewModeTitle("commits"),
       when: () => canSwitchReviewMode("commits"),
       run: () => setReviewMode("commits"),
+    },
+    {
+      // Story 8.3: every file of the folder (where the pane has one).
+      id: "review.modeFiles",
+      title: reviewModeTitle("files"),
+      when: () => canSwitchReviewMode("files"),
+      run: () => setReviewMode("files"),
+    },
+    {
+      // Story 8.3: the configured editor at the selected file and the line under the cursor (else
+      // the first visible line). The bare key never fires from a text field (the dispatcher's rule).
+      id: "review.openEditor",
+      title: "Open in editor",
+      keybinding: "o",
+      when: canOpenInEditor,
+      run: async () => {
+        await openInEditor();
+      },
     },
     {
       // Side by side ↔ unified.

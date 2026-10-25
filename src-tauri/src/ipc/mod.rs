@@ -24,6 +24,13 @@ use crate::windows;
 /// The notice behind "Open in external editor" when `settings.external_editor` is unset.
 pub const NO_EDITOR: &str = "No external editor configured — set external_editor in settings";
 
+/// The notice behind the Review pane's `o` (Open in editor, Story 8.3) when `settings.external_editor`
+/// is unset or blank; the UI opens Settings with it.
+pub const NO_EDITOR_SET: &str = "No external editor set: add external_editor to settings";
+
+/// Why `o` refuses a template whose program names `{file}` or `{line}`: it would run the file.
+pub const PLACEHOLDER_PROGRAM: &str = "the editor program cannot contain {file} or {line}";
+
 /// The folder picker's title unless the caller names one (the launch sheet's add-dir picker
 /// says "Add folder for this session").
 pub const PICK_FOLDER_TITLE: &str = "Add project folder";
@@ -542,6 +549,60 @@ pub async fn review_file<R: Runtime>(
     .await?
 }
 
+/// Story 8.3, Files mode: the entries of the folder `path` (relative to `target`'s folder, `""` for
+/// the folder itself), folders first, gitignored ones marked, at most 2,000. The path is checked by
+/// Rust (plain names, really inside the folder; links never followed). Read-only.
+#[tauri::command]
+pub async fn review_dir<R: Runtime>(app: AppHandle<R>, target: crate::review::ReviewTarget, path: String) -> Result<git::files::DirListing, String> {
+    blocking(move || {
+        let (git_bin, folder) = review_folder(&app, &target)?;
+        git::files::list_dir(&git_bin, &folder, &path)
+    })
+    .await?
+}
+
+/// Story 8.3, Files mode: the text of the file `path` in `target`'s folder (8.1's limits: binary,
+/// too large, not UTF-8, CRLF as LF; a link is its target text). Read-only.
+#[tauri::command]
+pub async fn review_view<R: Runtime>(app: AppHandle<R>, target: crate::review::ReviewTarget, path: String) -> Result<git::files::FileView, String> {
+    blocking(move || {
+        let (git_bin, folder) = review_folder(&app, &target)?;
+        git::files::file_view(&folder, &path, &git::files::Scope::of(&git_bin, &folder))
+    })
+    .await?
+}
+
+/// Story 8.3, `o` (Open in editor): run `settings.external_editor` at `path` (as the pane shows it in
+/// `mode`) and `line`, detached. Rust finds the file ([`crate::review::editor_folder`]: the reviewed
+/// folder, or in vs base and Commits the branch's checkout) and checks it lies inside and exists;
+/// the template is split into arguments (quotes respected) with `{file}` and `{line}` filled in
+/// each. `Err` is the notice: [`NO_EDITOR_SET`] (the UI then opens Settings), `this branch is not
+/// checked out anywhere`, `not on disk: <path>`, a program not found, could not start.
+#[tauri::command]
+pub async fn review_open_editor<R: Runtime>(
+    app: AppHandle<R>,
+    target: crate::review::ReviewTarget,
+    mode: crate::review::ReviewMode,
+    path: String,
+    line: u32,
+) -> Result<(), String> {
+    let template = app.state::<AppState>().read().settings.external_editor.clone();
+    editor_args(template.as_deref(), "", 1)?;
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let git_bin = git::poll::git_binary(&state.read());
+        let folder = crate::review::editor_folder(&state, &git_bin, &target, mode)?;
+        let file = git::files::on_disk(&folder, &path, &git::files::Scope::of(&git_bin, &folder))?;
+        let args = editor_args(template.as_deref(), &file.display().to_string(), line.max(1))?;
+        let (program, rest) = args.split_first().ok_or_else(|| NO_EDITOR_SET.to_string())?;
+        let program = resolve_program(program, &Search::from_env(Vec::new()))?;
+        let mut cmd = Command::new(program);
+        cmd.args(rest);
+        process::spawn_detached(cmd).map_err(|err| format!("could not start external editor: {err}"))
+    })
+    .await?
+}
+
 /// The git binary, the project's folder and the branch (`None`: the checked-out one) that vs base
 /// and Commits read for `target` (Story 8.2).
 fn review_range_target<R: Runtime>(app: &AppHandle<R>, target: &crate::review::ReviewTarget) -> Result<(PathBuf, PathBuf, Option<String>), String> {
@@ -740,7 +801,7 @@ pub async fn workspace_remove_project<R: Runtime>(app: AppHandle<R>, project_id:
 
 /// "Open in external editor": run the program named by the first token of
 /// `settings.external_editor` with the project folder as its only argument (the
-/// `{file}`/`{line}` form of the template is for Epic 7's file opens), detached. The program
+/// `{file}`/`{line}` form of the template is for the Review pane's `o`, [`review_open_editor`]), detached. The program
 /// is resolved like detection resolves binaries (PATH + `PATHEXT`, so `code` finds
 /// `code.cmd`); a `.cmd`/`.bat` runs through `cmd.exe` (std) with no console window. Every failure
 /// is an `Err` the UI shows as a notice: no editor configured, unknown project, program not
@@ -818,6 +879,80 @@ pub fn editor_program(template: Option<&str>) -> Option<String> {
         None => trimmed.split_whitespace().next().unwrap_or(""),
     };
     (!program.is_empty()).then(|| program.to_string())
+}
+
+/// An editor template split into arguments (Story 8.3): whitespace separates them, except inside
+/// double quotes, which group and are dropped (`"C:\Program Files\Ed\ed.exe" --line {line}` is two
+/// arguments then `{line}`). Backslashes are literal; an unterminated quote runs to the end.
+pub fn split_template(template: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let (mut quoted, mut started) = (false, false);
+    for c in template.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                started = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if started {
+                    args.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            c => {
+                current.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        args.push(current);
+    }
+    args
+}
+
+/// The argv `o` runs (Story 8.3): the template [`split_template`] with `{file}` and `{line}`
+/// replaced in each argument; a template naming no `{file}` gets the file as its last argument.
+/// `Err`: [`NO_EDITOR_SET`] for an unset or blank template (or an empty program), and
+/// [`PLACEHOLDER_PROGRAM`] for a program naming `{file}` or `{line}`.
+pub fn editor_args(template: Option<&str>, file: &str, line: u32) -> Result<Vec<String>, String> {
+    let parts = split_template(template.unwrap_or(""));
+    let Some(program) = parts.first().filter(|p| !p.trim().is_empty()) else {
+        return Err(NO_EDITOR_SET.to_string());
+    };
+    // The program is never the reviewed file (a `.cmd` in the repository would run).
+    if program.contains("{file}") || program.contains("{line}") {
+        return Err(PLACEHOLDER_PROGRAM.to_string());
+    }
+    let line = line.to_string();
+    let names_file = parts.iter().any(|p| p.contains("{file}"));
+    // One pass, so a file name holding `{line}` stays as it is.
+    let fill = |arg: &str| {
+        let mut out = String::new();
+        let mut rest = arg;
+        while let Some(at) = rest.find('{') {
+            out.push_str(&rest[..at]);
+            let tail = &rest[at..];
+            if let Some(after) = tail.strip_prefix("{file}") {
+                out.push_str(file);
+                rest = after;
+            } else if let Some(after) = tail.strip_prefix("{line}") {
+                out.push_str(&line);
+                rest = after;
+            } else {
+                out.push('{');
+                rest = &tail[1..];
+            }
+        }
+        out.push_str(rest);
+        out
+    };
+    let mut args: Vec<String> = parts.iter().map(|p| fill(p)).collect();
+    if !names_file {
+        args.push(file.to_string());
+    }
+    Ok(args)
 }
 
 /// Where the editor program is. A bare name is looked up like detection does (PATH, with
@@ -2259,6 +2394,39 @@ mod tests {
         assert_eq!(editor_program(Some("   ")), None);
         assert_eq!(editor_program(Some("")), None);
         assert_eq!(editor_program(None), None);
+    }
+
+    #[test]
+    fn an_editor_template_splits_into_arguments_with_the_placeholders_filled() {
+        assert_eq!(split_template("code -g {file}:{line}"), ["code", "-g", "{file}:{line}"]);
+        assert_eq!(
+            split_template("\"C:\\Program Files\\Ed\\ed.exe\" --line {line} {file}"),
+            ["C:\\Program Files\\Ed\\ed.exe", "--line", "{line}", "{file}"]
+        );
+        assert_eq!(split_template("  subl   \"{file}:{line}\"  "), ["subl", "{file}:{line}"]);
+        assert_eq!(split_template("ed \"a b\"c \"\""), ["ed", "a bc", ""]);
+        assert_eq!(split_template("\"unterminated path"), ["unterminated path"]);
+        assert!(split_template("   ").is_empty());
+
+        let file = if cfg!(windows) { "C:\\My Repo\\src\\a.ts" } else { "/my repo/src/a.ts" };
+        assert_eq!(editor_args(Some("code -g {file}:{line}"), file, 42), Ok(vec!["code".into(), "-g".into(), format!("{file}:42")]));
+        assert_eq!(
+            editor_args(Some("\"C:\\Program Files\\Ed\\ed.exe\" --line {line} {file}"), file, 7),
+            Ok(vec!["C:\\Program Files\\Ed\\ed.exe".into(), "--line".into(), "7".into(), file.into()])
+        );
+        // No `{file}`: the file comes last. A file named `{line}` stays as it is.
+        assert_eq!(editor_args(Some("subl"), file, 3), Ok(vec!["subl".into(), file.into()]));
+        assert_eq!(editor_args(Some("ed +{line} {file}"), "/r/{line}.txt", 5), Ok(vec!["ed".into(), "+5".into(), "/r/{line}.txt".into()]));
+        assert_eq!(editor_args(Some("ed {nope} {file"), "f", 1), Ok(vec!["ed".into(), "{nope}".into(), "{file".into(), "f".into()]));
+        let none = Err(NO_EDITOR_SET.to_string());
+        assert_eq!(editor_args(None, file, 1), none);
+        assert_eq!(editor_args(Some("  "), file, 1), none);
+        assert_eq!(editor_args(Some("\"\" -g {file}"), file, 1), none);
+        // The program is never the file: a template that would run it is refused.
+        let placeholder = Err(PLACEHOLDER_PROGRAM.to_string());
+        assert_eq!(editor_args(Some("{file}"), file, 1), placeholder);
+        assert_eq!(editor_args(Some("\"{file}\" --x"), file, 1), placeholder);
+        assert_eq!(editor_args(Some("ed{line} {file}"), file, 1), placeholder);
     }
 
     #[test]

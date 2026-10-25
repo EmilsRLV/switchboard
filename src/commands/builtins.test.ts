@@ -53,7 +53,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the seventy-four commands with the spec's keybindings", () => {
+  it("register the seventy-six commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -103,8 +103,10 @@ describe("built-in commands", () => {
       "review.modeBase",
       "review.modeChanges",
       "review.modeCommits",
+      "review.modeFiles",
       "review.nextFile",
       "review.open",
+      "review.openEditor",
       "review.prevFile",
       "review.refresh",
       "review.toggleLayout",
@@ -161,6 +163,11 @@ describe("built-in commands", () => {
     expect(getCommand("branch.newSession")?.keybinding).toBe("n");
     expect(getCommand("edge.link")?.keybinding).toBe("e");
     expect(getCommand("edge.link")?.title).toBe("Link to…");
+    // Story 8.3: `o` opens the Review pane's file in the external editor; Files is palette-only.
+    expect(getCommand("review.openEditor")?.keybinding).toBe("o");
+    expect(getCommand("review.openEditor")?.title).toBe("Open in editor");
+    expect(getCommand("review.modeFiles")?.keybinding).toBeUndefined();
+    expect(getCommand("review.modeFiles")?.title).toBe("Review: files");
     expect(getCommand("edge.delete")?.keybinding).toBe("delete");
     expect(getCommand("edge.inspect")?.keybinding).toBeUndefined();
     expect(listCommands().map((c) => c.keybinding)).not.toContain("/");
@@ -192,7 +199,7 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the sixty-two actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the sixty-four actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -237,8 +244,10 @@ describe("built-in commands", () => {
       "review.modeBase",
       "review.modeChanges",
       "review.modeCommits",
+      "review.modeFiles",
       "review.nextFile",
       "review.open",
+      "review.openEditor",
       "review.prevFile",
       "review.refresh",
       "review.toggleLayout",
@@ -296,7 +305,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(74);
+    expect(listCommands()).toHaveLength(76);
   });
 
   const PROJECT_ACTIONS = [

@@ -97,13 +97,14 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | `e` | Link to…: with a session or project card selected, the palette becomes a pick list of the nodes it can be linked to; Enter draws the edge, Esc cancels (see [Edges](#edges)). Also in the node menu and the palette. Not while focus is in a text field or a select, nor while the context menu is open. |
 | `r` | Review changes: with a project, branch or session card selected, open the Review pane on its working tree (see [Review](#review)). Also in the node menu and the palette. Only while no palette, pane, menu or Elsewhere list is open, and not while focus is in a text field or a select. |
 | `j` / `k` | Next / previous file in the Review pane's tree (the requested files first). Only while the Review pane is open, and not in a text field. |
+| `o` | Open in editor: the Review pane's selected file in the external editor, at the line under the cursor (see [Open in editor](#open-in-editor)). Only while the Review pane is open, not in a text field and not while the context menu is open. Also in the palette. |
 | Delete | Delete edge: only while an edge is selected (a click on its line), deletes it at once, no confirmation (see [Edges](#edges)). With no edge selected Delete does nothing; in a text field it is the field's. |
 | Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings, import, terminal, the launch sheet, the worktree sheet, the remove-worktree sheet, the edge inspector or the Review pane), else clears the selected node or edge. With all of them open, five presses. With focus in a terminal Esc is the terminal's (see [Terminal](#terminal)). |
 
 `/` is reserved for a later epic and deliberately unbound. Delete is bound only to deleting a selected edge;
 removing a project stays a menu action.
 
-The palette lists fifty-nine commands: Toggle command palette, Add project folder…, Import from Claude…, Open
+The palette lists sixty-one commands: Toggle command palette, Add project folder…, Import from Claude…, Open
 settings, Reveal settings file (only when the file's location is known), Re-detect binaries (not while one
 runs), Fit view (once the canvas has mounted; the two project commands need it too), Quit, Toggle Elsewhere
 sessions (only while the Elsewhere tray has rows), Go to session that needs you (only while one does),
@@ -131,8 +132,9 @@ holds back (see [Context edges on live sessions](#context-edges-on-live-sessions
 edges](#cooperation-edges)); Open review request while any session has a review request, and Clear review
 flag while a session is flagged (see [Review requests](#review-requests-request_review)); Review changes while a
 project, branch or session card is selected and, while the Review pane is open, Review: refresh, Review: all /
-staged / unstaged changes, Review: unified view (or side-by-side view), Review: next / previous file and, on a
-project or branch, Review: changes / vs base / commits (see [Review](#review)). The palette sorts by title. The key-only
+staged / unstaged changes, Review: unified view (or side-by-side view), Review: next / previous file, Open in
+editor, Review: files (where the pane has a folder) and, on a project or branch, Review: changes / vs base / commits
+(see [Review](#review)). The palette sorts by title. The key-only
 carriers (the `ctrl+,` toggle, the palette's second binding `ctrl+shift+k`, the five Esc commands, the four
 arrows and Enter) are registered but hidden from
 the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron on a card runs
@@ -1129,6 +1131,62 @@ A branch card without a linked worktree opens in vs base (its Changes would only
 - **Freshness.** vs base and Commits are read when the mode opens, when the base changes and on **Refresh**. They
   never poll.
 
+### Files
+
+**Files** (the last position of the mode toggle, or the palette's **Review: files**, Story 8.3) browses every file of
+the reviewed folder, read-only. It is offered wherever the pane has a folder: a project, a branch with a linked worktree,
+or a session (a branch without a worktree has none).
+
+- **The tree** is lazy: the folder's own entries are read when Files opens, and a folder's children the first time it is
+  opened (a click on its row, `▸` / `▾`). Folders come first, then names sorted case-insensitively; dotfiles are
+  listed. `.git` and the linked worktrees inside the repository are left out. Entries git ignores (`git check-ignore
+  --stdin -z`, one call per folder; everything under an ignored folder) are listed dimmed; inside a submodule or a
+  nested repository its own ignore rules decide, and its top folder is never dimmed. A folder lists at most 2,000
+  entries, then `N more not shown` (entries that could not be read count there too). A name the UI could not send back
+  (not UTF-8, control characters, a Windows device name such as `CON` or `aux.txt`) is listed but cannot be opened. A symbolic link (or a junction) is listed as `link` and never followed: it does not
+  open as a folder, and a path through it to elsewhere is refused. A folder that cannot be read shows its error in
+  place of its children. A folder that is not a git repository lists nothing as ignored.
+- **The viewer.** The selected file opens in a read-only CodeMirror view with line numbers and the same language packs
+  as the diff. The diff's limits apply: `binary file`, `too large to show` (over 2 MB or 50,000 lines), `not UTF-8
+  (shown lossily)`, and CRLF shown as LF. A link shows its target. `submodule` and `unreadable name` are the lines the
+  viewer would show for a submodule or an unreadable name. `j` / `k` step through the files of the open folders.
+  Switching from Changes to Files keeps the selected file and opens the folders above it.
+- **Paths.** The UI sends Rust a path relative to the folder; Rust accepts only plain names (no `..`, no root or drive,
+  no control characters, never `.git` (any case on Windows), and on Windows no device names such as `CON`, `NUL`,
+  `COM1` or `aux.txt` and no name ending in a dot or a space). It refuses a path inside a linked worktree (`not shown
+  in the folder`) and any path that passes through a link, even one pointing inside the folder (`a path through a
+  link`), and checks the real location lies inside the folder (7.4's check) before it lists or reads anything.
+- **Freshness.** **Refresh** reads every open folder and the open file again. A folder closed and opened again is read
+  again. Files never polls.
+
+### Open in editor
+
+`o` (or the palette's **Open in editor**) runs the `external_editor` command of the settings at the selected file and
+line, in every mode. Rust finds the file and builds the command; the UI only names the node, the mode, the path it shows
+and a line.
+
+- **The line** is the line at the cursor of the view last clicked (a click places it), else the first visible line. A
+  line on the old side of the side-by-side diff, or a deleted line of the unified diff, opens the new file at the
+  nearest new line (the same place in the changed block, or the line after a deletion). Clicking elsewhere or moving
+  the cursor drops a deleted line's mapping. Clicks on the gutters or scrollbars do not place the cursor. With no view
+  showing (a binary file, say), line 1. In vs base and Commits the line is the shown commit's, while the file that opens
+  is the working copy: when the working copy has changed since, the line may have drifted.
+- **The file** is `<folder>/<path>` in Changes and Files. In vs base and Commits it is the file in the branch's linked
+  worktree; a branch without one opens the project's folder when that branch is checked out there, and is otherwise
+  refused with `this branch is not checked out anywhere`. A file that is not there is refused with `not on disk:
+  <path>`, and one whose real location is outside the folder with `outside the reviewed folder`. With no file
+  selected (the commit list, a requested path that names no changed file), `o` says `Open in editor: no file
+  selected`.
+- **The command.** The template is split into arguments (whitespace separates them, double quotes group: `"C:\Program
+  Files\Ed\ed.exe" --line {line} {file}`), and `{file}` and `{line}` are replaced in each argument; a template that
+  names no `{file}` gets the file as its last argument. A program (the first argument) naming `{file}` or `{line}` is
+  refused with `the editor program cannot contain {file} or {line}`: it would run the reviewed file. The program is resolved like "Open in external editor"
+  (PATH, with `PATHEXT` on Windows, so `code` finds `code.cmd`) and started detached. The default is `code -g
+  {file}:{line}`, set at first run when `code` is on PATH.
+- **No editor.** With `external_editor` unset (or blank), `o` shows `No external editor set: add external_editor to
+  settings` and opens Settings, also when no file is selected. Any other refusal (the program not found, could not
+  start) is the notice.
+
 ## The switchboard MCP server
 
 A session Switchboard starts (New, Resume, Fork) can see the graph it sits in through a `switchboard` MCP
@@ -1318,7 +1376,7 @@ The location is `dirs::config_dir()/switchboard`, so it also resolves on macOS
 | `defaults.effort` | `null` | Launch-sheet default effort. |
 | `defaults.permission_mode` | `"default"` | Launch-sheet default permission mode. |
 | `worktrees_root` | `null` | Root for app-made worktrees; `null` means `<repo>/.worktrees/<branch>`, an absolute path `<root>/<repo folder>/<branch>` (see [Worktrees](#worktrees)). Affects only worktrees created afterwards. |
-| `external_editor` | `"code -g {file}:{line}"` when `code` is on PATH, else `null` | Command template for "open in editor". The `{file}`/`{line}` form is for Epic 7's file opens; "Open in external editor" on a project card runs only the **first token** with the project folder as its single argument. A path with spaces must be quoted (`"C:\Program Files\…\code.cmd" -g {file}:{line}`). A bare name is resolved like binary detection (PATH, with `PATHEXT` on Windows, so `code` finds `code.cmd`); a path (or `~/…`) is used as given. A `.cmd`/`.bat` runs through `cmd.exe` without a console window; the child is detached, never waited on. `null` makes the action a notice. |
+| `external_editor` | `"code -g {file}:{line}"` when `code` is on PATH, else `null` | Command template for "open in editor". The Review pane's `o` (see [Open in editor](#open-in-editor)) splits it into arguments (double quotes group) and fills `{file}` and `{line}` in each; "Open in external editor" on a project card runs only the **first token** with the project folder as its single argument. A path with spaces must be quoted (`"C:\Program Files\…\code.cmd" -g {file}:{line}`). A bare name is resolved like binary detection (PATH, with `PATHEXT` on Windows, so `code` finds `code.cmd`); a path (or `~/…`) is used as given. A `.cmd`/`.bat` runs through `cmd.exe` without a console window; the child is detached, never waited on. `null` makes the action a notice (and `o` opens Settings). |
 | `shell` | Windows: `"pwsh"` if present, else `"powershell"`; Linux: `$SHELL` (`null` when unset) | Shell for plain terminals. |
 | `theme` | `"dark"` | UI theme. Reserved; not applied yet (the UI is dark-only). |
 | `poll.agents_ms` | `2000` | `claude agents --json --all` poll interval (live sessions); floor 500 ms. |

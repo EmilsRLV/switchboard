@@ -10,15 +10,20 @@
 // the request), then shows the pane; a refusal is the notice. Each call names the request the UI
 // showed (its `seq`), so a replacement the operator never saw keeps its flag. While the pane shows
 // a session's request, a new request from it counts as seen: it is opened at once.
+//
+// Story 8.3: Files mode (wherever the pane has a folder) and `o`, Open in editor: Rust runs the
+// configured editor at the selected file and the line the view reports (`review/place.ts`); with
+// no editor set, the notice says so and Settings opens.
 
-import { reviewClear, reviewOpen, type DiffFilter, type ReviewTarget } from "../ipc";
+import { NO_EDITOR_SET, reviewClear, reviewOpen, reviewOpenEditor, type DiffFilter, type ReviewTarget } from "../ipc";
 import { useLiveStore } from "../state/live";
 import { isFlagged, requestIn, requestList, useReviewStore } from "../state/review";
 import { useSettingsStore } from "../state/settings";
 import { useStatusStore } from "../state/status";
-import { useUiStore } from "../state/ui";
+import { isContextMenuOpen, useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 import { MODES, modesFor, otherLayout, stepPath, type ReviewMode } from "../review/model";
+import { currentLine } from "../review/place";
 import { notify, selectedBranch } from "./navigation";
 import { openPane } from "./panes";
 
@@ -74,7 +79,7 @@ export function openingMode(target: ReviewTarget): ReviewMode {
 
 /** Open the Review pane on `target` (no review request on top). */
 export function openReviewOf(target: ReviewTarget): void {
-  useReviewStore.getState().openTarget(target, null, openingMode(target));
+  useReviewStore.getState().openTarget(target, null, openingMode(target), targetHasFolder(target));
   openPane("review");
 }
 
@@ -96,9 +101,27 @@ export function setReviewFilter(filter: DiffFilter): void {
   useReviewStore.getState().setFilter(filter);
 }
 
-/** Story 8.2: whether the open pane's target offers `mode` (a session has Changes only). */
+/**
+ * Story 8.3: whether `target` has a folder of its own (what Files lists): a project and a session
+ * do; a branch only with a linked worktree that is not missing.
+ */
+export function targetHasFolder(target: ReviewTarget): boolean {
+  if (target.kind !== "branch") return true;
+  const child = useWorkspaceStore
+    .getState()
+    .snapshot?.children.find((c) => c.kind === "branch" && c.projectId === target.projectId && c.label === target.branch);
+  const worktree = child?.branch?.worktree;
+  return worktree !== undefined && worktree !== null && !worktree.missing;
+}
+
+/** The modes the pane offers for `target` (Files only where it has a folder). */
+export function reviewModes(target: ReviewTarget | null): readonly ReviewMode[] {
+  return modesFor(target, target !== null && targetHasFolder(target));
+}
+
+/** Story 8.2: whether the open pane's target offers `mode` (a session has Changes and Files only). */
 export function canSetReviewMode(mode: ReviewMode): boolean {
-  return isReviewOpen() && modesFor(useReviewStore.getState().target).includes(mode);
+  return isReviewOpen() && reviewModes(useReviewStore.getState().target).includes(mode);
 }
 
 /** Story 8.2: the `when` of a mode command: the target offers `mode` and it is not the one showing. */
@@ -114,7 +137,8 @@ export function canSetReviewFilter(): boolean {
 /** Story 8.2: the mode toggle: Changes, vs base or Commits (vs base and Commits are read as they open). */
 export function setReviewMode(mode: ReviewMode): void {
   if (!canSetReviewMode(mode)) return;
-  useReviewStore.getState().setMode(mode);
+  const { target } = useReviewStore.getState();
+  useReviewStore.getState().setMode(mode, target !== null && targetHasFolder(target));
 }
 
 /** The palette title of mode `mode`'s command: `Review: changes`, `Review: vs base`, `Review: commits`. */
@@ -144,6 +168,56 @@ export function stepReviewFile(delta: number): void {
   const store = useReviewStore.getState();
   const next = stepPath(store.order, store.selected, delta);
   if (next !== null) store.select(next);
+}
+
+// -- Story 8.3: Open in editor -------------------------------------------------------------------
+
+/** The notice when `o` has no file to open. */
+export const NO_FILE_TO_OPEN = "Open in editor: no file selected";
+
+/** The file `o` opens: the selected file in Changes, vs base, a commit's files or Files; `null` without one. */
+export function editorPathOfPane(): string | null {
+  const { selected, mode, commit } = useReviewStore.getState();
+  if (selected === null || (mode === "commits" && commit === null)) return null;
+  // A requested path that names no changed file (`unchanged`, `missing`, outside) is a mark row.
+  if (selected.startsWith("req:")) return null;
+  return selected;
+}
+
+/** The `when` of "Open in editor" (`o`): the Review pane is open and no menu is. */
+export function canOpenInEditor(): boolean {
+  return isReviewOpen() && !isContextMenuOpen();
+}
+
+/**
+ * "Open in editor" (`o`): the configured editor at the selected file and the line the view
+ * reports (at its cursor, else its first visible line; line 1 when no view shows). A refusal is the
+ * notice; with no editor set, Settings opens too. Resolves whether the editor was started.
+ */
+export async function openInEditor(): Promise<boolean> {
+  const { target, mode } = useReviewStore.getState();
+  if (target === null || !isReviewOpen()) return false;
+  // No editor set wins over any other refusal (Rust says the same when settings are not here yet).
+  const settings = useSettingsStore.getState().snapshot?.settings;
+  if (settings !== undefined && (settings.external_editor ?? "").trim() === "") {
+    notify(NO_EDITOR_SET);
+    openPane("settings");
+    return false;
+  }
+  const path = editorPathOfPane();
+  if (path === null) {
+    notify(NO_FILE_TO_OPEN);
+    return false;
+  }
+  try {
+    await reviewOpenEditor(target, mode, path, currentLine() ?? 1);
+    return true;
+  } catch (err) {
+    const message = describe(err);
+    notify(message);
+    if (message === NO_EDITOR_SET) openPane("settings");
+    return false;
+  }
 }
 
 /** The project `target` belongs to (whose status poll keeps the list fresh), or `null`. */

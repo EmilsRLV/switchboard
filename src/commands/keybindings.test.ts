@@ -213,6 +213,20 @@ describe("handleKeydown (the dispatcher)", () => {
     expect(down).toHaveBeenCalledOnce();
   });
 
+  it("Story 8.3: a bare `o` is the input's in a text field, and the command's in a read-only view", () => {
+    const open = vi.fn();
+    registerCommand({ id: "review.openEditor", title: "Open in editor", keybinding: "o", run: open });
+    expect(handleKeydown(key("o", { target: { tagName: "INPUT" } }))).toBe(false);
+    expect(handleKeydown(key("o", { target: { tagName: "TEXTAREA" } }))).toBe(false);
+    expect(handleKeydown(key("o", { target: { tagName: "DIV", isContentEditable: true } }))).toBe(false);
+    expect(open).not.toHaveBeenCalled();
+    // CodeMirror's read-only content (`contenteditable="false"`).
+    expect(handleKeydown(key("o", { target: { tagName: "DIV", isContentEditable: false } }))).toBe(true);
+    // ctrl+o stays Add project folder's, never `o`'s.
+    expect(handleKeydown(key("o", { ctrlKey: true }))).toBe(false);
+    expect(open).toHaveBeenCalledOnce();
+  });
+
   it("runs at most one command per event", () => {
     const a = vi.fn();
     const b = vi.fn();

@@ -329,6 +329,40 @@ export type CommitLog = RangeBases & {
   more: number;
 };
 
+/** Mirrors `git::files::EntryKind` (Story 8.3): a folder, a file, or a link (shown, never followed). */
+export type DirEntryKind = "dir" | "file" | "link";
+
+/** Mirrors `git::files::DirEntry`: one entry of a folder in the Review pane's Files mode. */
+export type DirEntry = {
+  name: string;
+  /** Relative to the reviewed folder, `/`-separated: what the UI sends back. */
+  path: string;
+  kind: DirEntryKind;
+  /** git ignores it (or the folder it is in): listed dimmed. */
+  ignored: boolean;
+  /** The name is not valid UTF-8: listed lossily, never opened. */
+  unreadableName: boolean;
+};
+
+/** Mirrors `git::files::DirListing`: what `review_dir` returns, one folder's entries. */
+export type DirListing = {
+  root: string;
+  /** The folder listed (`""` for the reviewed folder itself). */
+  path: string;
+  entries: DirEntry[];
+  /** Entries past the first 2,000, not sent. */
+  more: number;
+};
+
+/** Mirrors `git::files::FileView`: what `review_view` returns (`old` is always `null`). */
+export type FileView = { path: string; content: DiffContent };
+
+/** Mirrors `review::ReviewMode` (Story 8.3): the pane's mode, as `o` names it. */
+export type ReviewModeWire = "changes" | "files" | "base" | "commits";
+
+/** Rust's refusal of `o` when no external editor is set (`ipc::NO_EDITOR_SET`): the UI then opens Settings. */
+export const NO_EDITOR_SET = "No external editor set: add external_editor to settings";
+
 /** Mirrors `graph::Workspace`: the on-disk `workspace.json` schema, version 1. */
 export type Workspace = {
   version: number;
@@ -847,6 +881,9 @@ type Commands = {
   review_range_list: RangeList;
   review_range_file: FileText;
   review_commits: CommitLog;
+  review_dir: DirListing;
+  review_view: FileView;
+  review_open_editor: void;
   edge_live_retry: void;
   edge_restart_with_flags: LaunchResult;
   claude_projects_list: ClaudeProject[];
@@ -1131,6 +1168,25 @@ export function reviewRangeFile(target: ReviewTarget, base: string | null, commi
 /** `ipc::review_commits` (Story 8.2) -- read-only: the branch's commits beyond `base`, newest first, at most 200. */
 export function reviewCommits(target: ReviewTarget, base: string | null): Promise<CommitLog> {
   return call("review_commits", { target, base });
+}
+
+/** `ipc::review_dir` (Story 8.3) -- read-only: the entries of the folder `path` (relative, `""` for the root) of `target`'s folder. */
+export function reviewDir(target: ReviewTarget, path: string): Promise<DirListing> {
+  return call("review_dir", { target, path });
+}
+
+/** `ipc::review_view` (Story 8.3) -- read-only: the text of the file `path` of `target`'s folder, or why it is not shown. */
+export function reviewView(target: ReviewTarget, path: string): Promise<FileView> {
+  return call("review_view", { target, path });
+}
+
+/**
+ * `ipc::review_open_editor` (Story 8.3) -- `o`: run the configured editor at `path` (as the pane
+ * shows it in `mode`) and `line`. Rust finds and checks the file. Rejects with the notice:
+ * `NO_EDITOR_SET`, `this branch is not checked out anywhere`, `not on disk: <path>`, …
+ */
+export function reviewOpenEditor(target: ReviewTarget, mode: ReviewModeWire, path: string, line: number): Promise<void> {
+  return call("review_open_editor", { target, mode, path, line });
 }
 
 /**

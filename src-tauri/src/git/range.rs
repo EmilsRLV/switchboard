@@ -415,7 +415,7 @@ fn ahead(git_bin: &Path, folder: &Path, pinned: &Pinned) -> Result<usize, String
 }
 
 /// The folder relative to the top level (`sub/dir/` or empty).
-fn prefix(git_bin: &Path, folder: &Path) -> Result<String, String> {
+pub(crate) fn prefix(git_bin: &Path, folder: &Path) -> Result<String, String> {
     let out = diff::run_ok(git(git_bin, folder, &["rev-parse", "--show-prefix"]))?;
     Ok(text(out).trim().to_string())
 }

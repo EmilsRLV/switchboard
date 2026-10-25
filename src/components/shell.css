@@ -1435,6 +1435,29 @@
   height: 100%;
 }
 
+/* Story 8.3, Files: a gitignored entry is dimmed (its name and mark in --fg-muted); the file view is
+   one editor filling the side. */
+.review-row.review-ignored {
+  color: var(--fg-muted);
+}
+
+.review-row:disabled {
+  color: var(--fg-faint);
+  cursor: default;
+}
+
+.review-tree .review-files-note {
+  padding-top: 0.15rem;
+  padding-bottom: 0.15rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.review-source .cm-editor {
+  height: 100%;
+}
+
 /* The edge inspector's policy row (Story 7.2). */
 .edge-policy {
   display: flex;

@@ -152,11 +152,13 @@ describe("stepping and the selection after a read", () => {
     expect(pickSelected("gone", [])).toBeNull();
   });
   it("Story 8.2: the modes a target offers, the base choices and the empty-range line", () => {
-    expect(MODES.map((m) => m.label)).toEqual(["Changes", "vs base", "Commits"]);
+    expect(MODES.map((m) => m.label)).toEqual(["Changes", "vs base", "Commits", "Files"]);
     expect(modesFor(null)).toEqual([]);
-    expect(modesFor({ kind: "session", sessionId: "s" })).toEqual(["changes"]);
-    expect(modesFor({ kind: "project", projectId: "p" })).toEqual(["changes", "base", "commits"]);
-    expect(modesFor({ kind: "branch", projectId: "p", branch: "feat" })).toEqual(["changes", "base", "commits"]);
+    expect(modesFor({ kind: "session", sessionId: "s" })).toEqual(["changes", "files"]);
+    expect(modesFor({ kind: "project", projectId: "p" })).toEqual(["changes", "base", "commits", "files"]);
+    expect(modesFor({ kind: "branch", projectId: "p", branch: "feat" })).toEqual(["changes", "base", "commits", "files"]);
+    // Story 8.3: Files only where the pane has a folder (a branch without a worktree has none).
+    expect(modesFor({ kind: "branch", projectId: "p", branch: "feat" }, false)).toEqual(["changes", "base", "commits"]);
     expect(baseChoices({ defaultBase: "main", bases: ["develop", "feat", "main"] })).toEqual(["main", "develop", "feat"]);
     expect(noCommitsText("main", "main")).toBe("No commits on main beyond main");
     expect(olderCommitsText(50)).toBe("50 older commits not shown");

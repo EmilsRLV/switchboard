@@ -298,7 +298,9 @@ chrome follows every rule here.
     toggle (**Changes**, **vs base**, **Commits**) in the same look; the filter shows in Changes only, and vs base
     and Commits put the base dropdown in its place: a muted `base` label (`--text-xs` `--fg-muted`) before the
     launch sheet's select in mono `--text-xs`, the default branch first and marked `(default)`. In Commits the
-    totals read `N commits`;
+    totals read `N commits`; Story 8.3 adds **Files** as the toggle's last position (wherever the pane has a folder;
+    a session's toggle is **Changes** and **Files**), and in Files the toolbar holds the mode toggle only: no filter,
+    base, totals or layout toggle;
   - the **body**: the changed-files tree (`min(300px, 35%)` wide, a 1-px `--border` line at its right,
     scrolling) beside the diff. A folder row is mono `--text-xs` `--fg-muted` (`src/auth/`; a chain of single
     folders on one row), its files indented under it. A file row is the palette's row look in mono `--text-xs`:
@@ -315,6 +317,16 @@ chrome follows every rule here.
     commit selected the column starts with an ordinary **← Commits** button and the commit's short hash and subject
     (mono `--text-xs`, one line, ellipsis) over a 1-px `--border` line, then its files as above; with none,
     the diff side reads `No commit selected.` (muted).
+  - Story 8.3, **Files**: the tree column is the folder's tree in the file rows' look (mono `--text-xs`, the palette's
+    row look on hover and when selected), one row per entry, indented `0.85rem` per level. A folder row is a button
+    whose mark is `▸` closed or `▾` open (`--fg-muted`, `aria-expanded`) and whose name ends in `/`; a link adds `link`
+    at the right in `--fg-muted`. A **gitignored** entry is dimmed: its whole row in `--fg-muted` (never the accent; the
+    word `ignored` is in its tooltip and accessible name). An entry whose name cannot be opened (not UTF-8, control characters, a Windows device name) is a disabled row in
+    `--fg-faint`. Under a folder, `Reading…` and `N more not shown` are muted mono `--text-xs` lines and a read error
+    is `.pane-error` text. The right side is the **viewer**: one read-only CodeMirror view of the file, the diff's
+    look exactly (its theme, gutters and syntax colours, no change colours); `No file selected.`, `Reading <path>…`,
+    `binary file`, `too large to show`, `submodule` and `unreadable name` are muted lines in its place, and `not UTF-8 (shown lossily)` the muted line
+    over it.
   - The **diff** fills the rest: CodeMirror's merge view with no chrome of its own beyond its gutters (see
     [Diff colours](#diff-colours)), in `--font-mono` `--text-md`. `binary file`, `too large to show (+N −M)`,
     `No file selected.` and `Reading <path>…` are muted lines in its place; a file that is not UTF-8 adds a muted

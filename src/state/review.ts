@@ -7,11 +7,12 @@
 // project, a branch or a session; Rust finds the folder), the session whose request it shows on
 // top (if any), the filter, the layout, the selected file, and the last diff's render time for
 // Diagnostics. Story 8.2 adds the mode (Changes, vs base, Commits), the base asked for, the commit
-// shown and the commit list as last read. Runtime only, never persisted.
+// shown and the commit list as last read. Story 8.3 adds Files mode's open folders (the file shown
+// is `selected`). Runtime only, never persisted.
 
 import { create } from "zustand";
 import type { Banner, CommitLog, DiffFilter, ReviewMap, ReviewRequest, ReviewTarget } from "../ipc";
-import { modesFor, type DiffLayout, type ReviewMode } from "../review/model";
+import { modesFor, toggleFolder, type DiffLayout, type ReviewMode } from "../review/model";
 
 export type ReviewStoreState = {
   requests: ReviewMap;
@@ -35,6 +36,8 @@ export type ReviewStoreState = {
   /** Commits mode: the list as last read (for the target, base and Refresh), or `null`. */
   commitList: CommitLog | null;
   layout: DiffLayout;
+  /** Story 8.3, Files: the folders shown open (paths relative to the reviewed folder); kept across modes, reset for a new target. */
+  filesOpen: ReadonlySet<string>;
   /** The selected file (its path in the list), or `null`. */
   selected: string | null;
   /** The tree's selectable paths in display order (the pane sets it), for stepping through the files. */
@@ -53,14 +56,19 @@ export type ReviewStoreState = {
   dismiss: (id: string, seq: number) => void;
   /**
    * Show `target` in the pane (a new target starts in `mode`, default Changes, at the All filter and
-   * the default base, with no file or commit selected).
+   * the default base, with no file or commit selected). `hasFolder` false: Files is not offered (a
+   * branch without a usable worktree); the same target showing Files then goes to `mode`.
    */
-  openTarget: (target: ReviewTarget, requestId: string | null, mode?: ReviewMode) => void;
+  openTarget: (target: ReviewTarget, requestId: string | null, mode?: ReviewMode, hasFolder?: boolean) => void;
   /** The pane closed: nothing is reviewed. */
   closeTarget: () => void;
   setFilter: (filter: DiffFilter) => void;
-  /** Switch the mode (a mode the target does not offer is ignored); no file or commit stays selected. */
-  setMode: (mode: ReviewMode) => void;
+  /**
+   * Switch the mode (a mode the target does not offer, `hasFolder` false for Files, is ignored); no
+   * file or commit stays selected, except that entering Files from Changes keeps a selected file and
+   * opens the folders above it.
+   */
+  setMode: (mode: ReviewMode, hasFolder?: boolean) => void;
   /** Pick the base (`null`: the default); the commit list is read again and no commit stays selected. */
   setBase: (base: string | null) => void;
   /** Show commit `sha`'s files (`null`: back to the commit list). */
@@ -68,6 +76,8 @@ export type ReviewStoreState = {
   /** The commit list as read; a shown commit it no longer lists (the branch was rewritten) goes back to the list. */
   setCommitList: (list: CommitLog | null) => void;
   setLayout: (layout: DiffLayout) => void;
+  /** Files: open or close the folder `path` (closing closes the folders inside it). */
+  toggleFolder: (path: string) => void;
   select: (path: string | null) => void;
   setOrder: (order: readonly string[]) => void;
   setRoot: (root: string | null) => void;
@@ -78,6 +88,7 @@ export type ReviewStoreState = {
 export const EMPTY_REVIEWS: ReviewMap = Object.freeze({}) as ReviewMap;
 const NO_ORDER: readonly string[] = Object.freeze([]);
 const NO_DISMISSED: Readonly<Record<string, number>> = Object.freeze({});
+const NO_FOLDERS: ReadonlySet<string> = new Set();
 
 export const useReviewStore = create<ReviewStoreState>()((set) => ({
   requests: EMPTY_REVIEWS,
@@ -92,6 +103,7 @@ export const useReviewStore = create<ReviewStoreState>()((set) => ({
   commit: null,
   commitList: null,
   layout: "split",
+  filesOpen: NO_FOLDERS,
   selected: null,
   order: NO_ORDER,
   root: null,
@@ -115,42 +127,63 @@ export const useReviewStore = create<ReviewStoreState>()((set) => ({
     }),
   setLoadError: (loadError) => set({ loadError }),
   dismiss: (id, seq) => set((s) => ({ dismissed: { ...s.dismissed, [id]: seq } })),
-  openTarget: (target, requestId, mode = "changes") =>
-    set((s) =>
-      s.target !== null && sameReviewTarget(s.target, target) && s.requestId === requestId
-        ? { refreshSeq: s.refreshSeq + 1 }
-        : {
+  openTarget: (target, requestId, mode = "changes", hasFolder = true) =>
+    set((s) => {
+      const offered = modesFor(target, hasFolder);
+      const start = offered.includes(mode) ? mode : "changes";
+      if (s.target !== null && sameReviewTarget(s.target, target) && s.requestId === requestId) {
+        // The same target: it stays as it is, unless its mode is no longer offered.
+        return offered.includes(s.mode) ? { refreshSeq: s.refreshSeq + 1 } : { mode: start, selected: null, commit: null, order: NO_ORDER, refreshSeq: s.refreshSeq + 1 };
+      }
+      return {
             target,
             requestId,
             filter: "all",
-            mode: modesFor(target).includes(mode) ? mode : "changes",
+            mode: start,
             base: null,
             commit: null,
             commitList: null,
+            filesOpen: NO_FOLDERS,
             selected: null,
             root: null,
             refreshSeq: s.refreshSeq + 1,
-          },
-    ),
+          };
+    }),
   closeTarget: () =>
-    set((s) => (s.target === null && s.requestId === null ? {} : { target: null, requestId: null, selected: null, order: NO_ORDER, root: null, commit: null, commitList: null })),
+    set((s) => (s.target === null && s.requestId === null ? {} : { target: null, requestId: null, selected: null, order: NO_ORDER, root: null, commit: null, commitList: null, filesOpen: NO_FOLDERS })),
   setFilter: (filter) => set((s) => (s.filter === filter ? {} : { filter })),
-  setMode: (mode) =>
+  setMode: (mode, hasFolder = true) =>
     set((s) => {
-      if (s.mode === mode || !modesFor(s.target).includes(mode)) return {};
-      return { mode, selected: null, commit: null, order: NO_ORDER };
+      if (s.mode === mode || !modesFor(s.target, hasFolder).includes(mode)) return {};
+      const kept = mode === "files" && s.mode === "changes" ? filesSelection(s.selected) : null;
+      if (kept === null) return { mode, selected: null, commit: null, order: NO_ORDER };
+      const filesOpen = new Set(s.filesOpen);
+      for (const folder of kept.folders) filesOpen.add(folder);
+      return { mode, selected: kept.path, commit: null, order: NO_ORDER, filesOpen };
     }),
   setBase: (base) => set((s) => (s.base === base ? {} : { base, commit: null, commitList: null, selected: null })),
   selectCommit: (commit) => set((s) => (s.commit === commit ? {} : { commit, selected: null, order: NO_ORDER })),
   setCommitList: (commitList) =>
     set((s) => (s.commit !== null && commitList !== null && !commitList.commits.some((c) => c.sha === s.commit) ? { commitList, commit: null, selected: null } : { commitList })),
   setLayout: (layout) => set((s) => (s.layout === layout ? {} : { layout })),
+  toggleFolder: (path) => set((s) => ({ filesOpen: toggleFolder(s.filesOpen, path) })),
   select: (selected) => set((s) => (s.selected === selected ? {} : { selected })),
   setRoot: (root) => set((s) => (s.root === root ? {} : { root })),
   setOrder: (order) => set((s) => (sameOrder(s.order, order) ? {} : { order })),
   refresh: () => set((s) => ({ refreshSeq: s.refreshSeq + 1 })),
   setRenderMs: (lastRenderMs) => set({ lastRenderMs }),
 }));
+
+/**
+ * What Files keeps of a Changes selection: a file path (paths are relative to the same folder), with
+ * the folders above it to open; `null` for none or a requested path's mark row (`req:…`).
+ */
+export function filesSelection(selected: string | null): { path: string; folders: string[] } | null {
+  if (selected === null || selected.startsWith("req:") || selected === "") return null;
+  const parts = selected.split("/");
+  if (parts.some((p) => p === "" || p === "." || p === "..")) return null;
+  return { path: selected, folders: parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join("/")) };
+}
 
 function sameOrder(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((p, i) => p === b[i]);

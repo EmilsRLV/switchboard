@@ -2,13 +2,16 @@ import { Suspense, lazy, useEffect, useMemo, useRef, useState, type PointerEvent
 import { runCommand } from "../commands/registry";
 import {
   reviewCommits,
+  reviewDir,
   reviewFile,
   reviewList,
   reviewRangeFile,
   reviewRangeList,
+  reviewView,
   type ChangeList,
   type ChangedFile,
   type FileText,
+  type FileView,
   type RangeBases,
   type RangeList,
   type RequestedKey,
@@ -29,8 +32,11 @@ import {
   commitRows,
   countsText,
   fileOrder,
+  filesOrder,
+  filesRows,
+  foldersToRead,
   languageFor,
-  modesFor,
+  moreEntriesText,
   noCommitsText,
   olderCommitsText,
   orderForRequest,
@@ -38,14 +44,19 @@ import {
   rowLabel,
   statusMark,
   totals,
+  type FilesRow,
+  type FolderState,
   type RequestedRow,
   type TreeRow,
 } from "../review/model";
 import { loadLanguage } from "../review/languages";
+import { reviewModes, setReviewMode } from "../commands/review";
 import { ErrorBoundary } from "./ErrorBoundary";
 
 // CodeMirror and the merge view: their own chunk, loaded with the first diff shown.
 const DiffView = lazy(() => import("../review/DiffView"));
+// Files mode's single view (Story 8.3), from the same chunk.
+const SourceView = lazy(() => import("../review/DiffView").then((m) => ({ default: m.SourceView })));
 
 function describe(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -82,6 +93,10 @@ type FileState = { key: string; text: FileText | null; error: string | null; arr
  * of local branches, the default first); Commits lists the branch's commits beyond the base, and a
  * commit's files show in the same tree and merge view with a "back to commits" control. Both are
  * read as they open and on Refresh; they never poll. The filter shows in Changes only.
+ *
+ * Story 8.3: Files (wherever the pane has a folder) is a lazy tree of the whole folder, folders
+ * first, gitignored entries dimmed, each folder read when it is first opened; a selected file opens
+ * read-only in a single CodeMirror view. Refresh reads the open folders and the open file again.
  */
 export function ReviewPane() {
   const target = useReviewStore((s) => s.target);
@@ -95,12 +110,14 @@ export function ReviewPane() {
   const layout = useReviewStore((s) => s.layout);
   const selected = useReviewStore((s) => s.selected);
   const refreshSeq = useReviewStore((s) => s.refreshSeq);
+  const storeRoot = useReviewStore((s) => s.root);
   const stored = useUiStore((s) => s.reviewWidth);
   const [viewport, setViewport] = useState(viewportWidth);
   const width = clampReviewWidth(stored ?? defaultReviewWidth(viewport), viewport);
   const request = requestId === null ? null : requestIn(requests, requestId);
   const title = useTargetTitle(target, request);
-  const modes = modesFor(target);
+  const modes = reviewModes(target);
+  const filesMode = mode === "files";
 
   useEffect(() => {
     const onResize = () => setViewport(viewportWidth());
@@ -205,7 +222,7 @@ export function ReviewPane() {
     : showsRange
       ? (rangeError ?? (staleCommit ? null : (rangeList?.error ?? null)))
       : (commitsState.error ?? commitList?.error ?? null);
-  const root = changes ? listState.list?.root : showsRange ? rangeList?.root : commitList?.root;
+  const root = filesMode ? (storeRoot ?? undefined) : changes ? listState.list?.root : showsRange ? rangeList?.root : commitList?.root;
   // The bases Rust last offered for this target: kept while a new base reads and after a failed
   // read, so another base can always be picked.
   const [knownBases, setKnownBases] = useState<{ key: string; bases: RangeBases } | null>(null);
@@ -234,11 +251,13 @@ export function ReviewPane() {
   // Keep the store's order (for stepping) and the selection on a listed file.
   const activeList = changes ? listState.list : showsRange ? rangeList : null;
   useEffect(() => {
+    // Files keeps its own order (FilesBody).
+    if (filesMode) return;
     const store = useReviewStore.getState();
     store.setOrder(order);
     if (activeList === null) return;
     store.select(pickSelected(store.selected, order));
-  }, [order, activeList]);
+  }, [order, activeList, filesMode]);
 
   const selectedFile = selected === null ? null : (files.find((f) => f.path === selected) ?? null);
   const selectedMark = selected === null ? null : (requested.find((r) => r.key === selected) ?? null);
@@ -337,13 +356,13 @@ export function ReviewPane() {
         {modes.length > 1 && (
           <span className="review-toggle" role="group" aria-label="Mode">
             {MODES.filter((m) => modes.includes(m.id)).map((m) => (
-              <button key={m.id} type="button" className="btn" aria-pressed={mode === m.id} title={m.title} onClick={() => useReviewStore.getState().setMode(m.id)}>
+              <button key={m.id} type="button" className="btn" aria-pressed={mode === m.id} title={m.title} onClick={() => setReviewMode(m.id)}>
                 {m.label}
               </button>
             ))}
           </span>
         )}
-        {changes ? (
+        {filesMode ? null : changes ? (
           <span className="review-toggle" role="group" aria-label="Compare">
             {FILTERS.map((f) => (
               <button
@@ -361,89 +380,95 @@ export function ReviewPane() {
         ) : (
           <BaseSelect bases={bases} current={shownBase} />
         )}
-        <span className="review-totals">{totalsText}</span>
-        <span className="review-toggle" role="group" aria-label="Layout">
-          <button type="button" className="btn" aria-pressed={layout === "split"} onClick={() => useReviewStore.getState().setLayout("split")}>
-            Side by side
-          </button>
-          <button type="button" className="btn" aria-pressed={layout === "unified"} onClick={() => useReviewStore.getState().setLayout("unified")}>
-            Unified
-          </button>
-        </span>
+        <span className="review-totals">{filesMode ? "" : totalsText}</span>
+        {!filesMode && (
+          <span className="review-toggle" role="group" aria-label="Layout">
+            <button type="button" className="btn" aria-pressed={layout === "split"} onClick={() => useReviewStore.getState().setLayout("split")}>
+              Side by side
+            </button>
+            <button type="button" className="btn" aria-pressed={layout === "unified"} onClick={() => useReviewStore.getState().setLayout("unified")}>
+              Unified
+            </button>
+          </span>
+        )}
       </div>
-      <div className="review-body">
-        <nav className="review-tree" aria-label={showCommitList ? "Commits" : "Changed files"}>
-          {mode === "commits" && commit !== null && (
-            <div className="review-commit-head">
-              <button type="button" className="btn" onClick={() => useReviewStore.getState().selectCommit(null)} title="Back to the commit list">
-                ← Commits
-              </button>
-              {shownCommit !== null && (
-                <p className="review-commit-title" title={`${shownCommit.short} ${shownCommit.subject}`}>
-                  {shownCommit.short} {shownCommit.subject}
-                </p>
-              )}
-            </div>
-          )}
-          {listError !== null ? (
-            <p className="pane-error" role="alert">
-              {listError}
-            </p>
-          ) : !listed ? (
-            <p className="muted">{showCommitList ? "Reading commits…" : "Reading changes…"}</p>
-          ) : nothingBeyond !== null ? (
-            <p className="muted">{nothingBeyond}</p>
-          ) : showCommitList ? (
-            <>
-              <ul className="review-rows">
-                {rows.map((row) => (
-                  <li key={row.sha}>
-                    <button type="button" className="review-row review-commit" aria-label={row.label} title={row.label} onClick={() => useReviewStore.getState().selectCommit(row.sha)}>
-                      <span className="review-sha">{row.short}</span>
-                      <span className="review-commit-subject">{row.subject}</span>
-                      <span className="review-commit-meta">
-                        {row.author} · {row.age}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              {commitList !== null && commitList.more > 0 && <p className="muted review-more">{olderCommitsText(commitList.more)}</p>}
-            </>
-          ) : (
-            <>
-              {requested.length > 0 && (
-                <>
-                  <h3 className="pane-heading review-group">Requested</h3>
-                  <ul className="review-rows">
-                    {requested.map((row) => (
-                      <RequestedRows key={row.key} row={row} selected={selected} />
-                    ))}
-                  </ul>
-                  {tree.length > 0 && <h3 className="pane-heading review-group">Other changes</h3>}
-                </>
-              )}
-              {files.length === 0 && requested.length === 0 ? (
-                <p className="muted">{subfolder ? NO_FOLDER_CHANGES : "No changes"}</p>
-              ) : (
+      {filesMode && target !== null ? (
+        <FilesBody target={target} refreshSeq={refreshSeq} />
+      ) : (
+        <div className="review-body">
+          <nav className="review-tree" aria-label={showCommitList ? "Commits" : "Changed files"}>
+            {mode === "commits" && commit !== null && (
+              <div className="review-commit-head">
+                <button type="button" className="btn" onClick={() => useReviewStore.getState().selectCommit(null)} title="Back to the commit list">
+                  ← Commits
+                </button>
+                {shownCommit !== null && (
+                  <p className="review-commit-title" title={`${shownCommit.short} ${shownCommit.subject}`}>
+                    {shownCommit.short} {shownCommit.subject}
+                  </p>
+                )}
+              </div>
+            )}
+            {listError !== null ? (
+              <p className="pane-error" role="alert">
+                {listError}
+              </p>
+            ) : !listed ? (
+              <p className="muted">{showCommitList ? "Reading commits…" : "Reading changes…"}</p>
+            ) : nothingBeyond !== null ? (
+              <p className="muted">{nothingBeyond}</p>
+            ) : showCommitList ? (
+              <>
                 <ul className="review-rows">
-                  {tree.map((row) => (
-                    <TreeRowItem key={row.key} row={row} selected={selected} />
+                  {rows.map((row) => (
+                    <li key={row.sha}>
+                      <button type="button" className="review-row review-commit" aria-label={row.label} title={row.label} onClick={() => useReviewStore.getState().selectCommit(row.sha)}>
+                        <span className="review-sha">{row.short}</span>
+                        <span className="review-commit-subject">{row.subject}</span>
+                        <span className="review-commit-meta">
+                          {row.author} · {row.age}
+                        </span>
+                      </button>
+                    </li>
                   ))}
                 </ul>
-              )}
-              {more > 0 && <p className="muted review-more">{more} more files not shown</p>}
-            </>
-          )}
-        </nav>
-        <section className="review-view" aria-label="Diff">
-          {showCommitList ? (
-            <p className="muted review-note">No commit selected.</p>
-          ) : (
-            <DiffArea file={selectedFile} mark={selectedMark} state={fileState} fileKey={fileKey} layout={layout} />
-          )}
-        </section>
-      </div>
+                {commitList !== null && commitList.more > 0 && <p className="muted review-more">{olderCommitsText(commitList.more)}</p>}
+              </>
+            ) : (
+              <>
+                {requested.length > 0 && (
+                  <>
+                    <h3 className="pane-heading review-group">Requested</h3>
+                    <ul className="review-rows">
+                      {requested.map((row) => (
+                        <RequestedRows key={row.key} row={row} selected={selected} />
+                      ))}
+                    </ul>
+                    {tree.length > 0 && <h3 className="pane-heading review-group">Other changes</h3>}
+                  </>
+                )}
+                {files.length === 0 && requested.length === 0 ? (
+                  <p className="muted">{subfolder ? NO_FOLDER_CHANGES : "No changes"}</p>
+                ) : (
+                  <ul className="review-rows">
+                    {tree.map((row) => (
+                      <TreeRowItem key={row.key} row={row} selected={selected} />
+                    ))}
+                  </ul>
+                )}
+                {more > 0 && <p className="muted review-more">{more} more files not shown</p>}
+              </>
+            )}
+          </nav>
+          <section className="review-view" aria-label="Diff">
+            {showCommitList ? (
+              <p className="muted review-note">No commit selected.</p>
+            ) : (
+              <DiffArea file={selectedFile} mark={selectedMark} state={fileState} fileKey={fileKey} layout={layout} />
+            )}
+          </section>
+        </div>
+      )}
     </aside>
   );
 }
@@ -640,6 +665,192 @@ function DiffArea({
             arrivedAt={state.arrivedAt}
             onRendered={onRendered}
           />
+        </Suspense>
+      </ErrorBoundary>
+    </div>
+  );
+}
+
+/** Story 8.3: the Files tree's folders as last read, for one target. */
+type Folders = { key: string; map: Readonly<Record<string, FolderState>> };
+
+/** Story 8.3: the file Files shows: for which target and path, the reply or its error. */
+type ViewState = { key: string; view: FileView | null; error: string | null };
+
+/**
+ * Files mode (Story 8.3): the folder's tree, each folder read when it is first opened (and every
+ * open one again on Refresh), beside the selected file's read-only view.
+ */
+function FilesBody({ target, refreshSeq }: { target: ReviewTarget; refreshSeq: number }) {
+  const open = useReviewStore((s) => s.filesOpen);
+  const selected = useReviewStore((s) => s.selected);
+  const targetKey = JSON.stringify(target);
+  const [folders, setFolders] = useState<Folders>({ key: targetKey, map: {} });
+  const foldersRef = useRef(folders);
+  foldersRef.current = folders;
+  // Each folder's latest read: an older reply never replaces a newer one.
+  const reads = useRef(new Map<string, number>());
+  const lastRefresh = useRef<{ key: string; seq: number } | null>(null);
+
+  useEffect(() => {
+    const refreshing = lastRefresh.current === null || lastRefresh.current.key !== targetKey || lastRefresh.current.seq !== refreshSeq;
+    lastRefresh.current = { key: targetKey, seq: refreshSeq };
+    const current = foldersRef.current.key === targetKey ? foldersRef.current.map : {};
+    const { kept, toRead } = foldersToRead(current, open, refreshing);
+    setFolders({ key: targetKey, map: kept });
+    for (const path of toRead) {
+      const id = (reads.current.get(path) ?? 0) + 1;
+      reads.current.set(path, id);
+      const apply = (state: FolderState) => {
+        if (reads.current.get(path) !== id) return;
+        setFolders((s) => (s.key !== targetKey || !Object.hasOwn(s.map, path) ? s : { key: s.key, map: { ...s.map, [path]: state } }));
+        if (path === "" && state.listing !== null) useReviewStore.getState().setRoot(state.listing.root);
+      };
+      reviewDir(target, path).then(
+        (listing) => apply({ listing, error: null }),
+        (err: unknown) => apply({ listing: null, error: describe(err) }),
+      );
+    }
+    // `targetKey` names the target; `open` and `refreshSeq` decide what is read.
+  }, [targetKey, open, refreshSeq]);
+
+  const map = folders.key === targetKey ? folders.map : NO_FOLDERS;
+  const rows = useMemo(() => filesRows(map, open), [map, open]);
+  const order = useMemo(() => filesOrder(rows), [rows]);
+  useEffect(() => {
+    useReviewStore.getState().setOrder(order);
+  }, [order]);
+
+  // The selected file's text, read again on every Refresh.
+  const [view, setView] = useState<ViewState | null>(null);
+  const viewKey = selected === null ? null : `${targetKey}\u0000${selected}`;
+  useEffect(() => {
+    if (viewKey === null || selected === null) {
+      setView(null);
+      return;
+    }
+    let live = true;
+    const kind = languageFor(selected);
+    if (kind !== null) void loadLanguage(kind).catch(() => undefined);
+    reviewView(target, selected).then(
+      (reply) => {
+        if (!live) return;
+        // The same text again keeps the shown view (and its cursor) as it is.
+        setView((prev) => (prev !== null && prev.key === viewKey && prev.error === null && JSON.stringify(prev.view) === JSON.stringify(reply) ? prev : { key: viewKey, view: reply, error: null }));
+      },
+      (err: unknown) => {
+        if (live) setView({ key: viewKey, view: null, error: describe(err) });
+      },
+    );
+    return () => {
+      live = false;
+    };
+    // `viewKey` covers the target and the path.
+  }, [viewKey, refreshSeq]);
+
+  return (
+    <div className="review-body">
+      <nav className="review-tree" aria-label="Files">
+        <ul className="review-rows">
+          {rows.map((row) => (
+            <FilesRowItem key={row.key} row={row} selected={selected} />
+          ))}
+        </ul>
+      </nav>
+      <section className="review-view" aria-label="File">
+        <FileViewArea path={selected} state={view} viewKey={viewKey} />
+      </section>
+    </div>
+  );
+}
+
+const NO_FOLDERS: Readonly<Record<string, FolderState>> = Object.freeze({});
+
+function indent(depth: number): { paddingLeft: string } {
+  return { paddingLeft: `${0.5 + depth * 0.85}rem` };
+}
+
+/** One row of the Files tree: a folder (opens and closes), a file or a link (selects), or a folder's state. */
+function FilesRowItem({ row, selected }: { row: FilesRow; selected: string | null }) {
+  if (row.kind === "loading") {
+    return (
+      <li className="muted review-files-note" style={indent(row.depth)}>
+        Reading…
+      </li>
+    );
+  }
+  if (row.kind === "error") {
+    return (
+      <li className="pane-error review-files-note" role="alert" style={indent(row.depth)}>
+        {row.message}
+      </li>
+    );
+  }
+  if (row.kind === "more") {
+    return (
+      <li className="muted review-files-note" style={indent(row.depth)}>
+        {moreEntriesText(row.count)}
+      </li>
+    );
+  }
+  const dir = row.entryKind === "dir";
+  const label = `${row.path}${dir ? "/" : ""}${row.entryKind === "link" ? ", link" : ""}${row.ignored ? ", ignored" : ""}${row.unreadable ? ", unreadable name" : ""}`;
+  return (
+    <li>
+      <button
+        type="button"
+        className={row.ignored ? "review-row review-ignored" : "review-row"}
+        style={indent(row.depth)}
+        aria-label={label}
+        title={label}
+        aria-expanded={dir ? row.open : undefined}
+        aria-current={!dir && selected === row.path ? "true" : undefined}
+        disabled={row.unreadable}
+        onClick={() => (dir ? useReviewStore.getState().toggleFolder(row.path) : select(row.path))}
+      >
+        <span className="review-mark" aria-hidden="true">
+          {dir ? (row.open ? "▾" : "▸") : ""}
+        </span>
+        <span className="review-name">
+          {row.name}
+          {dir ? "/" : ""}
+        </span>
+        {row.entryKind === "link" && <span className="review-counts">link</span>}
+      </button>
+    </li>
+  );
+}
+
+/** Files mode's right side: the selected file, read-only, or why it is not shown. */
+function FileViewArea({ path, state, viewKey }: { path: string | null; state: ViewState | null; viewKey: string | null }) {
+  if (path === null) return <p className="muted review-note">No file selected.</p>;
+  if (state === null || state.key !== viewKey) return <p className="muted review-note">Reading {path}…</p>;
+  if (state.error !== null) {
+    return (
+      <p className="pane-error review-note" role="alert">
+        {state.error}
+      </p>
+    );
+  }
+  const content = state.view?.content;
+  if (content === undefined) return null;
+  if (content.kind === "binary") return <p className="muted review-note">binary file</p>;
+  if (content.kind === "too_large") return <p className="muted review-note">too large to show</p>;
+  if (content.kind !== "text") return <p className="muted review-note">{content.kind === "submodule" ? "submodule" : "unreadable name"}</p>;
+  return (
+    <div className="review-diff-wrap">
+      {content.notUtf8 && <p className="review-mark-line">not UTF-8 (shown lossily)</p>}
+      <ErrorBoundary
+        label="file view"
+        resetKey={`${path} ${viewKey}`}
+        fallback={(message) => (
+          <p className="pane-error review-note" role="alert">
+            could not show this file: {message}
+          </p>
+        )}
+      >
+        <Suspense fallback={<p className="muted review-note">Loading the file view…</p>}>
+          <SourceView path={path} text={content.new ?? ""} />
         </Suspense>
       </ErrorBoundary>
     </div>

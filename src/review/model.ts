@@ -2,8 +2,9 @@
 // file is highlighted with, and the order of a review request's paths. No React, no CodeMirror:
 // the pane and its tests import these; the CodeMirror view lives in `DiffView.tsx`, loaded lazily.
 // Story 8.2 adds the modes (Changes, vs base, Commits), the base choices and the commit list rows.
+// Story 8.3 adds Files (the folder's lazy tree) and the line `o` opens a diff at.
 
-import type { ChangedFile, CommitInfo, DiffFilter, FileStatus, RangeBases, RequestedKey, ReviewTarget } from "../ipc";
+import type { ChangedFile, CommitInfo, DiffFilter, DirListing, FileStatus, RangeBases, RequestedKey, ReviewTarget } from "../ipc";
 
 /** The filter toggle's three positions, in order, with their labels. */
 export const FILTERS: readonly { id: DiffFilter; label: string; title: string }[] = [
@@ -14,21 +15,28 @@ export const FILTERS: readonly { id: DiffFilter; label: string; title: string }[
 
 /**
  * The pane's modes (Story 8.2): the working tree (`changes`, 8.1), the branch against its base
- * (`base`), and the branch's commits (`commits`).
+ * (`base`), and the branch's commits (`commits`). Story 8.3: every file of the folder (`files`).
  */
-export type ReviewMode = "changes" | "base" | "commits";
+export type ReviewMode = "changes" | "base" | "commits" | "files";
 
-/** The mode toggle's three positions, in order, with their labels. */
+/** The mode toggle's positions, in order, with their labels. */
 export const MODES: readonly { id: ReviewMode; label: string; title: string }[] = [
   { id: "changes", label: "Changes", title: "Uncommitted changes" },
   { id: "base", label: "vs base", title: "What the branch changed since it forked from the base" },
   { id: "commits", label: "Commits", title: "The branch's commits beyond the base" },
+  { id: "files", label: "Files", title: "Every file of the folder, read-only" },
 ];
 
-/** The modes a target offers: a session has Changes only; a project or a branch all three. */
-export function modesFor(target: ReviewTarget | null): readonly ReviewMode[] {
+/**
+ * The modes a target offers: a session has Changes and Files; a project or a branch Changes, vs
+ * base and Commits, and Files. Files needs a folder (`hasFolder`: false for a branch without a
+ * linked worktree).
+ */
+export function modesFor(target: ReviewTarget | null, hasFolder = true): readonly ReviewMode[] {
   if (target === null) return [];
-  return target.kind === "session" ? ["changes"] : ["changes", "base", "commits"];
+  const modes: ReviewMode[] = target.kind === "session" ? ["changes"] : ["changes", "base", "commits"];
+  if (hasFolder) modes.push("files");
+  return modes;
 }
 
 /** The line shown when the branch has no commits beyond its base. */
@@ -322,4 +330,119 @@ export function languageFor(path: string): LanguageKind | null {
   if (dot <= 0) return null;
   const ext = name.slice(dot + 1).toLowerCase();
   return Object.hasOwn(EXTENSIONS, ext) ? (EXTENSIONS[ext] ?? null) : null;
+}
+
+// -- Story 8.3: Files mode and the line `o` opens -----------------------------------------------
+
+/** One row of the Files tree. */
+export type FilesRow =
+  | { kind: "entry"; key: string; name: string; path: string; depth: number; entryKind: "dir" | "file" | "link"; ignored: boolean; open: boolean; unreadable: boolean }
+  | { kind: "more"; key: string; depth: number; count: number }
+  | { kind: "loading"; key: string; depth: number }
+  | { kind: "error"; key: string; depth: number; message: string };
+
+/** One folder as last read: its listing, or why it could not be read (`null` both: reading). */
+export type FolderState = { listing: DirListing | null; error: string | null };
+
+/**
+ * The Files tree's rows in display order: the root folder's entries (as Rust sorted them), each
+ * open folder's entries under it, one level deeper. An open folder not read yet shows a loading
+ * row; one that could not be read, an error row; a folder past the cap, `N more not shown`.
+ */
+export function filesRows(folders: Readonly<Record<string, FolderState>>, open: ReadonlySet<string>): FilesRow[] {
+  const rows: FilesRow[] = [];
+  const walk = (path: string, depth: number) => {
+    const state = Object.hasOwn(folders, path) ? folders[path] : undefined;
+    if (state === undefined || (state.listing === null && state.error === null)) {
+      rows.push({ kind: "loading", key: `loading:${path}`, depth });
+      return;
+    }
+    if (state.error !== null) {
+      rows.push({ kind: "error", key: `error:${path}`, depth, message: state.error });
+      return;
+    }
+    const listing = state.listing!;
+    for (const e of listing.entries) {
+      const isOpen = e.kind === "dir" && open.has(e.path);
+      rows.push({ kind: "entry", key: `entry:${e.path}`, name: e.name, path: e.path, depth, entryKind: e.kind, ignored: e.ignored, open: isOpen, unreadable: e.unreadableName });
+      if (isOpen) walk(e.path, depth + 1);
+    }
+    if (listing.more > 0) rows.push({ kind: "more", key: `more:${path}`, depth, count: listing.more });
+  };
+  walk("", 0);
+  return rows;
+}
+
+/** The line under a cut folder. */
+export function moreEntriesText(count: number): string {
+  return `${count} more not shown`;
+}
+
+/** The selectable files of the tree in display order (for `j` / `k` in Files). */
+export function filesOrder(rows: readonly FilesRow[]): string[] {
+  return rows.filter((r): r is Extract<FilesRow, { kind: "entry" }> => r.kind === "entry" && r.entryKind !== "dir" && !r.unreadable).map((r) => r.path);
+}
+
+/** The open folders after toggling `path`: closing a folder closes the folders inside it too. */
+export function toggleFolder(open: ReadonlySet<string>, path: string): Set<string> {
+  const next = new Set(open);
+  if (next.has(path)) {
+    for (const p of open) if (p === path || p.startsWith(`${path}/`)) next.delete(p);
+  } else {
+    next.add(path);
+  }
+  return next;
+}
+
+/** A chunk of a diff by line numbers (1-based; `to` exclusive): old lines `[fromA, toA)` became new lines `[fromB, toB)`. */
+export type LineChunk = { fromA: number; toA: number; fromB: number; toB: number };
+
+/**
+ * The new file's line nearest to old line `oldLine` (Story 8.3: `o` on the old side or a deleted
+ * line opens the new file): inside a changed chunk the line at the same offset in its new lines
+ * (the last of them when the new side is shorter; the line after the deletion for a pure
+ * deletion); outside, the old line shifted by the chunks above it. Clamped to `[1, newLines]`.
+ */
+export function oldToNewLine(chunks: readonly LineChunk[], oldLine: number, newLines: number): number {
+  const clamp = (n: number) => Math.max(1, Math.min(Math.max(1, newLines), n));
+  let shift = 0;
+  for (const c of chunks) {
+    if (oldLine < c.fromA) break;
+    if (oldLine < c.toA) {
+      const len = c.toB - c.fromB;
+      return clamp(len > 0 ? c.fromB + Math.min(oldLine - c.fromA, len - 1) : c.fromB);
+    }
+    shift = c.toB - c.toA;
+  }
+  return clamp(oldLine + shift);
+}
+
+/** Where the operator put a view's cursor: a side and that side's line (a deleted line of the unified view is old). */
+export type CursorPlace = { side: "old" | "new"; line: number };
+
+/**
+ * The new file's line `o` opens: the cursor's line on the new side; an old-side (or deleted) line
+ * mapped to the nearest new line; with no cursor placed, the first visible line.
+ */
+export function editorLine(place: CursorPlace | null, firstVisible: () => number, chunks: () => readonly LineChunk[], newLines: number): number {
+  if (place === null) return firstVisible();
+  return place.side === "old" ? oldToNewLine(chunks(), place.line, newLines) : place.line;
+}
+
+/**
+ * Which folders Files reads (the root and every open one): on a refresh all of them, else only
+ * those not read yet. A closed folder is forgotten, so it is read again when it opens; a folder
+ * about to be read shows as reading unless it is kept.
+ */
+export function foldersToRead(
+  current: Readonly<Record<string, FolderState>>,
+  open: ReadonlySet<string>,
+  refreshing: boolean,
+): { kept: Record<string, FolderState>; toRead: string[] } {
+  const wanted = ["", ...[...open].filter((p) => p !== "")];
+  const kept: Record<string, FolderState> = {};
+  for (const path of wanted) if (Object.hasOwn(current, path)) kept[path] = current[path]!;
+  const toRead = refreshing ? wanted : wanted.filter((path) => !Object.hasOwn(kept, path));
+  for (const path of toRead) if (!Object.hasOwn(kept, path)) kept[path] = { listing: null, error: null };
+  return { kept, toRead };
 }

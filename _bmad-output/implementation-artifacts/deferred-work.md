@@ -128,3 +128,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-8-2-branch-and-commit-diffs.md`
   summary: Story 8.2 has not run on CI. It was closed on local Windows verification while GitHub Actions is suspended.
   evidence: The Linux build and tests have not run. When Actions resumes, confirm the latest commit on both runners.
+- source_spec: `_bmad-output/implementation-artifacts/spec-8-3-file-browser-and-external-open.md`
+  summary: Story 8.3 has not run on CI, and FilesBody has no render tests. It was closed on local Windows verification while GitHub Actions is suspended.
+  evidence: The Linux build and tests have not run, including the Unix file-symlink case, which skipped on Windows. There is no DOM test environment for FilesBody's read ids.

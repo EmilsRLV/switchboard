@@ -6,10 +6,12 @@
 //! change on disk, and [`poll`] re-reads them every 30 s as a fallback. [`worktree`] makes the
 //! one write, `git worktree add`, on the operator's submit of the "New worktree" sheet (Story 5.2).
 //! [`diff`] reads the working-tree diff the Review pane shows (Story 8.1), read-only, and [`range`]
-//! a branch against its base and its commits (Story 8.2), read-only too.
+//! a branch against its base and its commits (Story 8.2), read-only too. [`files`] lists a folder and
+//! reads one file for the Review pane's Files mode (Story 8.3), read-only.
 
 pub mod branches;
 pub mod diff;
+pub mod files;
 pub mod poll;
 pub mod range;
 pub mod status;
