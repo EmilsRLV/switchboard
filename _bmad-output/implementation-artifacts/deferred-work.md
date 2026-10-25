@@ -137,3 +137,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-9-1-installers-and-first-run.md`
   summary: Installers have not been installed on a clean machine, and the Linux packages have not been built (CI suspended).
   evidence: Story 9.1 needs an install on a clean machine, following the README checklist and including the claude-absent banner. It also needs the CI bundle check on both runners, the actual `.deb` file name, and the MSI and NSIS reinstall behaviour.
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-2-tray-and-close-to-tray.md`
+  summary: It is unverified whether an OS logoff or shutdown close request is hidden to the tray instead of exiting cleanly (PTY children and temp settings files could be left behind).
+  evidence: Edge-case review, maybe-false. Settle with a logoff test with close_to_tray on, on Windows and Linux.
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-2-tray-and-close-to-tray.md`
+  summary: Story 9.2's Linux code (the appindicator check, minimize on close) has never been compiled. There was no GUI re-run after review round 1.
+  evidence: There is no Linux Rust target on the dev machine and CI is suspended. The GUI re-run was stopped twice by the foreground guard. Check by hand: the setting on and off, clicking the tray icon, the hint and its click, and Linux minimize.

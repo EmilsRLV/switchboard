@@ -116,6 +116,7 @@ mod tests {
             top,
             [
                 "claude",
+                "close_to_tray",
                 "defaults",
                 "external_editor",
                 "git",
@@ -138,6 +139,7 @@ mod tests {
         assert!(json["notifications"].get("finished").is_some());
         assert!(json["notifications"].get("waiting").is_some());
         assert!(json["notifications"].get("review").is_some());
+        assert!(json["notifications"].get("tray").is_some());
     }
 
     #[test]

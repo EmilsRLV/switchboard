@@ -66,6 +66,10 @@ pub struct Settings {
     pub notifications: NotificationSettings,
     /// Peer messaging (Story 7.3).
     pub peers: PeerSettings,
+    /// Story 9.2: closing the main window hides it to the tray (minimizes it on Linux; sessions
+    /// keep running) instead of quitting. Off by default. Read at close time, so a reload applies
+    /// at once. Ignored (closing quits) when the tray could not be created.
+    pub close_to_tray: bool,
 }
 
 impl Default for Settings {
@@ -82,6 +86,7 @@ impl Default for Settings {
             poll: PollSettings::default(),
             notifications: NotificationSettings::default(),
             peers: PeerSettings::default(),
+            close_to_tray: false,
         }
     }
 }
@@ -139,6 +144,8 @@ pub struct NotificationSettings {
     pub waiting: bool,
     /// A session asks for review (`request_review`, Story 7.4).
     pub review: bool,
+    /// The window was closed to the tray for the first time this run (Story 9.2).
+    pub tray: bool,
 }
 
 impl Default for NotificationSettings {
@@ -147,6 +154,7 @@ impl Default for NotificationSettings {
             finished: true,
             waiting: true,
             review: true,
+            tray: true,
         }
     }
 }
@@ -310,6 +318,9 @@ pub struct SettingsState {
     pub binary_banners: Vec<Banner>,
     /// Set when the hooks endpoint could not start (Story 4.3): `hooks endpoint unavailable`.
     pub hooks_banner: Option<Banner>,
+    /// Set when the tray icon could not be created (Story 9.2): `tray unavailable: closing the
+    /// window quits`.
+    pub tray_banner: Option<Banner>,
 }
 
 impl SettingsState {
@@ -325,6 +336,7 @@ impl SettingsState {
                 .chain(self.watch_banner.iter())
                 .chain(self.binary_banners.iter())
                 .chain(self.hooks_banner.iter())
+                .chain(self.tray_banner.iter())
                 .cloned()
                 .collect(),
         }
@@ -409,6 +421,9 @@ pub struct AppState {
     pub inbox: crate::inbox::Inboxes,
     /// Each session's review request and flag (`crate::review`, Story 7.4). Memory only.
     pub review: crate::review::Reviews,
+    /// Story 9.2: the tray icon, its counts line, whether it was created and whether this run
+    /// has already said it is still running in the tray (`crate::tray`).
+    pub tray: crate::tray::TrayState,
 }
 
 impl AppState {
@@ -727,6 +742,27 @@ mod tests {
         assert!(s.notifications.waiting);
         assert!(s.notifications.review);
         assert!(s.peers.nudge);
+        assert!(s.notifications.tray);
+        assert!(!s.close_to_tray, "close-to-tray is an option, not the default");
+    }
+
+    #[test]
+    fn close_to_tray_parses_tolerantly_and_defaults_on() {
+        assert!(!store::parse(r#"{ "close_to_tray": false }"#).unwrap().close_to_tray);
+        assert!(store::parse(r#"{ "close_to_tray": true }"#).unwrap().close_to_tray);
+        assert!(!store::parse("{}").unwrap().close_to_tray);
+        assert!(!store::parse(r#"{ "notifications": { "tray": false } }"#).unwrap().notifications.tray);
+    }
+
+    #[test]
+    fn the_tray_banner_comes_last() {
+        let st = SettingsState {
+            hooks_banner: Some(Banner::new("hooks.unavailable", "hooks endpoint unavailable")),
+            tray_banner: Some(Banner::new(crate::tray::BANNER_ID, crate::tray::BANNER_TEXT)),
+            ..Default::default()
+        };
+        let ids: Vec<String> = st.snapshot().banners.into_iter().map(|b| b.id).collect();
+        assert_eq!(ids, ["hooks.unavailable", "tray.unavailable"]);
     }
 
     #[test]
@@ -739,11 +775,11 @@ mod tests {
     #[test]
     fn notification_toggles_parse_tolerantly_and_default_on() {
         let s = store::parse(r#"{ "notifications": { "finished": false } }"#).unwrap();
-        assert_eq!(s.notifications, NotificationSettings { finished: false, waiting: true, review: true });
+        assert_eq!(s.notifications, NotificationSettings { finished: false, waiting: true, review: true, tray: true });
         let s = store::parse(r#"{ "notifications": { "waiting": false, "sound": true } }"#).unwrap();
-        assert_eq!(s.notifications, NotificationSettings { finished: true, waiting: false, review: true });
+        assert_eq!(s.notifications, NotificationSettings { finished: true, waiting: false, review: true, tray: true });
         let s = store::parse(r#"{ "notifications": { "review": false } }"#).unwrap();
-        assert_eq!(s.notifications, NotificationSettings { finished: true, waiting: true, review: false });
+        assert_eq!(s.notifications, NotificationSettings { finished: true, waiting: true, review: false, tray: true });
         assert_eq!(store::parse("{}").unwrap().notifications, NotificationSettings::default());
     }
 
@@ -823,6 +859,7 @@ mod tests {
             watch_banner: None,
             binary_banners: vec![Banner::new("git.configured_missing", "git: configured path …")],
             hooks_banner: None,
+            tray_banner: None,
         };
         assert_eq!(
             serde_json::to_value(st.snapshot()).unwrap(),
@@ -838,8 +875,9 @@ mod tests {
                     "shell": null,
                     "theme": "dark",
                     "poll": { "agents_ms": 2000, "git_ms": 5000 },
-                    "notifications": { "finished": true, "waiting": true, "review": true },
-                    "peers": { "nudge": true }
+                    "notifications": { "finished": true, "waiting": true, "review": true, "tray": true },
+                    "peers": { "nudge": true },
+                    "close_to_tray": false
                 },
                 "binaries": {
                     "claude": {

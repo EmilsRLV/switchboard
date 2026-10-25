@@ -51,7 +51,8 @@ build over the old one.
 
 - **`.deb` (Debian, Ubuntu 24.04 and derivatives).** `sudo apt install ./<the downloaded .deb>` (the
   leading `./` makes apt treat it as a file) pulls in the runtime packages: `libwebkit2gtk-4.1-0`,
-  `libgtk-3-0` and `xdg-utils` (used to open folders and the editor). Uninstall with
+  `libgtk-3-0`, `xdg-utils` (used to open folders and the editor) and `libayatana-appindicator3-1` (the tray
+  icon, see [Tray and closing the window](#tray-and-closing-the-window)). Uninstall with
   `sudo apt remove switchboard`.
 - **AppImage (any distro).** `chmod +x` the downloaded `.AppImage`, then run it. It bundles the webview; the
   system still needs `xdg-utils` for "open folder" and FUSE 2 (`libfuse2`, or `libfuse2t64` on Ubuntu 24.04)
@@ -156,7 +157,7 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | `ctrl+o` | Add project folder: the native folder picker; the chosen folder becomes a node at the centre of the view. |
 | `ctrl+,` | Open (toggle) the settings pane. |
 | `ctrl+0` | Fit view: fit every node into the canvas; with no nodes, back to the home viewport (`x 0, y 0, zoom 1`). |
-| `ctrl+q` | Quit. |
+| `ctrl+q` | Quit: stops every session and terminal, even with `close_to_tray` on (see [Tray and closing the window](#tray-and-closing-the-window)). |
 | `n` | New session…: with a project selected, open the launch sheet (see [Starting sessions](#starting-sessions)); with a branch card selected, the sheet aimed at that branch (see [Sessions on a branch](#sessions-on-a-branch)); on a session it does nothing. Not while focus is in a text field or a select, nor while the context menu is open. |
 | ``ctrl+` `` | Toggle terminal: hide the terminal pane, or show it again with the last terminal focused. Works with focus in the terminal too. |
 | `ctrl+shift+k` | The palette's second binding: the same toggle as `ctrl+k`, and the one that still works with focus in a terminal (where `ctrl+k` is the shell's). |
@@ -883,8 +884,9 @@ in a window focuses that window. Closing the window by any means, or Return to p
 the terminal back: the PTY gets the pane's size at once (even when its tab is not the one showing) and the
 pane's view redraws from the kept output, so lines printed at the window's width are not garbled. Resuming a
 session whose earlier run is popped out returns it to the pane once the new run has started. If the process exits while
-popped out, the window stays and reads `exited N`. Quitting the app (or closing the main window) closes every
-pop-out and kills every terminal as before. Tabs and pop-outs do not survive a restart of the app.
+popped out, the window stays and reads `exited N`. Quitting the app (or closing the main window while it quits,
+see [Tray and closing the window](#tray-and-closing-the-window)) closes every pop-out and kills every terminal as
+before; closing the main window to the tray leaves pop-outs open. Tabs and pop-outs do not survive a restart of the app.
 
 ## Starting sessions
 
@@ -1474,6 +1476,32 @@ for this session` (the notice says so).
 **Not yet verified with the real `claude`:** that a session asked to request review when done calls the tool
 without a permission prompt, and that the flag, toast, notification and pane all appear.
 
+## Tray and closing the window
+
+Switchboard puts an icon in the system tray for as long as it runs: the app icon, with the tooltip
+`Switchboard — 2 busy · 1 waiting` (or `Switchboard — no live sessions`). **Busy** counts sessions that are
+`busy` or `starting`; **waiting** counts the ones that need you, `waiting` or `finished`. The counts follow the
+live sessions as they change. A left click on the icon brings the window back (un-minimised, shown, focused).
+Its menu holds **Show Switchboard**, a greyed-out line with the same counts, and **Quit**, which exits exactly as
+`ctrl+q` does. On Linux the tray reports no clicks and shows no tooltip: use the menu's Show and read its counts
+line.
+
+**Closing the window.** By default (`close_to_tray: false`) closing the main window quits, as it always did.
+With `close_to_tray: true`, closing the main window (its × button, Alt+F4) only hides it: sessions, terminals
+and pop-out windows keep running. On **Linux** it is minimized instead of hidden, so it stays in the taskbar (an
+indicator can load with no tray host to show it, and a hidden window could then never come back). The first
+time in each run, one OS notification says `Switchboard is still running in the tray` (with
+`notifications.tray` on and notifications allowed by the OS); clicking it brings the window back. Bring the
+window back from the tray icon, or by starting Switchboard again (the second launch shows the running one). If
+the window cannot be hidden, the close goes ahead and quits. **Quit** (`ctrl+q`, the tray menu or the palette) always exits and stops every
+session and terminal; there is no confirmation.
+
+**No tray.** Where the tray icon cannot be created, closing the window always quits, whatever the setting says,
+because a hidden window could not be brought back. On Linux the tray is not tried at all unless the
+appindicator library (`libayatana-appindicator3` or `libappindicator3`) is found through `ldconfig -p`,
+`LD_LIBRARY_PATH` or the usual library folders. A banner says `tray unavailable: closing the window quits`. The `.deb` depends on `libayatana-appindicator3-1` for the
+icon.
+
 ## Settings
 
 One human-editable JSON file, written with every key present on first launch and never rewritten after
@@ -1506,6 +1534,8 @@ The location is `dirs::config_dir()/switchboard`, so it also resolves on macOS
 | `notifications.finished` | `true` | Send an OS toast when a session finishes its turn while the window is unfocused (see [Needs you](#needs-you)). |
 | `notifications.waiting` | `true` | Same for a session waiting for input (hooks, Story 4.3). |
 | `notifications.review` | `true` | Send an OS toast when a session asks for review (`request_review`) while the window is unfocused; clicking it opens the review (see [Review requests](#review-requests-request_review)). |
+| `close_to_tray` | `false` | `true`: closing the main window hides it to the tray (minimizes it on Linux) and sessions keep running; `false`: closing quits (see [Tray and closing the window](#tray-and-closing-the-window)). Read at close time, so a saved edit applies at once. Without a tray, closing always quits. |
+| `notifications.tray` | `true` | Send the one OS toast `Switchboard is still running in the tray` the first time in a run the window is closed to the tray. |
 | `peers.nudge` | `true` | Nudge a session that has new peer messages with one injected line once it is idle (see [Peer messages](#peer-messages-send-and-inbox)); `false` shows the `N new` badge only. Review line comments (see [Line comments](#line-comments)) are typed either way. |
 
 Binary detection: `claude` is searched on PATH, then `~/.local/bin`; `git` on PATH. Each one found is run

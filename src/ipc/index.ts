@@ -30,9 +30,15 @@ export type Settings = {
    * Which attention states send an OS toast while the window is unfocused (Story 3.3); `review`
    * (Story 7.4): a session's review request.
    */
-  notifications: { finished: boolean; waiting: boolean; review: boolean };
+  notifications: { finished: boolean; waiting: boolean; review: boolean; tray: boolean };
   /** Peer messaging (Story 7.3): nudge a session with new messages once it is idle. */
   peers: { nudge: boolean };
+  /**
+   * Story 9.2: closing the main window hides it to the tray (minimizes it on Linux; sessions keep
+   * running) instead of quitting. Off by default. Rust reads it at close time; without a tray,
+   * closing always quits. `notifications.tray`: the one toast of the first such close per run.
+   */
+  close_to_tray: boolean;
 };
 
 /** Mirrors `settings::BinaryStatus`. */

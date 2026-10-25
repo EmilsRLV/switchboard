@@ -541,6 +541,12 @@ Panes (the terminal pane, the launch, worktree and remove-worktree sheets, the e
 
 ## Icons
 
+- **Tray icon** (Story 9.2): the app icon itself (no separate tray artwork), monochrome like it. Its text is
+  plain, set by the OS: the tooltip `Switchboard — 2 busy · 1 waiting` (`Switchboard — no live sessions` with
+  none live), and the native menu **Show Switchboard**, a disabled counts line `2 busy · 1 waiting` (or `no live
+  sessions`), a separator, **Quit**. No accent, no badge drawn on the icon. The one toast of the first close to the tray (hidden; minimized on Linux) reads
+  `Switchboard is still running in the tray`; no tray shows the banner `tray unavailable: closing the window
+  quits`.
 - **App icon:** one source, [`src-tauri/icons/source.svg`](../src-tauri/icons/source.svg), 1024 × 1024:
   three outlined node squares joined by two lines, in `--fg` on a `--bg` rounded square; no accent, no
   gradient. The outline is the UI's 1-px line scaled up so the mark still reads at 16 px. Every other

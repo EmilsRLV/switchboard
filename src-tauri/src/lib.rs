@@ -14,6 +14,7 @@ pub mod process;
 pub mod pty;
 pub mod review;
 pub mod settings;
+pub mod tray;
 pub mod windows;
 
 use settings::AppState;
@@ -101,7 +102,8 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
 ///
 /// A destroyed pop-out window returns its terminal to the pane (Story 4.5). The main window
 /// going closes every pop-out too, so closing it quits the app as it always did (the last
-/// window closed).
+/// window closed). With `close_to_tray` on and a tray (Story 9.2) the main window is only hidden
+/// ([`on_window_event`]) and none of this runs until Quit.
 pub(crate) fn on_run_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: &tauri::RunEvent) {
     use tauri::Manager;
     match event {
@@ -116,6 +118,31 @@ pub(crate) fn on_run_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: 
         tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } => on_window_destroyed(app, label),
         _ => {}
     }
+}
+
+/// A window event (registered in [`builder`]): the main window's close request hides it to the
+/// tray (minimizes it on Linux) when `close_to_tray` is on and the tray exists (Story 9.2,
+/// [`tray::hide_on_close`]); otherwise the close goes ahead and the app quits as it always did.
+pub(crate) fn on_window_event<R: tauri::Runtime>(window: &tauri::Window<R>, event: &tauri::WindowEvent) {
+    use tauri::Manager;
+    if let tauri::WindowEvent::CloseRequested { api, .. } = event
+        && should_handle_close(window.label())
+        && tray::hide_on_close(window.app_handle())
+    {
+        api.prevent_close();
+    }
+}
+
+/// Whether a close request of window `label` may go to the tray: the main window's only; a
+/// pop-out closes as before.
+pub fn should_handle_close(label: &str) -> bool {
+    label == MAIN_WINDOW
+}
+
+/// What the window-state plugin saves and restores: everything but visibility, so quitting while
+/// the main window is hidden to the tray (Story 9.2) never brings it back invisible.
+pub fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
+    tauri_plugin_window_state::StateFlags::all() - tauri_plugin_window_state::StateFlags::VISIBLE
 }
 
 /// Window `label` was destroyed: a pop-out returns its terminal; the main window takes every
@@ -153,11 +180,13 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             eprintln!("second instance ignored: argv={argv:?} cwd={cwd}");
+            // Also brings back a window hidden to the tray (Story 9.2).
             focus_main_window(app);
         }))
         .plugin(
             // Pop-out terminal windows (Story 4.5) open at their own size every time.
             tauri_plugin_window_state::Builder::new()
+                .with_state_flags(window_state_flags())
                 .with_filter(|label| !windows::is_popout_label(label))
                 .build(),
         )
@@ -166,11 +195,14 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
         // Toasts are sent from Rust only (`notify`); no JS permission is granted.
         .plugin(tauri_plugin_notification::init());
     with_commands(builder)
+        .on_window_event(on_window_event)
         .setup(|app| {
             use tauri::Manager;
             // The hooks endpoint (Story 4.3) on 127.0.0.1:<ephemeral>, before the first settings
             // snapshot goes out, so a failed bind's banner is in it.
             let _ = claude::hooks::start(app.handle());
+            // The tray icon (Story 9.2), also before the first snapshot: its banner rides in it.
+            tray::setup(app.handle());
             settings::initialise(app.handle());
             // Read once, before the workspace loads and copies it; off by default.
             let stubs = stub_children_from_env(std::env::var(STUB_CHILDREN_ENV).ok().as_deref());
@@ -263,6 +295,22 @@ mod tests {
                 invoke_key: INVOKE_KEY.to_string(),
             },
         )
+    }
+
+    #[test]
+    fn only_the_main_windows_close_goes_to_the_tray() {
+        assert!(super::should_handle_close(super::MAIN_WINDOW));
+        assert!(super::windows::is_popout_label("term-12"));
+        assert!(!super::should_handle_close("term-12"), "a pop-out closes as before");
+        assert!(!super::should_handle_close(""));
+    }
+
+    #[test]
+    fn the_window_state_never_saves_visibility() {
+        use tauri_plugin_window_state::StateFlags;
+        let flags = super::window_state_flags();
+        assert!(!flags.contains(StateFlags::VISIBLE));
+        assert!(flags.contains(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED));
     }
 
     #[test]

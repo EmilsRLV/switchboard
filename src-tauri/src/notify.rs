@@ -70,21 +70,32 @@ pub struct PluginNotifier<R: Runtime> {
 impl<R: Runtime> Notifier for PluginNotifier<R> {
     fn send(&self, toast: &Toast) -> Result<(), String> {
         use tauri_plugin_notification::NotificationExt;
-        let mut builder = self
-            .app
-            .notification()
-            .builder()
-            .title(&toast.title)
-            .body(&toast.body)
-            .extra(EXTRA_SESSION_ID, &toast.session_id);
-        if let Some(project_id) = &toast.project_id {
-            builder = builder.extra(EXTRA_PROJECT_ID, project_id);
+        let mut builder = self.app.notification().builder().title(&toast.title);
+        // Story 9.2's tray toast has a title only.
+        if !toast.body.is_empty() {
+            builder = builder.body(&toast.body);
         }
-        if toast.review {
-            builder = builder.extra(EXTRA_REVIEW, true);
+        for (key, value) in toast_extras(toast) {
+            builder = builder.extra(key, value);
         }
         builder.show().map_err(|err| err.to_string())
     }
+}
+
+/// The `extra` payload a toast carries: its session id (none for a toast of no session, Story
+/// 9.2's tray toast), its project id and, for a review toast, `review: true`.
+pub fn toast_extras(toast: &Toast) -> Vec<(&'static str, serde_json::Value)> {
+    let mut extras = Vec::new();
+    if !toast.session_id.is_empty() {
+        extras.push((EXTRA_SESSION_ID, serde_json::Value::from(toast.session_id.clone())));
+    }
+    if let Some(project_id) = &toast.project_id {
+        extras.push((EXTRA_PROJECT_ID, serde_json::Value::from(project_id.clone())));
+    }
+    if toast.review {
+        extras.push((EXTRA_REVIEW, serde_json::Value::Bool(true)));
+    }
+    extras
 }
 
 /// The toasts a batch of transitions sends: none while the window is focused; otherwise one
@@ -228,6 +239,44 @@ pub fn on_review<R: Runtime>(app: &AppHandle<R>, caller: &str, name: &str, summa
     }
 }
 
+/// Whether the OS lets the app show toasts: the plugin's permission state (an injected sender,
+/// as in tests, counts as allowed).
+fn permission_granted<R: Runtime>(app: &AppHandle<R>) -> bool {
+    if app.state::<AppState>().notifier.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        return true;
+    }
+    app.try_state::<tauri_plugin_notification::Notification<R>>()
+        .is_some_and(|plugin| matches!(plugin.permission_state(), Ok(tauri::plugin::PermissionState::Granted)))
+}
+
+/// Story 9.2: the main window was closed to the tray. One toast, `Switchboard is still running
+/// in the tray`, when `notifications.tray` is on and the OS allows toasts; it carries no session,
+/// and a click on it brings the window back ([`handle_action`]). Sent whatever the window's focus
+/// (it has just been hidden). Returns whether it was sent; a send failure is logged only.
+pub fn on_hidden_to_tray<R: Runtime>(app: &AppHandle<R>) -> bool {
+    if !app.state::<AppState>().read().settings.notifications.tray || !permission_granted(app) {
+        return false;
+    }
+    let Some(sender) = notifier(app) else {
+        eprintln!("notifications: no sender registered; the tray toast is dropped");
+        return false;
+    };
+    let toast = Toast {
+        session_id: String::new(),
+        project_id: None,
+        title: crate::tray::HINT_TEXT.to_string(),
+        body: String::new(),
+        review: false,
+    };
+    match sender.send(&toast) {
+        Ok(()) => true,
+        Err(err) => {
+            eprintln!("notifications: could not show \"{}\": {err}", toast.title);
+            false
+        }
+    }
+}
+
 /// What a toast action asks for: a click on the toast itself (`tap`) whose `extra` names a
 /// session reveals it (and, for a review toast, opens its review); anything else (another action,
 /// a toast of no session) nothing.
@@ -245,9 +294,13 @@ pub fn reveal_for_action(action: &ActionPerformed) -> Option<RevealRequest> {
 }
 
 /// Handle one toast action: on a click on a session's toast, bring the main window forward
-/// and emit `notify://reveal` for the frontend.
+/// and emit `notify://reveal` for the frontend; a click on a toast of no session (Story 9.2's
+/// tray toast) only brings the window back.
 pub fn handle_action<R: Runtime>(app: &AppHandle<R>, action: &ActionPerformed) {
     let Some(request) = reveal_for_action(action) else {
+        if action.action_id() == "tap" {
+            crate::focus_main_window(app);
+        }
         return;
     };
     crate::focus_main_window(app);
@@ -342,11 +395,11 @@ mod tests {
             transition("s1", SessionState::Finished, Some(("ide", "ide"))),
             transition("s2", SessionState::Waiting, Some(("ide", "ide"))),
         ];
-        let off = NotificationSettings { finished: false, waiting: true, review: true };
+        let off = NotificationSettings { finished: false, waiting: true, review: true, tray: true };
         let toasts = decide(&t, &off, false);
         assert_eq!(toasts.len(), 1);
         assert_eq!(toasts[0].title, "ide — waiting");
-        let none = NotificationSettings { finished: false, waiting: false, review: true };
+        let none = NotificationSettings { finished: false, waiting: false, review: true, tray: true };
         assert!(decide(&t, &none, false).is_empty());
     }
 
@@ -430,6 +483,60 @@ mod tests {
         assert_eq!(serde_json::to_value(&request).unwrap()["review"], true);
         // Without the plugin there is nothing to listen to; this must not panic.
         listen_for_clicks(app.handle());
+    }
+
+    fn toast(session_id: &str, project_id: Option<&str>, review: bool) -> Toast {
+        Toast {
+            session_id: session_id.into(),
+            project_id: project_id.map(str::to_string),
+            title: "t".into(),
+            body: String::new(),
+            review,
+        }
+    }
+
+    #[test]
+    fn session_toasts_carry_their_ids_and_the_tray_toast_none() {
+        assert_eq!(
+            toast_extras(&toast("s1", Some("ide"), false)),
+            [(EXTRA_SESSION_ID, serde_json::json!("s1")), (EXTRA_PROJECT_ID, serde_json::json!("ide"))]
+        );
+        assert_eq!(
+            toast_extras(&toast("s1", None, true)),
+            [(EXTRA_SESSION_ID, serde_json::json!("s1")), (EXTRA_REVIEW, serde_json::json!(true))]
+        );
+        assert!(toast_extras(&toast("", None, false)).is_empty(), "the tray toast names no session");
+    }
+
+    #[test]
+    fn the_tray_toast_follows_its_setting_and_reports_whether_it_was_sent() {
+        let app = mock_app();
+        // No sender at all (no plugin, nothing injected): not sent.
+        assert!(!on_hidden_to_tray(app.handle()));
+        let recorder = Arc::new(Recorder::default());
+        inject(&app, recorder.clone());
+        app.state::<AppState>().write().settings.notifications.tray = false;
+        assert!(!on_hidden_to_tray(app.handle()));
+        app.state::<AppState>().write().settings.notifications.tray = true;
+        assert!(on_hidden_to_tray(app.handle()));
+        assert_eq!(*recorder.sent.lock().unwrap(), [(crate::tray::HINT_TEXT.to_string(), String::new())]);
+        inject(&app, Arc::new(Recorder { fail: true, ..Recorder::default() }));
+        assert!(!on_hidden_to_tray(app.handle()), "a failed send is not sent");
+    }
+
+    #[test]
+    fn a_tap_on_a_toast_of_no_session_emits_no_reveal() {
+        let app = mock_app();
+        let _webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let (tx, rx) = mpsc::channel();
+        app.listen_any(REVEAL_EVENT, move |_| {
+            let _ = tx.send(());
+        });
+        // Brings the window back (focus_main_window; nothing observable on the mock), no reveal.
+        handle_action(app.handle(), &action("tap", serde_json::json!({})));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

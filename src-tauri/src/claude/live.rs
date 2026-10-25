@@ -1099,6 +1099,8 @@ fn emit_live<R: Runtime>(app: &AppHandle<R>, snapshot: &LiveSnapshot) {
     if let Err(err) = app.emit(LIVE_EVENT, snapshot) {
         eprintln!("live sessions: emit failed: {err}");
     }
+    // Story 9.2: the tray's busy / waiting counts.
+    crate::tray::on_live(app, snapshot);
 }
 
 /// Acknowledge `id`, seen needing attention since `seen_since` (the operator selected it; see

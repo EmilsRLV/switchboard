@@ -1267,8 +1267,9 @@ function fixtureSnapshot(): SettingsSnapshot {
       shell: null,
       theme: "dark",
       poll: { agents_ms: 2000, git_ms: 5000 },
-      notifications: { finished: true, waiting: true, review: true },
+      notifications: { finished: true, waiting: true, review: true, tray: true },
       peers: { nudge: true },
+      close_to_tray: false,
     },
     binaries: {
       claude: { name: "claude", path: null, version: null, status: "missing", configured: false },
