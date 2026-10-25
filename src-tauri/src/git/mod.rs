@@ -5,11 +5,13 @@
 //! local branches and linked worktrees (Story 5.1), [`watch`] refreshes them when the refs
 //! change on disk, and [`poll`] re-reads them every 30 s as a fallback. [`worktree`] makes the
 //! one write, `git worktree add`, on the operator's submit of the "New worktree" sheet (Story 5.2).
-//! [`diff`] reads the working-tree diff the Review pane shows (Story 8.1), read-only.
+//! [`diff`] reads the working-tree diff the Review pane shows (Story 8.1), read-only, and [`range`]
+//! a branch against its base and its commits (Story 8.2), read-only too.
 
 pub mod branches;
 pub mod diff;
 pub mod poll;
+pub mod range;
 pub mod status;
 pub mod watch;
 pub mod worktree;

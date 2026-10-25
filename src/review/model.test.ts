@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
-import type { ChangedFile } from "../ipc";
+import type { ChangedFile, CommitInfo } from "../ipc";
 import {
   FILTERS,
+  MODES,
+  baseChoices,
+  baseForChoice,
+  baseSelectModel,
+  commitAge,
+  commitRows,
+  modesFor,
+  noCommitsText,
+  olderCommitsText,
   buildTree,
   countsText,
   fileOrder,
@@ -141,5 +150,55 @@ describe("stepping and the selection after a read", () => {
     expect(pickSelected("b", order)).toBe("b");
     expect(pickSelected("gone", order)).toBe("a");
     expect(pickSelected("gone", [])).toBeNull();
+  });
+  it("Story 8.2: the modes a target offers, the base choices and the empty-range line", () => {
+    expect(MODES.map((m) => m.label)).toEqual(["Changes", "vs base", "Commits"]);
+    expect(modesFor(null)).toEqual([]);
+    expect(modesFor({ kind: "session", sessionId: "s" })).toEqual(["changes"]);
+    expect(modesFor({ kind: "project", projectId: "p" })).toEqual(["changes", "base", "commits"]);
+    expect(modesFor({ kind: "branch", projectId: "p", branch: "feat" })).toEqual(["changes", "base", "commits"]);
+    expect(baseChoices({ defaultBase: "main", bases: ["develop", "feat", "main"] })).toEqual(["main", "develop", "feat"]);
+    expect(noCommitsText("main", "main")).toBe("No commits on main beyond main");
+    expect(olderCommitsText(50)).toBe("50 older commits not shown");
+    expect(olderCommitsText(1)).toBe("1 older commit not shown");
+  });
+
+  it("Story 8.2: the commit list's rows, newest first, with the short hash, subject, author and age (any time zone)", () => {
+    // Local wall-clock times, so the date-style ages hold in every time zone.
+    const now = new Date(2026, 9, 25, 12, 0, 0).getTime();
+    const s = Math.floor(now / 1000);
+    const c = (sha: string, at: number, subject = "work"): CommitInfo => ({ sha: sha.repeat(40), short: sha.repeat(7), subject, author: "Ann", at, parents: [] });
+    const rows = commitRows([c("a", s - 30), c("b", s - 2 * 3600, ""), c("c", s - 3 * 86400)], now);
+    expect(rows.map((r) => [r.short, r.subject, r.age])).toEqual([
+      ["aaaaaaa", "work", "now"],
+      ["bbbbbbb", "(no subject)", "2h"],
+      ["ccccccc", "work", "3d"],
+    ]);
+    expect(rows[0]?.label).toBe("aaaaaaa work, Ann, now");
+    expect(commitAge(s - 5 * 60, now)).toBe("5m");
+    expect(commitAge(0, now)).toBe("?");
+    expect(commitAge(new Date(2026, 0, 5, 12).getTime() / 1000, now)).toBe("5 Jan");
+    expect(commitAge(new Date(2025, 9, 12, 12).getTime() / 1000, now)).toBe("12 Oct 2025");
+  });
+
+  it("Story 8.2: the base dropdown: the default first and marked, a placeholder without a base, the default asked as null", () => {
+    const known = { defaultBase: "main", bases: ["develop", "feat", "main"] };
+    expect(baseSelectModel(known, "main")).toEqual({
+      value: "main",
+      options: [
+        { value: "main", label: "main (default)" },
+        { value: "develop", label: "develop" },
+        { value: "feat", label: "feat" },
+      ],
+    });
+    expect(baseSelectModel(known, "develop").value).toBe("develop");
+    const none = baseSelectModel({ defaultBase: null, bases: ["main"] }, null);
+    expect(none).toEqual({ value: "", options: [{ value: "", label: "pick a base" }, { value: "main", label: "main" }] });
+    expect(baseSelectModel(null, "feat").options).toEqual([{ value: "feat", label: "feat" }]);
+    expect(baseSelectModel(null, null).options).toEqual([{ value: "", label: "pick a base" }]);
+    expect(baseForChoice("main", "main")).toBe(null);
+    expect(baseForChoice("", "main")).toBe(null);
+    expect(baseForChoice("develop", "main")).toBe("develop");
+    expect(baseChoices({ defaultBase: null, bases: ["a", "b"] })).toEqual(["a", "b"]);
   });
 });

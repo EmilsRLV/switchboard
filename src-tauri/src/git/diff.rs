@@ -213,7 +213,7 @@ pub struct StatusEntry {
 }
 
 /// A path field: its text, and whether it was valid UTF-8.
-fn name(bytes: &[u8]) -> (String, bool) {
+pub(crate) fn name(bytes: &[u8]) -> (String, bool) {
     match std::str::from_utf8(bytes) {
         Ok(text) => (text.to_string(), true),
         Err(_) => (String::from_utf8_lossy(bytes).into_owned(), false),
@@ -482,7 +482,7 @@ struct Repo {
     excludes: Vec<String>,
 }
 
-fn describe(err: GitError) -> String {
+pub(crate) fn describe(err: GitError) -> String {
     match err {
         GitError::Failed { stderr, .. } if super::branches::says_not_a_repo(&stderr) => NOT_A_REPO.to_string(),
         GitError::Failed { stderr, code } if stderr.is_empty() => {
@@ -530,7 +530,7 @@ fn whole_folder() -> Vec<String> {
     vec![".".to_string()]
 }
 
-fn run_ok(cmd: std::process::Command) -> Result<Vec<u8>, String> {
+pub(crate) fn run_ok(cmd: std::process::Command) -> Result<Vec<u8>, String> {
     crate::process::run_bytes(cmd, DIFF_TIMEOUT, usize::MAX)
         .and_then(|d| d.success())
         .map(|d| d.stdout)
@@ -539,7 +539,7 @@ fn run_ok(cmd: std::process::Command) -> Result<Vec<u8>, String> {
 
 /// The empty tree's id in this repository (`git hash-object -t tree --stdin` on no input): the
 /// base of `All` before the first commit.
-fn empty_tree(git_bin: &Path, folder: &Path) -> Result<String, String> {
+pub(crate) fn empty_tree(git_bin: &Path, folder: &Path) -> Result<String, String> {
     let out = run_ok(git(git_bin, folder, &["hash-object", "-t", "tree", "--stdin"]))?;
     Ok(String::from_utf8_lossy(&out).trim().to_string())
 }
@@ -639,7 +639,7 @@ pub enum Side {
 }
 
 /// `git show --no-textconv <spec>`, capped. A blob's `show` runs no smudge filter.
-fn show(git_bin: &Path, folder: &Path, spec: &str) -> Result<Side, String> {
+pub(crate) fn show(git_bin: &Path, folder: &Path, spec: &str) -> Result<Side, String> {
     let done = crate::process::run_bytes(git(git_bin, folder, &["--no-pager", "show", "--no-textconv", spec]), DIFF_TIMEOUT, MAX_SIDE_BYTES)
         .and_then(|d| d.success())
         .map_err(describe)?;
@@ -738,7 +738,7 @@ pub fn sources(entry: &StatusEntry, file: &ChangedFile, top_path: &str, filter: 
 }
 
 /// The literal, top-anchored pathspec of one top-relative path.
-fn literal(top_path: &str) -> String {
+pub(crate) fn literal(top_path: &str) -> String {
     format!(":(top,literal){top_path}")
 }
 

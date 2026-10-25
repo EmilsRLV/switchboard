@@ -449,6 +449,34 @@ pub fn target_folder(state: &AppState, target: &ReviewTarget) -> Result<PathBuf,
     Ok(dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
 }
 
+/// Why vs base and Commits are refused for a session (Story 8.2).
+pub const NO_RANGE: &str = "vs base and Commits are for project and branch nodes";
+
+/// Where vs base and Commits read `target` (Story 8.2): the project's folder (canonical) and the
+/// branch, `None` for a project (the branch checked out in its folder, which git names). Unlike
+/// [`branch_folder`], a branch needs no worktree: its commits are read from the repository. `Err`
+/// for an unknown project, a session ([`NO_RANGE`]) or a folder that is gone.
+pub fn range_target(state: &AppState, target: &ReviewTarget) -> Result<(PathBuf, Option<String>), String> {
+    let (project_id, branch) = match target {
+        ReviewTarget::Project { project_id } => (project_id, None),
+        ReviewTarget::Branch { project_id, branch } => (project_id, Some(branch.clone())),
+        ReviewTarget::Session { .. } => return Err(NO_RANGE.to_string()),
+    };
+    let folder = state
+        .read_workspace()
+        .workspace
+        .projects
+        .iter()
+        .find(|p| &p.id == project_id)
+        .map(|p| p.path.clone())
+        .ok_or_else(|| "unknown project".to_string())?;
+    let path = Path::new(folder.trim());
+    if !path.is_dir() {
+        return Err(FOLDER_MISSING.to_string());
+    }
+    Ok((dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()), branch))
+}
+
 /// Whether `path` really lies inside `folder` (7.4's check): both at their real location, links
 /// and junctions followed, so a link inside the folder that points elsewhere is outside.
 pub fn within(path: &Path, folder: &Path) -> bool {

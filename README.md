@@ -131,8 +131,8 @@ holds back (see [Context edges on live sessions](#context-edges-on-live-sessions
 edges](#cooperation-edges)); Open review request while any session has a review request, and Clear review
 flag while a session is flagged (see [Review requests](#review-requests-request_review)); Review changes while a
 project, branch or session card is selected and, while the Review pane is open, Review: refresh, Review: all /
-staged / unstaged changes, Review: unified view (or side-by-side view) and Review: next / previous file (see
-[Review](#review)). The palette sorts by title. The key-only
+staged / unstaged changes, Review: unified view (or side-by-side view), Review: next / previous file and, on a
+project or branch, Review: changes / vs base / commits (see [Review](#review)). The palette sorts by title. The key-only
 carriers (the `ctrl+,` toggle, the palette's second binding `ctrl+shift+k`, the five Esc commands, the four
 arrows and Enter) are registered but hidden from
 the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron on a card runs
@@ -1095,6 +1095,39 @@ the selected file's text arriving to the merge view's first frame (the budget is
 `:<path>`, the index), the new side the index or the file on disk. A file is read only when git listed it, and only
 inside the reviewed folder (its real location, links followed). Every call is prompt-less and takes no optional
 locks.
+
+### vs base and Commits
+
+On a project or a branch card the toolbar starts with a mode toggle (Story 8.2; also the palette's **Review:
+changes**, **Review: vs base** and **Review: commits**): **Changes** is the working tree above (and the only mode on a
+session card), **vs base** is what the branch changed since it forked from a base, **Commits** is the branch's
+commits beyond the base. A branch's vs base and Commits need no worktree: they read the repository at the project's
+folder. On a project they read its checked-out branch (a detached HEAD is refused). The filter shows in Changes only.
+A branch card without a linked worktree opens in vs base (its Changes would only say `no worktree`).
+
+- **The base** defaults to the repository's default branch (`origin/HEAD`'s name when that is a local branch, then
+  `main`, then `master`) as long as it is a local branch other than the one compared; otherwise the first other
+  local branch by name. With no other local branch there is no base and the pane says `no base branch: pick one`.
+  The dropdown offers every local branch, the default first and marked `(default)`. Remote branches are never
+  offered, and Rust refuses any base that is not a local branch. When the branch has nothing beyond the base (a
+  branch picked against itself, say), the pane says `No commits on <branch> beyond <base>`. A failed read (a base
+  with no common ancestor, say) shows its error in the tree and keeps the dropdown, so another base can be picked.
+  Branch names that are not valid UTF-8 are left out.
+- **vs base** lists `git diff --raw -z -M` and `--numstat -z -M` between `git merge-base <base> <branch>` and the
+  branch, keeping the files inside the project's folder: only what the branch changed, not what the base did since.
+  A rename into the folder from outside it is a rename (`renamed from :/<path>`); one out of it is a deletion. A
+  project in a subfolder whose range touches nothing in it says `No changes in this folder`. A file's old side is
+  the merge-base's, its new side the branch's (`git show <commit>:<path>`); opening a file diffs only that path. Each
+  read resolves the branch and the base to commits once, so a branch that moves mid-read cannot mix states. Marks,
+  counts, the 5,000-row cap, the 2 MB / 50,000-line sides, binary, submodule, not-UTF-8 and CRLF handling are as in
+  Changes.
+- **Commits** lists `git log <base>..<branch>`, newest first: short hash, subject, author and age. At most 200 are
+  listed, then `N older commits not shown`. Selecting one shows its files in the same tree and diff, against its
+  first parent (a merge commit's first parent; the empty tree for a root commit); **← Commits** goes back to the
+  list. Rust accepts only a full hash among the commits it listed; a shown commit that a re-read no longer lists (the
+  branch was rewritten) goes back to the list. Commits are listed for the whole branch, also in a subfolder project.
+- **Freshness.** vs base and Commits are read when the mode opens, when the base changes and on **Refresh**. They
+  never poll.
 
 ## The switchboard MCP server
 

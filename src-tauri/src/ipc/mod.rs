@@ -542,6 +542,60 @@ pub async fn review_file<R: Runtime>(
     .await?
 }
 
+/// The git binary, the project's folder and the branch (`None`: the checked-out one) that vs base
+/// and Commits read for `target` (Story 8.2).
+fn review_range_target<R: Runtime>(app: &AppHandle<R>, target: &crate::review::ReviewTarget) -> Result<(PathBuf, PathBuf, Option<String>), String> {
+    let state = app.state::<AppState>();
+    let (folder, branch) = crate::review::range_target(&state, target)?;
+    Ok((git::poll::git_binary(&state.read()), folder, branch))
+}
+
+/// Story 8.2: "vs base" (`commit` absent: what the branch changed since its merge-base with
+/// `base`) or one commit's files (`commit`: a hash `review_commits` listed, diffed against its
+/// first parent). `base` absent: the default branch; any other must be a local branch. The reply
+/// names the branch, the base, the bases offered and the commits beyond the base. Read-only.
+#[tauri::command]
+pub async fn review_range_list<R: Runtime>(
+    app: AppHandle<R>,
+    target: crate::review::ReviewTarget,
+    base: Option<String>,
+    commit: Option<String>,
+) -> Result<git::range::RangeList, String> {
+    blocking(move || {
+        let (git_bin, folder, branch) = review_range_target(&app, &target)?;
+        git::range::list(&git_bin, &folder, branch.as_deref(), base.as_deref(), commit.as_deref())
+    })
+    .await?
+}
+
+/// Story 8.2: the old and new text of `path` (as `review_range_list` named it) in vs base or in
+/// one commit. A path not in that list is refused (`unchanged`). Read-only.
+#[tauri::command]
+pub async fn review_range_file<R: Runtime>(
+    app: AppHandle<R>,
+    target: crate::review::ReviewTarget,
+    base: Option<String>,
+    commit: Option<String>,
+    path: String,
+) -> Result<git::diff::FileText, String> {
+    blocking(move || {
+        let (git_bin, folder, branch) = review_range_target(&app, &target)?;
+        git::range::file(&git_bin, &folder, branch.as_deref(), base.as_deref(), commit.as_deref(), &path)
+    })
+    .await?
+}
+
+/// Story 8.2: the branch's commits beyond `base` (absent: the default branch), newest first, at
+/// most 200 (the rest counted). Read-only.
+#[tauri::command]
+pub async fn review_commits<R: Runtime>(app: AppHandle<R>, target: crate::review::ReviewTarget, base: Option<String>) -> Result<git::range::CommitLog, String> {
+    blocking(move || {
+        let (git_bin, folder, branch) = review_range_target(&app, &target)?;
+        git::range::commits(&git_bin, &folder, branch.as_deref(), base.as_deref())
+    })
+    .await?
+}
+
 /// Retry (Story 6.3): run the `/add-dir` injection of a context edge from a running session
 /// again (the operator says the prompt is clear). For a cooperate edge (Story 6.4) it sends the
 /// peer line again to the side of `session_id`, which must be one of its ends and must have

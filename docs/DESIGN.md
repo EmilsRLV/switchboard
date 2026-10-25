@@ -294,7 +294,11 @@ chrome follows every rule here.
   - a **toolbar**: the filter toggle (**All**, **Staged**, **Unstaged**) and, at the right, the layout toggle
     (**Side by side**, **Unified**): ordinary buttons in `--fg-muted`, the pressed one (`aria-pressed`) in
     `--fg` text with an `--fg` border, like the worktree sheet's mode toggle; between them the totals, `N files
-    +A −R` (mono `--text-xs` `--fg-muted`);
+    +A −R` (mono `--text-xs` `--fg-muted`). Story 8.2: on a project or a branch the toolbar starts with the mode
+    toggle (**Changes**, **vs base**, **Commits**) in the same look; the filter shows in Changes only, and vs base
+    and Commits put the base dropdown in its place: a muted `base` label (`--text-xs` `--fg-muted`) before the
+    launch sheet's select in mono `--text-xs`, the default branch first and marked `(default)`. In Commits the
+    totals read `N commits`;
   - the **body**: the changed-files tree (`min(300px, 35%)` wide, a 1-px `--border` line at its right,
     scrolling) beside the diff. A folder row is mono `--text-xs` `--fg-muted` (`src/auth/`; a chain of single
     folders on one row), its files indented under it. A file row is the palette's row look in mono `--text-xs`:
@@ -305,6 +309,12 @@ chrome follows every rule here.
     first under a `Requested` section heading, then `Other changes`; a requested path naming no changed file
     shows `unchanged` or `missing` in the counts' place. `No changes` and `Reading changes…` are muted lines; a
     refusal (`no worktree`, `not a git repository`) is `.pane-error` text.
+  - Story 8.2, **Commits**: the tree column lists the commits, newest first, as file rows: the short hash where the
+    mark sits (`--fg-muted`), the subject (ellipsis) and at the right `<author> · <age>` (`--fg-muted`; the age as a
+    session card's); `N older commits not shown` and `No commits on <branch> beyond <base>` are muted lines. With a
+    commit selected the column starts with an ordinary **← Commits** button and the commit's short hash and subject
+    (mono `--text-xs`, one line, ellipsis) over a 1-px `--border` line, then its files as above; with none,
+    the diff side reads `No commit selected.` (muted).
   - The **diff** fills the rest: CodeMirror's merge view with no chrome of its own beyond its gutters (see
     [Diff colours](#diff-colours)), in `--font-mono` `--text-md`. `binary file`, `too large to show (+N −M)`,
     `No file selected.` and `Reading <path>…` are muted lines in its place; a file that is not UTF-8 adds a muted

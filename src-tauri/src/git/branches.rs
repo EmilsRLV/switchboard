@@ -508,15 +508,16 @@ pub(crate) mod tests {
         crate::settings::detect::Search::from_env(vec![]).locate("git").map(|g| g.path)
     }
 
+    /// A git command in `dir` with the tests' isolated config (what [`git_ok`] runs).
+    pub(crate) fn git_cmd(git: &Path, dir: &Path, args: &[&str]) -> Command {
+        let mut cmd = Command::new(git);
+        cmd.args(args).current_dir(dir).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1");
+        cmd
+    }
+
     /// Run git in `dir` with an isolated config, asserting success; returns stdout.
     pub(crate) fn git_ok(git: &Path, dir: &Path, args: &[&str]) -> String {
-        let out = Command::new(git)
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .output()
-            .unwrap();
+        let out = git_cmd(git, dir, args).output().unwrap();
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).into_owned()
     }

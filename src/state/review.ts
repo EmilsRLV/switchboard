@@ -6,11 +6,12 @@
 // same session shows a toast again) and what the Review pane shows (Story 8.1): its target (a
 // project, a branch or a session; Rust finds the folder), the session whose request it shows on
 // top (if any), the filter, the layout, the selected file, and the last diff's render time for
-// Diagnostics. Runtime only, never persisted.
+// Diagnostics. Story 8.2 adds the mode (Changes, vs base, Commits), the base asked for, the commit
+// shown and the commit list as last read. Runtime only, never persisted.
 
 import { create } from "zustand";
-import type { Banner, DiffFilter, ReviewMap, ReviewRequest, ReviewTarget } from "../ipc";
-import type { DiffLayout } from "../review/model";
+import type { Banner, CommitLog, DiffFilter, ReviewMap, ReviewRequest, ReviewTarget } from "../ipc";
+import { modesFor, type DiffLayout, type ReviewMode } from "../review/model";
 
 export type ReviewStoreState = {
   requests: ReviewMap;
@@ -25,6 +26,14 @@ export type ReviewStoreState = {
   /** The session whose review request the pane shows on top (opened from the request), or `null`. */
   requestId: string | null;
   filter: DiffFilter;
+  /** Story 8.2: Changes (the working tree), vs base, or Commits. A session target has Changes only. */
+  mode: ReviewMode;
+  /** The base asked for (vs base and Commits); `null` for the repository's default branch. */
+  base: string | null;
+  /** Commits mode: the commit whose files show (a hash Rust listed), or `null` for the commit list. */
+  commit: string | null;
+  /** Commits mode: the list as last read (for the target, base and Refresh), or `null`. */
+  commitList: CommitLog | null;
   layout: DiffLayout;
   /** The selected file (its path in the list), or `null`. */
   selected: string | null;
@@ -42,11 +51,22 @@ export type ReviewStoreState = {
   setLoadError: (error: string | null) => void;
   /** Close the toast of request `seq` of session `id` (the flag stays). */
   dismiss: (id: string, seq: number) => void;
-  /** Show `target` in the pane (a new target starts at the All filter with no file selected). */
-  openTarget: (target: ReviewTarget, requestId: string | null) => void;
+  /**
+   * Show `target` in the pane (a new target starts in `mode`, default Changes, at the All filter and
+   * the default base, with no file or commit selected).
+   */
+  openTarget: (target: ReviewTarget, requestId: string | null, mode?: ReviewMode) => void;
   /** The pane closed: nothing is reviewed. */
   closeTarget: () => void;
   setFilter: (filter: DiffFilter) => void;
+  /** Switch the mode (a mode the target does not offer is ignored); no file or commit stays selected. */
+  setMode: (mode: ReviewMode) => void;
+  /** Pick the base (`null`: the default); the commit list is read again and no commit stays selected. */
+  setBase: (base: string | null) => void;
+  /** Show commit `sha`'s files (`null`: back to the commit list). */
+  selectCommit: (sha: string | null) => void;
+  /** The commit list as read; a shown commit it no longer lists (the branch was rewritten) goes back to the list. */
+  setCommitList: (list: CommitLog | null) => void;
   setLayout: (layout: DiffLayout) => void;
   select: (path: string | null) => void;
   setOrder: (order: readonly string[]) => void;
@@ -67,6 +87,10 @@ export const useReviewStore = create<ReviewStoreState>()((set) => ({
   target: null,
   requestId: null,
   filter: "all",
+  mode: "changes",
+  base: null,
+  commit: null,
+  commitList: null,
   layout: "split",
   selected: null,
   order: NO_ORDER,
@@ -91,15 +115,35 @@ export const useReviewStore = create<ReviewStoreState>()((set) => ({
     }),
   setLoadError: (loadError) => set({ loadError }),
   dismiss: (id, seq) => set((s) => ({ dismissed: { ...s.dismissed, [id]: seq } })),
-  openTarget: (target, requestId) =>
+  openTarget: (target, requestId, mode = "changes") =>
     set((s) =>
       s.target !== null && sameReviewTarget(s.target, target) && s.requestId === requestId
         ? { refreshSeq: s.refreshSeq + 1 }
-        : { target, requestId, filter: "all", selected: null, root: null, refreshSeq: s.refreshSeq + 1 },
+        : {
+            target,
+            requestId,
+            filter: "all",
+            mode: modesFor(target).includes(mode) ? mode : "changes",
+            base: null,
+            commit: null,
+            commitList: null,
+            selected: null,
+            root: null,
+            refreshSeq: s.refreshSeq + 1,
+          },
     ),
   closeTarget: () =>
-    set((s) => (s.target === null && s.requestId === null ? {} : { target: null, requestId: null, selected: null, order: NO_ORDER, root: null })),
+    set((s) => (s.target === null && s.requestId === null ? {} : { target: null, requestId: null, selected: null, order: NO_ORDER, root: null, commit: null, commitList: null })),
   setFilter: (filter) => set((s) => (s.filter === filter ? {} : { filter })),
+  setMode: (mode) =>
+    set((s) => {
+      if (s.mode === mode || !modesFor(s.target).includes(mode)) return {};
+      return { mode, selected: null, commit: null, order: NO_ORDER };
+    }),
+  setBase: (base) => set((s) => (s.base === base ? {} : { base, commit: null, commitList: null, selected: null })),
+  selectCommit: (commit) => set((s) => (s.commit === commit ? {} : { commit, selected: null, order: NO_ORDER })),
+  setCommitList: (commitList) =>
+    set((s) => (s.commit !== null && commitList !== null && !commitList.commits.some((c) => c.sha === s.commit) ? { commitList, commit: null, selected: null } : { commitList })),
   setLayout: (layout) => set((s) => (s.layout === layout ? {} : { layout })),
   select: (selected) => set((s) => (s.selected === selected ? {} : { selected })),
   setRoot: (root) => set((s) => (s.root === root ? {} : { root })),

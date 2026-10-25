@@ -1,7 +1,7 @@
 // Story 8.1: "Review changes" (`r`, the palette, the node menu) and the Review pane's commands.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceSnapshot } from "../ipc";
+import type { CommitLog, WorkspaceSnapshot } from "../ipc";
 import { EMPTY_REVIEWS, useReviewStore } from "../state/review";
 import { usePaletteStore } from "../state/palette";
 import { useStatusStore } from "../state/status";
@@ -12,7 +12,7 @@ import { registerBuiltins } from "./builtins";
 import { handleKeydown, type KeyEventLike } from "./keybindings";
 import { closeOpenPane, openPane } from "./panes";
 import { clearCommands, getCommand, listCommands, runCommand } from "./registry";
-import { canReviewSelection, needsOwnPoll, projectOfTarget, reviewTargetOfSelection, toggleLayoutTitle } from "./review";
+import { canReviewSelection, canSetReviewMode, needsOwnPoll, openingMode, projectOfTarget, reviewTargetOfSelection, toggleLayoutTitle } from "./review";
 
 function key(k: string): KeyEventLike {
   return { key: k, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, repeat: false, preventDefault: () => {} };
@@ -55,7 +55,7 @@ describe("Review changes (Story 8.1)", () => {
     useWorkspaceStore.setState({ snapshot, loadError: null });
     useUiStore.setState({ pane: null, selection: null, contextMenu: null, elsewhereOpen: false });
     usePaletteStore.setState({ isOpen: false, query: "", selected: 0 });
-    useReviewStore.setState({ requests: EMPTY_REVIEWS, target: null, requestId: null, selected: null, filter: "all", layout: "split", order: [], refreshSeq: 0, lastRenderMs: null });
+    useReviewStore.setState({ requests: EMPTY_REVIEWS, target: null, requestId: null, selected: null, filter: "all", mode: "changes", base: null, commit: null, commitList: null, layout: "split", order: [], refreshSeq: 0, lastRenderMs: null });
     useStatusStore.setState({ statuses: {}, received: true });
     registerBuiltins();
   });
@@ -197,5 +197,121 @@ describe("Review changes (Story 8.1)", () => {
     const storage = { getItem: (k: string) => stored.get(k) ?? null, setItem: (k: string, v: string) => void stored.set(k, v) };
     saveWidth(REVIEW_WIDTH_KEY, 812.4, storage);
     expect(loadWidth(REVIEW_WIDTH_KEY, storage)).toBe(812);
+  });
+  it("Story 8.2: a project or branch offers Changes, vs base and Commits; a session Changes only", () => {
+    for (const id of ["review.modeChanges", "review.modeBase", "review.modeCommits"]) expect(getCommand(id)?.when?.(), id).toBe(false);
+    expect(getCommand("review.modeBase")?.title).toBe("Review: vs base");
+    expect(getCommand("review.modeCommits")?.title).toBe("Review: commits");
+    expect(getCommand("review.modeChanges")?.title).toBe("Review: changes");
+    useUiStore.getState().select({ kind: "session", id: "s1" });
+    runCommand("review.changes");
+    expect(canSetReviewMode("changes")).toBe(true);
+    expect(canSetReviewMode("base")).toBe(false);
+    expect(runCommand("review.modeCommits")).toBe(false);
+    useReviewStore.getState().setMode("commits");
+    expect(useReviewStore.getState().mode, "a session has Changes only").toBe("changes");
+    closeOpenPane();
+    useUiStore.getState().select({ kind: "branch", id: "p1:feat" });
+    runCommand("review.changes");
+    useReviewStore.getState().select("a.ts");
+    expect(runCommand("review.modeBase")).toBe(true);
+    expect(useReviewStore.getState()).toMatchObject({ mode: "base", selected: null, base: null });
+    runCommand("review.modeCommits");
+    expect(useReviewStore.getState().mode).toBe("commits");
+    runCommand("review.modeChanges");
+    expect(useReviewStore.getState().mode).toBe("changes");
+  });
+
+  it("Story 8.2: the base and the commit; a new target starts over at Changes", () => {
+    useUiStore.getState().select({ kind: "project", id: "p1" });
+    runCommand("review.changes");
+    const store = () => useReviewStore.getState();
+    store().setMode("commits");
+    const log: CommitLog = { root: "/w/api", branch: "main", base: "feat", defaultBase: "feat", bases: ["feat", "main"], error: null, commits: [], more: 0 };
+    store().setCommitList(log);
+    store().selectCommit("a".repeat(40));
+    store().select("x.ts");
+    expect(store()).toMatchObject({ commit: "a".repeat(40), selected: "x.ts" });
+    store().selectCommit(null);
+    expect(store()).toMatchObject({ commit: null, selected: null });
+    store().selectCommit("b".repeat(40));
+    store().setBase("feat");
+    expect(store()).toMatchObject({ base: "feat", commit: null, commitList: null });
+    store().setBase(null);
+    expect(store().base).toBe(null);
+    // Same target: the mode stays (Refresh); another target starts at Changes with the default base.
+    store().setBase("feat");
+    store().openTarget({ kind: "project", projectId: "p1" }, null);
+    expect(store()).toMatchObject({ mode: "commits", base: "feat" });
+    store().openTarget({ kind: "branch", projectId: "p1", branch: "feat" }, null);
+    expect(store()).toMatchObject({ mode: "changes", base: null, commit: null, commitList: null });
+  });
+
+  it("Story 8.2: vs base and Commits never poll; Refresh still reads them again", () => {
+    vi.useFakeTimers();
+    try {
+      useStatusStore.getState().applyStatuses({ p1: repo(1) });
+      useUiStore.getState().select({ kind: "branch", id: "p1:feat" });
+      runCommand("review.changes");
+      useReviewStore.getState().setRoot("/w/api-feat");
+      runCommand("review.modeBase");
+      const seq = useReviewStore.getState().refreshSeq;
+      vi.advanceTimersByTime(20_000);
+      useStatusStore.getState().applyStatuses({ p1: repo(5) });
+      expect(useReviewStore.getState().refreshSeq, "no poll outside Changes").toBe(seq);
+      runCommand("review.refresh");
+      expect(useReviewStore.getState().refreshSeq).toBe(seq + 1);
+      runCommand("review.modeChanges");
+      vi.advanceTimersByTime(5000);
+      expect(useReviewStore.getState().refreshSeq, "Changes polls again").toBe(seq + 2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("Story 8.2: the filter is offered in Changes only; a mode command is not offered for the mode showing", () => {
+    useUiStore.getState().select({ kind: "project", id: "p1" });
+    runCommand("review.changes");
+    expect(getCommand("review.filterStaged")?.when?.()).toBe(true);
+    expect(getCommand("review.modeChanges")?.when?.(), "already showing").toBe(false);
+    runCommand("review.modeBase");
+    for (const id of ["review.filterAll", "review.filterStaged", "review.filterUnstaged", "review.modeBase"]) expect(getCommand(id)?.when?.(), id).toBe(false);
+    expect(getCommand("review.modeChanges")?.when?.()).toBe(true);
+    expect(getCommand("review.modeCommits")?.when?.()).toBe(true);
+  });
+
+  it("Story 8.2: a branch without a worktree opens in vs base; one with a worktree in Changes", () => {
+    const bare = {
+      ...child,
+      id: "p1:bare",
+      projectId: "p1",
+      kind: "branch",
+      label: "bare",
+      branch: { head: false, upstream: null, ahead: 0, behind: 0, upstreamGone: false, worktree: null },
+    };
+    useWorkspaceStore.setState({ snapshot: { ...snapshot, children: [...snapshot.children, bare] } as unknown as WorkspaceSnapshot });
+    useUiStore.getState().select({ kind: "branch", id: "p1:bare" });
+    runCommand("review.changes");
+    expect(useReviewStore.getState()).toMatchObject({ target: { kind: "branch", projectId: "p1", branch: "bare" }, mode: "base" });
+    closeOpenPane();
+    useUiStore.getState().select({ kind: "branch", id: "p1:feat" });
+    runCommand("review.changes");
+    expect(useReviewStore.getState().mode).toBe("changes");
+    expect(openingMode({ kind: "project", projectId: "p1" })).toBe("changes");
+  });
+
+  it("Story 8.2: a shown commit the re-read list no longer has goes back to the list", () => {
+    useUiStore.getState().select({ kind: "project", id: "p1" });
+    runCommand("review.changes");
+    runCommand("review.modeCommits");
+    const commit = (sha: string) => ({ sha: sha.repeat(40), short: sha.repeat(7), subject: sha, author: "A", at: 1, parents: [] });
+    const log = (shas: string[]): CommitLog => ({ root: "/w/api", branch: "main", base: "feat", defaultBase: "feat", bases: ["feat", "main"], error: null, commits: shas.map(commit), more: 0 });
+    const store = () => useReviewStore.getState();
+    store().setCommitList(log(["a", "b"]));
+    store().selectCommit("b".repeat(40));
+    store().select("x.ts");
+    store().setCommitList(log(["a", "b", "c"]));
+    expect(store()).toMatchObject({ commit: "b".repeat(40), selected: "x.ts" });
+    store().setCommitList(log(["a", "c"]));
+    expect(store()).toMatchObject({ commit: null, selected: null });
   });
 });

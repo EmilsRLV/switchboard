@@ -1,8 +1,9 @@
 // Pure helpers of the Review pane (Story 8.1): the changed-files tree, the filter, the language a
 // file is highlighted with, and the order of a review request's paths. No React, no CodeMirror:
 // the pane and its tests import these; the CodeMirror view lives in `DiffView.tsx`, loaded lazily.
+// Story 8.2 adds the modes (Changes, vs base, Commits), the base choices and the commit list rows.
 
-import type { ChangedFile, DiffFilter, FileStatus, RequestedKey } from "../ipc";
+import type { ChangedFile, CommitInfo, DiffFilter, FileStatus, RangeBases, RequestedKey, ReviewTarget } from "../ipc";
 
 /** The filter toggle's three positions, in order, with their labels. */
 export const FILTERS: readonly { id: DiffFilter; label: string; title: string }[] = [
@@ -10,6 +11,101 @@ export const FILTERS: readonly { id: DiffFilter; label: string; title: string }[
   { id: "staged", label: "Staged", title: "HEAD against the index" },
   { id: "unstaged", label: "Unstaged", title: "The index against the working tree" },
 ];
+
+/**
+ * The pane's modes (Story 8.2): the working tree (`changes`, 8.1), the branch against its base
+ * (`base`), and the branch's commits (`commits`).
+ */
+export type ReviewMode = "changes" | "base" | "commits";
+
+/** The mode toggle's three positions, in order, with their labels. */
+export const MODES: readonly { id: ReviewMode; label: string; title: string }[] = [
+  { id: "changes", label: "Changes", title: "Uncommitted changes" },
+  { id: "base", label: "vs base", title: "What the branch changed since it forked from the base" },
+  { id: "commits", label: "Commits", title: "The branch's commits beyond the base" },
+];
+
+/** The modes a target offers: a session has Changes only; a project or a branch all three. */
+export function modesFor(target: ReviewTarget | null): readonly ReviewMode[] {
+  if (target === null) return [];
+  return target.kind === "session" ? ["changes"] : ["changes", "base", "commits"];
+}
+
+/** The line shown when the branch has no commits beyond its base. */
+export function noCommitsText(branch: string, base: string): string {
+  return `No commits on ${branch} beyond ${base}`;
+}
+
+/** The line under a cut commit list. */
+export function olderCommitsText(more: number): string {
+  return `${more} older ${more === 1 ? "commit" : "commits"} not shown`;
+}
+
+/** The base dropdown's choices: the default base first, then every other local branch by name. */
+export function baseChoices(bases: Pick<RangeBases, "defaultBase" | "bases">): string[] {
+  const def = bases.defaultBase;
+  return def === null ? [...bases.bases] : [def, ...bases.bases.filter((b) => b !== def)];
+}
+
+/** Rust's refusal of a commit that is not (or no longer) in the list. */
+export const NOT_IN_RANGE = "not a commit of this list";
+
+/** The line shown when a subfolder project's range touches nothing in its folder. */
+export const NO_FOLDER_CHANGES = "No changes in this folder";
+
+/** One option of the base dropdown. */
+export type BaseOption = { value: string; label: string };
+
+/**
+ * The base dropdown: its options (the default first and marked `(default)`, then every other
+ * local branch; a `pick a base` placeholder while none is chosen) and the selected value.
+ * `known` are the last bases Rust offered (kept while a new base reads, and after a failed read).
+ */
+export function baseSelectModel(known: Pick<RangeBases, "defaultBase" | "bases"> | null, current: string | null): { value: string; options: BaseOption[] } {
+  const names = known === null ? [] : baseChoices(known);
+  if (current !== null && !names.includes(current)) names.unshift(current);
+  const options = names.map((name) => ({ value: name, label: known !== null && name === known.defaultBase ? `${name} (default)` : name }));
+  if (current === null) options.unshift({ value: "", label: "pick a base" });
+  return { value: current ?? "", options };
+}
+
+/** What a dropdown choice asks Rust for: `null` (the default) for the default base or the placeholder. */
+export function baseForChoice(value: string, defaultBase: string | null): string | null {
+  return value === "" || value === defaultBase ? null : value;
+}
+
+const MINUTE_S = 60;
+const HOUR_S = 60 * MINUTE_S;
+const DAY_S = 24 * HOUR_S;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * How long ago a commit was (`at`, seconds since the epoch), like a session card's age: `now`,
+ * `5m`, `3h`, `2d` (under a week), then `12 Oct` this year or `12 Oct 2025`; `?` when unknown.
+ */
+export function commitAge(at: number, nowMs: number): string {
+  if (!Number.isFinite(at) || at <= 0) return "?";
+  const age = Math.floor(nowMs / 1000) - at;
+  if (age < MINUTE_S) return "now";
+  if (age < HOUR_S) return `${Math.floor(age / MINUTE_S)}m`;
+  if (age < DAY_S) return `${Math.floor(age / HOUR_S)}h`;
+  if (age < 7 * DAY_S) return `${Math.floor(age / DAY_S)}d`;
+  const date = new Date(at * 1000);
+  const day = `${date.getDate()} ${MONTHS[date.getMonth()]}`;
+  return date.getFullYear() === new Date(nowMs).getFullYear() ? day : `${day} ${date.getFullYear()}`;
+}
+
+/** One row of the commit list as the pane shows it. */
+export type CommitRow = { sha: string; short: string; subject: string; author: string; age: string; label: string };
+
+/** The commit list's rows, newest first as Rust sent them. */
+export function commitRows(commits: readonly CommitInfo[], nowMs: number): CommitRow[] {
+  return commits.map((c) => {
+    const age = commitAge(c.at, nowMs);
+    const subject = c.subject === "" ? "(no subject)" : c.subject;
+    return { sha: c.sha, short: c.short, subject, author: c.author, age, label: `${c.short} ${subject}, ${c.author}, ${age}` };
+  });
+}
 
 /** The filter's label. */
 export function filterLabel(filter: DiffFilter): string {

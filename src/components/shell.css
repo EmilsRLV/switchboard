@@ -1224,6 +1224,73 @@
   text-overflow: ellipsis;
 }
 
+/* Story 8.2: the base dropdown (vs base, Commits): the launch sheet's select, mono --text-xs, with a
+   muted `base` label before it. */
+.review-base {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.review-base-label {
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+
+.review-base-select {
+  max-width: 14rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: 0.15rem 0.3rem;
+}
+
+/* A commit's files: the back control and the commit's short hash and subject over the tree. */
+.review-commit-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+  padding: 0 0.75rem 0.4rem;
+  margin-bottom: 0.3rem;
+  border-bottom: var(--line) solid var(--border);
+}
+
+.review-commit-title {
+  margin: 0;
+  max-width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A commit row: the short hash (never shrinks), the subject (ellipsis), then author and age. The
+   row's own gap spaces them. */
+.review-row .review-sha {
+  flex: none;
+  color: var(--fg-muted);
+}
+
+.review-row .review-commit-subject {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-row .review-commit-meta {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+}
+
 .review-body {
   flex: 1;
   min-height: 0;

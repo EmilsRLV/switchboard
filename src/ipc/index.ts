@@ -274,6 +274,61 @@ export type DiffContent =
 /** Mirrors `git::diff::FileText`: what `review_file` returns. */
 export type FileText = { file: ChangedFile; content: DiffContent };
 
+/** Mirrors `git::range::Bases` (Story 8.2): the branch compared, its base and the bases offered. */
+export type RangeBases = {
+  branch: string;
+  /** The base used (the one asked for, else the default); `null` when there is none or the one asked for is not a local branch. */
+  base: string | null;
+  /**
+   * The default base: the repository's default branch (`origin/HEAD`'s name, then `main`, then
+   * `master`) when it is a local branch other than this one, else the first other local branch;
+   * `null` without another local branch.
+   */
+  defaultBase: string | null;
+  /** Every local branch, sorted by name. */
+  bases: string[];
+};
+
+/** Mirrors `git::range::RangeList`: what `review_range_list` returns (vs base, or one commit's files). */
+export type RangeList = RangeBases & {
+  /** The project's folder. */
+  root: string;
+  /** Why nothing is listed (a base that is not local, no base, no common ancestor, a commit not listed); the bases are still offered. */
+  error: string | null;
+  /** The project's folder is a subfolder of the repository: only its files are listed. */
+  subfolder: boolean;
+  /** The commit whose files these are; `null` for vs base. */
+  commit: string | null;
+  /** Commits on the branch beyond the base (vs base only; 0 for a commit's files). */
+  ahead: number;
+  files: ChangedFile[];
+  /** Files past the first 5,000, not sent. */
+  more: number;
+};
+
+/** Mirrors `git::range::Commit`: one commit of the branch. */
+export type CommitInfo = {
+  sha: string;
+  short: string;
+  subject: string;
+  author: string;
+  /** Author time, seconds since the epoch (0 when unreadable). */
+  at: number;
+  /** The first is the one the commit is diffed against; none for a root commit. */
+  parents: string[];
+};
+
+/** Mirrors `git::range::CommitLog`: what `review_commits` returns. */
+export type CommitLog = RangeBases & {
+  root: string;
+  /** Why nothing is listed; the bases are still offered. */
+  error: string | null;
+  /** Newest first, at most 200. */
+  commits: CommitInfo[];
+  /** Commits past the first 200, not sent. */
+  more: number;
+};
+
 /** Mirrors `graph::Workspace`: the on-disk `workspace.json` schema, version 1. */
 export type Workspace = {
   version: number;
@@ -789,6 +844,9 @@ type Commands = {
   review_clear: void;
   review_list: ChangeList;
   review_file: FileText;
+  review_range_list: RangeList;
+  review_range_file: FileText;
+  review_commits: CommitLog;
   edge_live_retry: void;
   edge_restart_with_flags: LaunchResult;
   claude_projects_list: ClaudeProject[];
@@ -1052,6 +1110,27 @@ export function reviewList(target: ReviewTarget, filter: DiffFilter): Promise<Ch
  */
 export function reviewFile(target: ReviewTarget, path: string, filter: DiffFilter): Promise<FileText> {
   return call("review_file", { target, path, filter });
+}
+
+/**
+ * `ipc::review_range_list` (Story 8.2) -- read-only: "vs base" (`commit` `null`: what the branch
+ * changed since its merge-base with `base`) or one commit's files (a hash `reviewCommits` listed,
+ * against its first parent). `base` `null`: the default base. Rejects for a session target or a
+ * branch that cannot be known; a later failure (a base that is not local, no base, no common
+ * ancestor, a commit not listed) is the reply's `error`, with the bases.
+ */
+export function reviewRangeList(target: ReviewTarget, base: string | null, commit: string | null): Promise<RangeList> {
+  return call("review_range_list", { target, base, commit });
+}
+
+/** `ipc::review_range_file` (Story 8.2) -- read-only: the two sides of `path` in vs base or in one commit. */
+export function reviewRangeFile(target: ReviewTarget, base: string | null, commit: string | null, path: string): Promise<FileText> {
+  return call("review_range_file", { target, base, commit, path });
+}
+
+/** `ipc::review_commits` (Story 8.2) -- read-only: the branch's commits beyond `base`, newest first, at most 200. */
+export function reviewCommits(target: ReviewTarget, base: string | null): Promise<CommitLog> {
+  return call("review_commits", { target, base });
 }
 
 /**

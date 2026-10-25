@@ -51,6 +51,9 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::review_clear,
             ipc::review_list,
             ipc::review_file,
+            ipc::review_range_list,
+            ipc::review_range_file,
+            ipc::review_commits,
             ipc::edge_live_retry,
             ipc::edge_restart_with_flags,
             ipc::claude_projects_list,
@@ -3652,6 +3655,64 @@ mod tests {
         assert!(err == json!(super::review::NO_WORKTREE) || err == json!(super::claude::launch::BRANCH_NOT_FOUND), "{err}");
         let gone = json!({ "kind": "project", "projectId": "nope" });
         assert_eq!(invoke_with(&webview, "review_list", InvokeBody::Json(json!({ "target": gone, "filter": "all" }))).unwrap_err(), json!("unknown project"));
+        app.state::<super::AppState>().branch_watches.clear();
+    }
+
+    /// Story 8.2: vs base and Commits on a branch without a worktree and on a project (its
+    /// checked-out branch); a session and an unknown base are refused. Temp repo; read-only.
+    #[test]
+    fn review_range_and_commits_read_a_branch_without_a_worktree() {
+        use serde_json::json;
+        let Some(git) = super::git::branches::tests::real_git() else {
+            eprintln!("git not on PATH; skipping");
+            return;
+        };
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let cfg = tempfile::tempdir().unwrap();
+        super::graph::initialise_at(app.handle(), Some(cfg.path().join("workspace.json")));
+        app.state::<super::AppState>().write().binaries.git.path = Some(git.display().to_string());
+        let repo = super::git::branches::tests::temp_repo(&git);
+        let top = dunce::canonicalize(repo.path()).unwrap();
+        let ok = |args: &[&str]| super::git::branches::tests::git_ok(&git, &top, args);
+        ok(&["checkout", "-q", "-b", "feat"]);
+        std::fs::write(top.join("f.txt"), "f\n").unwrap();
+        ok(&["add", "f.txt"]);
+        ok(&["commit", "-q", "-m", "add f"]);
+        ok(&["checkout", "-q", "main"]);
+        let added = super::graph::add_projects(app.handle(), &[repo.path().display().to_string()], Default::default()).unwrap();
+        let id = added.added[0].clone();
+
+        let branch = json!({ "kind": "branch", "projectId": id, "branch": "feat" });
+        let body = invoke_with(&webview, "review_range_list", InvokeBody::Json(json!({ "target": branch }))).expect("review_range_list");
+        let list: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!((list["branch"].clone(), list["base"].clone(), list["ahead"].clone()), (json!("feat"), json!("main"), json!(1)));
+        assert_eq!(list["files"][0]["path"], json!("f.txt"));
+        let body = invoke_with(&webview, "review_range_file", InvokeBody::Json(json!({ "target": branch, "path": "f.txt" }))).expect("file");
+        assert_eq!(body.deserialize::<serde_json::Value>().unwrap()["content"], json!({ "kind": "text", "old": null, "new": "f\n", "notUtf8": false }));
+
+        let body = invoke_with(&webview, "review_commits", InvokeBody::Json(json!({ "target": branch, "base": "main" }))).expect("review_commits");
+        let log: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(log["commits"].as_array().unwrap().len(), 1);
+        assert_eq!(log["commits"][0]["subject"], json!("add f"));
+        let sha = log["commits"][0]["sha"].clone();
+        let body = invoke_with(&webview, "review_range_list", InvokeBody::Json(json!({ "target": branch, "base": "main", "commit": sha }))).expect("commit list");
+        assert_eq!(body.deserialize::<serde_json::Value>().unwrap()["commit"], sha);
+
+        // A base that is not a local branch: an error in the reply, the bases still offered.
+        let body = invoke_with(&webview, "review_range_list", InvokeBody::Json(json!({ "target": branch, "base": "develop" }))).expect("bad base");
+        let bad: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(bad["error"], json!(format!("{}: develop", super::git::range::NOT_LOCAL_BRANCH)));
+        assert_eq!(bad["bases"], json!(["feat", "main"]));
+        // The project's checked-out branch, against the other local branch by default.
+        let project = json!({ "kind": "project", "projectId": id });
+        let body = invoke_with(&webview, "review_commits", InvokeBody::Json(json!({ "target": project }))).expect("project commits");
+        let log: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!((log["branch"].clone(), log["base"].clone(), log["commits"].clone()), (json!("main"), json!("feat"), json!([])));
+        let session = json!({ "kind": "session", "sessionId": "s1" });
+        assert_eq!(invoke_with(&webview, "review_commits", InvokeBody::Json(json!({ "target": session }))).unwrap_err(), json!(super::review::NO_RANGE));
         app.state::<super::AppState>().branch_watches.clear();
     }
 

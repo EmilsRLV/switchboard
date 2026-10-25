@@ -18,7 +18,7 @@ import { useSettingsStore } from "../state/settings";
 import { useStatusStore } from "../state/status";
 import { useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
-import { otherLayout, stepPath } from "../review/model";
+import { MODES, modesFor, otherLayout, stepPath, type ReviewMode } from "../review/model";
 import { notify, selectedBranch } from "./navigation";
 import { openPane } from "./panes";
 
@@ -60,9 +60,21 @@ export function isReviewOpen(): boolean {
   return useUiStore.getState().pane === "review" && useReviewStore.getState().target !== null;
 }
 
+/**
+ * The mode the pane opens in for `target`: vs base for a branch without a linked worktree (its
+ * Changes would only say `no worktree`), else Changes.
+ */
+export function openingMode(target: ReviewTarget): ReviewMode {
+  if (target.kind !== "branch") return "changes";
+  const child = useWorkspaceStore
+    .getState()
+    .snapshot?.children.find((c) => c.kind === "branch" && c.projectId === target.projectId && c.label === target.branch);
+  return child?.branch !== undefined && child.branch !== null && child.branch.worktree === null ? "base" : "changes";
+}
+
 /** Open the Review pane on `target` (no review request on top). */
 export function openReviewOf(target: ReviewTarget): void {
-  useReviewStore.getState().openTarget(target, null);
+  useReviewStore.getState().openTarget(target, null, openingMode(target));
   openPane("review");
 }
 
@@ -82,6 +94,38 @@ export function refreshReview(): void {
 /** The filter toggle: All, Staged or Unstaged. */
 export function setReviewFilter(filter: DiffFilter): void {
   useReviewStore.getState().setFilter(filter);
+}
+
+/** Story 8.2: whether the open pane's target offers `mode` (a session has Changes only). */
+export function canSetReviewMode(mode: ReviewMode): boolean {
+  return isReviewOpen() && modesFor(useReviewStore.getState().target).includes(mode);
+}
+
+/** Story 8.2: the `when` of a mode command: the target offers `mode` and it is not the one showing. */
+export function canSwitchReviewMode(mode: ReviewMode): boolean {
+  return canSetReviewMode(mode) && useReviewStore.getState().mode !== mode;
+}
+
+/** The `when` of the filter commands: the pane is open on Changes (the filter's only mode). */
+export function canSetReviewFilter(): boolean {
+  return isReviewOpen() && useReviewStore.getState().mode === "changes";
+}
+
+/** Story 8.2: the mode toggle: Changes, vs base or Commits (vs base and Commits are read as they open). */
+export function setReviewMode(mode: ReviewMode): void {
+  if (!canSetReviewMode(mode)) return;
+  useReviewStore.getState().setMode(mode);
+}
+
+/** The palette title of mode `mode`'s command: `Review: changes`, `Review: vs base`, `Review: commits`. */
+export function reviewModeTitle(mode: ReviewMode): string {
+  const label = MODES.find((m) => m.id === mode)?.label ?? mode;
+  return `Review: ${label.toLowerCase()}`;
+}
+
+/** Whether the pane shows the working tree (the only mode the status poll and the own poll keep fresh). */
+function showsChanges(): boolean {
+  return useReviewStore.getState().mode === "changes";
 }
 
 /** The layout toggle: side by side ↔ unified. */
@@ -111,10 +155,11 @@ export function projectOfTarget(target: ReviewTarget): string | null {
   return Object.hasOwn(sessions, target.sessionId) ? (sessions[target.sessionId]?.project_id ?? null) : null;
 }
 
-// While the pane is open, a change in its project's status (the dirty count, the branch) reads
-// the list again.
+// While the pane is open on Changes, a change in its project's status (the dirty count, the
+// branch) reads the list again. vs base and Commits never poll: they are read as they open and on
+// Refresh.
 useStatusStore.subscribe((state, previous) => {
-  if (state.statuses === previous.statuses || useUiStore.getState().pane !== "review") return;
+  if (state.statuses === previous.statuses || useUiStore.getState().pane !== "review" || !showsChanges()) return;
   const target = useReviewStore.getState().target;
   const project = target === null ? null : projectOfTarget(target);
   if (project === null) return;
@@ -154,13 +199,14 @@ function gitPollMs(): number {
   return typeof ms === "number" && ms > 0 ? ms : DEFAULT_GIT_POLL_MS;
 }
 
-// While the pane is open on a target that needs its own poll, the list (and the selected file) is
-// read again every `poll.git_ms`; the pane keeps what it shows when nothing changed.
+// While the pane is open on Changes for a target that needs its own poll, the list (and the
+// selected file) is read again every `poll.git_ms`; the pane keeps what it shows when nothing
+// changed. vs base and Commits never poll.
 let ownPoll: ReturnType<typeof setInterval> | null = null;
 let ownPollKey = "";
 function syncOwnPoll(): void {
   const { target, root } = useReviewStore.getState();
-  const open = useUiStore.getState().pane === "review" && target !== null && needsOwnPoll(target, root);
+  const open = useUiStore.getState().pane === "review" && target !== null && showsChanges() && needsOwnPoll(target, root);
   const key = open ? `${JSON.stringify(target)}|${root}|${gitPollMs()}` : "";
   if (key === ownPollKey) return;
   ownPollKey = key;

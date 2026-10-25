@@ -1,15 +1,38 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { runCommand } from "../commands/registry";
-import { reviewFile, reviewList, type ChangeList, type ChangedFile, type FileText, type RequestedKey, type ReviewRequest, type ReviewTarget } from "../ipc";
+import {
+  reviewCommits,
+  reviewFile,
+  reviewList,
+  reviewRangeFile,
+  reviewRangeList,
+  type ChangeList,
+  type ChangedFile,
+  type FileText,
+  type RangeBases,
+  type RangeList,
+  type RequestedKey,
+  type ReviewRequest,
+  type ReviewTarget,
+} from "../ipc";
 import { requestIn, useReviewStore } from "../state/review";
 import { REVIEW_WIDTH_KEY, clampReviewWidth, defaultReviewWidth, saveWidth, useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 import {
   FILTERS,
+  MODES,
+  NOT_IN_RANGE,
+  NO_FOLDER_CHANGES,
+  baseForChoice,
+  baseSelectModel,
   buildTree,
+  commitRows,
   countsText,
   fileOrder,
   languageFor,
+  modesFor,
+  noCommitsText,
+  olderCommitsText,
   orderForRequest,
   pickSelected,
   rowLabel,
@@ -35,6 +58,12 @@ function viewportWidth(): number {
 /** The list as last read: loading (keeping the previous one), read, or why it could not be. */
 type ListState = { list: ChangeList | null; error: string | null; loading: boolean };
 
+/** Story 8.2: vs base's (or one commit's) list as last read. */
+type RangeState = { key: string | null; list: RangeList | null; error: string | null; loading: boolean };
+
+/** Story 8.2: the commit list's read error, if the last read failed. */
+type CommitsState = { error: string | null; loading: boolean };
+
 /** The selected file's text: for which path and filter, the reply or its error, and when it arrived. */
 type FileState = { key: string; text: FileText | null; error: string | null; arrivedAt: number };
 
@@ -47,12 +76,22 @@ type FileState = { key: string; text: FileText | null; error: string | null; arr
  * review request, the request's summary and time sit on top and its paths are listed (and
  * selected) first, `unchanged` or `missing` where they name no changed file. Rust lists the files
  * and reads their text; the pane never builds a path. It never takes the focus on opening.
+ *
+ * Story 8.2: on a project or a branch the toolbar starts with the mode toggle (Changes, vs base,
+ * Commits). vs base lists what the branch changed since its merge-base with the base (a dropdown
+ * of local branches, the default first); Commits lists the branch's commits beyond the base, and a
+ * commit's files show in the same tree and merge view with a "back to commits" control. Both are
+ * read as they open and on Refresh; they never poll. The filter shows in Changes only.
  */
 export function ReviewPane() {
   const target = useReviewStore((s) => s.target);
   const requestId = useReviewStore((s) => s.requestId);
   const requests = useReviewStore((s) => s.requests);
   const filter = useReviewStore((s) => s.filter);
+  const mode = useReviewStore((s) => s.mode);
+  const base = useReviewStore((s) => s.base);
+  const commit = useReviewStore((s) => s.commit);
+  const commitList = useReviewStore((s) => s.commitList);
   const layout = useReviewStore((s) => s.layout);
   const selected = useReviewStore((s) => s.selected);
   const refreshSeq = useReviewStore((s) => s.refreshSeq);
@@ -61,6 +100,7 @@ export function ReviewPane() {
   const width = clampReviewWidth(stored ?? defaultReviewWidth(viewport), viewport);
   const request = requestId === null ? null : requestIn(requests, requestId);
   const title = useTargetTitle(target, request);
+  const modes = modesFor(target);
 
   useEffect(() => {
     const onResize = () => setViewport(viewportWidth());
@@ -68,11 +108,11 @@ export function ReviewPane() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // The list: read on open, on a filter change, on Refresh and when the status poll moves.
+  // Changes: read on open, on a filter change, on Refresh and when the status poll moves.
   const [listState, setListState] = useState<ListState>({ list: null, error: null, loading: true });
   const listFor = useRef<string | null>(null);
   useEffect(() => {
-    if (target === null) return;
+    if (target === null || mode !== "changes") return;
     let live = true;
     // Another node or filter: the old list goes at once (a refresh keeps it while it reads).
     const key = `${JSON.stringify(target)}\u0000${filter}`;
@@ -93,29 +133,120 @@ export function ReviewPane() {
     return () => {
       live = false;
     };
-  }, [target, filter, refreshSeq]);
+  }, [target, filter, mode, refreshSeq]);
 
-  const files = listState.list?.files ?? NO_FILES;
-  // A request's paths as Rust keyed them to this folder (only while the pane shows a request).
-  const requestKeys = requestId === null ? NO_KEYS : (listState.list?.requested ?? NO_KEYS);
+  // vs base, or a commit's files: read as the mode opens, on a base or commit change and on Refresh.
+  const rangeCommit = mode === "commits" ? commit : null;
+  const showsRange = mode === "base" || (mode === "commits" && commit !== null);
+  // What the range list is for; a list read for another key is never shown (not even for one render).
+  const rangeKey = target === null || !showsRange ? null : `${JSON.stringify(target)}\u0000${base ?? ""}\u0000${rangeCommit ?? ""}`;
+  const [rangeState, setRangeState] = useState<RangeState>({ key: null, list: null, error: null, loading: true });
+  useEffect(() => {
+    if (target === null || rangeKey === null) return;
+    let live = true;
+    // Another node, base or commit: the old list goes at once (a refresh keeps it while it reads).
+    setRangeState((s) => (s.key === rangeKey ? { ...s, loading: true } : { key: rangeKey, list: null, error: null, loading: true }));
+    reviewRangeList(target, base, rangeCommit).then(
+      (list) => {
+        if (!live) return;
+        setRangeState((s) => ({
+          key: rangeKey,
+          list: s.key === rangeKey && s.list !== null && JSON.stringify(s.list) === JSON.stringify(list) ? s.list : list,
+          error: null,
+          loading: false,
+        }));
+      },
+      (err: unknown) => {
+        if (live) setRangeState({ key: rangeKey, list: null, error: describe(err), loading: false });
+      },
+    );
+    return () => {
+      live = false;
+    };
+    // `rangeKey` covers the target, the base and the commit.
+  }, [rangeKey, refreshSeq]);
+  const rangeList = rangeState.key === rangeKey ? rangeState.list : null;
+  const rangeError = rangeState.key === rangeKey ? rangeState.error : null;
+
+  // Commits: the list, read as the mode opens, on a base change and on Refresh.
+  const [commitsState, setCommitsState] = useState<CommitsState>({ error: null, loading: false });
+  useEffect(() => {
+    if (target === null || mode !== "commits") return;
+    let live = true;
+    setCommitsState({ error: null, loading: true });
+    reviewCommits(target, base).then(
+      (log) => {
+        if (!live) return;
+        const store = useReviewStore.getState();
+        const prev = store.commitList;
+        // A shown commit no longer listed (the branch was rewritten) goes back to the list.
+        store.setCommitList(prev !== null && JSON.stringify(prev) === JSON.stringify(log) ? prev : log);
+        setCommitsState({ error: null, loading: false });
+      },
+      (err: unknown) => {
+        if (!live) return;
+        useReviewStore.getState().setCommitList(null);
+        setCommitsState({ error: describe(err), loading: false });
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [target, mode, base, refreshSeq]);
+
+  const changes = mode === "changes";
+  const files = (changes ? listState.list?.files : showsRange ? rangeList?.files : undefined) ?? NO_FILES;
+  const more = (changes ? listState.list?.more : showsRange ? rangeList?.more : 0) ?? 0;
+  // A commit Rust no longer lists is not an error while the commit list reloads (that drops it).
+  const staleCommit = showsRange && mode === "commits" && rangeList?.error === NOT_IN_RANGE && commitsState.loading;
+  const listed = changes ? listState.list !== null : showsRange ? rangeList !== null && !staleCommit : commitList !== null;
+  const listError = changes
+    ? listState.error
+    : showsRange
+      ? (rangeError ?? (staleCommit ? null : (rangeList?.error ?? null)))
+      : (commitsState.error ?? commitList?.error ?? null);
+  const root = changes ? listState.list?.root : showsRange ? rangeList?.root : commitList?.root;
+  // The bases Rust last offered for this target: kept while a new base reads and after a failed
+  // read, so another base can always be picked.
+  const [knownBases, setKnownBases] = useState<{ key: string; bases: RangeBases } | null>(null);
+  const targetKey = target === null ? "" : JSON.stringify(target);
+  const latestBases = mode === "commits" && commitList !== null ? commitList : (rangeList ?? (mode === "commits" ? null : commitList));
+  useEffect(() => {
+    if (latestBases === null || target === null) return;
+    setKnownBases((prev) =>
+      prev !== null && prev.key === targetKey && JSON.stringify(prev.bases.bases) === JSON.stringify(latestBases.bases) && prev.bases.defaultBase === latestBases.defaultBase
+        ? prev
+        : { key: targetKey, bases: latestBases },
+    );
+  }, [latestBases, targetKey, target]);
+  const bases = knownBases !== null && knownBases.key === targetKey ? knownBases.bases : null;
+  const shownBase = base ?? latestBases?.base ?? bases?.defaultBase ?? null;
+  const subfolder = showsRange && rangeList?.subfolder === true;
+  // A request's paths as Rust keyed them to this folder (only while the pane shows a request, in Changes).
+  const requestKeys = requestId === null || !changes ? NO_KEYS : (listState.list?.requested ?? NO_KEYS);
   const { requested, rest } = useMemo(() => orderForRequest(files, requestKeys), [files, requestKeys]);
   const tree = useMemo(() => buildTree(rest), [rest]);
   const order = useMemo(() => fileOrder(requested, tree), [requested, tree]);
+  // Ages are as of the last read (Refresh reads the list again).
+  const rows = useMemo(() => commitRows(commitList?.commits ?? [], Date.now()), [commitList]);
+  const shownCommit = commit === null ? null : (commitList?.commits.find((c) => c.sha === commit) ?? null);
 
   // Keep the store's order (for stepping) and the selection on a listed file.
+  const activeList = changes ? listState.list : showsRange ? rangeList : null;
   useEffect(() => {
     const store = useReviewStore.getState();
     store.setOrder(order);
-    if (listState.list === null) return;
+    if (activeList === null) return;
     store.select(pickSelected(store.selected, order));
-  }, [order, listState.list]);
+  }, [order, activeList]);
 
   const selectedFile = selected === null ? null : (files.find((f) => f.path === selected) ?? null);
   const selectedMark = selected === null ? null : (requested.find((r) => r.key === selected) ?? null);
 
   // The selected file's text, read again whenever the list is and on every Refresh.
   const [fileState, setFileState] = useState<FileState | null>(null);
-  const fileKey = selectedFile === null || target === null ? null : `${JSON.stringify(target)}\u0000${filter}\u0000${selectedFile.path}`;
+  const source = changes ? `changes\u0000${filter}` : `range\u0000${base ?? ""}\u0000${rangeCommit ?? ""}`;
+  const fileKey = selectedFile === null || target === null ? null : `${JSON.stringify(target)}\u0000${source}\u0000${selectedFile.path}`;
   useEffect(() => {
     if (fileKey === null || target === null || selectedFile === null) {
       setFileState(null);
@@ -124,7 +255,8 @@ export function ReviewPane() {
     let live = true;
     const kind = languageFor(selectedFile.path);
     if (kind !== null) void loadLanguage(kind).catch(() => undefined);
-    reviewFile(target, selectedFile.path, filter).then(
+    const read = changes ? reviewFile(target, selectedFile.path, filter) : reviewRangeFile(target, base, rangeCommit, selectedFile.path);
+    read.then(
       (text) => {
         if (!live) return;
         // The same text again keeps the shown diff (and its render time) as it is.
@@ -141,8 +273,8 @@ export function ReviewPane() {
     return () => {
       live = false;
     };
-    // `listState.list` and `refreshSeq` re-read the text after every list read and every Refresh.
-  }, [fileKey, target, listState.list, refreshSeq]);
+    // `activeList` and `refreshSeq` re-read the text after every list read and every Refresh.
+  }, [fileKey, target, activeList, refreshSeq]);
 
   const onDragStart = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -165,6 +297,21 @@ export function ReviewPane() {
   };
 
   const sum = totals(files);
+  const showCommitList = mode === "commits" && commit === null;
+  const totalsText = showCommitList
+    ? commitList === null
+      ? ""
+      : `${commitList.commits.length + commitList.more} ${commitList.commits.length + commitList.more === 1 ? "commit" : "commits"}`
+    : listed
+      ? `${sum.files} ${sum.files === 1 ? "file" : "files"} +${sum.added} −${sum.removed}`
+      : "";
+  // vs base with nothing beyond the base, or an empty commit list.
+  const nothingBeyond =
+    mode === "base" && rangeList !== null && rangeList.error === null && rangeList.base !== null && rangeList.ahead === 0
+      ? noCommitsText(rangeList.branch, rangeList.base)
+      : showCommitList && commitList !== null && commitList.error === null && commitList.base !== null && commitList.commits.length === 0
+        ? noCommitsText(commitList.branch, commitList.base)
+        : null;
 
   return (
     <aside className="pane review-pane" aria-label={`Review: ${title}`} style={{ width: `${width}px` }}>
@@ -173,8 +320,8 @@ export function ReviewPane() {
         <h2 className="pane-title review-title" title={title}>
           {title}
         </h2>
-        <span className="review-root" title={listState.list?.root}>
-          {listState.list?.root ?? ""}
+        <span className="review-root" title={root}>
+          {root ?? ""}
         </span>
         <span className="review-header-actions">
           <button type="button" className="btn" onClick={() => runCommand("review.refresh")} title="Read the changes again">
@@ -187,23 +334,34 @@ export function ReviewPane() {
       </header>
       {requestId !== null && <RequestSummary request={request} />}
       <div className="review-toolbar">
-        <span className="review-toggle" role="group" aria-label="Compare">
-          {FILTERS.map((f) => (
-            <button
-              key={f.id}
-              type="button"
-              className="btn"
-              aria-pressed={filter === f.id}
-              title={f.title}
-              onClick={() => useReviewStore.getState().setFilter(f.id)}
-            >
-              {f.label}
-            </button>
-          ))}
-        </span>
-        <span className="review-totals">
-          {listState.list === null ? "" : `${sum.files} ${sum.files === 1 ? "file" : "files"} +${sum.added} −${sum.removed}`}
-        </span>
+        {modes.length > 1 && (
+          <span className="review-toggle" role="group" aria-label="Mode">
+            {MODES.filter((m) => modes.includes(m.id)).map((m) => (
+              <button key={m.id} type="button" className="btn" aria-pressed={mode === m.id} title={m.title} onClick={() => useReviewStore.getState().setMode(m.id)}>
+                {m.label}
+              </button>
+            ))}
+          </span>
+        )}
+        {changes ? (
+          <span className="review-toggle" role="group" aria-label="Compare">
+            {FILTERS.map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                className="btn"
+                aria-pressed={filter === f.id}
+                title={f.title}
+                onClick={() => useReviewStore.getState().setFilter(f.id)}
+              >
+                {f.label}
+              </button>
+            ))}
+          </span>
+        ) : (
+          <BaseSelect bases={bases} current={shownBase} />
+        )}
+        <span className="review-totals">{totalsText}</span>
         <span className="review-toggle" role="group" aria-label="Layout">
           <button type="button" className="btn" aria-pressed={layout === "split"} onClick={() => useReviewStore.getState().setLayout("split")}>
             Side by side
@@ -214,13 +372,44 @@ export function ReviewPane() {
         </span>
       </div>
       <div className="review-body">
-        <nav className="review-tree" aria-label="Changed files">
-          {listState.error !== null ? (
+        <nav className="review-tree" aria-label={showCommitList ? "Commits" : "Changed files"}>
+          {mode === "commits" && commit !== null && (
+            <div className="review-commit-head">
+              <button type="button" className="btn" onClick={() => useReviewStore.getState().selectCommit(null)} title="Back to the commit list">
+                ← Commits
+              </button>
+              {shownCommit !== null && (
+                <p className="review-commit-title" title={`${shownCommit.short} ${shownCommit.subject}`}>
+                  {shownCommit.short} {shownCommit.subject}
+                </p>
+              )}
+            </div>
+          )}
+          {listError !== null ? (
             <p className="pane-error" role="alert">
-              {listState.error}
+              {listError}
             </p>
-          ) : listState.list === null ? (
-            <p className="muted">Reading changes…</p>
+          ) : !listed ? (
+            <p className="muted">{showCommitList ? "Reading commits…" : "Reading changes…"}</p>
+          ) : nothingBeyond !== null ? (
+            <p className="muted">{nothingBeyond}</p>
+          ) : showCommitList ? (
+            <>
+              <ul className="review-rows">
+                {rows.map((row) => (
+                  <li key={row.sha}>
+                    <button type="button" className="review-row review-commit" aria-label={row.label} title={row.label} onClick={() => useReviewStore.getState().selectCommit(row.sha)}>
+                      <span className="review-sha">{row.short}</span>
+                      <span className="review-commit-subject">{row.subject}</span>
+                      <span className="review-commit-meta">
+                        {row.author} · {row.age}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {commitList !== null && commitList.more > 0 && <p className="muted review-more">{olderCommitsText(commitList.more)}</p>}
+            </>
           ) : (
             <>
               {requested.length > 0 && (
@@ -235,7 +424,7 @@ export function ReviewPane() {
                 </>
               )}
               {files.length === 0 && requested.length === 0 ? (
-                <p className="muted">No changes</p>
+                <p className="muted">{subfolder ? NO_FOLDER_CHANGES : "No changes"}</p>
               ) : (
                 <ul className="review-rows">
                   {tree.map((row) => (
@@ -243,15 +432,41 @@ export function ReviewPane() {
                   ))}
                 </ul>
               )}
-              {listState.list.more > 0 && <p className="muted review-more">{listState.list.more} more files not shown</p>}
+              {more > 0 && <p className="muted review-more">{more} more files not shown</p>}
             </>
           )}
         </nav>
         <section className="review-view" aria-label="Diff">
-          <DiffArea file={selectedFile} mark={selectedMark} state={fileState} fileKey={fileKey} layout={layout} />
+          {showCommitList ? (
+            <p className="muted review-note">No commit selected.</p>
+          ) : (
+            <DiffArea file={selectedFile} mark={selectedMark} state={fileState} fileKey={fileKey} layout={layout} />
+          )}
         </section>
       </div>
     </aside>
+  );
+}
+
+/** Story 8.2: the base dropdown: the default base first, then every other local branch (the last bases Rust offered). */
+function BaseSelect({ bases, current }: { bases: RangeBases | null; current: string | null }) {
+  const model = baseSelectModel(bases, current);
+  return (
+    <label className="review-base">
+      <span className="review-base-label">base</span>
+      <select
+        className="launch-input review-base-select"
+        value={model.value}
+        disabled={model.options.length === 0}
+        onChange={(e) => useReviewStore.getState().setBase(baseForChoice(e.target.value, bases?.defaultBase ?? null))}
+      >
+        {model.options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 

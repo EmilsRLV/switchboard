@@ -53,7 +53,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the seventy-one commands with the spec's keybindings", () => {
+  it("register the seventy-four commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -100,6 +100,9 @@ describe("built-in commands", () => {
       "review.filterAll",
       "review.filterStaged",
       "review.filterUnstaged",
+      "review.modeBase",
+      "review.modeChanges",
+      "review.modeCommits",
       "review.nextFile",
       "review.open",
       "review.prevFile",
@@ -189,7 +192,7 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the fifty-nine actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the sixty-two actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -231,6 +234,9 @@ describe("built-in commands", () => {
       "review.filterAll",
       "review.filterStaged",
       "review.filterUnstaged",
+      "review.modeBase",
+      "review.modeChanges",
+      "review.modeCommits",
       "review.nextFile",
       "review.open",
       "review.prevFile",
@@ -290,7 +296,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(71);
+    expect(listCommands()).toHaveLength(74);
   });
 
   const PROJECT_ACTIONS = [

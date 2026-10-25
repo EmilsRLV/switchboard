@@ -125,3 +125,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-8-1-working-tree-diff-pane.md`
   summary: Story 8.1 has not run on CI. It was closed on local Windows verification while GitHub Actions is suspended.
   evidence: The Linux build and tests have not run, including the Unix symlink branch of `read_disk`, which skipped on Windows. When Actions resumes, confirm the latest commit on both runners.
+- source_spec: `_bmad-output/implementation-artifacts/spec-8-2-branch-and-commit-diffs.md`
+  summary: Story 8.2 has not run on CI. It was closed on local Windows verification while GitHub Actions is suspended.
+  evidence: The Linux build and tests have not run. When Actions resumes, confirm the latest commit on both runners.
