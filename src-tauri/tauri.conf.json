@@ -28,12 +28,30 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "Emils Romanis",
+    "copyright": "Copyright © 2026 Emils Romanis",
+    "category": "DeveloperTool",
+    "shortDescription": "A canvas for your projects and Claude Code sessions",
+    "longDescription": "Switchboard is a small desktop app whose main surface is a graph of projects, Claude Code sessions and branches. It starts, watches, connects and reviews Claude Code sessions in built-in terminals. It is not a text editor.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": ["xdg-utils"]
+      }
+    }
   }
 }

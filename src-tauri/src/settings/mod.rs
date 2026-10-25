@@ -171,8 +171,9 @@ impl Settings {
     /// when it is on PATH. This is what the first launch writes to disk.
     pub fn for_machine(search: &Search) -> Self {
         let mut settings = Self::default();
+        // Never pin the npm `claude.cmd` shim: detection then reports it with its banner.
         settings.claude.path = search
-            .locate("claude")
+            .locate_native("claude", cfg!(windows))
             .map(|located| located.path.display().to_string());
         settings.shell = default_shell(search);
         // The editor command is run by a shell later, which sees PATH only -- not the
@@ -593,6 +594,11 @@ fn read_with_retry(path: &Path) -> std::io::Result<Option<String>> {
 /// Run binary detection off the main thread, store the result (if no newer run has started
 /// since), emit and return the resulting snapshot.
 pub async fn redetect<R: Runtime>(app: AppHandle<R>) -> Snapshot {
+    redetect_in(app, Search::from_env(paths::extra_bin_dirs()), Search::from_env(Vec::new())).await
+}
+
+/// [`redetect`] over the given searches (`claude`'s, `git`'s); tests pass their own.
+pub(crate) async fn redetect_in<R: Runtime>(app: AppHandle<R>, claude_search: Search, git_search: Search) -> Snapshot {
     let state = app.state::<AppState>();
     let generation = state.detect_generation.fetch_add(1, Ordering::SeqCst) + 1;
     let (claude_cfg, git_cfg) = state.read().settings.binary_config();
@@ -600,7 +606,7 @@ pub async fn redetect<R: Runtime>(app: AppHandle<R>) -> Snapshot {
         let (claude_cfg, git_cfg) = (claude_cfg.clone(), git_cfg.clone());
         move || {
             let runner = ProcessRunner::default();
-            detect_all(claude_cfg.as_deref(), git_cfg.as_deref(), &runner)
+            detect_all_in(&claude_search, &git_search, claude_cfg.as_deref(), git_cfg.as_deref(), &runner)
         }
     })
     .await;
@@ -649,8 +655,19 @@ pub fn detect_all(
 ) -> (Binaries, Vec<Banner>) {
     let claude_search = Search::from_env(paths::extra_bin_dirs());
     let git_search = Search::from_env(Vec::new());
-    let (claude, claude_banner) = detect::resolve("claude", claude_cfg, &claude_search, runner);
-    let (git, git_banner) = detect::resolve("git", git_cfg, &git_search, runner);
+    detect_all_in(&claude_search, &git_search, claude_cfg, git_cfg, runner)
+}
+
+/// [`detect_all`] over the given searches.
+fn detect_all_in(
+    claude_search: &Search,
+    git_search: &Search,
+    claude_cfg: Option<&str>,
+    git_cfg: Option<&str>,
+    runner: &dyn Runner,
+) -> (Binaries, Vec<Banner>) {
+    let (claude, claude_banner) = detect::resolve("claude", claude_cfg, claude_search, runner);
+    let (git, git_banner) = detect::resolve("git", git_cfg, git_search, runner);
     let banners = claude_banner.into_iter().chain(git_banner).collect();
     (Binaries { claude, git }, banners)
 }
@@ -878,6 +895,19 @@ mod tests {
         let s = Settings::for_machine(&search_in(dir.path()));
         assert_eq!(s.claude.path, None);
         assert_eq!(s.external_editor, None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn for_machine_never_pins_the_npm_claude_shim() {
+        let dir = tempfile::tempdir().unwrap();
+        detect::fixtures::write_executable(&dir.path().join("claude.cmd"), b"@echo off\r\n");
+        let search = Search {
+            path_dirs: vec![dir.path().to_path_buf()],
+            extra_dirs: vec![],
+            extensions: [".exe", ".cmd"].map(String::from).to_vec(),
+        };
+        assert_eq!(Settings::for_machine(&search).claude.path, None);
     }
 
     #[test]

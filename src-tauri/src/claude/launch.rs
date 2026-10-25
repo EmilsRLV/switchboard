@@ -333,11 +333,7 @@ pub fn pathext_target(program: &Path, extensions: &[String]) -> PathBuf {
 /// so `cmd.exe` never re-parses the prompt. Pass the path [`pathext_target`] resolved, so an
 /// extensionless `claude.path` that resolves to a batch file is refused too.
 pub fn refuse_batch(program: &Path, windows: bool) -> Result<(), String> {
-    let batch = program
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"));
-    if windows && batch { Err(BATCH_FILE.to_string()) } else { Ok(()) }
+    if windows && settings::detect::is_batch(program) { Err(BATCH_FILE.to_string()) } else { Ok(()) }
 }
 
 /// The add-dirs as `--add-dir` gets them: each trimmed and canonicalised; blanks, duplicates

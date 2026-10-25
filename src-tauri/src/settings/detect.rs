@@ -65,10 +65,31 @@ impl Search {
 
     /// First directory, PATH first then extras, containing an executable named `name`.
     pub fn locate(&self, name: &str) -> Option<Located> {
+        self.locate_where(name, |_| true)
+    }
+
+    /// On Windows, [`Search::locate`] accepting only a native `.exe` / `.com`: the npm package
+    /// installs `claude` as a `claude.cmd` shim, which Switchboard never runs (nor a `.ps1`
+    /// and the like), so a native `claude.exe` later on PATH wins over it and a shim alone is
+    /// not a hit. Elsewhere the same as [`Search::locate`].
+    pub fn locate_native(&self, name: &str, windows: bool) -> Option<Located> {
+        if windows {
+            self.locate_where(name, is_native_windows)
+        } else {
+            self.locate(name)
+        }
+    }
+
+    /// The first batch file (`.cmd` / `.bat`) that `name` resolves to, for the shim banner.
+    pub fn locate_shim(&self, name: &str) -> Option<Located> {
+        self.locate_where(name, is_batch)
+    }
+
+    fn locate_where(&self, name: &str, keep: impl Fn(&Path) -> bool) -> Option<Located> {
         let hit = |dirs: &[PathBuf], source: Source| {
             dirs.iter()
                 .flat_map(|dir| candidates(dir, name, &self.extensions))
-                .find(|p| is_executable_file(p))
+                .find(|p| keep(p) && is_executable_file(p))
                 .map(|path| Located { path, source })
         };
         hit(&self.path_dirs, Source::Path).or_else(|| hit(&self.extra_dirs, Source::Extra))
@@ -98,6 +119,20 @@ fn candidates<'a>(dir: &'a Path, name: &'a str, extensions: &'a [String]) -> imp
     let with_ext = extensions.iter().map(move |ext| dir.join(format!("{name}{ext}")));
     let bare = (extensions.is_empty() || name.contains('.')).then(|| dir.join(name));
     with_ext.chain(bare)
+}
+
+/// A `.cmd` / `.bat` file (any case): what `cmd.exe` runs, re-parsing its arguments.
+pub fn is_batch(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
+}
+
+/// A `.exe` / `.com` file (any case): what Windows runs natively.
+fn is_native_windows(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe") || ext.eq_ignore_ascii_case("com"))
 }
 
 /// A regular file that the OS would run: on Unix that needs an exec bit, so a stray
@@ -238,7 +273,18 @@ fn starts_with_digit(s: &str) -> bool {
 /// Detect `name` by searching, then probing its version. Returns the binary record and the
 /// banner to show, if any.
 pub fn detect(name: &str, search: &Search, runner: &dyn Runner) -> (Binary, Option<Banner>) {
-    detect_as(name, name, search, runner, false)
+    resolve_for(name, None, search, runner, cfg!(windows))
+}
+
+/// The banner id for a `claude` that is only a batch file (Windows).
+pub const SHIM_BANNER: &str = "claude.shim";
+
+/// The binary whose batch files are reported rather than run (Windows only).
+const SHIM_GUARDED: &str = "claude";
+
+/// Shim rules apply: `name` is `claude` and this is Windows.
+fn guarded(name: &str, windows: bool) -> bool {
+    windows && name == SHIM_GUARDED
 }
 
 /// Search for `lookup` and report it as `name`.
@@ -248,48 +294,106 @@ fn detect_as(
     search: &Search,
     runner: &dyn Runner,
     configured: bool,
+    windows: bool,
 ) -> (Binary, Option<Banner>) {
-    match search.locate(lookup) {
-        Some(located) => probe(name, located.path, configured, runner),
-        None => {
-            let label = if lookup == name {
-                name.to_string()
-            } else {
-                format!("{name} ({lookup})")
-            };
-            (
-                Binary {
-                    name: name.to_string(),
-                    path: configured.then(|| lookup.to_string()),
-                    version: None,
-                    status: BinaryStatus::Missing,
-                    configured,
-                },
-                Some(Banner::new(
-                    format!("{name}.missing"),
-                    format!("{label} not found — searched: {}", search.searched().join(", ")),
-                )),
-            )
-        }
+    // On Windows `claude` is never run through a batch file (see `claude::launch::refuse_batch`),
+    // so a shim neither counts as found nor gets its `--version` run.
+    let guarded = guarded(name, windows);
+    let located = if guarded {
+        search.locate_native(lookup, true)
+    } else {
+        search.locate(lookup)
+    };
+    if let Some(located) = located {
+        return probe(name, located.path, configured, runner);
     }
+    let path = configured.then(|| lookup.to_string());
+    if let Some(shim) = guarded.then(|| search.locate_shim(lookup)).flatten() {
+        return shim_result(name, &shim.path, path, configured, search);
+    }
+    let label = if lookup == name {
+        name.to_string()
+    } else {
+        format!("{name} ({lookup})")
+    };
+    (
+        missing(name, path, configured),
+        Some(Banner::new(
+            format!("{name}.missing"),
+            format!("{label} not found — searched: {}", search.searched().join(", ")),
+        )),
+    )
+}
+
+fn missing(name: &str, path: Option<String>, configured: bool) -> Binary {
+    Binary {
+        name: name.to_string(),
+        path,
+        version: None,
+        status: BinaryStatus::Missing,
+        configured,
+    }
+}
+
+/// `claude` resolved only to a batch file (Windows): reported as missing, never run. When
+/// `claude.path` names it while a native `claude.exe` is on the search, the banner says to
+/// clear the setting; otherwise to install the native binary.
+fn shim_result(
+    name: &str,
+    batch: &Path,
+    path: Option<String>,
+    configured: bool,
+    search: &Search,
+) -> (Binary, Option<Banner>) {
+    let kind = if is_npm_shim(name, batch) { "npm shim" } else { "a batch file" };
+    let text = if configured && search.locate_native(name, true).is_some() {
+        let kind = if kind == "npm shim" { "the npm shim" } else { kind };
+        format!("{name}.path names {kind}; clear it to use {name}.exe")
+    } else {
+        format!("{} ({kind}) found — install the native {name}.exe", batch.display())
+    };
+    (missing(name, path, configured), Some(Banner::new(SHIM_BANNER, text)))
+}
+
+/// `claude.cmd` / `claude.bat` (any case): what the npm package installs.
+fn is_npm_shim(name: &str, path: &Path) -> bool {
+    is_batch(path)
+        && path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case(name))
 }
 
 /// Use the value configured in `settings.json` instead of searching. A leading `~` is the
 /// home dir; a bare name (single path component) is looked up on PATH like an unconfigured
 /// binary; a path that points at nothing is reported as such, with a note that detection
-/// was skipped because it is set.
+/// was skipped because it is set. On Windows a configured `claude` that is a batch file is
+/// reported (shim banner) and never run.
 pub fn detect_configured(
     name: &str,
     configured: &str,
     search: &Search,
     runner: &dyn Runner,
 ) -> (Binary, Option<Banner>) {
+    resolve_for(name, Some(configured), search, runner, cfg!(windows))
+}
+
+fn detect_configured_for(
+    name: &str,
+    configured: &str,
+    search: &Search,
+    runner: &dyn Runner,
+    windows: bool,
+) -> (Binary, Option<Banner>) {
     let expanded = expand_home(configured);
     let path = Path::new(&expanded);
     if !path.is_absolute() && path.components().count() == 1 {
-        return detect_as(name, &expanded, search, runner, true);
+        return detect_as(name, &expanded, search, runner, true, windows);
     }
     if is_executable_file(path) {
+        if guarded(name, windows) && is_batch(path) {
+            return shim_result(name, path, Some(configured.to_string()), true, search);
+        }
         probe(name, path.to_path_buf(), true, runner)
     } else {
         (
@@ -317,9 +421,20 @@ pub fn resolve(
     search: &Search,
     runner: &dyn Runner,
 ) -> (Binary, Option<Banner>) {
+    resolve_for(name, configured, search, runner, cfg!(windows))
+}
+
+/// [`resolve`] with the platform explicit, so the Windows shim rules are tested everywhere.
+pub(crate) fn resolve_for(
+    name: &str,
+    configured: Option<&str>,
+    search: &Search,
+    runner: &dyn Runner,
+    windows: bool,
+) -> (Binary, Option<Banner>) {
     match configured.map(str::trim).filter(|p| !p.is_empty()) {
-        Some(path) => detect_configured(name, path, search, runner),
-        None => detect(name, search, runner),
+        Some(path) => detect_configured_for(name, path, search, runner, windows),
+        None => detect_as(name, name, search, runner, false, windows),
     }
 }
 
@@ -583,6 +698,197 @@ mod tests {
         assert!(banner.text.contains(&a.path().display().to_string()));
         assert!(banner.text.contains(&extra.path().display().to_string()));
         assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
+    /// A Windows-style search: PATHEXT order, `.exe` before `.bat` / `.cmd`. Explicit, and
+    /// used with `resolve_for(.., windows: true)`, so the shim rules are tested everywhere.
+    fn windows_search(path_dirs: Vec<PathBuf>, extra_dirs: Vec<PathBuf>) -> Search {
+        Search {
+            path_dirs,
+            extra_dirs,
+            extensions: [".com", ".exe", ".bat", ".cmd", ".ps1"].map(String::from).to_vec(),
+        }
+    }
+
+    fn shim(dir: &Path, file: &str) -> PathBuf {
+        let path = dir.join(file);
+        super::fixtures::write_executable(&path, b"@echo off\r\n");
+        path
+    }
+
+    fn native(dir: &Path) -> PathBuf {
+        let path = dir.join("claude.exe");
+        super::fixtures::write_executable(&path, b"");
+        path
+    }
+
+    /// `detect` on Windows.
+    fn detect_win(name: &str, s: &Search, runner: &FakeRunner) -> (Binary, Option<Banner>) {
+        resolve_for(name, None, s, runner, true)
+    }
+
+    fn shim_banner(path: &Path, kind: &str) -> Option<Banner> {
+        Some(Banner::new(
+            SHIM_BANNER,
+            format!("{} ({kind}) found — install the native claude.exe", path.display()),
+        ))
+    }
+
+    #[test]
+    fn is_batch_matches_cmd_and_bat_in_any_case_only() {
+        assert!(is_batch(Path::new("C:\\npm\\claude.cmd")));
+        assert!(is_batch(Path::new("C:\\npm\\claude.BAT")));
+        assert!(!is_batch(Path::new("C:\\bin\\claude.exe")));
+        assert!(!is_batch(Path::new("/usr/bin/claude")));
+    }
+
+    #[test]
+    fn a_claude_shim_alone_gets_the_shim_banner_with_its_path_and_is_never_run() {
+        let a = tempfile::tempdir().unwrap();
+        let extra = tempfile::tempdir().unwrap();
+        for file in ["claude.cmd", "claude.bat"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = shim(dir.path(), file);
+            let runner = FakeRunner::default().with(&path, Ok("2.1.301 (Claude Code)"));
+            let s = windows_search(
+                vec![a.path().to_path_buf(), dir.path().to_path_buf()],
+                vec![extra.path().to_path_buf()],
+            );
+            let (bin, banner) = detect_win("claude", &s, &runner);
+            assert_eq!(bin.status, BinaryStatus::Missing);
+            assert_eq!(bin.path, None);
+            assert_eq!(bin.version, None);
+            assert!(!bin.configured);
+            assert_eq!(banner, shim_banner(&path, "npm shim"), "{file}");
+            assert!(runner.calls.lock().unwrap().is_empty(), "the shim is not run");
+        }
+    }
+
+    #[test]
+    fn a_shim_in_the_extra_dirs_still_gets_the_shim_banner() {
+        let a = tempfile::tempdir().unwrap();
+        let extra = tempfile::tempdir().unwrap();
+        let path = shim(extra.path(), "claude.cmd");
+        let s = windows_search(vec![a.path().to_path_buf()], vec![extra.path().to_path_buf()]);
+        let (_, banner) = detect_win("claude", &s, &FakeRunner::default());
+        assert_eq!(banner, shim_banner(&path, "npm shim"));
+    }
+
+    #[test]
+    fn a_ps1_is_not_native_claude() {
+        let a = tempfile::tempdir().unwrap();
+        super::fixtures::write_executable(&a.path().join("claude.ps1"), b"");
+        let s = windows_search(vec![a.path().to_path_buf()], vec![]);
+        assert_eq!(s.locate_native("claude", true), None);
+        let runner = FakeRunner::default();
+        let (bin, banner) = detect_win("claude", &s, &runner);
+        assert_eq!(bin.status, BinaryStatus::Missing);
+        assert_eq!(banner.unwrap().id, "claude.missing");
+        assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_native_claude_anywhere_in_the_search_wins_over_an_earlier_shim() {
+        let npm = tempfile::tempdir().unwrap();
+        let nat = tempfile::tempdir().unwrap();
+        shim(npm.path(), "claude.cmd");
+        let exe = native(nat.path());
+        let runner = FakeRunner::default().with(&exe, Ok("2.1.301 (Claude Code)"));
+
+        // Later on PATH.
+        let s = windows_search(vec![npm.path().to_path_buf(), nat.path().to_path_buf()], vec![]);
+        let (bin, banner) = detect_win("claude", &s, &runner);
+        assert_eq!(banner, None);
+        assert_eq!(bin.status, BinaryStatus::Found);
+        assert_eq!(bin.path.as_deref(), Some(exe.display().to_string().as_str()));
+
+        // Only in the extra dirs (`~/.local/bin`), with the shim on PATH.
+        let s = windows_search(vec![npm.path().to_path_buf()], vec![nat.path().to_path_buf()]);
+        let (bin, banner) = detect_win("claude", &s, &runner);
+        assert_eq!(banner, None);
+        assert_eq!(bin.path.as_deref(), Some(exe.display().to_string().as_str()));
+        assert_eq!(runner.calls.lock().unwrap().as_slice(), [exe.clone(), exe]);
+    }
+
+    #[test]
+    fn a_configured_bare_name_that_resolves_only_to_a_shim_gets_the_shim_banner() {
+        let a = tempfile::tempdir().unwrap();
+        let path = shim(a.path(), "claude.cmd");
+        let s = windows_search(vec![a.path().to_path_buf()], vec![]);
+        let runner = FakeRunner::default();
+        for configured in ["claude", "claude.cmd"] {
+            let (bin, banner) = resolve_for("claude", Some(configured), &s, &runner, true);
+            assert_eq!(bin.status, BinaryStatus::Missing);
+            assert!(bin.configured);
+            assert_eq!(bin.path.as_deref(), Some(configured));
+            assert_eq!(banner, shim_banner(&path, "npm shim"));
+        }
+        assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_configured_absolute_batch_path_gets_the_shim_banner_and_is_never_run() {
+        let npm = tempfile::tempdir().unwrap();
+        let path = shim(npm.path(), "claude.cmd");
+        let other = shim(npm.path(), "run-claude.bat");
+        let empty = tempfile::tempdir().unwrap();
+        let s = windows_search(vec![empty.path().to_path_buf()], vec![]);
+        let runner = FakeRunner::default()
+            .with(&path, Ok("2.1.301 (Claude Code)"))
+            .with(&other, Ok("2.1.301 (Claude Code)"));
+
+        let configured = path.display().to_string();
+        let (bin, banner) = resolve_for("claude", Some(&configured), &s, &runner, true);
+        assert_eq!(bin.status, BinaryStatus::Missing);
+        assert!(bin.configured);
+        assert_eq!(bin.path.as_deref(), Some(configured.as_str()));
+        assert_eq!(banner, shim_banner(&path, "npm shim"));
+
+        // Any other batch file is named as such.
+        let (_, banner) = resolve_for("claude", Some(&other.display().to_string()), &s, &runner, true);
+        assert_eq!(banner, shim_banner(&other, "a batch file"));
+        assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn claude_path_naming_the_shim_while_a_native_exe_exists_says_to_clear_it() {
+        let npm = tempfile::tempdir().unwrap();
+        let nat = tempfile::tempdir().unwrap();
+        let path = shim(npm.path(), "claude.cmd");
+        native(nat.path());
+        let s = windows_search(vec![nat.path().to_path_buf()], vec![]);
+        let runner = FakeRunner::default();
+        let (bin, banner) = resolve_for("claude", Some(&path.display().to_string()), &s, &runner, true);
+        assert_eq!(bin.status, BinaryStatus::Missing);
+        assert_eq!(
+            banner,
+            Some(Banner::new(SHIM_BANNER, "claude.path names the npm shim; clear it to use claude.exe"))
+        );
+        assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn shim_rules_apply_on_windows_only() {
+        let a = tempfile::tempdir().unwrap();
+        let path = shim(a.path(), "claude.cmd");
+        let runner = FakeRunner::default().with(&path, Ok("2.1.301 (Claude Code)"));
+        let s = windows_search(vec![a.path().to_path_buf()], vec![]);
+        // Off Windows a `.cmd` is just a file: searched as before and configured as given.
+        let (bin, banner) = resolve_for("claude", None, &s, &runner, false);
+        assert_eq!((bin.status, banner), (BinaryStatus::Found, None));
+        let (bin, banner) = resolve_for("claude", Some(&path.display().to_string()), &s, &runner, false);
+        assert_eq!((bin.status, banner), (BinaryStatus::Found, None));
+        assert_eq!(s.locate_native("claude", false).unwrap().path, path);
+    }
+
+    #[test]
+    fn only_claude_is_shim_guarded() {
+        let a = tempfile::tempdir().unwrap();
+        let git = shim(a.path(), "git.cmd");
+        let runner = FakeRunner::default().with(&git, Ok("git version 2.45.2"));
+        let (bin, banner) = detect_win("git", &windows_search(vec![a.path().to_path_buf()], vec![]), &runner);
+        assert_eq!(banner, None);
+        assert_eq!(bin.status, BinaryStatus::Found);
     }
 
     #[test]

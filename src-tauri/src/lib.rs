@@ -760,6 +760,88 @@ mod tests {
         assert_eq!(value, serde_json::json!([]));
     }
 
+    /// Story 9.1: a first run on a clean machine with no config files, no `claude`, no `git` and
+    /// no `~/.claude`. Loading writes both files with defaults and raises no banner; the startup
+    /// detection pass (`redetect`) then raises exactly the `claude.missing` and `git.missing`
+    /// banners; with a project on the canvas, discovery is empty, no workspace banner appears
+    /// and nothing is created under the Claude home.
+    #[test]
+    fn a_first_run_on_a_clean_profile_writes_both_files_and_reads_an_absent_claude_home_as_empty() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let config = tempfile::tempdir().unwrap();
+        let bin = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let claude_home = home.path().join(".claude");
+        let settings_path = config.path().join("switchboard").join("settings.json");
+        let workspace_path = config.path().join("switchboard").join("workspace.json");
+        let search = super::settings::detect::Search {
+            path_dirs: vec![bin.path().to_path_buf()],
+            extra_dirs: vec![],
+            extensions: super::settings::detect::platform_extensions(),
+        };
+
+        super::settings::initialise_at(app.handle(), Some(settings_path.clone()), &search);
+        super::graph::initialise_at(app.handle(), Some(workspace_path.clone()));
+        app.state::<super::AppState>().claude_home.set(claude_home.clone()).unwrap();
+
+        assert!(settings_path.is_file(), "settings.json is created");
+        assert!(workspace_path.is_file(), "workspace.json is created");
+        let settings = app.state::<super::AppState>().read().snapshot();
+        assert!(settings.banners.is_empty(), "{:?}", settings.banners);
+        assert_eq!(settings.settings.claude.path, None, "nothing to pin");
+        let workspace = app.state::<super::AppState>().read_workspace().snapshot();
+        assert!(workspace.banners.is_empty(), "{:?}", workspace.banners);
+        assert!(workspace.workspace.projects.is_empty(), "the empty canvas");
+
+        // The startup detection pass over the same empty search (nothing is located, so nothing
+        // is run): the 1.3 banner for `claude` and the `git.missing` banner, nothing else.
+        let snapshot = tauri::async_runtime::block_on(super::settings::redetect_in(
+            app.handle().clone(),
+            search.clone(),
+            search.clone(),
+        ));
+        assert_eq!(snapshot.binaries.claude.status, super::settings::BinaryStatus::Missing);
+        assert_eq!(snapshot.binaries.git.status, super::settings::BinaryStatus::Missing);
+        let ids: Vec<&str> = snapshot.banners.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, ["claude.missing", "git.missing"]);
+        assert!(snapshot.banners[0].text.starts_with("claude not found — searched: "), "{}", snapshot.banners[0].text);
+        assert!(snapshot.banners[0].text.contains(&bin.path().display().to_string()));
+        assert!(snapshot.banners[1].text.starts_with("git not found — searched: "), "{}", snapshot.banners[1].text);
+        assert_eq!(app.state::<super::AppState>().read().snapshot(), snapshot, "stored, not just returned");
+
+        // A project on the canvas, but no `~/.claude`: no sessions, no banner, nothing created.
+        let folder = tempfile::tempdir().unwrap();
+        super::graph::add_projects(app.handle(), &[folder.path().display().to_string()], super::graph::Position::default()).unwrap();
+        tauri::async_runtime::block_on(super::claude::sessions::refresh(app.handle()));
+        let workspace = app.state::<super::AppState>().read_workspace().snapshot();
+        assert_eq!(workspace.workspace.projects.len(), 1);
+        assert!(workspace.children.is_empty());
+        assert!(workspace.banners.is_empty(), "{:?}", workspace.banners);
+        let body = invoke(&webview, "claude_projects_list").unwrap();
+        assert_eq!(body.deserialize::<serde_json::Value>().unwrap(), serde_json::json!([]));
+        assert!(!claude_home.exists(), "nothing is created under the Claude home");
+    }
+
+    /// Story 9.1: the bundle metadata and platform options the installers are built with.
+    #[test]
+    fn the_bundle_config_carries_the_installer_metadata() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let bundle = &conf["bundle"];
+        assert_eq!(bundle["publisher"], "Emils Romanis");
+        assert_eq!(bundle["copyright"], "Copyright © 2026 Emils Romanis");
+        assert_eq!(bundle["category"], "DeveloperTool");
+        assert!(bundle["shortDescription"].as_str().is_some_and(|s| !s.is_empty()));
+        assert!(bundle["longDescription"].as_str().is_some_and(|s| !s.is_empty()));
+        assert!(conf.get("version").is_none(), "the version comes from Cargo.toml");
+        assert_eq!(bundle["windows"]["webviewInstallMode"]["type"], "embedBootstrapper");
+        assert_eq!(bundle["windows"]["nsis"]["installMode"], "currentUser");
+        let depends = bundle["linux"]["deb"]["depends"].as_array().unwrap();
+        assert!(depends.iter().any(|d| d == "xdg-utils"), "{depends:?}");
+    }
+
     #[test]
     fn claude_projects_list_reads_the_injected_home() {
         let app = mock_app();
@@ -1592,6 +1674,12 @@ mod tests {
         // No fixture and no claude found: the sheet's message.
         *state.launcher.program.lock().unwrap() = None;
         assert_eq!(call(base()), Err(json!(super::claude::launch::NO_CLAUDE)));
+        // Only the npm shim was found: the shim banner is the reason.
+        let shim_text = "C:\\npm\\claude.cmd (npm shim) found — install the native claude.exe";
+        state.write().binary_banners = vec![super::settings::Banner::new(super::settings::detect::SHIM_BANNER, shim_text)];
+        assert_eq!(call(base()), Err(json!(shim_text)));
+        state.write().binary_banners.clear();
+        nothing_started();
         // A batch-file claude (Windows only refuses it), spelled out or reached through PATHEXT.
         std::fs::write(dir.path().join("claude.cmd"), "@echo off").unwrap();
         for spelled in [dir.path().join("claude.cmd"), dir.path().join("claude")] {

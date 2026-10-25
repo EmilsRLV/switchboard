@@ -134,3 +134,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-8-4-session-touched-files-and-line-comments.md`
   summary: Story 8.4 has not run on CI, and the touched marks have not been seen on screen. It was closed on local Windows verification while GitHub Actions is suspended.
   evidence: The GUI pass cannot write a transcript into the real `~/.claude`; the IPC test covers the marks with a temp claude home. Linux CI has not run.
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-1-installers-and-first-run.md`
+  summary: Installers have not been installed on a clean machine, and the Linux packages have not been built (CI suspended).
+  evidence: Story 9.1 needs an install on a clean machine, following the README checklist and including the claude-absent banner. It also needs the CI bundle check on both runners, the actual `.deb` file name, and the MSI and NSIS reinstall behaviour.

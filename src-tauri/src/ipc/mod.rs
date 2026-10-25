@@ -1591,9 +1591,17 @@ fn launch_program(state: &AppState) -> Result<(PathBuf, Vec<String>), String> {
     if let Some(program) = state.launcher.program.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         return Ok(program);
     }
-    live::claude_binary(&state.read())
+    let st = state.read();
+    live::claude_binary(&st)
         .map(|path| (path, Vec::new()))
-        .ok_or_else(|| launch::NO_CLAUDE.to_string())
+        .ok_or_else(|| {
+            // Only a batch-file `claude` (Windows npm shim): its banner says what to do.
+            st.binary_banners
+                .iter()
+                .find(|b| b.id == crate::settings::detect::SHIM_BANNER)
+                .map(|b| b.text.clone())
+                .unwrap_or_else(|| launch::NO_CLAUDE.to_string())
+        })
 }
 
 /// Why Resume is refused while the session runs (in Switchboard, or elsewhere).

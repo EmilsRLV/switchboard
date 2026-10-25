@@ -20,6 +20,76 @@ its turn turns the accent and makes its project glow until it is selected, with 
 window is in the background (see [Needs you](#needs-you)). Everything on screen follows one quiet visual
 language (see [Design](#design)).
 
+## Install
+
+There are no releases yet: installers come from CI. Open a green run of
+[`ci.yml`](https://github.com/EmilsRLV/switchboard/actions/workflows/ci.yml) on `master` and download its
+artefact: `switchboard-windows` (NSIS `.exe` and `.msi`) or `switchboard-linux` (`.AppImage` and `.deb`).
+Artefacts are kept for **7 days**; after that, push or re-run the workflow to get fresh ones. With no CI
+artefact at hand, build the installers yourself: follow [Dev loop](#dev-loop) and run `npm run tauri build`
+(the bundles land in `src-tauri/target/release/bundle/`). The installers are not code-signed, so Windows
+SmartScreen may warn before the first run ("More info" → "Run anyway"). Nothing auto-updates: install a newer
+build over the old one.
+
+**Windows 11 x64.**
+
+- **NSIS (`Switchboard_<version>_x64-setup.exe`), recommended.** A per-user install under
+  `%LOCALAPPDATA%\Switchboard`; no admin rights needed. Uninstall from Settings → Apps → Switchboard.
+  Running the same version's installer again may ask whether to reinstall or uninstall first.
+- **MSI (`Switchboard_<version>_x64_en-US.msi`).** The Windows Installer package, for machines managed that
+  way; it installs per machine and asks for admin rights. Uninstall from Settings → Apps → Switchboard. To
+  install the same version again, uninstall the old one first.
+- **Pick one.** NSIS and MSI install to different places, so installing both gives two separate
+  Switchboard installs (two Start-menu entries, two uninstall entries); uninstall one.
+- **WebView2.** Both installers carry the small WebView2 bootstrapper and install the runtime only when it is
+  missing (that needs a network connection). Windows 11 already has it.
+- **`claude` must be the native `claude.exe`** (Claude Code's native installer). The npm package installs a
+  `claude.cmd` shim that Switchboard will not run; with only the shim, the app says so in a banner (see
+  [Starting sessions](#starting-sessions)). `git` for Windows is optional but needed for branches and review.
+
+**Linux x64** (X11 or Wayland).
+
+- **`.deb` (Debian, Ubuntu 24.04 and derivatives).** `sudo apt install ./<the downloaded .deb>` (the
+  leading `./` makes apt treat it as a file) pulls in the runtime packages: `libwebkit2gtk-4.1-0`,
+  `libgtk-3-0` and `xdg-utils` (used to open folders and the editor). Uninstall with
+  `sudo apt remove switchboard`.
+- **AppImage (any distro).** `chmod +x` the downloaded `.AppImage`, then run it. It bundles the webview; the
+  system still needs `xdg-utils` for "open folder" and FUSE 2 (`libfuse2`, or `libfuse2t64` on Ubuntu 24.04)
+  to mount the image. Uninstall by deleting the file.
+- `claude` is looked up on PATH, then in `~/.local/bin` (where the native installer puts it). `git` is
+  looked up on PATH.
+
+**Where things live.** Settings and the canvas are two JSON files, both written on first launch:
+
+| OS | Folder |
+|---|---|
+| Windows | `%APPDATA%\switchboard\` (`settings.json`, `workspace.json`) |
+| Linux | `$XDG_CONFIG_HOME/switchboard/` (default `~/.config/switchboard/`) |
+
+Uninstalling leaves them in place; delete the folder for a truly clean start. Switchboard reads Claude Code's
+own files under `~/.claude` but never writes there; a machine where Claude Code never ran simply shows no
+sessions.
+
+### Clean-machine checklist
+
+For checking an installed build by hand, on a machine (or user profile) that has never run Switchboard:
+
+1. Install as above and start Switchboard from the Start menu or the app launcher. The window opens on an
+   empty canvas with the hint `Add a project — ctrl+o, drop a folder, or ctrl+k`, and no wizard or modal.
+2. Both files now exist in the folder above; `settings.json` has `claude.path` filled in when `claude` was
+   found.
+3. With native `claude` installed: no banner, and `ctrl+,` shows `claude` with its version. Without it: the
+   banner `claude not found — searched: …` lists the directories searched, and the canvas still works. On
+   Windows with only the npm package: the banner `<path>\claude.cmd (npm shim) found — install the native
+   claude.exe`, and starting a session fails with the same text.
+4. Without `git`: the `git not found — searched: …` banner, and the canvas still works.
+5. Without `~/.claude` (Claude Code never run): no error banner, no sessions under projects, and no
+   `~/.claude` folder appears.
+6. `ctrl+o` adds a folder; expanding the card lists its sessions. `n` on it starts a session in a terminal
+   (needs the native `claude`).
+7. Quit with `ctrl+q`, start again: the project and viewport are where you left them.
+8. Uninstall; the app is gone and the config folder is left as documented.
+
 ## Design
 
 [`docs/DESIGN.md`](docs/DESIGN.md) is the visual system: the tokens in
@@ -59,7 +129,7 @@ This is the same list CI installs (`.github/workflows/ci.yml`); keep the two in 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the same loop on `ubuntu-24.04` and
 `windows-latest` on every push and pull request: typecheck, vitest, `cargo test`, then `tauri build`,
 uploading the bundles as the `switchboard-linux` (AppImage, .deb) and `switchboard-windows` (NSIS, MSI)
-artefacts for 14 days.
+artefacts for 7 days.
 
 ```powershell
 npm install              # frontend deps (pinned in package.json)
@@ -1443,6 +1513,17 @@ with `--version` (5 s timeout) and its version recorded. A configured `*.path` m
 `~/`, or be a bare name (then it is looked up on PATH). Problems are non-blocking banners at the top of the
 window, never a crash: `claude` missing (banner lists the searched directories), a configured path that does
 not exist, or a `--version` that fails.
+
+On Windows only, `claude` is never run through a batch file (see [Starting sessions](#starting-sessions)).
+The search accepts only a native `claude.exe` / `claude.com` (a `claude.ps1` or other `PATHEXT` entry does not
+count), so a native one anywhere on PATH or in `~/.local/bin` wins over an earlier `claude.cmd`. When a
+`.cmd` / `.bat` is all there is, `claude` is reported as not found, the file is never run (not even for
+`--version`), and the banner names its full path: `<path>\claude.cmd (npm shim) found — install the native
+claude.exe` (any other batch file reads `(a batch file)` instead of `(npm shim)`). The same applies when
+`claude.path` is set to a batch file, by bare name or by path; if a native `claude.exe` is also on the search,
+the banner instead reads `claude.path names the npm shim; clear it to use claude.exe`. Starting a session
+then fails with that banner's text. First launch never writes a batch file into `claude.path`. `git` is not
+affected, and on Linux a file named `claude.cmd` is just a file.
 
 The file is watched: save it and the app reloads within a second, no restart (if the watcher cannot start, a
 banner says so and edits apply on the next launch). Missing keys take their defaults and unknown keys are
