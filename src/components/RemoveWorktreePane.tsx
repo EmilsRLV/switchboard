@@ -1,13 +1,10 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { runCommand } from "../commands/registry";
+import { isCommandEnabled, runCommand } from "../commands/registry";
 import {
   FORCE_CONFIRM_DELAY_MS,
   dirtyLine,
   discardLabel,
-  discardReady,
   plannedCommands,
-  removeBlockedReason,
-  submitRemoveWorktree,
 } from "../commands/removeWorktree";
 import { usePaletteStore } from "../state/palette";
 import { useRemoveWorktreeStore } from "../state/removeWorktree";
@@ -51,10 +48,8 @@ export function RemoveWorktreePane() {
     };
   }, []);
 
-  const blocked = removeBlockedReason({ check, removing, removed });
   const commands = plannedCommands({ check, deleteBranch, forceArmed });
   const dirty = check?.dirty ?? 0;
-  const canRun = blocked === null && check !== null;
 
   // Enter is swallowed so it never submits (a focused button would otherwise take it as a click).
   const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
@@ -107,7 +102,7 @@ export function RemoveWorktreePane() {
           </code>
           {!removed && dirty === 0 && (
             <div className="actions launch-start">
-              <button type="button" className="btn" data-removes="true" disabled={!canRun} onClick={() => void submitRemoveWorktree(false)}>
+              <button type="button" className="btn" data-removes="true" disabled={!isCommandEnabled("worktree.remove")} onClick={() => runCommand("worktree.remove")}>
                 {removing ? "Removing…" : "Remove"}
               </button>
             </div>
@@ -118,8 +113,8 @@ export function RemoveWorktreePane() {
                 key="force"
                 type="button"
                 className="btn"
-                disabled={!canRun || forceArmed}
-                onClick={() => useRemoveWorktreeStore.getState().armForce()}
+                disabled={!isCommandEnabled("worktree.forceRemove")}
+                onClick={() => runCommand("worktree.forceRemove")}
               >
                 Force remove…
               </button>
@@ -131,8 +126,8 @@ export function RemoveWorktreePane() {
                 type="button"
                 className="btn"
                 data-removes="true"
-                disabled={!canRun || !discardReady({ forceArmed, forceArmedAt })}
-                onClick={() => void submitRemoveWorktree(true)}
+                disabled={!isCommandEnabled("worktree.discardAndRemove")}
+                onClick={() => runCommand("worktree.discardAndRemove")}
               >
                 {removing ? "Removing…" : discardLabel(dirty)}
               </button>

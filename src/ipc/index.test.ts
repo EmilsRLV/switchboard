@@ -56,6 +56,9 @@ import {
   onEdgesLive,
   inboxUnreadGet,
   INBOX_UNREAD_EVENT,
+  keybindingsGet,
+  KEYBINDINGS_CHANGED_EVENT,
+  onKeybindingsChanged,
   onInboxUnread,
   workspaceRemoveProject,
   workspaceSetExpanded,
@@ -162,6 +165,20 @@ describe("workspace command wrappers", () => {
     await expect(inboxUnreadGet()).resolves.toEqual({ s1: 2 });
     expect(invoke).toHaveBeenCalledWith("inbox_unread_get", {}, undefined);
     expect(INBOX_UNREAD_EVENT).toBe("inbox://unread");
+  });
+
+  it("the 9.4 keybindings wrapper invokes keybindings_get with {} and names its event", async () => {
+    const file = { path: "/cfg/switchboard/keybindings.json", text: "{}", error: null };
+    const invoke = vi.fn().mockResolvedValue(file);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await expect(keybindingsGet()).resolves.toEqual(file);
+    expect(invoke).toHaveBeenCalledWith("keybindings_get", {}, undefined);
+    expect(KEYBINDINGS_CHANGED_EVENT).toBe("keybindings://changed");
+  });
+
+  it("onKeybindingsChanged resolves with a no-op without a runtime", async () => {
+    const stop = await onKeybindingsChanged(() => {});
+    expect(typeof stop).toBe("function");
   });
 
   it("the 7.2 approval wrappers invoke their wire names with {}, { id, answer }, { id, allowed } and { mode }", async () => {

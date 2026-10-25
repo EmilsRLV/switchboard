@@ -72,6 +72,22 @@ export type SettingsSnapshot = {
 /** Event name Rust emits with a fresh `SettingsSnapshot` on every change. */
 export const SETTINGS_CHANGED_EVENT = "settings://changed";
 
+/**
+ * Mirrors `settings::keybindings::KeybindingsFile` (Story 9.4): `keybindings.json` beside
+ * `settings.json`, unparsed. `text` is `null` when the file does not exist; `error` says why it
+ * could not be read. The frontend parses it (`state/keybindings.ts`).
+ */
+export type KeybindingsFile = {
+  path: string | null;
+  text: string | null;
+  error: string | null;
+  /** Why Rust could not watch the file (edits then need a restart); `null` while it watches. */
+  watchError: string | null;
+};
+
+/** Event name Rust emits with the re-read `KeybindingsFile` whenever the file changes. */
+export const KEYBINDINGS_CHANGED_EVENT = "keybindings://changed";
+
 // --- workspace (`src-tauri/src/graph/mod.rs`, architecture §5.1) ---------------------------
 
 /** Mirrors `graph::Viewport`: the canvas pan offset in pixels and zoom factor. */
@@ -889,6 +905,7 @@ type Commands = {
   app_info: AppInfo;
   settings_get: SettingsSnapshot;
   settings_reveal: void;
+  keybindings_get: KeybindingsFile;
   binaries_redetect: SettingsSnapshot;
   workspace_get: WorkspaceSnapshot;
   workspace_set_viewport: WorkspaceSnapshot;
@@ -992,6 +1009,11 @@ export function appInfo(): Promise<AppInfo> {
 /** `ipc::settings_get` -- the current snapshot (path, settings, binaries, banners). */
 export function settingsGet(): Promise<SettingsSnapshot> {
   return call("settings_get");
+}
+
+/** `ipc::keybindings_get` (Story 9.4) -- `keybindings.json` as it is on disk now, unparsed. */
+export function keybindingsGet(): Promise<KeybindingsFile> {
+  return call("keybindings_get");
 }
 
 /** `ipc::settings_reveal` -- open the config folder with `settings.json` selected. */
@@ -1475,6 +1497,14 @@ export async function onSettingsChanged(
     return () => {};
   }
   return listen<SettingsSnapshot>(SETTINGS_CHANGED_EVENT, (event) => callback(event.payload));
+}
+
+/** Subscribe to `keybindings://changed` (Story 9.4); same contract as {@link onSettingsChanged}. */
+export async function onKeybindingsChanged(callback: (file: KeybindingsFile) => void): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return listen<KeybindingsFile>(KEYBINDINGS_CHANGED_EVENT, (event) => callback(event.payload));
 }
 
 /** Subscribe to `workspace://changed`; same contract as {@link onSettingsChanged}. */

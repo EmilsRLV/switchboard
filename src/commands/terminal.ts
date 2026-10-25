@@ -267,3 +267,27 @@ export function forgetProjectTerminals(projectId: string): void {
     .map((info) => info.id);
   for (const id of ids) forgetTerminal(id);
 }
+
+/** The pane's terminal when it is popped out into its own window (the placeholder shows); else `null`. */
+function poppedPaneTerminal(): string | null {
+  const ui = useUiStore.getState();
+  const id = ui.activeTerminal;
+  return ui.pane === "terminal" && id !== null && isPoppedOut(id) ? id : null;
+}
+
+/** The `when` of `terminal.returnToPane` / `terminal.focusWindow`: the pane's terminal is popped out. */
+export function isPaneTerminalPoppedOut(): boolean {
+  return poppedPaneTerminal() !== null;
+}
+
+/** `terminal.returnToPane` (the placeholder's "Return to pane"): close the pane terminal's pop-out window. */
+export async function returnActiveToPane(): Promise<boolean> {
+  const id = poppedPaneTerminal();
+  return id === null ? false : returnToPane(id);
+}
+
+/** `terminal.focusWindow` (the placeholder's "Focus window"): bring the pane terminal's pop-out window forward. */
+export async function focusPoppedWindow(): Promise<boolean> {
+  const id = poppedPaneTerminal();
+  return id === null ? false : popOutTerminal(id);
+}

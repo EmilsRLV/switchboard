@@ -141,3 +141,38 @@ export async function submitRemoveWorktree(force: boolean, now: number = Date.no
   if (removed.branchDeleted) useUiStore.getState().select({ kind: "project", id: token.projectId });
   return true;
 }
+
+// -- Story 9.4: the sheet's buttons as commands -----------------------------------------------
+
+/** The sheet's state when it shows with its checks in and nothing blocking a remove; else `null`. */
+function runnableSheet() {
+  const sheet = useRemoveWorktreeStore.getState();
+  if (useUiStore.getState().pane !== "removeWorktree" || sheet.projectId === null || sheet.check === null) return null;
+  return removeBlockedReason(sheet) === null ? sheet : null;
+}
+
+/** The `when` of `worktree.remove` (the sheet's Remove): a clean (or missing) worktree may be removed. */
+export function canRemoveCleanWorktree(): boolean {
+  const sheet = runnableSheet();
+  return sheet !== null && sheet.check !== null && sheet.check.dirty === 0;
+}
+
+/** The `when` of `worktree.forceRemove` (Force remove…): a dirty worktree, not armed yet. */
+export function canArmForceRemove(): boolean {
+  const sheet = runnableSheet();
+  return sheet !== null && sheet.check !== null && sheet.check.dirty > 0 && !sheet.forceArmed;
+}
+
+/** Force remove…: reveal the second, explicit button (it waits {@link FORCE_CONFIRM_DELAY_MS}). */
+export function armForceRemove(): void {
+  if (canArmForceRemove()) useRemoveWorktreeStore.getState().armForce();
+}
+
+/**
+ * The `when` of `worktree.discardAndRemove` (the `Discard N changed files and remove` button):
+ * Force remove… was pressed at least {@link FORCE_CONFIRM_DELAY_MS} ago on a dirty worktree.
+ */
+export function canDiscardAndRemove(now: number = Date.now()): boolean {
+  const sheet = runnableSheet();
+  return sheet !== null && sheet.check !== null && sheet.check.dirty > 0 && discardReady(sheet, now);
+}

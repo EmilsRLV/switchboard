@@ -1,7 +1,7 @@
 import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { launchKeyAction, launchKeyTarget } from "../commands/launch";
-import { runCommand } from "../commands/registry";
-import { createBlockedReason, editWorktree, submitWorktree } from "../commands/worktree";
+import { isCommandEnabled, runCommand } from "../commands/registry";
+import { createBlockedReason, editWorktree } from "../commands/worktree";
 import { usePaletteStore } from "../state/palette";
 import { useWorktreeStore } from "../state/worktree";
 
@@ -41,7 +41,7 @@ export function WorktreePane() {
   const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (launchKeyAction(event.nativeEvent, launchKeyTarget(event.target)) !== "start") return;
     event.preventDefault();
-    void submitWorktree();
+    runCommand("worktree.create");
   };
 
   return (
@@ -56,10 +56,10 @@ export function WorktreePane() {
       <section className="pane-section">
         <p className="muted">A separate checkout of {projectLabel} for parallel work. Enter creates it.</p>
         <div className="worktree-mode" role="group" aria-label="Branch">
-          <button type="button" className="btn" aria-pressed={!existing} disabled={creating} onClick={() => void editWorktree({ mode: "new" })}>
+          <button type="button" className="btn" aria-pressed={!existing} disabled={creating} onClick={() => runCommand("worktree.modeNew")}>
             New branch
           </button>
-          <button type="button" className="btn" aria-pressed={existing} disabled={creating} onClick={() => void editWorktree({ mode: "existing" })}>
+          <button type="button" className="btn" aria-pressed={existing} disabled={creating} onClick={() => runCommand("worktree.modeExisting")}>
             Existing branch
           </button>
         </div>
@@ -115,8 +115,8 @@ export function WorktreePane() {
           <button
             type="button"
             className="btn"
-            onClick={() => void submitWorktree()}
-            disabled={blocked !== null}
+            onClick={() => runCommand("worktree.create")}
+            disabled={!isCommandEnabled("worktree.create")}
             aria-describedby={blocked !== null ? "worktree-create-reason" : undefined}
           >
             {creating ? "Creating…" : "Create"}

@@ -81,6 +81,14 @@ pub fn settings_reveal<R: Runtime>(app: AppHandle<R>, state: State<'_, AppState>
     .map_err(|err| err.to_string())
 }
 
+/// Story 9.4: `keybindings.json` as it is on disk now -- its path and raw text (none when the
+/// file does not exist), or why it could not be read. The frontend parses and applies it;
+/// `keybindings://changed` carries the same shape on every change.
+#[tauri::command]
+pub fn keybindings_get(state: State<'_, AppState>) -> settings::keybindings::KeybindingsFile {
+    settings::keybindings::current_of(&state)
+}
+
 /// Re-run binary detection (`claude`, `git`). Also emits `settings://changed`.
 #[tauri::command]
 pub async fn binaries_redetect<R: Runtime>(app: AppHandle<R>) -> Snapshot {

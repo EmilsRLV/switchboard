@@ -143,3 +143,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-9-2-tray-and-close-to-tray.md`
   summary: Story 9.2's Linux code (the appindicator check, minimize on close) has never been compiled. There was no GUI re-run after review round 1.
   evidence: There is no Linux Rust target on the dev machine and CI is suspended. The GUI re-run was stopped twice by the foreground guard. Check by hand: the setting on and off, clicking the tray icon, the hint and its click, and Linux minimize.
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-4-keybindings-and-palette-completeness.md`
+  summary: There was no GUI pass for Story 9.4 (keybindings.json overrides, Diagnostics list, routed pane buttons), and Linux CI has not run.
+  evidence: The machine was probably in use (the foreground guard stopped the 9.2 re-run twice). Check by hand: write keybindings.json with an override, a conflict and a bad key, then check the key and the Diagnostics list.

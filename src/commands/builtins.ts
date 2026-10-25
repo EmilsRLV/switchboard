@@ -12,6 +12,9 @@
 // With focus in a terminal the dispatcher yields every key to it (Esc included) except
 // `terminal.toggle` (ctrl+`), the palette's second binding, ctrl+shift+k, and the tab keys
 // `terminal.prevTab` / `terminal.nextTab` (ctrl+pageup / ctrl+pagedown, Story 4.5; `terminal/keys`).
+// Story 9.4: every pane-level button is a command too (the sheets' Start / Create / Remove, the
+// Review pane's toggles, the terminal placeholder's buttons, the oldest toast's Always / Dismiss),
+// so each is in the palette (the two layout carriers aside) and can be bound in `keybindings.json`.
 
 import type { Direction } from "../canvas/nodes";
 import { appQuit } from "../ipc";
@@ -38,6 +41,7 @@ import { canGoToAttention, goToNextAttention } from "./attention";
 import {
   answerOldest,
   canAllowAllAgentActions,
+  canAlwaysAllowOldest,
   canAskAgentActions,
   canRevokeEdgePolicy,
   hasPendingRequest,
@@ -63,6 +67,10 @@ import { canToggleBranches, relayoutChildren, removeProject, setExpanded, toggle
 import {
   canForkSession,
   canNewSessionOnBranch,
+  canPickAddDir,
+  canStartLaunch,
+  pickAddDir,
+  startLaunch,
   canResumeSession,
   canShowSessionTerminal,
   canStopSession,
@@ -77,6 +85,12 @@ import { closeOpenPane, openPane, togglePane } from "./panes";
 import {
   canClearReview,
   canOpenReview,
+  canBackToCommits,
+  canDismissReviewToast,
+  canSetReviewLayout,
+  backToCommits,
+  dismissOldestReviewToast,
+  setReviewLayout,
   canReviewSelection,
   canSetReviewFilter,
   canSwitchReviewMode,
@@ -96,9 +110,26 @@ import {
   toggleLayoutTitle,
   toggleReviewLayout,
 } from "./review";
-import { canNewWorktree, canNewWorktreeOnBranch, openWorktreeSheet, openWorktreeSheetForBranch } from "./worktree";
-import { canRemoveWorktree, openRemoveWorktreeSheet } from "./removeWorktree";
-import { addProjectFromPicker, isPickerIdle } from "./projects";
+import {
+  canCreateWorktree,
+  canNewWorktree,
+  canNewWorktreeOnBranch,
+  canSetWorktreeMode,
+  editWorktree,
+  openWorktreeSheet,
+  openWorktreeSheetForBranch,
+  submitWorktree,
+} from "./worktree";
+import {
+  armForceRemove,
+  canArmForceRemove,
+  canDiscardAndRemove,
+  canRemoveCleanWorktree,
+  canRemoveWorktree,
+  openRemoveWorktreeSheet,
+  submitRemoveWorktree,
+} from "./removeWorktree";
+import { addProjectFromPicker, addSelectedImports, canAddSelectedImports, isPickerIdle } from "./projects";
 import { registerCommands, type Command } from "./registry";
 import { hasSettingsPath, redetectBinaries, revealSettingsFile } from "./settings";
 import {
@@ -106,6 +137,9 @@ import {
   canCloseTerminal,
   canPopOut,
   canRestartTerminal,
+  isPaneTerminalPoppedOut,
+  focusPoppedWindow,
+  returnActiveToPane,
   canSwitchTab,
   closeTerminal,
   canToggleTerminal,
@@ -411,6 +445,23 @@ export function builtinCommands(): Command[] {
       },
     },
     {
+      // Story 9.4: the popped-out tab's placeholder buttons.
+      id: "terminal.returnToPane",
+      title: "Return terminal to pane",
+      when: isPaneTerminalPoppedOut,
+      run: async () => {
+        await returnActiveToPane();
+      },
+    },
+    {
+      id: "terminal.focusWindow",
+      title: "Focus terminal window",
+      when: isPaneTerminalPoppedOut,
+      run: async () => {
+        await focusPoppedWindow();
+      },
+    },
+    {
       id: "terminal.nextTab",
       title: "Next terminal tab",
       keybinding: NEXT_TAB_KEY,
@@ -632,6 +683,15 @@ export function builtinCommands(): Command[] {
       },
     },
     {
+      // Story 9.4: the oldest request's "Always for this edge", where it offers it.
+      id: "approval.always",
+      title: "Always allow agent request (this edge)",
+      when: canAlwaysAllowOldest,
+      run: async () => {
+        await answerOldest("always");
+      },
+    },
+    {
       // Story 8.1: the Review pane on the selected project, branch or session (its working-tree
       // diff). The key is the canvas's (no palette, pane, menu or tray open); the palette and the
       // node menu list it too, last, in a group of its own (bare keys never fire from those: the
@@ -727,6 +787,35 @@ export function builtinCommands(): Command[] {
       run: toggleReviewLayout,
     },
     {
+      // Story 9.4: the layout toggle's two buttons. Key-only carriers: the palette has the toggle above.
+      id: "review.layoutSplit",
+      title: "Review: side-by-side view",
+      hidden: true,
+      when: () => canSetReviewLayout("split"),
+      run: () => setReviewLayout("split"),
+    },
+    {
+      id: "review.layoutUnified",
+      title: "Review: unified view",
+      hidden: true,
+      when: () => canSetReviewLayout("unified"),
+      run: () => setReviewLayout("unified"),
+    },
+    {
+      // Story 9.4: Commits mode's "← Commits".
+      id: "review.backToCommits",
+      title: "Review: back to commits",
+      when: canBackToCommits,
+      run: backToCommits,
+    },
+    {
+      // Story 9.4: the oldest review toast's Dismiss (the toast goes, the flag stays).
+      id: "review.dismissToast",
+      title: "Dismiss review toast",
+      when: canDismissReviewToast,
+      run: dismissOldestReviewToast,
+    },
+    {
       // The next file in the tree (the requested files first).
       id: "review.nextFile",
       title: "Review: next file",
@@ -775,6 +864,78 @@ export function builtinCommands(): Command[] {
       run: async () => {
         await setAgentActions("ask");
       },
+    },
+    // -- Story 9.4: the sheets' buttons ---------------------------------------------------------
+    {
+      id: "launch.start",
+      title: "New session: start",
+      when: canStartLaunch,
+      run: async () => {
+        await startLaunch();
+      },
+    },
+    {
+      id: "launch.addFolder",
+      title: "New session: add folder…",
+      when: canPickAddDir,
+      run: async () => {
+        await pickAddDir();
+      },
+    },
+    {
+      id: "worktree.modeNew",
+      title: "New worktree: new branch",
+      when: () => canSetWorktreeMode("new"),
+      run: async () => {
+        await editWorktree({ mode: "new" });
+      },
+    },
+    {
+      id: "worktree.modeExisting",
+      title: "New worktree: existing branch",
+      when: () => canSetWorktreeMode("existing"),
+      run: async () => {
+        await editWorktree({ mode: "existing" });
+      },
+    },
+    {
+      id: "worktree.create",
+      title: "New worktree: create",
+      when: canCreateWorktree,
+      run: async () => {
+        await submitWorktree();
+      },
+    },
+    {
+      // The remove-worktree sheet's Remove: a clean (or missing) worktree only.
+      id: "worktree.remove",
+      title: "Remove worktree: remove",
+      when: canRemoveCleanWorktree,
+      run: async () => {
+        await submitRemoveWorktree(false);
+      },
+    },
+    {
+      // Force remove…: only reveals the second, explicit step.
+      id: "worktree.forceRemove",
+      title: "Remove worktree: force remove…",
+      when: canArmForceRemove,
+      run: armForceRemove,
+    },
+    {
+      // The second step, once Force remove… was pressed and its delay has passed.
+      id: "worktree.discardAndRemove",
+      title: "Remove worktree: discard changes and remove",
+      when: () => canDiscardAndRemove(),
+      run: async () => {
+        await submitRemoveWorktree(true);
+      },
+    },
+    {
+      id: "import.addSelected",
+      title: "Import: add selected",
+      when: canAddSelectedImports,
+      run: addSelectedImports,
     },
     {
       id: "edge.inspect",

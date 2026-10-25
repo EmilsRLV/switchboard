@@ -32,12 +32,12 @@ import {
   type ReviewTarget,
 } from "../ipc";
 import { useLiveStore } from "../state/live";
-import { isFlagged, requestIn, requestList, useReviewStore } from "../state/review";
+import { isFlagged, requestIn, requestList, toastRequests, useReviewStore } from "../state/review";
 import { useSettingsStore } from "../state/settings";
 import { useStatusStore } from "../state/status";
 import { isContextMenuOpen, useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
-import { MODES, modesFor, otherLayout, stepPath, type ReviewMode } from "../review/model";
+import { MODES, modesFor, otherLayout, stepPath, type DiffLayout, type ReviewMode } from "../review/model";
 import { currentLine } from "../review/place";
 import { notify, selectedBranch } from "./navigation";
 import { openPane } from "./panes";
@@ -523,3 +523,64 @@ useReviewStore.subscribe((state) => {
     (err: unknown) => console.warn(`review open failed: ${describe(err)}`),
   );
 });
+
+// -- Story 9.4: the pane's buttons as commands ------------------------------------------------
+
+/** The command each mode button runs. */
+export const REVIEW_MODE_COMMANDS: Readonly<Record<ReviewMode, string>> = {
+  changes: "review.modeChanges",
+  base: "review.modeBase",
+  commits: "review.modeCommits",
+  files: "review.modeFiles",
+};
+
+/** The command each filter button runs. */
+export const REVIEW_FILTER_COMMANDS: Readonly<Record<DiffFilter, string>> = {
+  all: "review.filterAll",
+  staged: "review.filterStaged",
+  unstaged: "review.filterUnstaged",
+};
+
+/** The command each layout button runs. */
+export const REVIEW_LAYOUT_COMMANDS: Readonly<Record<DiffLayout, string>> = {
+  split: "review.layoutSplit",
+  unified: "review.layoutUnified",
+};
+
+/** The `when` of `review.layoutSplit` / `review.layoutUnified`: the pane is open in the other layout. */
+export function canSetReviewLayout(layout: DiffLayout): boolean {
+  return isReviewOpen() && useReviewStore.getState().layout !== layout;
+}
+
+/** Side by side / Unified. */
+export function setReviewLayout(layout: DiffLayout): void {
+  if (isReviewOpen()) useReviewStore.getState().setLayout(layout);
+}
+
+/** The `when` of `review.backToCommits` ("← Commits"): Commits mode with a commit selected. */
+export function canBackToCommits(): boolean {
+  const store = useReviewStore.getState();
+  return isReviewOpen() && store.mode === "commits" && store.commit !== null;
+}
+
+/** "← Commits": back to the commit list. */
+export function backToCommits(): void {
+  if (canBackToCommits()) useReviewStore.getState().selectCommit(null);
+}
+
+/** The oldest review toast showing now, or `null`. */
+function oldestReviewToast() {
+  const { requests, dismissed } = useReviewStore.getState();
+  return toastRequests(requests, dismissed)[0] ?? null;
+}
+
+/** The `when` of `review.dismissToast`: a review toast shows. */
+export function canDismissReviewToast(): boolean {
+  return oldestReviewToast() !== null;
+}
+
+/** `review.dismissToast`: the oldest review toast's Dismiss (the toast goes, the flag stays). */
+export function dismissOldestReviewToast(): void {
+  const request = oldestReviewToast();
+  if (request !== null) dismissReviewToast(request.sessionId, request.seq);
+}

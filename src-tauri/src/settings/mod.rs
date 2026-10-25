@@ -3,6 +3,7 @@
 //! about settings is a [`Snapshot`], pushed as the `settings://changed` event.
 
 pub mod detect;
+pub mod keybindings;
 pub mod paths;
 pub mod store;
 pub mod watch;
@@ -367,6 +368,13 @@ pub struct AppState {
     pub workspace: RwLock<WorkspaceState>,
     pub live: RwLock<LiveState>,
     pub watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    /// The searches binary detection uses (`claude`'s, `git`'s) when set; `None` means
+    /// [`default_detect_searches`]. Tests set one to detect in a temp dir.
+    pub detect_searches: Mutex<Option<(Search, Search)>>,
+    /// The `keybindings.json` watcher (Story 9.4), kept alive like `watcher`.
+    pub keybindings_watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    /// Why that watcher could not start (edits then need a restart); shown in Diagnostics.
+    pub keybindings_watch_error: Mutex<Option<String>>,
     /// Bumped per detection run; a run stores its result only if it is still the latest,
     /// so overlapping runs (startup, reload, Re-detect) cannot finish out of order.
     pub detect_generation: AtomicU64,
@@ -427,6 +435,16 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// The searches detection runs over now (`claude`'s, `git`'s): the injected ones, else
+    /// [`default_detect_searches`].
+    pub fn detect_searches(&self) -> (Search, Search) {
+        self.detect_searches
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or_else(default_detect_searches)
+    }
+
     /// Read the settings state; a poisoned lock is recovered rather than propagated.
     pub fn read(&self) -> RwLockReadGuard<'_, SettingsState> {
         self.settings.read().unwrap_or_else(|e| e.into_inner())
@@ -468,13 +486,35 @@ impl AppState {
 // Orchestration
 // ---------------------------------------------------------------------------------------
 
+/// The searches detection uses unless [`AppState::detect_searches`] holds others: `claude` on
+/// PATH then `~/.local/bin`, `git` on PATH. Under `cfg(test)` both are empty, so no test can
+/// ever locate (and run `--version` on) a real `claude` or `git` by accident; a test that
+/// needs a binary sets its own search or calls [`redetect_in`].
+pub fn default_detect_searches() -> (Search, Search) {
+    #[cfg(not(test))]
+    {
+        production_detect_searches(std::env::var_os("PATH").as_deref(), paths::extra_bin_dirs())
+    }
+    #[cfg(test)]
+    {
+        (Search::empty(), Search::empty())
+    }
+}
+
+/// The production pair over a given `PATH` value and `claude`'s extra dirs: `claude` on PATH then
+/// the extras (`~/.local/bin`), `git` on PATH only.
+pub fn production_detect_searches(path: Option<&std::ffi::OsStr>, claude_extra_dirs: Vec<PathBuf>) -> (Search, Search) {
+    (Search::from_path_var(path, claude_extra_dirs), Search::from_path_var(path, Vec::new()))
+}
+
 /// Load (or create) the settings file, start the watcher and kick off binary detection.
 /// Called once from Tauri's `setup`. Only fast filesystem work happens here; running
 /// `--version` is deferred to the async runtime.
 pub fn initialise<R: Runtime>(app: &AppHandle<R>) {
-    let search = Search::from_env(paths::extra_bin_dirs());
+    let (search, _) = app.state::<AppState>().detect_searches();
     initialise_at(app, paths::settings_path(), &search);
     start_watcher(app);
+    keybindings::start_watcher(app);
     emit(app, &app.state::<AppState>().read().snapshot());
     tauri::async_runtime::spawn(redetect(app.clone()));
 }
@@ -591,7 +631,7 @@ pub fn reload<R: Runtime>(app: &AppHandle<R>) -> bool {
 }
 
 /// Read the file, retrying transient errors a few times. `Ok(None)` means it does not exist.
-fn read_with_retry(path: &Path) -> std::io::Result<Option<String>> {
+pub(crate) fn read_with_retry(path: &Path) -> std::io::Result<Option<String>> {
     let mut attempt = 1;
     loop {
         match std::fs::read_to_string(path) {
@@ -609,7 +649,8 @@ fn read_with_retry(path: &Path) -> std::io::Result<Option<String>> {
 /// Run binary detection off the main thread, store the result (if no newer run has started
 /// since), emit and return the resulting snapshot.
 pub async fn redetect<R: Runtime>(app: AppHandle<R>) -> Snapshot {
-    redetect_in(app, Search::from_env(paths::extra_bin_dirs()), Search::from_env(Vec::new())).await
+    let (claude_search, git_search) = app.state::<AppState>().detect_searches();
+    redetect_in(app, claude_search, git_search).await
 }
 
 /// [`redetect`] over the given searches (`claude`'s, `git`'s); tests pass their own.
@@ -662,14 +703,15 @@ fn detection_failed(name: &str, configured: Option<String>) -> Binary {
     }
 }
 
-/// Detect both binaries: `claude` on PATH then `~/.local/bin`, `git` on PATH.
+/// Detect both binaries over the state's searches ([`AppState::detect_searches`]): by default
+/// `claude` on PATH then `~/.local/bin`, `git` on PATH.
 pub fn detect_all(
+    state: &AppState,
     claude_cfg: Option<&str>,
     git_cfg: Option<&str>,
     runner: &dyn Runner,
 ) -> (Binaries, Vec<Banner>) {
-    let claude_search = Search::from_env(paths::extra_bin_dirs());
-    let git_search = Search::from_env(Vec::new());
+    let (claude_search, git_search) = state.detect_searches();
     detect_all_in(&claude_search, &git_search, claude_cfg, git_cfg, runner)
 }
 
@@ -1159,5 +1201,64 @@ mod tests {
         let st = st.read();
         assert_eq!(st.settings.theme, "light");
         assert_eq!(st.file_banner, None);
+    }
+
+    /// Safety: under `cfg(test)` detection searches nothing unless a test injects a search, so no
+    /// test can locate (or run) the real `claude` on PATH or in `~/.local/bin`.
+    #[test]
+    fn the_test_default_detection_search_finds_nothing() {
+        let (claude, git) = default_detect_searches();
+        assert_eq!(claude, Search::empty());
+        assert_eq!(git, Search::empty());
+        assert_eq!(claude.locate("claude"), None);
+        assert_eq!(git.locate("git"), None);
+        let state = AppState::default();
+        assert_eq!(state.detect_searches(), (Search::empty(), Search::empty()));
+    }
+
+    #[test]
+    fn the_production_searches_are_path_then_extras_for_claude_and_path_only_for_git() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let extra = tempfile::tempdir().unwrap();
+        let path = std::env::join_paths([a.path(), b.path()]).unwrap();
+        let (claude, git) = production_detect_searches(Some(&path), vec![extra.path().to_path_buf()]);
+        assert_eq!(claude.path_dirs, vec![a.path().to_path_buf(), b.path().to_path_buf()]);
+        assert_eq!(claude.extra_dirs, vec![extra.path().to_path_buf()]);
+        assert_eq!(git.path_dirs, claude.path_dirs);
+        assert!(git.extra_dirs.is_empty());
+        let (claude, git) = production_detect_searches(None, vec![]);
+        assert_eq!((claude, git), (Search::empty(), Search::empty()));
+    }
+
+    #[test]
+    fn detect_all_uses_the_states_search() {
+        let state = AppState::default();
+        let dir = tempfile::tempdir().unwrap();
+        let claude = fake_binary(dir.path(), "claude");
+        struct NoRun;
+        impl Runner for NoRun {
+            fn version_output(&self, _bin: &Path) -> Result<String, detect::RunError> {
+                Err(detect::RunError::Spawn("never run in tests".into()))
+            }
+        }
+        let runner = NoRun;
+        let (binaries, _) = detect_all(&state, None, None, &runner);
+        assert_eq!(binaries.claude.status, BinaryStatus::Missing, "the test default searches nothing");
+        *state.detect_searches.lock().unwrap() = Some((search_in(dir.path()), Search::empty()));
+        let (binaries, _) = detect_all(&state, None, None, &runner);
+        assert_eq!(binaries.claude.path.as_deref(), Some(claude.display().to_string().as_str()));
+    }
+
+    #[test]
+    fn redetect_uses_an_injected_search() {
+        let app = mock_app();
+        let dir = tempfile::tempdir().unwrap();
+        let claude = fake_binary(dir.path(), "claude");
+        *app.state::<AppState>().detect_searches.lock().unwrap() = Some((search_in(dir.path()), Search::empty()));
+        let snapshot = tauri::async_runtime::block_on(redetect(app.handle().clone()));
+        assert_eq!(snapshot.binaries.claude.path.as_deref(), Some(claude.display().to_string().as_str()));
+        assert_ne!(snapshot.binaries.claude.status, BinaryStatus::Missing);
+        assert_eq!(snapshot.binaries.git.status, BinaryStatus::Missing);
     }
 }

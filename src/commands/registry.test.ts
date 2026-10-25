@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  applyBindingOverrides,
+  bindingConflicts,
+  clearBindingOverrides,
   clearCommands,
   getCommand,
   isEnabled,
@@ -7,6 +10,7 @@ import {
   registerCommand,
   registerCommands,
   runCommand,
+  runCommandAsync,
   unregisterCommand,
   type Command,
 } from "./registry";
@@ -159,5 +163,77 @@ describe("command registry", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(error).toHaveBeenCalledWith('command "a.rejects" failed:', expect.any(Error));
+  });
+
+  it("runCommandAsync resolves once the run settles, and false when the command cannot run", async () => {
+    let finish: () => void = () => {};
+    const done = vi.fn();
+    registerCommand(command({ id: "a.slow", run: () => new Promise<void>((resolve) => (finish = resolve)) }));
+    const pending = runCommandAsync("a.slow").then(done);
+    await Promise.resolve();
+    expect(done).not.toHaveBeenCalled();
+    finish();
+    await pending;
+    expect(done).toHaveBeenCalledWith(true);
+    expect(await runCommandAsync("a.missing")).toBe(false);
+    registerCommand(command({ id: "a.off", when: () => false }));
+    expect(await runCommandAsync("a.off")).toBe(false);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    registerCommand(command({ id: "a.rejects", run: () => Promise.reject(new Error("no")) }));
+    expect(await runCommandAsync("a.rejects")).toBe(true);
+    expect(error).toHaveBeenCalledWith('command "a.rejects" failed:', expect.any(Error));
+  });
+
+  describe("binding overrides (Story 9.4)", () => {
+    it("an override replaces the effective binding and keeps the default; clearing restores it", () => {
+      registerCommand(command({ id: "a.one", keybinding: "ctrl+k" }));
+      expect(getCommand("a.one")).toMatchObject({ bindingSource: "default", binding: { ctrl: true, key: "k" } });
+      expect(applyBindingOverrides({ "a.one": "Alt+X" })).toEqual([]);
+      expect(getCommand("a.one")).toMatchObject({
+        keybinding: "ctrl+k",
+        defaultBinding: { ctrl: true, shift: false, alt: false, key: "k" },
+        binding: { ctrl: false, shift: false, alt: true, key: "x" },
+        bindingSource: "override",
+      });
+      clearBindingOverrides();
+      expect(getCommand("a.one")).toMatchObject({ bindingSource: "default", binding: { ctrl: true, key: "k" } });
+    });
+
+    it("null unbinds; unknown ids and bad keys are errors and skipped; each apply replaces the last", () => {
+      registerCommands([command({ id: "a.one", keybinding: "ctrl+k" }), command({ id: "a.two" })]);
+      expect(applyBindingOverrides({ "a.one": null, nope: "x", "a.two": "ctrl+", "a.three": null })).toEqual([
+        "unknown command nope",
+        'bad key "ctrl+" for a.two',
+        "unknown command a.three",
+      ]);
+      expect(getCommand("a.one")?.binding).toBeNull();
+      expect(getCommand("a.two")?.binding).toBeNull();
+      expect(applyBindingOverrides({ "a.two": ["x"] })).toEqual(['bad key ["x"] for a.two']);
+      expect(getCommand("a.one")?.binding).toMatchObject({ key: "k" });
+    });
+
+    it("a command registered after the overrides gets its override; unregistering still removes it", () => {
+      registerCommand(command({ id: "a.one" }));
+      applyBindingOverrides({ "a.one": "f2" });
+      const unregister = registerCommand(command({ id: "a.one", title: "again" }));
+      expect(getCommand("a.one")).toMatchObject({ title: "again", binding: { key: "f2" }, bindingSource: "override" });
+      applyBindingOverrides({ "a.one": "f3" });
+      unregister();
+      expect(getCommand("a.one")).toBeUndefined();
+    });
+
+    it("conflicts are keys shared after the overrides where one binding came from the file", () => {
+      registerCommands([
+        command({ id: "a.esc1", keybinding: "escape" }),
+        command({ id: "a.esc2", keybinding: "escape" }),
+        command({ id: "b.k", keybinding: "ctrl+k" }),
+        command({ id: "c.none" }),
+      ]);
+      expect(bindingConflicts()).toEqual([]);
+      applyBindingOverrides({ "c.none": "ctrl+k", "a.esc1": "esc" });
+      expect(bindingConflicts()).toEqual(["ctrl+k: b.k, c.none"]);
+      applyBindingOverrides({ "c.none": "esc" });
+      expect(bindingConflicts()).toEqual(["escape: a.esc1, a.esc2, c.none"]);
+    });
   });
 });

@@ -1,8 +1,7 @@
 import { useEffect, useState, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { cooperateSides, edgeLiveIn, endText, type EndText } from "../canvas/edges";
-import { revokeEdgePolicy } from "../commands/approvals";
-import { restartEdge, retryEdge, saveEdgeLabel } from "../commands/edges";
-import { runCommand } from "../commands/registry";
+import { retryEdge, saveEdgeLabel } from "../commands/edges";
+import { runCommand, runCommandAsync } from "../commands/registry";
 import type { ChildNode, Edge, EdgeLive, EdgesLiveMap, Project } from "../ipc";
 import { canRetryLive, isCooperate, isSessionContext, nowText, sideNowText, useEdgesLiveStore } from "../state/edgesLive";
 import { useUiStore } from "../state/ui";
@@ -40,6 +39,18 @@ export function EdgePane() {
   );
 }
 
+/**
+ * Which of the inspector's command buttons show for `edge` (its live state `live`); each runs
+ * the command beside it in {@link INSPECTOR_BUTTON_COMMANDS} on the selected edge, which is the
+ * one the inspector shows.
+ */
+export function inspectorButtons(edge: Edge, live: EdgeLive | null): { revoke: boolean; retry: boolean; restart: boolean } {
+  const sessionContext = isSessionContext(edge);
+  return { revoke: edge.agentAllowed === true, retry: sessionContext && canRetryLive(live), restart: sessionContext };
+}
+
+export const INSPECTOR_BUTTON_COMMANDS = { revoke: "edge.revokeAgentPolicy", retry: "edge.retry", restart: "edge.restartWithFlags" } as const;
+
 function endLine(end: EndText): string {
   return end.project === null ? end.label : `${end.label} (${end.project})`;
 }
@@ -65,14 +76,15 @@ function EdgeInspector({ edge, from, to, live, entries }: { edge: Edge; from: En
   // Story 6.3: what the edge does now; Retry after a failure (or a draft held it back), and
   // Restart with flags always for a context edge from a session.
   const now = nowText(edge, live);
-  const sessionContext = isSessionContext(edge);
+  const shown = inspectorButtons(edge, live);
   // Story 6.4: one Now line per side of a cooperate edge, each with its own Retry.
   const sides = isCooperate(edge)
     ? cooperateSides(edge, entries).map((side, i) => ({ ...side, name: (i === 0 ? from : to).label }))
     : [];
+  // The inspector shows the selected edge, which is what `edge.restartWithFlags` acts on.
   const restart = () => {
     setRestarting(true);
-    void restartEdge(edge.id).finally(() => setRestarting(false));
+    void runCommandAsync("edge.restartWithFlags").finally(() => setRestarting(false));
   };
 
   return (
@@ -115,13 +127,13 @@ function EdgeInspector({ edge, from, to, live, entries }: { edge: Edge; from: En
             )}
           </div>
         ))}
-        {edge.agentAllowed === true && (
+        {shown.revoke && (
           // Story 7.2: "Always for this edge" -- an agent at one end acts on the other without a toast.
           <div className="edge-policy">
             <p className="edge-now">
               <span className="edge-now-term">Agent actions:</span> always allowed
             </p>
-            <button type="button" className="btn" onClick={() => void revokeEdgePolicy(edge.id)} title="The next agent action across this edge asks again">
+            <button type="button" className="btn" onClick={() => runCommand("edge.revokeAgentPolicy")} title="The next agent action across this edge asks again">
               Revoke
             </button>
           </div>
@@ -141,12 +153,12 @@ function EdgeInspector({ edge, from, to, live, entries }: { edge: Edge; from: En
           />
         </label>
         <div className="actions launch-start">
-          {sessionContext && canRetryLive(live) && (
-            <button type="button" className="btn" onClick={() => void retryEdge(edge.id)} title="Inject /add-dir again">
+          {shown.retry && (
+            <button type="button" className="btn" onClick={() => runCommand("edge.retry")} title="Inject /add-dir again">
               Retry
             </button>
           )}
-          {sessionContext && (
+          {shown.restart && (
             <button
               type="button"
               className="btn"

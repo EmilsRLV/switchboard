@@ -1,4 +1,5 @@
 import type { DiagnosticsSnapshot, McpRefusal } from "../ipc";
+import { keybindingsStatusText, type KeybindingsReport } from "../state/keybindings";
 
 /** How often Settings → Diagnostics re-reads `diagnostics_get` while the pane is open. */
 export const DIAGNOSTICS_REFRESH_MS = 2_000;
@@ -43,6 +44,23 @@ export function diagnosticsRows(d: DiagnosticsSnapshot, lastDiffRenderMs?: numbe
 /** The `last diff render` value: `N ms`, or `none yet` before any diff was shown. */
 export function renderTimeText(ms: number | null): string {
   return ms === null ? "none yet" : `${Math.round(ms)} ms`;
+}
+
+/**
+ * Story 9.4: the Keybindings part of Diagnostics: the `keybindings.json` row (`none`, `ok` or
+ * `n errors`, then `, n conflicts`; in attention while there are errors or conflicts) and one line
+ * per error, then per warning, then per conflict (`ctrl+k: palette.toggle, review.refresh`).
+ */
+export function keybindingsDiagnostics(state: KeybindingsReport): { row: DiagnosticsRow; lines: string[] } {
+  return {
+    row: {
+      label: "keybindings.json",
+      value: keybindingsStatusText(state.status, state.errors.length, state.conflicts.length),
+      attention: state.errors.length > 0 || state.conflicts.length > 0,
+    },
+    // Unique, so each can be its own React key.
+    lines: [...new Set([...state.errors, ...state.warnings, ...state.conflicts])],
+  };
 }
 
 /** A time of day as the refusal list shows it (local time, `HH:MM:SS`). */

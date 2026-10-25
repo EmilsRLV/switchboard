@@ -68,7 +68,17 @@ import {
   type TreeRow,
 } from "../review/model";
 import { loadLanguage } from "../review/languages";
-import { commentBlockedReason, draftKey, handleCommentKey, reviewModes, sendComment, setReviewMode, shownFilePath } from "../commands/review";
+import {
+  REVIEW_FILTER_COMMANDS,
+  REVIEW_LAYOUT_COMMANDS,
+  REVIEW_MODE_COMMANDS,
+  commentBlockedReason,
+  draftKey,
+  handleCommentKey,
+  reviewModes,
+  sendComment,
+  shownFilePath,
+} from "../commands/review";
 import { ErrorBoundary } from "./ErrorBoundary";
 
 // CodeMirror and the merge view: their own chunk, loaded with the first diff shown.
@@ -402,7 +412,7 @@ export function ReviewPane() {
         {modes.length > 1 && (
           <span className="review-toggle" role="group" aria-label="Mode">
             {MODES.filter((m) => modes.includes(m.id)).map((m) => (
-              <button key={m.id} type="button" className="btn" aria-pressed={mode === m.id} title={m.title} onClick={() => setReviewMode(m.id)}>
+              <button key={m.id} type="button" className="btn" aria-pressed={mode === m.id} title={m.title} onClick={() => runCommand(REVIEW_MODE_COMMANDS[m.id])}>
                 {m.label}
               </button>
             ))}
@@ -417,7 +427,7 @@ export function ReviewPane() {
                 className="btn"
                 aria-pressed={filter === f.id}
                 title={f.title}
-                onClick={() => useReviewStore.getState().setFilter(f.id)}
+                onClick={() => runCommand(REVIEW_FILTER_COMMANDS[f.id])}
               >
                 {f.label}
               </button>
@@ -438,10 +448,10 @@ export function ReviewPane() {
         </button>
         {!filesMode && (
           <span className="review-toggle" role="group" aria-label="Layout">
-            <button type="button" className="btn" aria-pressed={layout === "split"} onClick={() => useReviewStore.getState().setLayout("split")}>
+            <button type="button" className="btn" aria-pressed={layout === "split"} onClick={() => runCommand(REVIEW_LAYOUT_COMMANDS.split)}>
               Side by side
             </button>
-            <button type="button" className="btn" aria-pressed={layout === "unified"} onClick={() => useReviewStore.getState().setLayout("unified")}>
+            <button type="button" className="btn" aria-pressed={layout === "unified"} onClick={() => runCommand(REVIEW_LAYOUT_COMMANDS.unified)}>
               Unified
             </button>
           </span>
@@ -456,7 +466,7 @@ export function ReviewPane() {
           <nav className="review-tree" aria-label={showCommitList ? "Commits" : "Changed files"}>
             {mode === "commits" && commit !== null && (
               <div className="review-commit-head">
-                <button type="button" className="btn" onClick={() => useReviewStore.getState().selectCommit(null)} title="Back to the commit list">
+                <button type="button" className="btn" onClick={() => runCommand("review.backToCommits")} title="Back to the commit list">
                   ← Commits
                 </button>
                 {shownCommit !== null && (

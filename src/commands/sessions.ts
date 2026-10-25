@@ -13,7 +13,7 @@ import { isTerminalRunning, sessionTerminal, sessionTerminalId, terminalInfo, us
 import { disposeView, restore } from "../terminal/registry";
 import { isPoppedOut, useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
-import { canStart, formFromPrefill, launchRequest, missingAddDirs, skippedNote, withAddDir, withoutAddDir } from "./launch";
+import { canStart, formFromPrefill, launchRequest, missingAddDirs, skippedNote, startBlockedReason, withAddDir, withoutAddDir } from "./launch";
 import { notify, selectedBranch } from "./navigation";
 import { setExpanded } from "./nodes";
 import { closeOpenPane, openPane } from "./panes";
@@ -324,4 +324,23 @@ export async function stopSelectedSession(): Promise<boolean> {
     notify(describe(err));
     return false;
   }
+}
+
+// -- Story 9.4: the launch sheet's buttons as commands ----------------------------------------
+
+/** True while the launch sheet shows (its form loaded). */
+function launchSheetShows(): boolean {
+  return useUiStore.getState().pane === "launch" && useLaunchStore.getState().form !== null;
+}
+
+/** The `when` of `launch.start` (the sheet's Start): the sheet shows and nothing blocks its Start. */
+export function canStartLaunch(): boolean {
+  if (!launchSheetShows()) return false;
+  const sheet = useLaunchStore.getState();
+  return sheet.form !== null && startBlockedReason(sheet.form, sheet.missingDirs, sheet.starting, sheet.worktreePlan, sheet.repoTop) === null;
+}
+
+/** The `when` of `launch.addFolder` (the sheet's "Add folder…"): the sheet shows and is not starting. */
+export function canPickAddDir(): boolean {
+  return launchSheetShows() && !useLaunchStore.getState().starting;
 }

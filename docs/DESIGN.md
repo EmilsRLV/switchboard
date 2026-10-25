@@ -177,7 +177,11 @@ chrome follows every rule here.
   them, when an `/mcp` request has been refused, a caption **Recent MCP refusals** (the section-heading style:
   `--text-sm` upper case `--fg-muted`) heads a plain list of the last 20, newest first. Each is one mono
   `--text-sm` `--fg-muted` line, `HH:MM:SS /mcp — <reason>`, that wraps anywhere. There are no colours, icons or
-  buttons, and a token is never shown.
+  buttons, and a token is never shown. Last (Story 9.4), the caption **Keybindings** over one label / value row,
+  `keybindings.json` and its status (`none`, `ok` or `n errors`, then `, n conflicts` when there are any; the
+  value in `.attention`, like an endpoint error, while there are errors or conflicts), then, when there are any,
+  the errors, the warnings (an unbound palette key or key-only command, `live reload unavailable: …`) and the
+  conflicts (`ctrl+k: palette.toggle, review.refresh`) as a plain list in the refusals' look.
 - **The terminal pane** is a pane, wider (the first wide pane; the Review pane is the second): `min(720px, 70vw)` by default, dragged between 360 px and 90vw by
   its left edge (a 6-px handle over the 1-px border, `--border` while hovered, `col-resize` cursor). A header
   row over a 1-px `--border` line holds the project label (`--text-md` / 500), its folder (mono `--text-xs`

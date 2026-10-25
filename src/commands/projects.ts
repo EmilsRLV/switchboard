@@ -147,3 +147,10 @@ export async function addSelectedImports(): Promise<void> {
   if (useUiStore.getState().pane === "import") closeOpenPane();
   else useImportStore.getState().setAdding(false);
 }
+
+/** The `when` of `import.addSelected` (the import pane's "Add selected"): ticked folders to add, not adding. */
+export function canAddSelectedImports(): boolean {
+  const store = useImportStore.getState();
+  if (useUiStore.getState().pane !== "import" || store.adding) return false;
+  return selectedToAdd(importRows(store.items ?? []), store.selected).length > 0;
+}

@@ -98,7 +98,7 @@ describe("the tab keys (Story 4.5)", () => {
     expect(terminalKeyAllowed(key("Unidentified", { ctrlKey: true, code: "PageUp" }))).toBe(true);
     expect(terminalKeyAllowed(key("Unidentified", { ctrlKey: true, code: "PageDown" }))).toBe(true);
     expect(terminalKeyAction(key("PageDown", { ctrlKey: true, code: "PageDown" }))).toBe("dispatch");
-    expect(layoutKey(key("x", { ctrlKey: true, code: "PageUp" }))).toBe("PageUp");
+    expect(layoutKey(key("x", { ctrlKey: true, code: "PageUp" }))).toBe("pageup");
     expect(layoutKey(key("PageUp", { ctrlKey: true, shiftKey: true, code: "PageUp" }))).toBe("PageUp");
     expect(terminalKeyAllowed(key("PageUp", { ctrlKey: true, shiftKey: true, code: "PageUp" }))).toBe(false);
   });

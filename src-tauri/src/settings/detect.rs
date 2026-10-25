@@ -42,13 +42,24 @@ pub struct Located {
 }
 
 impl Search {
+    /// A search with no directories at all: it locates nothing (the test default for detection).
+    pub fn empty() -> Self {
+        Self {
+            path_dirs: Vec::new(),
+            extra_dirs: Vec::new(),
+            extensions: platform_extensions(),
+        }
+    }
+
     /// PATH from the environment plus the given extra dirs.
     pub fn from_env(extra_dirs: Vec<PathBuf>) -> Self {
-        let path_dirs = std::env::var_os("PATH")
-            .map(|p| split_path(&p))
-            .unwrap_or_default();
+        Self::from_path_var(std::env::var_os("PATH").as_deref(), extra_dirs)
+    }
+
+    /// A `PATH` value (absent: no dirs) plus the given extra dirs.
+    pub fn from_path_var(path: Option<&OsStr>, extra_dirs: Vec<PathBuf>) -> Self {
         Self {
-            path_dirs,
+            path_dirs: path.map(split_path).unwrap_or_default(),
             extra_dirs,
             extensions: platform_extensions(),
         }

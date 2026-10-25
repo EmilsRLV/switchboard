@@ -29,6 +29,7 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::app_info,
             ipc::settings_get,
             ipc::settings_reveal,
+            ipc::keybindings_get,
             ipc::binaries_redetect,
             ipc::workspace_get,
             ipc::workspace_set_viewport,
@@ -346,6 +347,65 @@ mod tests {
         assert_eq!(value["banners"], serde_json::json!([]));
     }
 
+    /// Story 9.4: `keybindings_get` reads `keybindings.json` beside `settings.json` (none, then the
+    /// raw text), and the watcher emits `keybindings://changed` with the new text after a save.
+    #[test]
+    fn keybindings_get_reads_the_file_and_the_watcher_emits_each_change() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        // No settings path yet: nothing to read.
+        let body = invoke(&webview, "keybindings_get").expect("keybindings_get should be registered");
+        let value: serde_json::Value = body.deserialize().unwrap();
+        assert_eq!(value, serde_json::json!({ "path": null, "text": null, "error": null, "watchError": null }));
+
+        let config = tempfile::tempdir().unwrap();
+        // A config dir that does not exist: no watch, and the file says why (Diagnostics shows it).
+        app.state::<super::AppState>().write().path = Some(config.path().join("missing").join("settings.json"));
+        super::settings::keybindings::start_watcher(app.handle());
+        let value: serde_json::Value = invoke(&webview, "keybindings_get").unwrap().deserialize().unwrap();
+        assert_eq!(value["watchError"], "config directory does not exist");
+
+        let dir = config.path().join("switchboard");
+        std::fs::create_dir_all(&dir).unwrap();
+        app.state::<super::AppState>().write().path = Some(dir.join("settings.json"));
+        let file = dir.join("keybindings.json");
+        let value: serde_json::Value = invoke(&webview, "keybindings_get").unwrap().deserialize().unwrap();
+        assert_eq!(value["path"], serde_json::json!(file.display().to_string()));
+        assert_eq!(value["text"], serde_json::Value::Null, "missing: the defaults apply");
+        assert_eq!(value["error"], serde_json::Value::Null);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            use tauri::Listener;
+            app.listen_any(super::settings::keybindings::CHANGED_EVENT, move |event| {
+                let _ = tx.send(event.payload().to_string());
+            });
+        }
+        super::settings::keybindings::start_watcher(app.handle());
+        assert!(app.state::<super::AppState>().keybindings_watcher.lock().unwrap().is_some());
+        // A settings.json write is not this watcher's business.
+        std::fs::write(dir.join("settings.json"), "{}").unwrap();
+        // The OS watch arms asynchronously: write until an event comes back (no fixed sleep).
+        let started = std::time::Instant::now();
+        let payload = loop {
+            std::fs::write(&file, "{\"review.refresh\": \"ctrl+shift+r\"}").unwrap();
+            if let Ok(payload) = rx.recv_timeout(std::time::Duration::from_millis(500)) {
+                break payload;
+            }
+            assert!(started.elapsed() < std::time::Duration::from_secs(5), "no keybindings://changed within 5 s");
+        };
+        let emitted: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(emitted["text"], serde_json::json!("{\"review.refresh\": \"ctrl+shift+r\"}"));
+        assert_eq!(emitted["error"], serde_json::Value::Null);
+        assert_eq!(emitted["watchError"], serde_json::Value::Null, "watching now");
+        let value: serde_json::Value = invoke(&webview, "keybindings_get").unwrap().deserialize().unwrap();
+        assert_eq!(value["text"], emitted["text"]);
+        // Stop watching before the temp dir goes.
+        *app.state::<super::AppState>().keybindings_watcher.lock().unwrap() = None;
+    }
+
     #[test]
     fn settings_reveal_is_registered_and_fails_cleanly_without_a_path() {
         let app = mock_app();
@@ -357,8 +417,10 @@ mod tests {
         assert_eq!(err, serde_json::json!("settings file location is unknown"));
     }
 
+    /// The command is registered and detects; under `cfg(test)` its search is empty (never the
+    /// real PATH or `~/.local/bin`), so no real `claude` is located or run and both are `missing`.
     #[test]
-    fn binaries_redetect_is_registered_and_resolves_both_binaries() {
+    fn binaries_redetect_is_registered_and_finds_neither_binary_in_tests() {
         let app = mock_app();
         let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
             .build()
@@ -367,12 +429,8 @@ mod tests {
         let body = invoke(&webview, "binaries_redetect").expect("binaries_redetect should be registered and succeed");
         let value: serde_json::Value = body.deserialize().unwrap();
         for name in ["claude", "git"] {
-            let status = value["binaries"][name]["status"].as_str().unwrap();
-            assert_ne!(status, "pending", "{name} should have been detected one way or the other");
-            assert!(
-                ["found", "missing", "version_failed"].contains(&status),
-                "{name}: {status}"
-            );
+            assert_eq!(value["binaries"][name]["status"], "missing", "{name}: nothing is searched in tests");
+            assert_eq!(value["binaries"][name]["path"], serde_json::Value::Null, "{name}");
         }
         // The managed state now holds the same result.
         let state = app.state::<super::AppState>();

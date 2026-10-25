@@ -35,10 +35,19 @@ export function hasPendingRequest(): boolean {
   return oldestUnanswered() !== null;
 }
 
-/** "Allow agent request" / "Deny agent request": answer the oldest pending request with no answer on its way. */
-export async function answerOldest(answer: "allow" | "deny"): Promise<boolean> {
+/**
+ * "Allow agent request" / "Deny agent request" / "Always allow agent request (this edge)": answer
+ * the oldest pending request with no answer on its way. "always" only where it offers it.
+ */
+export async function answerOldest(answer: "allow" | "deny" | "always"): Promise<boolean> {
   const request = oldestUnanswered();
-  return request === null ? false : answerRequest(request.id, answer);
+  if (request === null || (answer === "always" && !request.always)) return false;
+  return answerRequest(request.id, answer);
+}
+
+/** The `when` of `approval.always` (Story 9.4): the oldest pending request offers "Always for this edge". */
+export function canAlwaysAllowOldest(): boolean {
+  return oldestUnanswered()?.always === true;
 }
 
 /** The workspace's policy for the agents' act tools (absent: `ask`). */

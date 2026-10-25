@@ -13,8 +13,8 @@ import {
   skippedNote,
   startBlockedReason,
 } from "../commands/launch";
-import { runCommand } from "../commands/registry";
-import { pickAddDir, removeAddDir, startLaunch } from "../commands/sessions";
+import { isCommandEnabled, runCommand } from "../commands/registry";
+import { removeAddDir } from "../commands/sessions";
 import { shortenPath } from "../canvas/nodes";
 import { useLaunchStore } from "../state/launch";
 import { usePaletteStore } from "../state/palette";
@@ -68,7 +68,7 @@ export function LaunchPane() {
   const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (launchKeyAction(event.nativeEvent, launchKeyTarget(event.target)) !== "start") return;
     event.preventDefault();
-    void startLaunch();
+    runCommand("launch.start");
   };
 
   return (
@@ -252,7 +252,7 @@ export function LaunchPane() {
         )}
         {notAdded !== null && <p className="launch-skipped">{notAdded}</p>}
         <div className="actions">
-          <button type="button" className="btn" onClick={() => void pickAddDir()} disabled={starting}>
+          <button type="button" className="btn" onClick={() => runCommand("launch.addFolder")} disabled={!isCommandEnabled("launch.addFolder")}>
             Add folder…
           </button>
         </div>
@@ -276,8 +276,8 @@ export function LaunchPane() {
           <button
             type="button"
             className="btn"
-            onClick={() => void startLaunch()}
-            disabled={blocked !== null}
+            onClick={() => runCommand("launch.start")}
+            disabled={!isCommandEnabled("launch.start")}
             aria-describedby={blocked !== null ? "launch-start-reason" : undefined}
           >
             {starting ? "Starting…" : "Start"}

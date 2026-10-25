@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { addSelectedImports } from "../commands/projects";
-import { runCommand } from "../commands/registry";
+import { isCommandEnabled, runCommand } from "../commands/registry";
 import { importRows, selectedToAdd, useImportStore } from "../state/import";
 import { usePaletteStore } from "../state/palette";
 import { shortenPath } from "../canvas/nodes";
@@ -42,7 +41,7 @@ export function ImportPane() {
     const onRow = (target instanceof HTMLInputElement && target.type === "checkbox") || target.tagName === "UL";
     if (!onRow) return;
     event.preventDefault();
-    void addSelectedImports();
+    runCommand("import.addSelected");
   };
 
   return (
@@ -93,7 +92,7 @@ export function ImportPane() {
           </ul>
         )}
         <div className="actions">
-          <button type="button" className="btn" onClick={() => void addSelectedImports()} disabled={adding || toAdd.length === 0}>
+          <button type="button" className="btn" onClick={() => runCommand("import.addSelected")} disabled={!isCommandEnabled("import.addSelected")}>
             {adding ? "Adding…" : toAdd.length === 0 ? "Add selected" : `Add selected (${toAdd.length})`}
           </button>
         </div>

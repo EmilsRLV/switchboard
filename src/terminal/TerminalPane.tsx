@@ -8,7 +8,6 @@ import {
   closeTerminalTab,
   isClosableTerminal,
   killTerminal,
-  popOutTerminal,
   restartTerminal,
   returnToPane,
 } from "../commands/terminal";
@@ -142,10 +141,10 @@ export function TerminalPane() {
         <div className="terminal-popped" role="status">
           <span className="terminal-popped-text">In its own window</span>
           <span className="terminal-actions">
-            <button type="button" className="btn" onClick={() => void popOutTerminal(id)}>
+            <button type="button" className="btn" onClick={() => runCommand("terminal.focusWindow")}>
               Focus window
             </button>
-            <button type="button" className="btn" onClick={() => void returnToPane(id)}>
+            <button type="button" className="btn" onClick={() => runCommand("terminal.returnToPane")}>
               Return to pane
             </button>
           </span>
@@ -156,18 +155,42 @@ export function TerminalPane() {
   );
 }
 
+const CLOSE_TITLE = "Close this exited session's terminal";
+
+/**
+ * Which of the header's action buttons show. In the pane each runs the command beside it in
+ * {@link HEADER_BUTTON_COMMANDS} on the pane's terminal (`id`); a popped-out tab keeps none of them.
+ */
+export function headerButtons(
+  id: string | null,
+  info: TermInfo | undefined,
+  where: "pane" | "window",
+  popped: boolean,
+): { restart: boolean; close: boolean; popOut: boolean; kill: boolean } {
+  const actions = !(where === "pane" && popped);
+  return {
+    // A session terminal is never restarted (its session is resumed instead); once exited it closes.
+    restart: actions && isTerminalRestartable(id),
+    close: actions && isClosableTerminal(id),
+    popOut: where === "pane" && id !== null && info !== undefined && !popped,
+    kill: actions && info !== undefined && info.exited === null,
+  };
+}
+
+export const HEADER_BUTTON_COMMANDS = { restart: "terminal.restart", close: "terminal.close", popOut: "terminal.popOut", kill: "terminal.kill" } as const;
+
 /**
  * A terminal's header row, in the pane (`where="pane"`: Pop out and Hide too) or in its pop-out
  * window (`where="window"`: Return to pane). Restart / Close / Kill act on `id` itself. In the
  * pane, a popped-out terminal keeps only its title, state and Hide: its window has the rest, and
  * the placeholder below offers Focus window and Return to pane.
+ *
+ * Story 9.4: in the pane every button runs its command (`terminal.restart`, `terminal.close`,
+ * `terminal.popOut`, `terminal.kill`: they act on the pane's terminal, which is `id`). A pop-out
+ * window has no command registry, so there the buttons act on its own terminal directly.
  */
 export function TerminalHeader({ id, info, where, popped }: { id: string | null; info: TermInfo | undefined; where: "pane" | "window"; popped: boolean }) {
-  const exited = info !== undefined && info.exited !== null;
-  const actions = !(where === "pane" && popped);
-  // A session terminal is never restarted (its session is resumed instead); once exited it closes.
-  const restartable = actions && isTerminalRestartable(id);
-  const closable = actions && isClosableTerminal(id);
+  const { restart: restartable, close: closable, popOut, kill } = headerButtons(id, info, where, popped);
   return (
     <header className="terminal-header">
       <span className="terminal-title">{info?.title ?? ""}</span>
@@ -180,18 +203,28 @@ export function TerminalHeader({ id, info, where, popped }: { id: string | null;
         </span>
       )}
       <span className="terminal-actions">
-        {restartable && (
+        {restartable && where === "pane" && (
+          <button type="button" className="btn" onClick={() => runCommand("terminal.restart")}>
+            Restart
+          </button>
+        )}
+        {restartable && where === "window" && (
           <button type="button" className="btn" onClick={() => void restartTerminal(id)}>
             Restart
           </button>
         )}
-        {closable && (
-          <button type="button" className="btn" onClick={() => void closeTerminal(id)} title="Close this exited session's terminal">
+        {closable && where === "pane" && (
+          <button type="button" className="btn" onClick={() => runCommand("terminal.close")} title={CLOSE_TITLE}>
             Close
           </button>
         )}
-        {where === "pane" && id !== null && info !== undefined && !popped && (
-          <button type="button" className="btn" onClick={() => void popOutTerminal(id)} title="Pop out into its own window">
+        {closable && where === "window" && (
+          <button type="button" className="btn" onClick={() => void closeTerminal(id)} title={CLOSE_TITLE}>
+            Close
+          </button>
+        )}
+        {popOut && (
+          <button type="button" className="btn" onClick={() => runCommand("terminal.popOut")} title="Pop out into its own window">
             Pop out
           </button>
         )}
@@ -205,7 +238,12 @@ export function TerminalHeader({ id, info, where, popped }: { id: string | null;
             Hide
           </button>
         )}
-        {actions && info !== undefined && !exited && (
+        {kill && where === "pane" && (
+          <button type="button" className="btn" onClick={() => runCommand("terminal.kill")}>
+            Kill
+          </button>
+        )}
+        {kill && where === "window" && (
           <button type="button" className="btn" onClick={() => void killTerminal(id)}>
             Kill
           </button>

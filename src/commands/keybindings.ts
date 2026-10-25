@@ -7,8 +7,10 @@
 // bare-key bindings (no modifier) other than escape/enter/arrows are left to the element, so
 // typing never triggers a command. While focus
 // is inside a terminal (`[data-terminal]`, xterm's helper textarea included) every key is the
-// terminal's except the pass-through bindings (`terminal/keys`: ctrl+`, ctrl+shift+k and the tab
-// keys ctrl+pageup / ctrl+pagedown), so Esc, ctrl+c, ctrl+o and ctrl+k reach the program running there.
+// terminal's except the pass-through bindings (`terminal/keys`: the effective keys of
+// `terminal.toggle`, `palette.toggleFromTerminal`, `terminal.prevTab` and `terminal.nextTab`, by
+// default ctrl+`, ctrl+shift+k, ctrl+pageup and ctrl+pagedown; Story 9.4's `keybindings.json` may
+// move them), so Esc, ctrl+c, ctrl+o and ctrl+k reach the program running there.
 
 import { useEffect } from "react";
 import { isInsideTerminal, layoutKey, terminalKeyAllowed } from "../terminal/keys";
@@ -131,15 +133,15 @@ export function formatKeybinding(binding: Keybinding): string {
  * and swallow the event. Auto-repeat is ignored (a held `ctrl+k` toggles once). Returns true
  * when a command ran. Commands whose `when` is false are skipped, which is how `escape` is
  * shared: `palette.close` only when the palette is open, `pane.close` only otherwise. Inside a
- * terminal only ``ctrl+` ``, `ctrl+shift+k`, `ctrl+pageup` and `ctrl+pagedown` are dispatched;
- * every other key is left alone.
+ * terminal only the pass-through keys are dispatched (`terminalKeyAllowed`: the effective keys of
+ * the four pass-through commands); every other key is left alone.
  */
 export function handleKeydown(event: KeyEventLike): boolean {
   if (event.repeat || event.defaultPrevented === true) return false;
   if (isInsideTerminal(event.target) && !terminalKeyAllowed(event)) return false;
   // Bare keys are the element's in an editable target, and the menu's while the context menu is open.
   const editable = isEditableTarget(event.target) || isContextMenuOpen();
-  // ctrl+Backquote / ctrl+shift+KeyK / ctrl+PageUp / ctrl+PageDown match their bindings on any keyboard layout.
+  // A pass-through binding matches on its physical key too (`layoutKey`), on any keyboard layout.
   const probe: KeyEventLike = { ...pick(event), key: layoutKey(event) };
   for (const command of listCommands({ enabledOnly: true })) {
     const binding = command.binding;

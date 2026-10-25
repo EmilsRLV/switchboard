@@ -53,12 +53,13 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the seventy-seven commands with the spec's keybindings", () => {
+  it("register the ninety-three commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
       "app.quit",
       "approval.allow",
+      "approval.always",
       "approval.deny",
       "attention.next",
       "binaries.redetect",
@@ -77,6 +78,9 @@ describe("built-in commands", () => {
       "edge.select",
       "elsewhere.close",
       "elsewhere.toggle",
+      "import.addSelected",
+      "launch.addFolder",
+      "launch.start",
       "palette.close",
       "palette.toggle",
       "palette.toggleFromTerminal",
@@ -95,12 +99,16 @@ describe("built-in commands", () => {
       "project.terminal",
       "project.toggleBranches",
       "project.toggleShowAll",
+      "review.backToCommits",
       "review.changes",
       "review.clear",
       "review.comment",
+      "review.dismissToast",
       "review.filterAll",
       "review.filterStaged",
       "review.filterUnstaged",
+      "review.layoutSplit",
+      "review.layoutUnified",
       "review.modeBase",
       "review.modeChanges",
       "review.modeCommits",
@@ -126,12 +134,20 @@ describe("built-in commands", () => {
       "settings.reveal",
       "settings.toggle",
       "terminal.close",
+      "terminal.focusWindow",
       "terminal.kill",
       "terminal.nextTab",
       "terminal.popOut",
       "terminal.prevTab",
       "terminal.restart",
+      "terminal.returnToPane",
       "terminal.toggle",
+      "worktree.create",
+      "worktree.discardAndRemove",
+      "worktree.forceRemove",
+      "worktree.modeExisting",
+      "worktree.modeNew",
+      "worktree.remove",
     ]);
     expect(getCommand("elsewhere.close")?.keybinding).toBe("escape");
     expect(getCommand("elsewhere.toggle")?.keybinding).toBeUndefined();
@@ -201,14 +217,21 @@ describe("built-in commands", () => {
     expect(getCommand("project.expand")?.keybinding).toBeUndefined();
     expect(getCommand("project.collapse")?.keybinding).toBeUndefined();
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
+    // Story 9.4: the pane buttons' commands have no default key (bind them in keybindings.json).
+    for (const id of ["approval.always", "import.addSelected", "launch.addFolder", "launch.start", "review.backToCommits", "review.dismissToast", "terminal.focusWindow", "terminal.returnToPane", "worktree.create", "worktree.discardAndRemove", "worktree.forceRemove", "worktree.modeExisting", "worktree.modeNew", "worktree.remove", "review.layoutSplit", "review.layoutUnified"]) {
+      expect(getCommand(id)?.keybinding, id).toBeUndefined();
+    }
+    expect(getCommand("review.layoutSplit")?.hidden).toBe(true);
+    expect(getCommand("review.layoutUnified")?.hidden).toBe(true);
   });
 
-  it("the key-only carriers are hidden from the palette, the sixty-five actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the seventy-nine actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
       "app.quit",
       "approval.allow",
+      "approval.always",
       "approval.deny",
       "attention.next",
       "binaries.redetect",
@@ -225,6 +248,9 @@ describe("built-in commands", () => {
       "edge.revokeAgentPolicy",
       "edge.select",
       "elsewhere.toggle",
+      "import.addSelected",
+      "launch.addFolder",
+      "launch.start",
       "palette.toggle",
       "project.add",
       "project.collapse",
@@ -240,9 +266,11 @@ describe("built-in commands", () => {
       "project.terminal",
       "project.toggleBranches",
       "project.toggleShowAll",
+      "review.backToCommits",
       "review.changes",
       "review.clear",
       "review.comment",
+      "review.dismissToast",
       "review.filterAll",
       "review.filterStaged",
       "review.filterUnstaged",
@@ -264,12 +292,20 @@ describe("built-in commands", () => {
       "settings.open",
       "settings.reveal",
       "terminal.close",
+      "terminal.focusWindow",
       "terminal.kill",
       "terminal.nextTab",
       "terminal.popOut",
       "terminal.prevTab",
       "terminal.restart",
+      "terminal.returnToPane",
       "terminal.toggle",
+      "worktree.create",
+      "worktree.discardAndRemove",
+      "worktree.forceRemove",
+      "worktree.modeExisting",
+      "worktree.modeNew",
+      "worktree.remove",
     ]);
   });
 
@@ -310,7 +346,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(77);
+    expect(listCommands()).toHaveLength(93);
   });
 
   const PROJECT_ACTIONS = [

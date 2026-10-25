@@ -164,3 +164,21 @@ export async function submitWorktree(): Promise<boolean> {
   }
   return true;
 }
+
+// -- Story 9.4: the sheet's buttons as commands -----------------------------------------------
+
+/** True while the worktree sheet shows (its form loaded). */
+function worktreeSheetShows(): boolean {
+  return useUiStore.getState().pane === "worktree" && useWorktreeStore.getState().form !== null;
+}
+
+/** The `when` of `worktree.modeNew` / `worktree.modeExisting`: the sheet shows in the other mode, not creating. */
+export function canSetWorktreeMode(mode: WorktreeForm["mode"]): boolean {
+  const sheet = useWorktreeStore.getState();
+  return worktreeSheetShows() && !sheet.creating && sheet.form?.mode !== mode;
+}
+
+/** The `when` of `worktree.create` (the sheet's Create): the sheet shows and nothing blocks Create. */
+export function canCreateWorktree(): boolean {
+  return worktreeSheetShows() && createBlockedReason(useWorktreeStore.getState()) === null;
+}

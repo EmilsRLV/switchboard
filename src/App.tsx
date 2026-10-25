@@ -4,12 +4,14 @@ import {
   edgesLiveGet,
   hasTauriRuntime,
   inboxUnreadGet,
+  keybindingsGet,
   liveSessionsGet,
   onAgentStarted,
   onApprovalNotice,
   onApprovals,
   onEdgesLive,
   onInboxUnread,
+  onKeybindingsChanged,
   onLiveSessions,
   onNotifyReveal,
   onReviewComments,
@@ -31,6 +33,7 @@ import { forgetTerminal } from "./commands/terminal";
 import { useApprovalsStore } from "./state/approvals";
 import { useEdgesLiveStore } from "./state/edgesLive";
 import { useInboxStore } from "./state/inbox";
+import { useKeybindingsStore } from "./state/keybindings";
 import { useReviewStore } from "./state/review";
 import { useTerminalStore } from "./state/terminals";
 import { useLiveStore } from "./state/live";
@@ -88,6 +91,8 @@ export default function App() {
   const setApprovalsLoadError = useApprovalsStore((s) => s.setLoadError);
   const applyInbox = useInboxStore((s) => s.applySnapshot);
   const setInboxLoadError = useInboxStore((s) => s.setLoadError);
+  const applyKeybindings = useKeybindingsStore((s) => s.apply);
+  const setKeybindingsLoadError = useKeybindingsStore((s) => s.setLoadError);
   const applyReview = useReviewStore((s) => s.applySnapshot);
   const setReviewLoadError = useReviewStore((s) => s.setLoadError);
 
@@ -102,6 +107,18 @@ export default function App() {
       fail: (message) => setSettingsLoadError(`settings load failed: ${message}`),
     });
   }, [applySettings, setSettingsLoadError]);
+
+  // Story 9.4: `keybindings.json` over the default bindings, reloaded live.
+  useEffect(() => {
+    if (!hasTauriRuntime()) return;
+    return mirror({
+      listen: onKeybindingsChanged,
+      get: keybindingsGet,
+      apply: applyKeybindings,
+      hasSnapshot: () => useKeybindingsStore.getState().loaded,
+      fail: setKeybindingsLoadError,
+    });
+  }, [applyKeybindings, setKeybindingsLoadError]);
 
   useEffect(() => {
     if (!hasTauriRuntime()) return;

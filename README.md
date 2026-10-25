@@ -176,7 +176,7 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 `/` is reserved for a later epic and deliberately unbound. Delete is bound only to deleting a selected edge;
 removing a project stays a menu action.
 
-The palette lists sixty-one commands: Toggle command palette, Add project folder…, Import from Claude…, Open
+The palette lists up to seventy-nine commands, each only while its `when` holds: Toggle command palette, Add project folder…, Import from Claude…, Open
 settings, Reveal settings file (only when the file's location is known), Re-detect binaries (not while one
 runs), Fit view (once the canvas has mounted; the two project commands need it too), Quit, Toggle Elsewhere
 sessions (only while the Elsewhere tray has rows), Go to session that needs you (only while one does),
@@ -206,12 +206,162 @@ flag while a session is flagged (see [Review requests](#review-requests-request_
 project, branch or session card is selected and, while the Review pane is open, Review: refresh, Review: all /
 staged / unstaged changes, Review: unified view (or side-by-side view), Review: next / previous file, Open in
 editor, Review: files (where the pane has a folder), Comment on line (a session showing a file) and, on a project or
-branch, Review: changes / vs base / commits (see [Review](#review)). The palette sorts by title. The key-only
+branch, Review: changes / vs base / commits (see [Review](#review)). Story 9.4 adds the pane buttons that had no
+command: New session: start / add folder… (the launch sheet), New worktree: new branch / existing branch / create,
+Remove worktree: remove / force remove… / discard changes and remove (the second step only once Force remove…
+was pressed and its delay passed), Import: add selected, Return terminal to pane and Focus terminal window (a
+popped-out tab), Review: back to commits, Dismiss review toast (the oldest) and Always allow agent request (this
+edge) (the oldest request, where it offers it). The palette sorts by title. The key-only
 carriers (the `ctrl+,` toggle, the palette's second binding `ctrl+shift+k`, the five Esc commands, the four
 arrows and Enter) are registered but hidden from
-the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron on a card runs
-Expand/Collapse, and the context menu lists the commands tagged for it in its own fixed order. Keybindings are
-not editable yet (Epic 9).
+the list, as are the Review pane's two layout buttons (`review.layoutSplit` / `review.layoutUnified`; the palette
+has Review: unified view / side-by-side view, and the two have no default key, so they are reachable from the
+keyboard only once bound in `keybindings.json`); every pane's Close button runs the Esc command (`pane.close`), the chevron on a card runs
+Expand/Collapse, and the context menu lists the commands tagged for it in its own fixed order.
+
+### keybindings.json
+
+Every command can be bound, rebound or unbound in `keybindings.json`, beside `settings.json` in the config
+directory (`%APPDATA%\switchboard\keybindings.json` on Windows, `$XDG_CONFIG_HOME/switchboard/keybindings.json`
+on Linux). It is optional; without it the defaults above apply. It reloads live, like `settings.json`:
+
+```json
+{
+  "review.refresh": "ctrl+shift+r",
+  "attention.next": null,
+  "terminal.toggle": "ctrl+shift+t"
+}
+```
+
+Each key is a command id, each value a binding in the form above (`ctrl+`/`shift+`/`alt+` plus one key; no chords
+or sequences) or `null` to remove the command's key. An unknown id or a binding that does not parse is an error and
+is skipped (that command keeps its default); the other entries apply. A file that is not a JSON object, or cannot be
+read, is an error and changes nothing (the bindings from the last good file stay). The palette shows the effective
+keys. **Settings → Diagnostics → Keybindings** shows the file's status (`none`, `ok` or `n errors`), each error
+(`unknown command nope`, `bad key "ctrl+" for review.refresh`, `terminal.toggle needs ctrl, alt or shift`,
+`ctrl+shift+c is the terminal's copy`), each warning (unbinding `palette.toggle`, `palette.toggleFromTerminal` or a
+key-only command such as `pane.close` leaves it out of reach; `live reload unavailable: …` when the file cannot
+be watched) and each conflict: two or more commands on one key where at least one of those bindings came from the
+file (`ctrl+k: palette.toggle, review.refresh`; of those enabled at the time, the first by title runs), or a
+command moved onto the terminal's copy / paste keys (`ctrl+shift+c: review.refresh, terminal copy`: in a terminal
+the key stays the terminal's). Keys are written as in this file (`escape`, `arrowup`). The status reads `ok, 1
+conflict` while there are conflicts. An id no command has is an error until one registers under it, when its entry
+applies. The defaults' own shared keys (Esc, `n`) are told apart by their `when`s and are never reported. Inside
+a focused terminal the keys that still reach the app are the effective keys of `terminal.toggle`,
+`palette.toggleFromTerminal`, `terminal.prevTab` and `terminal.nextTab` (matched on the physical key too, so a
+rebound letter works on any keyboard layout); they need a modifier and may not be the clipboard keys
+(`ctrl+shift+c`, `ctrl+shift+v`, `ctrl+v`), so a rebound terminal toggle works there too (a pop-out window keeps
+the default keys).
+
+The command ids:
+
+| Command id | Default key |
+|---|---|
+| `agentActions.allowAll` | — |
+| `agentActions.ask` | — |
+| `app.quit` | `ctrl+q` |
+| `approval.allow` | — |
+| `approval.always` | — |
+| `approval.deny` | — |
+| `attention.next` | `ctrl+j` |
+| `binaries.redetect` | — |
+| `branch.copyName` | — |
+| `branch.newSession` | `n` |
+| `branch.newWorktree` | — |
+| `branch.removeWorktree` | — |
+| `canvas.fitView` | `ctrl+0` |
+| `contextMenu.close` (key-only) | `escape` |
+| `edge.delete` | `delete` |
+| `edge.inspect` | — |
+| `edge.link` | `e` |
+| `edge.restartWithFlags` | — |
+| `edge.retry` | — |
+| `edge.revokeAgentPolicy` | — |
+| `edge.select` | — |
+| `elsewhere.close` (key-only) | `escape` |
+| `elsewhere.toggle` | — |
+| `import.addSelected` | — |
+| `launch.addFolder` | — |
+| `launch.start` | — |
+| `palette.close` (key-only) | `escape` |
+| `palette.toggle` | `ctrl+k` |
+| `palette.toggleFromTerminal` (key-only) | `ctrl+shift+k` |
+| `pane.close` (key-only) | `escape` |
+| `project.add` | `ctrl+o` |
+| `project.collapse` | — |
+| `project.expand` | — |
+| `project.import` | — |
+| `project.newSession` | `n` |
+| `project.newWorktree` | — |
+| `project.openEditor` | — |
+| `project.openFolder` | — |
+| `project.relayout` | — |
+| `project.remove` | — |
+| `project.revealClaudeDir` | — |
+| `project.terminal` | — |
+| `project.toggleBranches` | — |
+| `project.toggleShowAll` | — |
+| `review.backToCommits` | — |
+| `review.changes` | `r` |
+| `review.clear` | — |
+| `review.comment` | `c` |
+| `review.dismissToast` | — |
+| `review.filterAll` | — |
+| `review.filterStaged` | — |
+| `review.filterUnstaged` | — |
+| `review.layoutSplit` (key-only) | — |
+| `review.layoutUnified` (key-only) | — |
+| `review.modeBase` | — |
+| `review.modeChanges` | — |
+| `review.modeCommits` | — |
+| `review.modeFiles` | — |
+| `review.nextFile` | `j` |
+| `review.open` | — |
+| `review.openEditor` | `o` |
+| `review.prevFile` | `k` |
+| `review.refresh` | — |
+| `review.toggleLayout` | — |
+| `selection.activate` (key-only) | `enter` |
+| `selection.clear` (key-only) | `escape` |
+| `selection.move.down` (key-only) | `arrowdown` |
+| `selection.move.left` (key-only) | `arrowleft` |
+| `selection.move.right` (key-only) | `arrowright` |
+| `selection.move.up` (key-only) | `arrowup` |
+| `session.attach` | — |
+| `session.fork` | — |
+| `session.resume` | — |
+| `session.showTerminal` | — |
+| `session.stop` | — |
+| `settings.open` | — |
+| `settings.reveal` | — |
+| `settings.toggle` (key-only) | `ctrl+,` |
+| `terminal.close` | — |
+| `terminal.focusWindow` | — |
+| `terminal.kill` | — |
+| `terminal.nextTab` | `ctrl+pagedown` |
+| `terminal.popOut` | — |
+| `terminal.prevTab` | `ctrl+pageup` |
+| `terminal.restart` | — |
+| `terminal.returnToPane` | — |
+| `terminal.toggle` | ``ctrl+` `` |
+| `worktree.create` | — |
+| `worktree.discardAndRemove` | — |
+| `worktree.forceRemove` | — |
+| `worktree.modeExisting` | — |
+| `worktree.modeNew` | — |
+| `worktree.remove` | — |
+
+**Exempt from commands** (the audit, `src/commands/audit.test.ts`, fails on any other direct `onClick` /
+`onChange` / `onSubmit` handler in `src/components`, `src/canvas` and `src/terminal`): controls that act on one
+specific item rather than the pane's subject, each with a palette route where one makes sense: a click on a file,
+tree, commit or terminal tab row (`review.nextFile` / `review.prevFile`, `terminal.nextTab` / `terminal.prevTab`),
+a tab's ×, a cooperate edge's per-side Retry (`edge.retry` retries every failed side), an add-dir row's Remove, an
+import row's checkbox, an Elsewhere row's Add folder (the tray has no selection), a card's `review` flag
+(`review.open`), the Allow / Deny / Always for this edge / Open / Dismiss buttons of a specific toast
+(`approval.allow`, `approval.deny`, `approval.always`, `review.open`, `review.dismissToast`: the oldest); form fields
+(the sheets' inputs and selects, the base `<select>`, the edge label, the comment box, the palette's input); pointer
+gestures on the canvas (clicks, drag-to-link); and a pop-out window's header buttons (that window has no command
+registry; the pane's buttons run `terminal.restart`, `terminal.close`, `terminal.kill` and `terminal.returnToPane`).
 
 The app is **single-instance** (`tauri-plugin-single-instance`): launching it again focuses and
 un-minimises the running window and the second process exits. Its arguments are ignored (printed to stderr
