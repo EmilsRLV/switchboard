@@ -7,7 +7,7 @@ in `_bmad-output/implementation-artifacts/deferred-work.md`.
 | Budget | Limit | Where |
 |---|---|---|
 | Cold start to an interactive canvas | < 1 s (< 2 s on a cold Linux laptop) | dev machine, NFR setup |
-| Idle RSS, not counting `claude` | < 150 MB | dev machine, NFR setup, 60 s idle |
+| Idle RSS of the app's own share, not counting `claude` | < 150 MB | dev machine, NFR setup, 60 s idle |
 | Added terminal typing latency | < 16 ms | dev machine, a plain shell terminal |
 
 **NFR setup:** 5 projects on the canvas and 3 live sessions with their terminals open. Sessions are **stub**
@@ -112,9 +112,11 @@ commands that put it back, and exits with code 3.
   while the operator starts 3 stub sessions with their terminals open, then waits 60 s without input and
   samples, per process, the **working set** and **private bytes** of `switchboard.exe` and the
   `msedgewebview2.exe` processes in its process tree. Everything else in the tree (`claude`, the stubs, the
-  shells, `conhost`) is listed as excluded. The budget is compared with the working-set total. Summing working
-  sets counts pages shared between the WebView2 processes more than once, so the total overstates what the app
-  costs; private bytes are reported beside it for that reason.
+  shells, `conhost`) is listed as excluded. Each WebView2 process is labelled with its role (from its
+  `--type=` command-line switch).
+  - **What the budget counts.** The **app's own share**: `switchboard.exe` plus the renderer process(es) running its page (Emils' decision, 2026-10-25).
+  - **What is reported but not counted.** The shared WebView2 runtime processes: browser, GPU, the network and storage utilities, and crashpad. They exist whatever the page does, and are reported beside the share as the whole-tree total.
+  - **Why private bytes too.** Summing working sets counts shared pages more than once, so private bytes are reported beside them.
 - **Typing (`Session`, after RSS).** The script waits again while the operator focuses a **plain shell
   terminal** (`cmd` / `pwsh`, so the echo comes from a real program), types 50 printable keys at an ordinary
   pace, and reads `typing: median · p95` in Settings → Diagnostics. The number is the **full** keydown → echo
@@ -149,7 +151,7 @@ Trial build: 478, 491, 448, 469 and 437 ms, a median of 469 ms (window created a
 
 Final build after the review patch round, run with the patched script: 528, 420, 432, 466 and 455 ms, a median of **455 ms** (window created at a median of 54.6 ms). The real config was restored and nothing was left running.
 
-**Idle RSS** after 60 s idle (budget < 150 MB working set, `claude` excluded). The shipped build:
+**Idle RSS** after 60 s idle (budget < 150 MB working set of the app's own share, `claude` excluded). The shipped build:
 
 | Process | Working set (MB) | Private bytes (MB) |
 |---|---|---|
@@ -160,7 +162,8 @@ Final build after the review patch round, run with the patched script: 528, 420,
 | msedgewebview2.exe (network service) | 34.8 | 11.1 |
 | msedgewebview2.exe (storage service) | 18.3 | 7.1 |
 | msedgewebview2.exe (crashpad handler) | 11.0 | 3.1 |
-| **Total** | **363.7** | **244.9** |
+| **App share** (switchboard.exe + renderer) | **125.1** | **55.9** |
+| Whole tree (reported, not budgeted) | 363.7 | 244.9 |
 
 Excluded: 3 × `stubclaude.exe`, 3 × `conhost.exe`.
 
@@ -192,17 +195,20 @@ One pass of 50 keys per build; the p95 of 50 samples rests on about 3 keystrokes
 | Budget | Measured (shipped build) | Result |
 |---|---|---|
 | Cold start < 1 s | median 447 ms in-app (window created at 54 ms) | **PASS** |
-| Idle RSS < 150 MB | 364 MB working set (245 MB private) | **MISS** |
+| Idle RSS < 150 MB (app share) | 125.1 MB working set (55.9 MB private); whole tree 364 MB | **PASS** |
 | Typing < 16 ms added | median 15.4 ms, p95 16.2 ms (full keydown → echo frame, including the shell's echo) | **PASS** on the median (0.6 ms to spare); p95 **over** |
 
 The typing verdict is based on the median of the full time, an upper bound on what the app adds. The p95 is recorded as over the budget.
 
 **Misses, causes, follow-ups:**
 
-- **Idle RSS: the bulk is the WebView2 runtime.**
-  - With 5 projects and no sessions, the total is already 315 MB working set (174 MB private). `switchboard.exe` is 26 MB of that, and the page's renderer 69 MB.
-  - The browser, GPU, network, storage and crashpad processes make up the other 220 MB.
-  - The 3 sessions with their terminals add 48 to 56 MB working set and about 70 MB private. That growth is mostly the GPU process (+53 MB private) and the renderer (+15 to 17 MB private).
+- **Idle RSS: a pass on the app share, with 25 MB to spare.**
+  - The trial build's share was 130.2 MB. With no sessions open it is 95 MB.
+  - Before Emils' decision, the budget was compared with the whole tree, which missed: 364 MB.
+  - What the whole tree contains:
+    - With 5 projects and no sessions, the total is already 315 MB working set (174 MB private). `switchboard.exe` is 26 MB of that, and the page's renderer 69 MB.
+    - The browser, GPU, network, storage and crashpad processes make up the other 220 MB.
+    - The 3 sessions with their terminals add 48 to 56 MB working set and about 70 MB private. That growth is mostly the GPU process (+53 MB private) and the renderer (+15 to 17 MB private).
 - **Budget fix tried and reverted: WebGL only while a terminal is on screen.**
   - The trial build dropped a hidden terminal's WebGL addon and loaded it again on show.
   - Measured with the same setup: GPU private 135.3 → 130.5 MB, total private 244.9 → 244.3 MB. That is within noise, so there was no gain.
@@ -210,7 +216,7 @@ The typing verdict is based on the median of the full time, an upper bound on wh
   - Reverted. Terminals load WebGL once, as before.
 - **Follow-ups** (in `deferred-work.md`):
   - WebView2 options. `MemoryUsageTargetLevel` low while the window is hidden or minimized helps the tray case, not the foreground budget. Browser flags that drop optional services need care.
-  - A decision for Emils on whether NFR-2 means the whole WebView2 process tree or the app's own share. The budget stays 150 MB here.
+  - The renderer share grows with open terminals (+30 MB for 3 sessions), so many more terminals could approach the budget. It is worth re-measuring with 10 sessions.
   - Typing p95 over 16 ms (16.2 ms shipped; 20.0 ms on the trial build), cause not established. A longer typing pass would give a steadier p95.
 - **Typing: what the number contains.**
   - It includes the shell's own echo (ConPTY and `cmd`).

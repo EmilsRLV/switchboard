@@ -19,7 +19,8 @@
            their terminals open. Then it waits -IdleSeconds (default 60) without input and samples the
            working set and private bytes of switchboard.exe and its WebView2 processes (msedgewebview2.exe
            in its process tree). Everything else in the tree (claude, stubs, shells, conhost) is listed
-           as excluded. Then it prints the typing instructions and waits for the operator again before
+           as excluded. The budget counts the app's own share (switchboard.exe + its renderer
+           process); the whole tree is reported beside it. Then it prints the typing instructions and waits for the operator again before
            closing the app.
 
   All      Start, then Session.
@@ -97,7 +98,7 @@ function Get-MachineInfo {
 
 # The process tree under $rootId (inclusive), from one Win32_Process snapshot.
 function Get-ProcessTree([int] $rootId) {
-    $all = @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, CreationDate)
+    $all = @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, CreationDate, CommandLine)
     $children = @{}
     foreach ($p in $all) {
         $key = [int]$p.ParentProcessId
@@ -383,6 +384,20 @@ function Invoke-StartRuns([string] $outDir) {
     return $summary
 }
 
+# NFR-2 counts the app's own share: switchboard.exe and the renderer process(es) running its page.
+# The shared WebView2 runtime processes (browser, GPU, network/storage utilities, crashpad) are
+# reported but not counted against the budget (Emils' decision, 2026-10-25).
+function Get-Role($p) {
+    if ([IO.Path]::GetFileNameWithoutExtension($p.Name) -ne $WebViewName) { return 'app' }
+    $cmd = [string]$p.CommandLine
+    if ($cmd -match '--type=([a-z-]+)') {
+        $type = $Matches[1]
+        if ($type -eq 'utility' -and $cmd -match 'utility-sub-type=([A-Za-z.]+)') { return "utility $($Matches[1])" }
+        return $type
+    }
+    return 'browser'
+}
+
 function Get-MemorySample([int] $rootId) {
     $tree = @(Get-ProcessTree $rootId)
     $counted = New-Object System.Collections.ArrayList
@@ -393,6 +408,7 @@ function Get-MemorySample([int] $rootId) {
             if ($null -eq $gp) { continue }
             [void]$counted.Add([ordered]@{
                     name      = $p.Name
+                    role      = (Get-Role $p)
                     pid       = [int]$p.ProcessId
                     ws_mb     = [math]::Round($gp.WorkingSet64 / 1MB, 1)
                     private_mb = [math]::Round($gp.PrivateMemorySize64 / 1MB, 1)
@@ -401,15 +417,21 @@ function Get-MemorySample([int] $rootId) {
             [void]$excluded.Add("$($p.Name) ($($p.ProcessId))")
         }
     }
-    $ws = 0.0; $priv = 0.0
-    foreach ($c in $counted) { $ws += $c.ws_mb; $priv += $c.private_mb }
+    $ws = 0.0; $priv = 0.0; $appWs = 0.0; $appPriv = 0.0
+    foreach ($c in $counted) {
+        $ws += $c.ws_mb; $priv += $c.private_mb
+        if ($c.role -eq 'app' -or $c.role -eq 'renderer') { $appWs += $c.ws_mb; $appPriv += $c.private_mb }
+    }
     return [ordered]@{
         processes        = $counted.ToArray()
+        app_ws_mb        = [math]::Round($appWs, 1)
+        app_private_mb   = [math]::Round($appPriv, 1)
         total_ws_mb      = [math]::Round($ws, 1)
         total_private_mb = [math]::Round($priv, 1)
         excluded         = $excluded.ToArray()
         budget_mb        = 150
-        pass             = ($ws -lt 150)
+        budget_counts    = 'app share: switchboard.exe + its WebView2 renderer process(es), working set'
+        pass             = ($appWs -lt 150)
     }
 }
 
@@ -430,10 +452,11 @@ function Invoke-Session([string] $outDir) {
         Write-Host ''
         Write-Host '  counted processes:'
         foreach ($p in $mem.processes) {
-            Write-Host ("    {0,-20} pid {1,-7} working set {2,8} MB   private {3,8} MB" -f $p.name, $p.pid, $p.ws_mb, $p.private_mb)
+            Write-Host ("    {0,-20} {1,-36} pid {2,-7} working set {3,8} MB   private {4,8} MB" -f $p.name, $p.role, $p.pid, $p.ws_mb, $p.private_mb)
         }
-        Write-Host ("  total working set {0} MB, private {1} MB; budget < 150 MB (working set): {2}" -f `
-                $mem.total_ws_mb, $mem.total_private_mb, $(if ($mem.pass) { 'PASS' } else { 'MISS' }))
+        Write-Host ("  whole tree: working set {0} MB, private {1} MB (reported, not budgeted)" -f $mem.total_ws_mb, $mem.total_private_mb)
+        Write-Host ("  app share (switchboard.exe + renderer): working set {0} MB, private {1} MB; budget < 150 MB (working set): {2}" -f `
+                $mem.app_ws_mb, $mem.app_private_mb, $(if ($mem.pass) { 'PASS' } else { 'MISS' }))
         if ($mem.excluded.Count -gt 0) { Write-Host "  excluded: $($mem.excluded -join ', ')" }
         Wait-Operator ('>> Typing: focus a plain shell terminal (cmd or pwsh, not a session), type 50 printable keys at an ordinary pace ' +
             '(no Enter needed), then open Settings (ctrl+,) and read Diagnostics -> Performance -> typing: median / p95. ' +

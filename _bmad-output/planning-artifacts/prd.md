@@ -130,7 +130,7 @@ Requirements are numbered `FR-<area>-<n>` so epics and specs can cite them. "Mus
 | ID | Req |
 |---|---|
 | NFR-1 | Cold start to interactive canvas < 1 s on the dev machine; < 2 s on a cold Linux laptop. |
-| NFR-2 | Idle RSS < 150 MB for the app with 5 projects, 3 live sessions and their terminals open (excluding the `claude` processes themselves). |
+| NFR-2 | Idle RSS < 150 MB for the app with 5 projects, 3 live sessions and their terminals open (excluding the `claude` processes themselves). Counts the app's own share: the app process and the webview renderer running its page; the shared webview runtime processes (browser, GPU, network/storage services, crash handler) are reported but not counted (decided by Emils, 2026-10-25). |
 | NFR-3 | Terminal input latency indistinguishable from Windows Terminal / a native terminal for typing (target < 16 ms added). |
 | NFR-4 | Status change on a node visible within 1 s of the hook firing, within one poll interval (default 2 s) when only `agents --json` is available. |
 | NFR-5 | The app never writes into Claude's own state directory (`~/.claude`) except through the `claude` CLI; it only reads transcripts. |

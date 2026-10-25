@@ -1654,7 +1654,7 @@ icon.
 
 ## Performance
 
-The budgets (cold start to an interactive canvas under 1 s, idle RSS under 150 MB not counting `claude`,
+The budgets (cold start to an interactive canvas under 1 s, idle RSS of the app's own share under 150 MB not counting `claude`,
 added typing latency under 16 ms), how they are measured and the measured results are in
 [`docs/perf.md`](docs/perf.md). Settings (`ctrl+,`) → Diagnostics → **Performance** shows the app's own
 measuring points: `startup: N ms` (process start to the first canvas frame) and `typing: median N ms · p95 M ms`

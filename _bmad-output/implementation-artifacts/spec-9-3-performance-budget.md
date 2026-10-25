@@ -27,7 +27,7 @@ context:
   - **In the app.** Rust records when the process started. The frontend reports when its first canvas render is done. Diagnostics shows `startup: N ms`, and the value is also returned by a `perf_get` command.
   - **Second check.** The script also measures it from the outside, from `Start-Process` to the window first appearing, as a cross-check.
   - **Runs.** Five cold runs with the median reported. "Cold" means a fresh process; the OS file cache may be warm, and the doc says so.
-- **Idle RSS** is the sum of the working set (and private bytes, reported separately) of `switchboard.exe` and its WebView2 child processes. `claude` and the shells are excluded. It is sampled after 60 s idle with the NFR setup, using stub sessions that hold their terminals open.
+- **Idle RSS** is the app's own share (Emils, 2026-10-25): the working set (and private bytes, reported separately) of `switchboard.exe` plus its WebView2 renderer process(es). The shared WebView2 runtime processes (browser, GPU, network/storage utilities, crashpad) are reported beside it but not counted. `claude` and the shells are excluded. It is sampled after 60 s idle with the NFR setup, using stub sessions that hold their terminals open.
 - **Typing latency** is the time from a key event in a terminal to its echoed character being drawn.
   - **In the app.** The terminal records keydown → the PTY write → the frame that draws the echo, and Diagnostics shows the median and p95 of the last 100 keystrokes (`typing: median N ms · p95 M ms`).
   - **What is typed into.** A plain shell terminal (`cmd`/`pwsh`), so the echo comes from a real program.
@@ -58,7 +58,7 @@ context:
 |---|---|---|---|
 | Startup mark | app launched | Diagnostics `startup: N ms` | — |
 | Typing | 50 keys typed in a shell terminal | `typing: median · p95` from those keys | fewer than 5 samples → `typing: not enough samples` |
-| Idle RSS | NFR setup, 60 s idle | script prints per-process and total working set / private bytes | — |
+| Idle RSS | NFR setup, 60 s idle | script prints per-process figures with each process's role, the app share (budgeted) and the whole tree (reported) | — |
 | Doc | measurements done | `docs/perf.md` with method, machine, runs, pass/fail | — |
 
 </frozen-after-approval>
@@ -137,6 +137,10 @@ context:
   - `docs/perf.md` method sections are updated; Results is untouched.
 
 ## Spec Change Log
+
+- **2026-10-25: Emils' decision.** NFR-2 counts only the app's own share. The orchestrator defined that share as `switchboard.exe` plus its WebView2 renderer process(es).
+  - **Updated to match:** the frozen Idle RSS definition and the I/O matrix row, PRD NFR-2, `measure.ps1` (per-process roles; the budget is compared with the app share) and `docs/perf.md`.
+  - **Result:** the shipped build moves from MISS (364 MB, whole tree) to PASS (125 MB, app share).
 
 - **2026-10-25: orchestrator decision, for Emils' review.**
   - **Change:** the `SWITCHBOARD_PERF_OUT` opt-in file write is an exception to the frozen constraint "nothing written unless Diagnostics is open".
