@@ -155,6 +155,9 @@ pub struct ChangeList {
     pub more: usize,
     /// A session's review request's paths, keyed to this folder (empty otherwise).
     pub requested: Vec<RequestedKey>,
+    /// Story 8.4: on a session target, the files its transcript says it edited, keyed like the
+    /// list's paths (empty otherwise).
+    pub touched: Vec<String>,
 }
 
 /// The two sides of one file, or why they are not shown.
@@ -625,6 +628,7 @@ pub fn list(git_bin: &Path, folder: &Path, filter: Filter) -> Result<ChangeList,
         files: rows.into_iter().map(|r| r.file).collect(),
         more,
         requested: Vec::new(),
+        touched: Vec::new(),
     })
 }
 

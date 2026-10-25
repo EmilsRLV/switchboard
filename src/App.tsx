@@ -12,6 +12,7 @@ import {
   onInboxUnread,
   onLiveSessions,
   onNotifyReveal,
+  onReviewComments,
   onReviewRequests,
   onProjectsStatus,
   onSettingsChanged,
@@ -199,6 +200,8 @@ export default function App() {
       else unlisten.push(fn);
     };
     void onApprovalNotice((text) => notify(text)).then(keep);
+    // Story 8.4: every line comment of this run with its state (the pane reads its target's on opening).
+    void onReviewComments((comments) => useReviewStore.getState().applyComments(comments)).then(keep);
     void onAgentStarted((term) => useTerminalStore.getState().upsert(term)).then(keep);
     return () => {
       disposed = true;

@@ -57,6 +57,9 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::review_dir,
             ipc::review_view,
             ipc::review_open_editor,
+            ipc::review_touched,
+            ipc::review_comment,
+            ipc::review_comments_get,
             ipc::edge_live_retry,
             ipc::edge_restart_with_flags,
             ipc::claude_projects_list,
@@ -3401,6 +3404,237 @@ mod tests {
         super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
     }
 
+    /// Story 8.4: the files a session touched come from its transcript (a temp claude home), keyed
+    /// to its folder. A line comment lands in its inbox from `operator`; it is typed in exactly once
+    /// at an idle with no draft (sent while stopped: after the resume; while busy: at the next idle;
+    /// read first: never), the typed one leaves the inbox, comments never feed the nudge's loop
+    /// guard, a full comment list drops (and shows) only that session's oldest, and removing the
+    /// session drops its comments and job.
+    #[test]
+    fn review_comments_reach_the_session_and_its_touched_files_are_marked() {
+        use super::claude::live::SessionState;
+        use super::claude::live_edges;
+        use super::inbox::NudgeLimit;
+        use serde_json::json;
+        let (app, webview, dir, folder, _sessions) = launch_fixture();
+        let state = app.state::<super::AppState>();
+        *state.launcher.program.lock().unwrap() = Some(line_echo_program(dir.path()));
+        *state.live_edges.timeouts.lock().unwrap() = live_edges::Timeouts {
+            busy: std::time::Duration::from_millis(1500),
+            confirm: std::time::Duration::from_millis(1500),
+            notify: std::time::Duration::from_millis(600),
+            tick: std::time::Duration::from_millis(50),
+        };
+        // The loop guard allows one nudge an hour: had the comments counted, the peer's nudge below
+        // would be held back.
+        *state.inbox.limit.lock().unwrap() = NudgeLimit { max: 1, window: std::time::Duration::from_secs(3600) };
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        let ide_path = dunce::canonicalize(folder.path()).unwrap();
+        let ide = ide_path.display().to_string();
+        std::fs::create_dir_all(ide_path.join("src")).unwrap();
+        std::fs::write(ide_path.join("src").join("a.ts"), "a\n").unwrap();
+        let (api, web) = ("c3c3c3c3-5b7d-4e8f-9a0b-1c2d3e4f5a6b", "d4d4d4d4-5b7d-4e8f-9a0b-1c2d3e4f5a6b");
+
+        // A temp claude home with the session's transcript (read-only).
+        let home = tempfile::tempdir().unwrap();
+        let project_dir = home.path().join("projects").join("-w-ide");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let tool = |name: &str, field: &str, path: String, sidechain: bool| {
+            json!({ "type": "assistant", "isSidechain": sidechain, "cwd": ide, "message": { "id": "m", "content": [
+                { "type": "tool_use", "id": "t", "name": name, "input": { field: path } }
+            ] } })
+            .to_string()
+        };
+        let sep = std::path::MAIN_SEPARATOR;
+        let lines = [
+            tool("Edit", "file_path", format!("{ide}{sep}src{sep}a.ts"), false),
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\"".to_string(),
+            tool("Write", "file_path", format!("{ide}{sep}b.md"), false),
+            tool("MultiEdit", "file_path", format!("{ide}{sep}src{sep}c.rs"), true),
+            tool("NotebookEdit", "notebook_path", format!("{ide}{sep}n.ipynb"), false),
+            tool("Edit", "file_path", dir.path().join("elsewhere.txt").display().to_string(), false),
+            tool("Read", "file_path", format!("{ide}{sep}read.md"), false),
+        ];
+        std::fs::write(project_dir.join(format!("{api}.jsonl")), lines.join("\n") + "\n").unwrap();
+        state.claude_home.set(home.path().to_path_buf()).unwrap();
+        let summary = |id: &str, title: &str| super::claude::SessionSummary {
+            id: id.into(),
+            title: title.into(),
+            started_at: "2026-10-18T10:00:00.000Z".into(),
+            last_active: "2026-10-18T10:05:00.000Z".into(),
+            branch: None,
+            messages: 4,
+            cwd: Some(ide.clone()),
+        };
+        super::graph::set_discovered(app.handle(), std::collections::HashMap::from([("ide".to_string(), vec![summary(api, "api-1"), summary(web, "web-2")])]));
+        // A peer for the loop-guard check, linked while neither runs (no peer line is typed).
+        call("edge_add", json!({ "from": { "type": "session", "id": api }, "to": { "type": "session", "id": web } })).expect("edge_add");
+        let target = json!({ "kind": "session", "sessionId": api });
+        let project = json!({ "kind": "project", "projectId": "ide" });
+
+        // Touched: the edit tools' files inside the folder; corrupt lines and outside paths skipped.
+        assert_eq!(call("review_touched", json!({ "target": target })).unwrap(), json!(["b.md", "n.ipynb", "src/a.ts", "src/c.rs"]));
+        assert_eq!(call("review_touched", json!({ "target": project })).unwrap(), json!([]));
+
+        let term = format!("session:{api}");
+        let output = || super::pty::tests::strip_escapes(&state.terms.buffer(&term).map(|b| b.data).unwrap_or_default());
+        let typed = || -> Vec<String> {
+            output()
+                .lines()
+                .filter(|l| l.starts_with("got=Review comment on") || l.starts_with("got=You have"))
+                .map(|l| l.trim_end().to_string())
+                .collect()
+        };
+        let comment_to = |id: &str, path: &str, line: u32, text: &str| {
+            call("review_comment", json!({ "target": { "kind": "session", "sessionId": id }, "path": path, "line": line, "text": text }))
+        };
+        let comment = |path: &str, line: u32, text: &str| comment_to(api, path, line, text);
+        let states_of = |id: &str| -> Vec<String> {
+            call("review_comments_get", json!({ "target": { "kind": "session", "sessionId": id } }))
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c["state"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let states = || states_of(api);
+        let read = || super::mcp::call_app(app.handle(), api, "inbox", &json!({})).unwrap();
+        let set_state = |s: SessionState| state.write_sessions_live().sessions.get_mut(api).unwrap().state = s;
+        let settle = || std::thread::sleep(std::time::Duration::from_millis(400));
+        let job_done = |what: &str| wait_until(&app, &term, what, || !state.inbox.comment_pending(api));
+
+        // Refused: a project, an empty comment, a path outside the folder, line 0.
+        assert_eq!(
+            call("review_comment", json!({ "target": project, "path": "a.txt", "line": 1, "text": "x" })),
+            Err(json!(super::inbox::COMMENTS_GO_TO_A_SESSION))
+        );
+        assert_eq!(comment("src/a.ts", 1, " \n "), Err(json!(super::inbox::EMPTY_COMMENT)));
+        assert_eq!(comment("../x", 1, "x"), Err(json!(super::inbox::BAD_COMMENT_PATH)));
+        assert!(comment("src/a.ts", 0, "x").is_err());
+        assert!(states().is_empty() && state.inbox.unread().is_empty(), "nothing lands for a refusal");
+        assert_eq!(call("review_comments_get", json!({ "target": project })).unwrap(), json!([]));
+
+        // Stopped, then read: queued in the inbox; `inbox()` returns it from `operator`; never typed.
+        let queued = comment("src/a.ts", 12, "rename this").unwrap();
+        assert_eq!(queued["state"], "queued");
+        assert_eq!(queued["text"], "Review comment on src/a.ts:12: rename this");
+        assert_eq!((queued["path"].clone(), queued["line"].clone()), (json!("src/a.ts"), json!(12)));
+        assert_eq!(state.inbox.count(api), 1);
+        assert!(!state.inbox.comment_pending(api), "no job for a session that is not running");
+        let got = read();
+        assert_eq!(got[0]["from"], "operator");
+        assert_eq!(got[0]["fromNodeId"], json!(null));
+        assert_eq!(got[0]["text"], "Review comment on src/a.ts:12: rename this");
+        assert_eq!(states(), ["read"]);
+
+        // Stopped, not read: typed once the resumed session is idle, and it leaves the inbox.
+        comment("src/a.ts", 2, "while you were stopped").unwrap();
+        call("session_resume", json!({ "projectId": "ide", "sessionId": api, "cols": 1000, "rows": 40 })).expect("resume");
+        wait_until(&app, &term, "the prompt", || output().contains("Switchboard node id"));
+        set_state(SessionState::Idle);
+        wait_until(&app, &term, "the comment sent while stopped", || !typed().is_empty());
+        set_state(SessionState::Busy);
+        job_done("the comment job to end");
+        assert_eq!(typed(), ["got=Review comment on src/a.ts:2: while you were stopped"], "{}", output());
+        assert_eq!(states(), ["read", "sent"]);
+        assert_eq!(state.inbox.count(api), 0, "a typed comment counts as read in the inbox");
+        assert_eq!(read(), json!([]), "so the agent never gets it twice");
+
+        // Running and idle: exactly the line, then `sent`.
+        set_state(SessionState::Idle);
+        comment("src/a.ts", 12, "rename this").unwrap();
+        wait_until(&app, &term, "the comment line", || typed().len() == 2);
+        set_state(SessionState::Busy);
+        job_done("the comment job to end");
+        assert_eq!(typed()[1], "got=Review comment on src/a.ts:12: rename this");
+        assert_eq!(states(), ["read", "sent", "sent"]);
+
+        // Busy: queued; typed (as one line, a run of breaks one space) at the next idle.
+        comment("b.md", 3, "first\nsecond\r\n\r\nthird").unwrap();
+        settle();
+        assert_eq!(typed().len(), 2, "nothing while busy");
+        assert_eq!(states().last().unwrap(), "queued");
+        set_state(SessionState::Idle);
+        wait_until(&app, &term, "the busy comment", || typed().len() == 3);
+        set_state(SessionState::Busy);
+        job_done("the comment job to end");
+        assert_eq!(typed()[2], "got=Review comment on b.md:3: first second third");
+
+        // A draft holds it back until an idle with no draft.
+        set_state(SessionState::Idle);
+        live_edges::note_input(&state, api, "half a thought");
+        comment("src/a.ts", 1, "draft").unwrap();
+        settle();
+        assert_eq!(typed().len(), 3, "not over a draft");
+        assert!(state.inbox.comment_pending(api));
+        live_edges::note_input(&state, api, "\x15");
+        wait_until(&app, &term, "the comment after the draft", || typed().len() == 4);
+        set_state(SessionState::Busy);
+        job_done("the comment job to end");
+        assert_eq!(states(), ["read", "sent", "sent", "sent", "sent"]);
+
+        // Read before the idle: never typed.
+        comment("src/a.ts", 5, "read first").unwrap();
+        assert_eq!(read()[0]["text"], "Review comment on src/a.ts:5: read first");
+        set_state(SessionState::Idle);
+        settle();
+        assert_eq!(typed().len(), 4, "a read comment is not typed");
+        assert_eq!(states().last().unwrap(), "read");
+        assert!(!state.inbox.comment_pending(api));
+
+        // Four comments typed with a loop guard of one: a peer's message still nudges.
+        assert!(!typed().iter().any(|l| l.starts_with("got=You have")), "no generic nudge for a comment: {:?}", typed());
+        super::mcp::call_app(app.handle(), web, "send", &json!({ "peer": api, "text": "hello" })).expect("send");
+        wait_until(&app, &term, "the peer's nudge", || typed().iter().any(|l| l.starts_with("got=You have")));
+        set_state(SessionState::Busy);
+        assert_eq!(typed()[4], "got=You have 1 message from \"web-2\". Call switchboard.inbox.");
+        wait_until(&app, &term, "the nudge job to end", || !state.inbox.nudge_pending(api));
+        read();
+
+        // A full comment list (another, stopped session): its oldest queued comment is dropped and
+        // listed as such, the inbox keeps the rest, and this session's comments are untouched.
+        let before = states();
+        for n in 0..=super::inbox::MAX_COMMENTS {
+            comment_to(web, "b.md", 1, &format!("c{n}")).unwrap();
+        }
+        let web_states = states_of(web);
+        assert_eq!(web_states.len(), super::inbox::MAX_COMMENTS + 1);
+        assert_eq!(web_states[0], "dropped");
+        assert!(web_states[1..].iter().all(|s| s == "queued"));
+        assert_eq!(state.inbox.count(web), super::inbox::MAX_COMMENTS, "the dropped one left the inbox; none other was evicted");
+        assert_eq!(states(), before);
+
+        // Sent while busy, then the session exits: typed after its resume.
+        comment("src/a.ts", 7, "after the resume").unwrap();
+        state.terms.write(&term, b"/exit\r").unwrap();
+        wait_until(&app, &term, "the exit", || live_edges::running_session(&state, api).is_none());
+        assert_eq!(states().last().unwrap(), "queued");
+        call("session_resume", json!({ "projectId": "ide", "sessionId": api, "cols": 1000, "rows": 40 })).expect("resume again");
+        wait_until(&app, &term, "the session to run again", || live_edges::running_session(&state, api).is_some());
+        set_state(SessionState::Idle);
+        wait_until(&app, &term, "the comment after the resume", || {
+            typed().iter().any(|l| l == "got=Review comment on src/a.ts:7: after the resume")
+        });
+        set_state(SessionState::Busy);
+        wait_until(&app, &term, "sent", || states().last().map(String::as_str) == Some("sent"));
+        job_done("the comment job to end");
+
+        // Removed from the workspace: its comments and its waiting job go; the other session's stay.
+        comment("src/a.ts", 8, "never").unwrap();
+        assert!(state.inbox.comment_pending(api));
+        super::inbox::forget_sessions(app.handle(), [api]);
+        assert!(states().is_empty());
+        assert!(!state.inbox.comment_pending(api));
+        assert_eq!(states_of(web).len(), super::inbox::MAX_COMMENTS + 1);
+        set_state(SessionState::Idle);
+        settle();
+        assert!(!typed().iter().any(|l| l.contains("never")), "{:?}", typed());
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
+    }
+
     #[test]
     fn a_misspelt_command_is_rejected() {
         let app = mock_app();
@@ -3620,12 +3854,23 @@ mod tests {
                 "submodule": false, "unreadableName": false, "tooLarge": false, "onDisk": false }])
         );
         assert_eq!((list["more"].clone(), list["requested"].clone()), (json!(0), json!([])));
+        assert_eq!(list["touched"], json!([]), "a project has no touched marks");
 
         // A session is reviewed in its cwd; one whose folder is not known is refused.
         app.state::<super::AppState>().write_sessions_live().launched("s-live", Some(id.clone()), &top.display().to_string(), "live", 1);
+        // Story 8.4: its transcript (a temp claude home) says it edited a.txt, read with the list.
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("projects").join("p")).unwrap();
+        let edit = json!({ "type": "assistant", "message": { "content": [
+            { "type": "tool_use", "name": "Edit", "input": { "file_path": top.join("a.txt").display().to_string() } }
+        ] } });
+        std::fs::write(home.path().join("projects").join("p").join("s-live.jsonl"), format!("{edit}\n")).unwrap();
+        app.state::<super::AppState>().claude_home.set(home.path().to_path_buf()).unwrap();
         let session = json!({ "kind": "session", "sessionId": "s-live" });
         let body = invoke_with(&webview, "review_list", InvokeBody::Json(json!({ "target": session, "filter": "all" }))).expect("session list");
-        assert_eq!(body.deserialize::<serde_json::Value>().unwrap()["root"], top.display().to_string());
+        let session_list = body.deserialize::<serde_json::Value>().unwrap();
+        assert_eq!(session_list["root"], top.display().to_string());
+        assert_eq!(session_list["touched"], json!(["a.txt"]));
         let unknown = json!({ "kind": "session", "sessionId": "nobody" });
         let err = invoke_with(&webview, "review_list", InvokeBody::Json(json!({ "target": unknown, "filter": "all" }))).unwrap_err();
         assert_eq!(err, json!(super::review::NO_FOLDER));

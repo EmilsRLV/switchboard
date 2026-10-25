@@ -53,7 +53,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the seventy-six commands with the spec's keybindings", () => {
+  it("register the seventy-seven commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -97,6 +97,7 @@ describe("built-in commands", () => {
       "project.toggleShowAll",
       "review.changes",
       "review.clear",
+      "review.comment",
       "review.filterAll",
       "review.filterStaged",
       "review.filterUnstaged",
@@ -167,6 +168,9 @@ describe("built-in commands", () => {
     expect(getCommand("review.openEditor")?.keybinding).toBe("o");
     expect(getCommand("review.openEditor")?.title).toBe("Open in editor");
     expect(getCommand("review.modeFiles")?.keybinding).toBeUndefined();
+    // Story 8.4: `c` comments on the shown line (a session target only).
+    expect(getCommand("review.comment")?.keybinding).toBe("c");
+    expect(getCommand("review.comment")?.title).toBe("Comment on line");
     expect(getCommand("review.modeFiles")?.title).toBe("Review: files");
     expect(getCommand("edge.delete")?.keybinding).toBe("delete");
     expect(getCommand("edge.inspect")?.keybinding).toBeUndefined();
@@ -199,7 +203,7 @@ describe("built-in commands", () => {
     expect(getCommand("project.relayout")?.keybinding).toBeUndefined();
   });
 
-  it("the key-only carriers are hidden from the palette, the sixty-four actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the sixty-five actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -238,6 +242,7 @@ describe("built-in commands", () => {
       "project.toggleShowAll",
       "review.changes",
       "review.clear",
+      "review.comment",
       "review.filterAll",
       "review.filterStaged",
       "review.filterUnstaged",
@@ -305,7 +310,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(76);
+    expect(listCommands()).toHaveLength(77);
   });
 
   const PROJECT_ACTIONS = [

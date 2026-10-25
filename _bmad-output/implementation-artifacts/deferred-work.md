@@ -131,3 +131,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-8-3-file-browser-and-external-open.md`
   summary: Story 8.3 has not run on CI, and FilesBody has no render tests. It was closed on local Windows verification while GitHub Actions is suspended.
   evidence: The Linux build and tests have not run, including the Unix file-symlink case, which skipped on Windows. There is no DOM test environment for FilesBody's read ids.
+- source_spec: `_bmad-output/implementation-artifacts/spec-8-4-session-touched-files-and-line-comments.md`
+  summary: Story 8.4 has not run on CI, and the touched marks have not been seen on screen. It was closed on local Windows verification while GitHub Actions is suspended.
+  evidence: The GUI pass cannot write a transcript into the real `~/.claude`; the IPC test covers the marks with a temp claude home. Linux CI has not run.

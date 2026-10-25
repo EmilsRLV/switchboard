@@ -34,6 +34,21 @@
 //! **The link notice.** When a cooperate edge joins two running sessions, each inbox gets
 //! `Linked to "<other>" (<purpose>).` from `switchboard`. It counts as unread but never nudges
 //! on its own (the 6.4 peer line already tells the session).
+//!
+//! **Line comments** (Story 8.4). The Review pane sends `Review comment on <path>:<line>:
+//! <comment>` ([`comment_line`]: one line, at most [`MAX_COMMENT_CHARS`] characters) to a session.
+//! It lands in the inbox from `operator` (so `inbox()` returns it) and never counts as a peer
+//! arrival: the `You have N messages` nudge and its loop guard ignore it. While the session runs
+//! in a Switchboard terminal, its comment job types the line itself at the next idle with no draft
+//! and a free slot (the shared injection rules, `live_edges::look`), each comment once, oldest
+//! first. It is typed whatever `peers.nudge` says (that setting governs only the peer-message
+//! nudge). A session that is not running keeps it queued in the inbox, and it is typed once the
+//! session next runs here and is idle, unless the session read it with `inbox()` first. A typed
+//! comment leaves the inbox (it counts as read there), so the agent never gets it twice. Comment
+//! messages are never evicted from a full inbox ahead of other messages, nor queued comments from
+//! the per-session list; one that must go anyway is `dropped`. Each comment's state (`queued`,
+//! `sent` once typed, `read` once drained by `inbox()`, `dropped`) is kept for this run only and goes
+//! out as [`COMMENTS_EVENT`].
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Mutex, MutexGuard};
@@ -95,6 +110,9 @@ pub struct Message {
     pub text: String,
     /// ISO 8601 UTC.
     pub at: String,
+    /// Story 8.4: the line comment this message carries (never sent to the session).
+    #[serde(skip)]
+    pub comment: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -140,6 +158,11 @@ struct Inner {
     /// Session → the generation of its current nudge job.
     jobs: HashMap<String, u64>,
     next_job: u64,
+    /// Story 8.4: the line comments of this run, oldest first.
+    comments: Vec<Comment>,
+    next_comment: u64,
+    /// Session → the generation of its current comment job.
+    comment_jobs: HashMap<String, u64>,
 }
 
 /// Every session's inbox (in `AppState`). Memory only.
@@ -179,6 +202,21 @@ impl Inboxes {
     pub fn has_box(&self, id: &str) -> bool {
         lock(&self.inner).boxes.contains_key(id)
     }
+
+    /// Story 8.4: session `id`'s line comments of this run, oldest first.
+    pub fn comments_of(&self, id: &str) -> Vec<Comment> {
+        lock(&self.inner).comments.iter().filter(|c| c.session_id == id).cloned().collect()
+    }
+
+    /// Story 8.4: every line comment of this run, oldest first.
+    pub fn comments(&self) -> Vec<Comment> {
+        lock(&self.inner).comments.clone()
+    }
+
+    /// Story 8.4: whether session `id` has a comment job waiting.
+    pub fn comment_pending(&self, id: &str) -> bool {
+        lock(&self.inner).comment_jobs.contains_key(id)
+    }
 }
 
 fn counts(inner: &Inner) -> BTreeMap<String, usize> {
@@ -206,11 +244,34 @@ fn now_iso() -> String {
 fn push<R: Runtime>(app: &AppHandle<R>, to: &str, message: Message, arrival: bool) -> (usize, usize) {
     let state = app.state::<AppState>();
     let mut inner = lock(&state.inbox.inner);
-    let entry = inner.boxes.entry(to.to_string()).or_default();
+    let (count, dropped, comments_changed) = push_locked(&mut inner, to, message, arrival);
+    // Under the lock, so the events go out in the order the changes were made.
+    emit(app, &inner);
+    if comments_changed {
+        emit_comments(app, &inner);
+    }
+    (count, dropped)
+}
+
+/// [`push`] under the caller's lock, without the events. Past [`MAX_UNREAD`] the oldest message
+/// that is not a line comment goes first; a comment message goes only when nothing else is left,
+/// and its comment is then `dropped`. Returns the count, the messages dropped and whether a
+/// comment's state changed.
+fn push_locked(inner: &mut Inner, to: &str, message: Message, arrival: bool) -> (usize, usize, bool) {
+    let Inner { boxes, comments, .. } = inner;
+    let entry = boxes.entry(to.to_string()).or_default();
     entry.messages.push_back(message);
     let mut dropped = 0;
+    let mut comments_changed = false;
     while entry.messages.len() > MAX_UNREAD {
-        entry.messages.pop_front();
+        let at = entry.messages.iter().position(|m| m.comment.is_none()).unwrap_or(0);
+        if let Some(gone) = entry.messages.remove(at)
+            && let Some(id) = gone.comment
+            && let Some(comment) = comments.iter_mut().find(|c| c.id == id && c.state == CommentState::Queued)
+        {
+            comment.state = CommentState::Dropped;
+            comments_changed = true;
+        }
         dropped += 1;
     }
     if dropped > 0 {
@@ -220,10 +281,7 @@ fn push<R: Runtime>(app: &AppHandle<R>, to: &str, message: Message, arrival: boo
     if arrival {
         entry.arrival += 1;
     }
-    let count = entry.len();
-    // Under the lock, so the events go out in the order the changes were made.
-    emit(app, &inner);
-    (count, dropped)
+    (entry.len(), dropped, comments_changed)
 }
 
 /// A message's text as it is stored: line breaks kept (`\r\n`, `\r`, U+2028 and U+2029 become
@@ -307,6 +365,7 @@ pub fn send<R: Runtime>(app: &AppHandle<R>, caller: &str, args: &Value) -> Resul
         from_node_id: Some(caller.to_string()),
         text,
         at: now_iso(),
+        comment: None,
     };
     let (unread, dropped) = push(app, &to, message, true);
     let running = live_edges::running_session(&state, &to).is_some();
@@ -339,6 +398,7 @@ pub fn inbox<R: Runtime>(app: &AppHandle<R>, caller: &str) -> Result<Value, Stri
             from_node_id: None,
             text: dropped_text(entry.dropped),
             at: std::mem::take(&mut entry.dropped_at),
+            comment: None,
         });
         entry.dropped = 0;
     }
@@ -347,6 +407,19 @@ pub fn inbox<R: Runtime>(app: &AppHandle<R>, caller: &str) -> Result<Value, Stri
     entry.nudged = entry.arrival;
     if !messages.is_empty() {
         emit(app, &inner);
+    }
+    // Story 8.4: a drained line comment is read (and so never typed).
+    let mut read = false;
+    for id in messages.iter().filter_map(|m| m.comment) {
+        if let Some(comment) = inner.comments.iter_mut().find(|c| c.id == id)
+            && comment.state == CommentState::Queued
+        {
+            comment.state = CommentState::Read;
+            read = true;
+        }
+    }
+    if read {
+        emit_comments(app, &inner);
     }
     serde_json::to_value(messages).map_err(|e| e.to_string())
 }
@@ -372,6 +445,7 @@ pub fn link_notices<R: Runtime>(app: &AppHandle<R>, edge: &Edge) {
             from_node_id: None,
             text: notice_text(&peer.name, &peer.purpose),
             at: now_iso(),
+            comment: None,
         };
         push(app, me, message, false);
     }
@@ -423,6 +497,10 @@ pub fn session_started<R: Runtime>(app: &AppHandle<R>, id: &str) {
     if state.inbox.nudge_owed(id) && nudge_on(&state) {
         start(app, id);
     }
+    // Story 8.4: comments still queued (sent while it was stopped, or not typed before it exited).
+    if next_comment(&lock(&state.inbox.inner), id).is_some() {
+        start_comments(app, id);
+    }
 }
 
 /// `peers.nudge` was turned on: every running session with an arrival not yet nudged gets a job.
@@ -438,7 +516,10 @@ pub fn nudge_turned_on<R: Runtime>(app: &AppHandle<R>) {
 
 /// Session `id` exited: its nudge job ends; its inbox stays for a later resume.
 pub fn session_exited<R: Runtime>(app: &AppHandle<R>, id: &str) {
-    lock(&app.state::<AppState>().inbox.inner).jobs.remove(id);
+    let state = app.state::<AppState>();
+    let mut inner = lock(&state.inbox.inner);
+    inner.jobs.remove(id);
+    inner.comment_jobs.remove(id);
 }
 
 /// Sessions removed from the workspace (their ref, or their project): their inboxes and nudge
@@ -447,12 +528,18 @@ pub fn forget_sessions<'a, R: Runtime>(app: &AppHandle<R>, ids: impl IntoIterato
     let state = app.state::<AppState>();
     let mut inner = lock(&state.inbox.inner);
     let mut removed = false;
+    let before = inner.comments.len();
     for id in ids {
         inner.jobs.remove(id);
+        inner.comment_jobs.remove(id);
+        inner.comments.retain(|c| c.session_id != id);
         removed |= inner.boxes.remove(id).is_some();
     }
     if removed {
         emit(app, &inner);
+    }
+    if inner.comments.len() != before {
+        emit_comments(app, &inner);
     }
 }
 
@@ -591,4 +678,350 @@ fn run_nudge<R: Runtime>(app: &AppHandle<R>, id: &str, job: u64) {
     }
     drop(slot);
     finish(&state, id, job);
+}
+
+// -- Story 8.4: line comments from the Review pane ---------------------------------------------
+
+/// The event that carries every line comment of this run (`[Comment]`, oldest first) on each change.
+pub const COMMENTS_EVENT: &str = "review://comments";
+
+/// The sender of a line comment.
+pub const OPERATOR: &str = "operator";
+
+/// The longest comment line, in characters (cut there).
+pub const MAX_COMMENT_CHARS: usize = 1000;
+
+/// The most comments kept per session (those already typed, read or dropped go first).
+pub const MAX_COMMENTS: usize = 100;
+
+/// Why a comment to a project or a branch is refused.
+pub const COMMENTS_GO_TO_A_SESSION: &str = "comments go to a session";
+
+/// Why an empty comment is refused.
+pub const EMPTY_COMMENT: &str = "comment is empty";
+
+/// Why a comment on a bad path is refused.
+pub const BAD_COMMENT_PATH: &str = "the file is not in the reviewed folder";
+
+/// Why a comment whose path leaves no room for its text is refused.
+pub const PATH_TOO_LONG: &str = "the file's path is too long for a comment";
+
+/// A comment's delivery state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommentState {
+    /// In the inbox, waiting for an idle (or for the session to run here).
+    Queued,
+    /// Typed into the session (it left the inbox).
+    Sent,
+    /// Drained by the session's `inbox()`.
+    Read,
+    /// Pushed out of a full inbox or comment list before it was delivered.
+    Dropped,
+}
+
+/// One line comment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Comment {
+    pub id: u64,
+    pub session_id: String,
+    /// Relative to the reviewed folder, with `/`.
+    pub path: String,
+    pub line: u32,
+    /// The line as delivered: `Review comment on <path>:<line>: <comment>`.
+    pub text: String,
+    pub state: CommentState,
+    /// ISO 8601 UTC.
+    pub at: String,
+}
+
+fn emit_comments<R: Runtime>(app: &AppHandle<R>, inner: &Inner) {
+    if let Err(err) = app.emit(COMMENTS_EVENT, &inner.comments) {
+        eprintln!("inbox: comments emit failed: {err}");
+    }
+}
+
+fn is_break(c: char) -> bool {
+    matches!(c, '\r' | '\n' | '\u{2028}' | '\u{2029}')
+}
+
+fn is_stripped(c: char) -> bool {
+    c.is_control() || ('\u{202A}'..='\u{202E}').contains(&c) || ('\u{2066}'..='\u{2069}').contains(&c)
+}
+
+/// `text` as one plain line: each run of line breaks (`\r`, `\n`, U+2028, U+2029) becomes one
+/// space (as the comment box does); every other control character and the bidi embeddings,
+/// overrides and isolates are stripped; trimmed.
+pub fn one_line(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_break = false;
+    for c in text.chars() {
+        if is_break(c) {
+            if !in_break {
+                out.push(' ');
+                in_break = true;
+            }
+        } else if !is_stripped(c) {
+            out.push(c);
+            in_break = false;
+        }
+    }
+    out.trim().to_string()
+}
+
+/// `Review comment on <path>:<line>: <comment>`, one line, cut to [`MAX_COMMENT_CHARS`]
+/// characters. `Err` ([`EMPTY_COMMENT`]) when nothing is left of the comment, and
+/// ([`PATH_TOO_LONG`]) when the path leaves no room for it.
+pub fn comment_line(path: &str, line: u32, comment: &str) -> Result<String, String> {
+    let comment = one_line(comment);
+    if comment.is_empty() {
+        return Err(EMPTY_COMMENT.to_string());
+    }
+    let lead = format!("Review comment on {path}:{line}: ");
+    if lead.chars().count() >= MAX_COMMENT_CHARS {
+        return Err(PATH_TOO_LONG.to_string());
+    }
+    Ok(format!("{lead}{comment}").chars().take(MAX_COMMENT_CHARS).collect())
+}
+
+/// The path a comment names, checked lexically (the comment only names it; nothing is read):
+/// relative to the reviewed folder as the pane lists it (`/` between the parts, names kept as
+/// listed, spaces included), with no empty, `.` or `..` part and no control, line-break or bidi
+/// characters, so it lies inside the folder; on Windows also no `:` or `\`.
+pub fn comment_path(path: &str) -> Result<String, String> {
+    let bad = |c: char| is_break(c) || is_stripped(c) || (cfg!(windows) && matches!(c, ':' | '\\'));
+    let plain = !path.is_empty() && !path.chars().any(bad) && path.split('/').all(|p| !p.is_empty() && p != "." && p != "..");
+    if plain { Ok(path.to_string()) } else { Err(BAD_COMMENT_PATH.to_string()) }
+}
+
+/// Take comment `id`'s message out of session `session`'s inbox: where it was and the message.
+fn take_comment_message(inner: &mut Inner, session: &str, id: u64) -> Option<(usize, Message)> {
+    let entry = inner.boxes.get_mut(session)?;
+    let at = entry.messages.iter().position(|m| m.comment == Some(id))?;
+    entry.messages.remove(at).map(|m| (at, m))
+}
+
+/// Room for one more comment of `session`: past [`MAX_COMMENTS`] its oldest comment that is no
+/// longer queued goes; when every one is still queued, the oldest is `dropped` (it stays listed as
+/// such, and leaves the inbox). Other sessions' comments are never touched.
+fn make_room(inner: &mut Inner, session: &str) {
+    while inner.comments.iter().filter(|c| c.session_id == session).count() >= MAX_COMMENTS {
+        if let Some(at) = inner.comments.iter().position(|c| c.session_id == session && c.state != CommentState::Queued) {
+            inner.comments.remove(at);
+            continue;
+        }
+        if let Some(oldest) = inner.comments.iter_mut().find(|c| c.session_id == session && c.state == CommentState::Queued) {
+            oldest.state = CommentState::Dropped;
+            let id = oldest.id;
+            take_comment_message(inner, session, id);
+        }
+        break;
+    }
+}
+
+/// A line comment to session `session` on `path` (checked by the caller) at `line`: built
+/// ([`comment_line`]; an empty comment and line 0 are refused), pushed to its inbox from
+/// [`OPERATOR`] (no peer arrival, no nudge) and, while the session runs here, typed in at its next
+/// idle by its comment job (otherwise once it runs here again: [`session_started`]). Returns the
+/// comment.
+pub fn comment<R: Runtime>(app: &AppHandle<R>, session: &str, path: &str, line: u32, text: &str) -> Result<Comment, String> {
+    if line == 0 {
+        return Err("line must be 1 or more".to_string());
+    }
+    let text = comment_line(path, line, text)?;
+    let state = app.state::<AppState>();
+    let at = now_iso();
+    let (comment, running) = {
+        let mut inner = lock(&state.inbox.inner);
+        make_room(&mut inner, session);
+        inner.next_comment += 1;
+        let comment = Comment {
+            id: inner.next_comment,
+            session_id: session.to_string(),
+            path: path.to_string(),
+            line,
+            text: text.clone(),
+            state: CommentState::Queued,
+            at: at.clone(),
+        };
+        inner.comments.push(comment.clone());
+        let message = Message {
+            from: OPERATOR.to_string(),
+            from_node_id: None,
+            text,
+            at,
+            comment: Some(comment.id),
+        };
+        push_locked(&mut inner, session, message, false);
+        emit(app, &inner);
+        emit_comments(app, &inner);
+        // Decided under the lock that holds the queued comment: a start after this point finds it
+        // owed (`session_started`), and one before it is seen running here.
+        let running = live_edges::running_session(&state, session).is_some();
+        (comment, running)
+    };
+    if running {
+        start_comments(app, session);
+    }
+    Ok(comment)
+}
+
+/// Session `id`'s oldest comment still to be typed in (queued: not read, typed or dropped).
+fn next_comment(inner: &Inner, id: &str) -> Option<u64> {
+    inner.comments.iter().find(|c| c.session_id == id && c.state == CommentState::Queued).map(|c| c.id)
+}
+
+/// Start session `id`'s comment job on a thread of its own, retiring an earlier one.
+fn start_comments<R: Runtime>(app: &AppHandle<R>, id: &str) {
+    let state = app.state::<AppState>();
+    let job = {
+        let mut inner = lock(&state.inbox.inner);
+        inner.next_job += 1;
+        let job = inner.next_job;
+        inner.comment_jobs.insert(id.to_string(), job);
+        job
+    };
+    let app = app.clone();
+    let id = id.to_string();
+    std::thread::spawn(move || run_comments(&app, &id, job));
+}
+
+fn comment_job_current(state: &AppState, id: &str, job: u64) -> bool {
+    lock(&state.inbox.inner).comment_jobs.get(id) == Some(&job)
+}
+
+fn finish_comments(state: &AppState, id: &str, job: u64) {
+    let mut inner = lock(&state.inbox.inner);
+    if inner.comment_jobs.get(id) == Some(&job) {
+        inner.comment_jobs.remove(id);
+    }
+}
+
+/// What a comment job took for one write: the comment, its line and its inbox message (and where
+/// it was), to put back if the write fails.
+struct Claimed {
+    id: u64,
+    line: String,
+    message: Option<(usize, Message)>,
+}
+
+/// Claim session `id`'s oldest queued comment under the lock, before it is written: it is `sent`
+/// and its message leaves the inbox, so a drain from now on cannot also return it.
+fn claim<R: Runtime>(app: &AppHandle<R>, state: &AppState, id: &str, job: u64) -> Option<Claimed> {
+    let mut inner = lock(&state.inbox.inner);
+    if inner.comment_jobs.get(id) != Some(&job) {
+        return None;
+    }
+    let comment = next_comment(&inner, id)?;
+    let line = {
+        let c = inner.comments.iter_mut().find(|c| c.id == comment)?;
+        c.state = CommentState::Sent;
+        c.text.clone()
+    };
+    let message = take_comment_message(&mut inner, id, comment);
+    emit(app, &inner);
+    emit_comments(app, &inner);
+    Some(Claimed { id: comment, line, message })
+}
+
+/// The write failed: the comment is queued again and its message back where it was.
+fn unclaim<R: Runtime>(app: &AppHandle<R>, state: &AppState, session: &str, claimed: Claimed) {
+    let mut inner = lock(&state.inbox.inner);
+    if let Some(c) = inner.comments.iter_mut().find(|c| c.id == claimed.id && c.state == CommentState::Sent) {
+        c.state = CommentState::Queued;
+        if let Some((at, message)) = claimed.message {
+            let entry = inner.boxes.entry(session.to_string()).or_default();
+            let at = at.min(entry.messages.len());
+            entry.messages.insert(at, message);
+        }
+    }
+    emit(app, &inner);
+    emit_comments(app, &inner);
+}
+
+/// The comment job of session `id`: while a comment is queued, wait (no give-up) for the session
+/// to be idle with no draft and its slot free, claim the oldest queued comment ([`claim`]), type
+/// its line and Enter, and hold the slot until the session takes it (goes busy) or the notify wait
+/// passes. A failed write puts the comment back and is tried again on the next tick. Ends when
+/// nothing is queued or the session is gone (the rest stay queued for its next run).
+fn run_comments<R: Runtime>(app: &AppHandle<R>, id: &str, job: u64) {
+    let state = app.state::<AppState>();
+    let timeouts = live_edges::current_timeouts(&state);
+    loop {
+        if !comment_job_current(&state, id, job) {
+            return;
+        }
+        if next_comment(&lock(&state.inbox.inner), id).is_none() {
+            finish_comments(&state, id, job);
+            return;
+        }
+        let slot = match live_edges::look(&state, id) {
+            Look::Gone => {
+                finish_comments(&state, id, job);
+                return;
+            }
+            Look::Slot(slot) => slot,
+            Look::NotYet | Look::Draft => {
+                std::thread::sleep(timeouts.tick);
+                continue;
+            }
+        };
+        let Some(claimed) = claim(app, &state, id, job) else {
+            // Retired, or read meanwhile: the loop's next look decides.
+            drop(slot);
+            continue;
+        };
+        if let Err(err) = live_edges::write_line(&state, id, &format!("{}\r", claimed.line)) {
+            eprintln!("inbox: comment for {id} not written: {err}");
+            unclaim(app, &state, id, claimed);
+            drop(slot);
+            std::thread::sleep(timeouts.tick);
+            continue;
+        }
+        let sent = Instant::now();
+        while sent.elapsed() <= timeouts.notify {
+            std::thread::sleep(timeouts.tick);
+            match live_edges::running_session(&state, id) {
+                Some((live, _)) if live_edges::is_idle(&live) => {}
+                _ => break,
+            }
+        }
+        drop(slot);
+    }
+}
+
+#[cfg(test)]
+mod comment_tests {
+    use super::*;
+
+    #[test]
+    fn a_comment_is_one_cleaned_line_cut_to_the_limit() {
+        assert_eq!(comment_line("src/a.ts", 12, "rename this").unwrap(), "Review comment on src/a.ts:12: rename this");
+        assert_eq!(
+            comment_line("src/a.ts", 3, " first\r\n\r\nsecond\u{2028}third\u{2029}\n\u{7}\n\u{1b}[2J\u{202E}x\u{7} ").unwrap(),
+            "Review comment on src/a.ts:3: first second third [2Jx",
+            "a run of line breaks is one space"
+        );
+        assert_eq!(comment_line("a", 1, " \n\t\u{2028} "), Err(EMPTY_COMMENT.to_string()));
+        let long = comment_line("a", 1, &"x".repeat(5000)).unwrap();
+        assert_eq!(long.chars().count(), MAX_COMMENT_CHARS);
+        assert!(!long.contains('\n') && !long.contains('\r'));
+        // A path that leaves no room for the comment is refused; one that leaves a little is cut.
+        assert_eq!(comment_line(&"p".repeat(990), 1, "x"), Err(PATH_TOO_LONG.to_string()));
+        assert!(comment_line(&"p".repeat(970), 1, "xyz").unwrap().ends_with(": xyz"));
+    }
+
+    #[test]
+    fn a_comment_path_is_checked_lexically_and_kept_as_listed() {
+        assert_eq!(comment_path("src/a.ts"), Ok("src/a.ts".to_string()));
+        assert_eq!(comment_path(" spaced name .md"), Ok(" spaced name .md".to_string()), "names are kept as listed");
+        assert_eq!(comment_path("link/out.txt"), Ok("link/out.txt".to_string()), "nothing is resolved or read");
+        for bad in ["", "../x", "src/../../x", "/etc/passwd", "a//b", "./a", "a\nb", "a/", "a\u{202E}b", "a\u{7}"] {
+            assert_eq!(comment_path(bad), Err(BAD_COMMENT_PATH.to_string()), "{bad:?}");
+        }
+        for name in ["C:/x", "a\\b", "x:y.txt"] {
+            assert_eq!(comment_path(name).is_ok(), !cfg!(windows), "{name:?}: valid on Linux only");
+        }
+    }
 }

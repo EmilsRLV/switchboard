@@ -1025,6 +1025,7 @@ fn the_nudge_line_counts_messages_and_senders() {
         from_node_id: id.map(str::to_string),
         text: "x".into(),
         at: "2026-10-24T10:00:00.000Z".into(),
+        comment: None,
     };
     let a = message("A", Some("a"));
     let b = message("B", Some("b"));

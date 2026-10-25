@@ -98,8 +98,9 @@ same commands. Shortcuts go through one `keydown` dispatcher (`src/commands/keyb
 | `r` | Review changes: with a project, branch or session card selected, open the Review pane on its working tree (see [Review](#review)). Also in the node menu and the palette. Only while no palette, pane, menu or Elsewhere list is open, and not while focus is in a text field or a select. |
 | `j` / `k` | Next / previous file in the Review pane's tree (the requested files first). Only while the Review pane is open, and not in a text field. |
 | `o` | Open in editor: the Review pane's selected file in the external editor, at the line under the cursor (see [Open in editor](#open-in-editor)). Only while the Review pane is open, not in a text field and not while the context menu is open. Also in the palette. |
+| `c` | Comment on line: on a session's Review pane showing a file, open the comment box at the current line (see [Line comments](#line-comments)); ctrl+Enter in the box sends, Esc cancels. Not in a text field and not while the context menu is open. Also in the palette. |
 | Delete | Delete edge: only while an edge is selected (a click on its line), deletes it at once, no confirmation (see [Edges](#edges)). With no edge selected Delete does nothing; in a text field it is the field's. |
-| Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings, import, terminal, the launch sheet, the worktree sheet, the remove-worktree sheet, the edge inspector or the Review pane), else clears the selected node or edge. With all of them open, five presses. With focus in a terminal Esc is the terminal's (see [Terminal](#terminal)). |
+| Esc | One step back, in this order: closes the node context menu, else the Elsewhere list, else the palette, else the open pane (settings, import, terminal, the launch sheet, the worktree sheet, the remove-worktree sheet, the edge inspector or the Review pane), else clears the selected node or edge. With all of them open, five presses. With focus in a terminal Esc is the terminal's (see [Terminal](#terminal)). With focus in the Review pane's comment box, Esc closes only the box (see [Line comments](#line-comments)); with the focus elsewhere it does the above. |
 
 `/` is reserved for a later epic and deliberately unbound. Delete is bound only to deleting a selected edge;
 removing a project stays a menu action.
@@ -133,8 +134,8 @@ edges](#cooperation-edges)); Open review request while any session has a review 
 flag while a session is flagged (see [Review requests](#review-requests-request_review)); Review changes while a
 project, branch or session card is selected and, while the Review pane is open, Review: refresh, Review: all /
 staged / unstaged changes, Review: unified view (or side-by-side view), Review: next / previous file, Open in
-editor, Review: files (where the pane has a folder) and, on a project or branch, Review: changes / vs base / commits
-(see [Review](#review)). The palette sorts by title. The key-only
+editor, Review: files (where the pane has a folder), Comment on line (a session showing a file) and, on a project or
+branch, Review: changes / vs base / commits (see [Review](#review)). The palette sorts by title. The key-only
 carriers (the `ctrl+,` toggle, the palette's second binding `ctrl+shift+k`, the five Esc commands, the four
 arrows and Enter) are registered but hidden from
 the list; both panes' Close buttons run the Esc command (`pane.close`), the chevron on a card runs
@@ -1187,6 +1188,57 @@ and a line.
   settings` and opens Settings, also when no file is selected. Any other refusal (the program not found, could not
   start) is the notice.
 
+### Session-touched files
+
+On a session (Story 8.4), the files the session itself edited carry a muted `•` in the Changes tree and in Files (its
+tooltip and accessible name: `edited by this session`), so its own edits stand apart from files that were already
+dirty.
+
+- **Source.** Rust reads the session's own transcript (`<claude_home>/projects/*/<id>.jsonl`), read-only and
+  leniently (a line that is not JSON, or not shaped as expected, is skipped). An assistant record's `tool_use` blocks
+  named `Edit`, `Write` or `MultiEdit` give their `input.file_path`, and `NotebookEdit` its `input.notebook_path`.
+  Sidechain records in the same file count; separate subagent transcript files are not read. A session with no
+  transcript yet has no marks.
+- **Keys.** Each absolute path is mapped to the reviewed folder with 7.4's canonical check (links followed, case as
+  on disk), and also by its text, so a file named through a link inside the folder keeps that key. A path outside the
+  folder, or one that is not absolute on this OS (a `C:\…` path on Linux), is ignored.
+- **Freshness.** The marks are read with the list (Changes) or the tree (Files), so **Refresh** and the git poll update
+  them in both. Each transcript's scan is kept in memory and resumes where the last one stopped; a transcript that
+  shrank or was rewritten (its length, modified time and a fingerprint of its start tell) is read again, and a removed
+  session's scan goes.
+- **Other targets.** Projects and branches have no marks.
+
+### Line comments
+
+On a session (Story 8.4), **Comment on line** (`c`, the palette, or the toolbar's **Comment** button) opens a one-line
+box under the toolbar, `Comment on <file>:<line>`, anchored at the shown file's current line (the line `o` would open:
+the cursor of the view last clicked, else the first visible line; line 1 with no view). ctrl+Enter sends; Esc, while
+the focus is in the box, closes the box (the pane stays open); Enter alone does nothing, and bare keys (`c`, `o`, `j`,
+…) never fire while typing. The text is kept per reviewed node while the box moves to another line, and dropped when
+the pane closes. While it sends the box is read-only; a refusal shows under it and the focus returns to it. On a
+project or a branch the command is not offered and the button is disabled, titled `comments go to a session`.
+
+- **The line.** Rust builds `Review comment on <path>:<line>: <comment>`, the path relative to the reviewed folder.
+  Each run of line breaks becomes one space, control characters and U+2028/U+2029 are stripped, and the line is cut
+  to 1,000 characters. An empty comment is refused (`comment is empty`), and so is a path that is not a plain relative
+  path inside the folder (checked on its text: no `.` or `..` parts, no control characters, and on Windows no `:` or
+  `\`; names are kept as listed, spaces included) or one so long it leaves no room for the comment.
+- **Delivery.** The line lands in the session's inbox from `operator`, so the session's `inbox()` returns it (the
+  `N new` badge counts it). While the session runs in a Switchboard terminal, the line itself is typed in at its next
+  idle, through the same injection slot and draft rule as the peer line and the nudge (one plain line and Enter, never
+  over a draft). Comments are typed whatever `peers.nudge` says: that setting governs only the peer-message nudge.
+  The generic `You have N messages` nudge never fires for a comment, and comments do not count toward its loop guard.
+  Each comment is typed once, oldest first; a failed write is tried again. A session that is not running keeps the
+  comment queued in its inbox, and it is typed once the session next runs here and is idle, unless the session read it
+  with `inbox()` first. A typed comment leaves the inbox (it counts as read there), so the agent never gets it twice.
+- **Limits.** A full inbox (100 messages) drops its oldest peer messages and notices before any comment, and a
+  session's comment list (100) drops its oldest typed, read or dropped comments first. A comment that must go anyway is
+  `dropped`: it leaves the inbox, is never typed, and shows as such in the list. Other sessions' comments are never
+  touched.
+- **States.** Under the toolbar the pane lists this session's comments of this app run, oldest first: where, what and
+  the state, `queued` (in the inbox, waiting for idle or for the session to run here), `sent` (typed into the
+  session), `read` (drained by `inbox()`) or `dropped`. They update live and are never persisted.
+
 ## The switchboard MCP server
 
 A session Switchboard starts (New, Resume, Fork) can see the graph it sits in through a `switchboard` MCP
@@ -1384,7 +1436,7 @@ The location is `dirs::config_dir()/switchboard`, so it also resolves on macOS
 | `notifications.finished` | `true` | Send an OS toast when a session finishes its turn while the window is unfocused (see [Needs you](#needs-you)). |
 | `notifications.waiting` | `true` | Same for a session waiting for input (hooks, Story 4.3). |
 | `notifications.review` | `true` | Send an OS toast when a session asks for review (`request_review`) while the window is unfocused; clicking it opens the review (see [Review requests](#review-requests-request_review)). |
-| `peers.nudge` | `true` | Nudge a session that has new peer messages with one injected line once it is idle (see [Peer messages](#peer-messages-send-and-inbox)); `false` shows the `N new` badge only. |
+| `peers.nudge` | `true` | Nudge a session that has new peer messages with one injected line once it is idle (see [Peer messages](#peer-messages-send-and-inbox)); `false` shows the `N new` badge only. Review line comments (see [Line comments](#line-comments)) are typed either way. |
 
 Binary detection: `claude` is searched on PATH, then `~/.local/bin`; `git` on PATH. Each one found is run
 with `--version` (5 s timeout) and its version recorded. A configured `*.path` may be absolute, start with

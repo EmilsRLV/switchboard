@@ -81,6 +81,8 @@ import {
   canSetReviewFilter,
   canSwitchReviewMode,
   canOpenInEditor,
+  canCommentOnLine,
+  openCommentBox,
   openInEditor,
   clearReviewFromPalette,
   isReviewOpen,
@@ -703,6 +705,17 @@ export function builtinCommands(): Command[] {
       when: canOpenInEditor,
       run: async () => {
         await openInEditor();
+      },
+    },
+    {
+      // Story 8.4: a comment on the shown file's current line, to a session target only (its box
+      // takes the text; ctrl+Enter sends, Esc cancels). The bare key never fires while typing.
+      id: "review.comment",
+      title: "Comment on line",
+      keybinding: "c",
+      when: canCommentOnLine,
+      run: () => {
+        openCommentBox();
       },
     },
     {

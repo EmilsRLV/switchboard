@@ -527,9 +527,63 @@ pub async fn review_list<R: Runtime>(
         {
             list.requested = crate::review::request_keys(&folder, &request.paths);
         }
+        // Story 8.4: the files the session's transcript says it edited, read with the list.
+        if let crate::review::ReviewTarget::Session { session_id } = &target {
+            list.touched = crate::review::touched::session_touched(&app.state::<AppState>(), session_id, &folder);
+        }
         Ok(list)
     })
     .await?
+}
+
+/// Story 8.4: the files session `target` touched (its transcript's Edit / Write / MultiEdit /
+/// NotebookEdit calls), keyed to its folder as Files mode's paths are; empty for a project or a
+/// branch, or a session with no transcript yet. Read-only.
+#[tauri::command]
+pub async fn review_touched<R: Runtime>(app: AppHandle<R>, target: crate::review::ReviewTarget) -> Result<Vec<String>, String> {
+    blocking(move || {
+        let crate::review::ReviewTarget::Session { session_id } = &target else {
+            return Ok(Vec::new());
+        };
+        let (_, folder) = review_folder(&app, &target)?;
+        Ok(crate::review::touched::session_touched(&app.state::<AppState>(), session_id, &folder))
+    })
+    .await?
+}
+
+/// Story 8.4: a line comment from the Review pane to session `target`: `Review comment on
+/// <path>:<line>: <text>` lands in its inbox from `operator` and, while it runs here, is typed in at
+/// its next idle. `Err` for a project or a branch, an empty comment, a bad line or a path outside
+/// the reviewed folder. Returns the comment with its state.
+#[tauri::command]
+pub async fn review_comment<R: Runtime>(
+    app: AppHandle<R>,
+    target: crate::review::ReviewTarget,
+    path: String,
+    line: u32,
+    text: String,
+) -> Result<crate::inbox::Comment, String> {
+    blocking(move || {
+        let crate::review::ReviewTarget::Session { session_id } = &target else {
+            return Err(crate::inbox::COMMENTS_GO_TO_A_SESSION.to_string());
+        };
+        // The session must be known (with its folder); the path is checked lexically.
+        review_folder(&app, &target)?;
+        let path = crate::inbox::comment_path(&path)?;
+        crate::inbox::comment(&app, session_id, &path, line, &text)
+    })
+    .await?
+}
+
+/// Story 8.4: the line comments sent to `target` this run, oldest first, each with its state
+/// (`queued`, `sent`, `read`); empty for a project or a branch. `review://comments` carries every
+/// session's on each change.
+#[tauri::command]
+pub fn review_comments_get(state: State<'_, AppState>, target: crate::review::ReviewTarget) -> Vec<crate::inbox::Comment> {
+    match &target {
+        crate::review::ReviewTarget::Session { session_id } => state.inbox.comments_of(session_id),
+        _ => Vec::new(),
+    }
 }
 
 /// Story 8.1: the old and new text of `path` (as `review_list` named it) in `target`'s folder under

@@ -40,6 +40,8 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 use crate::graph;
 use crate::settings::AppState;
 
+pub mod touched;
+
 /// The event that carries `{sessionId: ReviewRequest}` on every change.
 pub const EVENT: &str = "review://requests";
 
@@ -568,9 +570,12 @@ pub fn request_keys(folder: &Path, paths: &[ReviewPath]) -> Vec<crate::git::diff
         .collect()
 }
 
-/// Sessions removed from the workspace (their ref, or their project): their requests go, and the
-/// map is emitted.
+/// Sessions removed from the workspace (their ref, or their project): their requests (and their
+/// touched-file scans) go, and the map is emitted.
 pub fn forget_sessions<'a, R: Runtime>(app: &AppHandle<R>, ids: impl IntoIterator<Item = &'a str>) {
+    let ids: Vec<&str> = ids.into_iter().collect();
+    // Story 8.4: and their transcripts' touched-file scans.
+    touched::forget(ids.iter().copied());
     change(app, |inner| {
         let mut removed = false;
         for id in ids {

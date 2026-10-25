@@ -261,7 +261,35 @@ export type ChangeList = {
   more: number;
   /** A session target's review request paths, keyed to this folder (empty otherwise). */
   requested: RequestedKey[];
+  /** Story 8.4: on a session target, the files its transcript says it edited, keyed like `files` (empty otherwise). */
+  touched: string[];
 };
+
+/**
+ * Mirrors `inbox::CommentState` (Story 8.4): in the inbox waiting, typed into the session, drained
+ * by `inbox()`, or pushed out of a full inbox or comment list before it was delivered.
+ */
+export type CommentState = "queued" | "sent" | "read" | "dropped";
+
+/** Mirrors `inbox::Comment` (Story 8.4): one line comment sent to a session this run. */
+export type ReviewComment = {
+  id: number;
+  sessionId: string;
+  /** Relative to the reviewed folder, `/`-separated. */
+  path: string;
+  line: number;
+  /** The line as delivered: `Review comment on <path>:<line>: <comment>`. */
+  text: string;
+  state: CommentState;
+  /** ISO 8601 UTC. */
+  at: string;
+};
+
+/** Event name Rust emits with every line comment of this run (oldest first) on each change. */
+export const REVIEW_COMMENTS_EVENT = "review://comments";
+
+/** Rust's refusal of a comment to a project or a branch; also the disabled command's title. */
+export const COMMENTS_GO_TO_A_SESSION = "comments go to a session";
 
 /** Mirrors `git::diff::Content`: a file's two sides, or why they are not shown. `null` where a side does not exist. */
 export type DiffContent =
@@ -884,6 +912,9 @@ type Commands = {
   review_dir: DirListing;
   review_view: FileView;
   review_open_editor: void;
+  review_touched: string[];
+  review_comment: ReviewComment;
+  review_comments_get: ReviewComment[];
   edge_live_retry: void;
   edge_restart_with_flags: LaunchResult;
   claude_projects_list: ClaudeProject[];
@@ -1189,6 +1220,25 @@ export function reviewOpenEditor(target: ReviewTarget, mode: ReviewModeWire, pat
   return call("review_open_editor", { target, mode, path, line });
 }
 
+/** `ipc::review_touched` (Story 8.4) -- read-only: the files session `target` edited (its transcript), keyed to its folder; empty otherwise. */
+export function reviewTouched(target: ReviewTarget): Promise<string[]> {
+  return call("review_touched", { target });
+}
+
+/**
+ * `ipc::review_comment` (Story 8.4) -- send `Review comment on <path>:<line>: <text>` to session
+ * `target`: Rust builds the line, puts it in the inbox and types it in at the next idle. Rejects
+ * with `COMMENTS_GO_TO_A_SESSION` for a project or a branch, `comment is empty`, or a bad path.
+ */
+export function reviewComment(target: ReviewTarget, path: string, line: number, text: string): Promise<ReviewComment> {
+  return call("review_comment", { target, path, line, text });
+}
+
+/** `ipc::review_comments_get` (Story 8.4) -- the line comments sent to `target` this run, with their states. */
+export function reviewCommentsGet(target: ReviewTarget): Promise<ReviewComment[]> {
+  return call("review_comments_get", { target });
+}
+
 /**
  * `ipc::edge_live_retry` (Story 6.3) -- run a context edge's `/add-dir` injection again; for a
  * cooperate edge (Story 6.4), send the peer line again to the side of `sessionId`. Rejects when
@@ -1469,6 +1519,14 @@ export async function onReviewRequests(callback: (requests: ReviewMap) => void):
     return () => {};
   }
   return listen<ReviewMap>(REVIEW_REQUESTS_EVENT, (event) => callback(event.payload));
+}
+
+/** Subscribe to `review://comments` (Story 8.4); same contract as {@link onSettingsChanged}. */
+export async function onReviewComments(callback: (comments: ReviewComment[]) => void): Promise<UnlistenFn> {
+  if (!hasTauriRuntime()) {
+    return () => {};
+  }
+  return listen<ReviewComment[]>(REVIEW_COMMENTS_EVENT, (event) => callback(event.payload));
 }
 
 /** Subscribe to `notify://reveal` (a toast was clicked); same contract as {@link onSettingsChanged}. */

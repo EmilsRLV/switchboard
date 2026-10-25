@@ -331,6 +331,18 @@ chrome follows every rule here.
     [Diff colours](#diff-colours)), in `--font-mono` `--text-md`. `binary file`, `too large to show (+N −M)`,
     `No file selected.` and `Reading <path>…` are muted lines in its place; a file that is not UTF-8 adds a muted
     mono `--text-xs` line `not UTF-8 (shown lossily)` over the diff.
+  - Story 8.4, **touched mark**: on a session, a Changes or Files file row the session edited carries a plain `•` in
+    `--fg-muted` before the counts (its tooltip `edited by this session`, also in the row's accessible name). Never the
+    accent: it is information.
+  - Story 8.4, **comments**: the toolbar holds an ordinary **Comment** button before the layout toggle (disabled,
+    `--fg-faint`, on a project or a branch, titled `comments go to a session`, or with no file shown). The **comment
+    box** is a row under the toolbar over a 1-px `--border` line: `Comment on <file>:<line>` (mono `--text-xs`
+    `--fg-muted`, ellipsis), a one-line textarea in the launch sheet's input look in mono (no resize), and the muted
+    `--text-xs` hint `ctrl+Enter sends · Esc cancels`; a refusal is `.pane-error` text under it. Below it (or the
+    toolbar), the **comment list**: one mono `--text-xs` row per comment of this run, `<file>:<line>`
+    (`--fg-muted`), the comment (ellipsis, full line on hover) and the state word at the right (`queued`, `sent`,
+    `read`, `dropped`, `--fg-muted`; a drop is said in words, never the accent), at most 20% of the pane's height, then scrolling, over a 1-px `--border` line. No accent,
+    no new motion.
 
   Tokens only; the accent appears only through `.pane-error`. It never takes the focus on opening and appears
   without animation, like every pane.

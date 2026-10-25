@@ -156,6 +156,37 @@ export function countsText(
   return file.binary ? "binary file" : `+${file.added} −${file.removed}`;
 }
 
+/** Story 8.4: the mark on a row the session touched (its transcript edited the file), and its title. */
+export const TOUCHED_MARK = "•";
+export const TOUCHED_TITLE = "edited by this session";
+
+/** A row's label, plus `edited by this session` when the session touched it. */
+export function withTouched(label: string, touched: boolean): string {
+  return touched ? `${label}, ${TOUCHED_TITLE}` : label;
+}
+
+/**
+ * Story 8.4: a comment as its list row shows it: where (`<path>:<line>`) and what was said (the
+ * delivered line without its `Review comment on <path>:<line>: ` lead).
+ */
+export function commentRow(comment: { path: string; line: number; text: string }): { where: string; body: string } {
+  const where = `${comment.path}:${comment.line}`;
+  const lead = `Review comment on ${where}: `;
+  return { where, body: comment.text.startsWith(lead) ? comment.text.slice(lead.length) : comment.text };
+}
+
+/**
+ * Story 8.4: the touched keys the tree marks for `target` in `mode`: a session's (from its
+ * Changes `list`, or the `review_touched` reply in Files), never a project's or a branch's, and
+ * none in vs base or Commits.
+ */
+export function touchedFor(target: ReviewTarget | null, mode: ReviewMode, list: { touched: readonly string[] } | null): readonly string[] {
+  if (target === null || target.kind !== "session" || (mode !== "changes" && mode !== "files")) return NO_TOUCHED;
+  return list?.touched ?? NO_TOUCHED;
+}
+
+const NO_TOUCHED: readonly string[] = Object.freeze([]);
+
 /** What a row says to a screen reader and on hover: its name, its status word and its counts. */
 export function rowLabel(file: ChangedFile, name: string): string {
   const word = file.onDisk ? "deleted from index, still on disk" : statusMark(file.status).word;

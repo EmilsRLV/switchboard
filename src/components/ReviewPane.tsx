@@ -1,4 +1,14 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  Suspense,
+  lazy,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent as ReactChangeEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { runCommand } from "../commands/registry";
 import {
   reviewCommits,
@@ -8,6 +18,8 @@ import {
   reviewRangeFile,
   reviewRangeList,
   reviewView,
+  reviewCommentsGet,
+  reviewTouched,
   type ChangeList,
   type ChangedFile,
   type FileText,
@@ -15,10 +27,11 @@ import {
   type RangeBases,
   type RangeList,
   type RequestedKey,
+  type ReviewComment,
   type ReviewRequest,
   type ReviewTarget,
 } from "../ipc";
-import { requestIn, useReviewStore } from "../state/review";
+import { commentsOf, requestIn, useReviewStore, type CommentAnchor } from "../state/review";
 import { REVIEW_WIDTH_KEY, clampReviewWidth, defaultReviewWidth, saveWidth, useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 import {
@@ -44,13 +57,18 @@ import {
   rowLabel,
   statusMark,
   totals,
+  TOUCHED_MARK,
+  TOUCHED_TITLE,
+  commentRow,
+  touchedFor,
+  withTouched,
   type FilesRow,
   type FolderState,
   type RequestedRow,
   type TreeRow,
 } from "../review/model";
 import { loadLanguage } from "../review/languages";
-import { reviewModes, setReviewMode } from "../commands/review";
+import { commentBlockedReason, draftKey, handleCommentKey, reviewModes, sendComment, setReviewMode, shownFilePath } from "../commands/review";
 import { ErrorBoundary } from "./ErrorBoundary";
 
 // CodeMirror and the merge view: their own chunk, loaded with the first diff shown.
@@ -97,6 +115,12 @@ type FileState = { key: string; text: FileText | null; error: string | null; arr
  * Story 8.3: Files (wherever the pane has a folder) is a lazy tree of the whole folder, folders
  * first, gitignored entries dimmed, each folder read when it is first opened; a selected file opens
  * read-only in a single CodeMirror view. Refresh reads the open folders and the open file again.
+ *
+ * Story 8.4: on a session, the rows of the files its transcript says it edited carry a muted `•`
+ * (`edited by this session`), read with the list (so Refresh and the poll update it). "Comment on
+ * line" (`c`, or the toolbar's Comment button) opens a one-line box under the toolbar anchored at
+ * the shown file's current line; ctrl+Enter sends it to the session, Esc cancels. The comments sent
+ * to the session this run are listed under it with their state (`queued`, `sent`, `read`), live.
  */
 export function ReviewPane() {
   const target = useReviewStore((s) => s.target);
@@ -111,6 +135,8 @@ export function ReviewPane() {
   const selected = useReviewStore((s) => s.selected);
   const refreshSeq = useReviewStore((s) => s.refreshSeq);
   const storeRoot = useReviewStore((s) => s.root);
+  const commentBox = useReviewStore((s) => s.commentBox);
+  const allComments = useReviewStore((s) => s.comments);
   const stored = useUiStore((s) => s.reviewWidth);
   const [viewport, setViewport] = useState(viewportWidth);
   const width = clampReviewWidth(stored ?? defaultReviewWidth(viewport), viewport);
@@ -241,6 +267,26 @@ export function ReviewPane() {
   const subfolder = showsRange && rangeList?.subfolder === true;
   // A request's paths as Rust keyed them to this folder (only while the pane shows a request, in Changes).
   const requestKeys = requestId === null || !changes ? NO_KEYS : (listState.list?.requested ?? NO_KEYS);
+  // Story 8.4: the files the session touched (Rust keys them like the list's paths).
+  const touchedKeys = touchedFor(target, mode, listState.list);
+  const touched = useMemo(() => new Set(touchedKeys), [touchedKeys]);
+  const sessionId = target?.kind === "session" ? target.sessionId : null;
+  const comments = useMemo(() => (sessionId === null ? NO_COMMENTS : commentsOf(allComments, sessionId)), [allComments, sessionId]);
+  const commentBlocked = commentBlockedReason(target, shownFilePath(selected, mode, commit));
+  // Story 8.4: the comments already sent to this session (the event keeps them fresh after).
+  useEffect(() => {
+    if (target === null || target.kind !== "session") return;
+    let live = true;
+    reviewCommentsGet(target).then(
+      (list) => {
+        if (live) useReviewStore.getState().mergeComments(list);
+      },
+      (err: unknown) => console.warn(`review comments read failed: ${describe(err)}`),
+    );
+    return () => {
+      live = false;
+    };
+  }, [target]);
   const { requested, rest } = useMemo(() => orderForRequest(files, requestKeys), [files, requestKeys]);
   const tree = useMemo(() => buildTree(rest), [rest]);
   const order = useMemo(() => fileOrder(requested, tree), [requested, tree]);
@@ -381,6 +427,15 @@ export function ReviewPane() {
           <BaseSelect bases={bases} current={shownBase} />
         )}
         <span className="review-totals">{filesMode ? "" : totalsText}</span>
+        <button
+          type="button"
+          className="btn"
+          disabled={commentBlocked !== null}
+          title={commentBlocked ?? "Comment on the current line (c)"}
+          onClick={() => runCommand("review.comment")}
+        >
+          Comment
+        </button>
         {!filesMode && (
           <span className="review-toggle" role="group" aria-label="Layout">
             <button type="button" className="btn" aria-pressed={layout === "split"} onClick={() => useReviewStore.getState().setLayout("split")}>
@@ -392,6 +447,8 @@ export function ReviewPane() {
           </span>
         )}
       </div>
+      {commentBox !== null && target !== null && <CommentBox key={`${commentBox.path}:${commentBox.line}`} anchor={commentBox} target={target} />}
+      {comments.length > 0 && <CommentList comments={comments} />}
       {filesMode && target !== null ? (
         <FilesBody target={target} refreshSeq={refreshSeq} />
       ) : (
@@ -441,7 +498,7 @@ export function ReviewPane() {
                     <h3 className="pane-heading review-group">Requested</h3>
                     <ul className="review-rows">
                       {requested.map((row) => (
-                        <RequestedRows key={row.key} row={row} selected={selected} />
+                        <RequestedRows key={row.key} row={row} selected={selected} touched={touched} />
                       ))}
                     </ul>
                     {tree.length > 0 && <h3 className="pane-heading review-group">Other changes</h3>}
@@ -452,7 +509,7 @@ export function ReviewPane() {
                 ) : (
                   <ul className="review-rows">
                     {tree.map((row) => (
-                      <TreeRowItem key={row.key} row={row} selected={selected} />
+                      <TreeRowItem key={row.key} row={row} selected={selected} touched={touched} />
                     ))}
                   </ul>
                 )}
@@ -497,6 +554,98 @@ function BaseSelect({ bases, current }: { bases: RangeBases | null; current: str
 
 const NO_FILES: ChangedFile[] = [];
 const NO_KEYS: RequestedKey[] = [];
+const NO_COMMENTS: ReviewComment[] = [];
+const NO_TOUCHED_SET: ReadonlySet<string> = new Set();
+
+/**
+ * Story 8.4: the one-line comment box under the toolbar, anchored at a file and line. It takes the
+ * focus as it opens (the operator asked for it); ctrl+Enter sends, Esc cancels, a bare Enter does
+ * nothing (one line; pasted line breaks become spaces). The text is the target's draft (kept while
+ * the box moves to another line, dropped when the pane closes). While it sends the box is
+ * read-only; Rust's refusal shows under it and the focus goes back to it.
+ */
+function CommentBox({ anchor, target }: { anchor: CommentAnchor; target: ReviewTarget }) {
+  const key = draftKey(target);
+  const text = useReviewStore((s) => (Object.hasOwn(s.commentDrafts, key) ? (s.commentDrafts[key] ?? "") : ""));
+  const [error, setError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const input = useRef<HTMLTextAreaElement>(null);
+  const label = `Comment on ${anchor.path}:${anchor.line}`;
+  const send = () => {
+    if (sending) return;
+    setSending(true);
+    setError(null);
+    sendComment(text).then(
+      () => setSending(false),
+      (err: unknown) => {
+        setSending(false);
+        setError(describe(err));
+        input.current?.focus();
+      },
+    );
+  };
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    // Claimed here: the global bindings (Enter, Esc closing the pane) never see it.
+    const action = handleCommentKey({
+      key: event.key,
+      ctrlKey: event.ctrlKey,
+      shiftKey: event.shiftKey,
+      altKey: event.altKey,
+      metaKey: event.metaKey,
+      isComposing: event.nativeEvent.isComposing,
+      preventDefault: () => event.preventDefault(),
+      stopPropagation: () => event.stopPropagation(),
+    });
+    if (action === "send") send();
+    else if (action === "cancel") useReviewStore.getState().closeCommentBox();
+  };
+  const onChange = (event: ReactChangeEvent<HTMLTextAreaElement>) =>
+    useReviewStore.getState().setCommentDraft(key, event.target.value.replace(/[\r\n\u2028\u2029]+/g, " "));
+  return (
+    <section className="review-comment-box" aria-label={label}>
+      <label className="review-comment-label">
+        <span className="review-comment-where">{label}</span>
+        <textarea
+          className="launch-input review-comment-input"
+          rows={1}
+          value={text}
+          autoFocus
+          ref={input}
+          aria-label={label}
+          readOnly={sending}
+          onChange={onChange}
+          onKeyDown={onKeyDown}
+        />
+      </label>
+      <p className="review-comment-hint">ctrl+Enter sends · Esc cancels</p>
+      {error !== null && (
+        <p className="pane-error" role="alert">
+          {error}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** Story 8.4: the comments sent to the session this run, oldest first, each with its state. */
+function CommentList({ comments }: { comments: readonly ReviewComment[] }) {
+  return (
+    <section className="review-comments" aria-label="Comments">
+      <ul className="review-rows" aria-live="polite">
+        {comments.map((comment) => {
+          const { where, body } = commentRow(comment);
+          return (
+            <li key={comment.id} className="review-comment" title={comment.text}>
+              <span className="review-comment-where">{where}</span>
+              <span className="review-comment-text">{body}</span>
+              <span className="review-comment-state">{comment.state}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
 
 /** The pane's title: the project's label, `<project>:<branch>`, or the session's name. */
 function useTargetTitle(target: ReviewTarget | null, request: ReviewRequest | null): string {
@@ -527,9 +676,9 @@ function select(path: string): void {
   useReviewStore.getState().select(path);
 }
 
-function FileButton({ file, name, depth, selected }: { file: ChangedFile; name: string; depth: number; selected: boolean }) {
+function FileButton({ file, name, depth, selected, touched }: { file: ChangedFile; name: string; depth: number; selected: boolean; touched: boolean }) {
   const { mark } = statusMark(file.status);
-  const label = rowLabel(file, file.path);
+  const label = withTouched(rowLabel(file, file.path), touched);
   return (
     <button
       type="button"
@@ -548,12 +697,22 @@ function FileButton({ file, name, depth, selected }: { file: ChangedFile; name: 
         {name}
         {file.oldPath !== null && <span className="review-from"> renamed from {file.oldPath}</span>}
       </span>
+      {touched && <TouchedMark />}
       <span className="review-counts">{countsText(file)}</span>
     </button>
   );
 }
 
-function TreeRowItem({ row, selected }: { row: TreeRow; selected: string | null }) {
+/** Story 8.4: the muted `•` on a row the session touched. */
+function TouchedMark() {
+  return (
+    <span className="review-touched" title={TOUCHED_TITLE} aria-hidden="true">
+      {TOUCHED_MARK}
+    </span>
+  );
+}
+
+function TreeRowItem({ row, selected, touched }: { row: TreeRow; selected: string | null; touched: ReadonlySet<string> }) {
   if (row.kind === "dir") {
     return (
       <li className="review-dir" style={{ paddingLeft: `${0.5 + row.depth * 0.85}rem` }}>
@@ -563,12 +722,12 @@ function TreeRowItem({ row, selected }: { row: TreeRow; selected: string | null 
   }
   return (
     <li>
-      <FileButton file={row.file} name={row.name} depth={row.depth} selected={selected === row.file.path} />
+      <FileButton file={row.file} name={row.name} depth={row.depth} selected={selected === row.file.path} touched={touched.has(row.file.path)} />
     </li>
   );
 }
 
-function RequestedRows({ row, selected }: { row: RequestedRow; selected: string | null }) {
+function RequestedRows({ row, selected, touched }: { row: RequestedRow; selected: string | null; touched: ReadonlySet<string> }) {
   if (row.mark !== null) {
     return (
       <li>
@@ -593,7 +752,7 @@ function RequestedRows({ row, selected }: { row: RequestedRow; selected: string 
     <>
       {row.files.map((file) => (
         <li key={file.path}>
-          <FileButton file={file} name={file.path} depth={0} selected={selected === file.path} />
+          <FileButton file={file} name={file.path} depth={0} selected={selected === file.path} touched={touched.has(file.path)} />
         </li>
       ))}
     </>
@@ -714,6 +873,30 @@ function FilesBody({ target, refreshSeq }: { target: ReviewTarget; refreshSeq: n
     // `targetKey` names the target; `open` and `refreshSeq` decide what is read.
   }, [targetKey, open, refreshSeq]);
 
+  // Story 8.4: a session's touched files, read with the tree (on opening and on every Refresh).
+  const touchedSeq = useReviewStore((s) => s.touchedSeq);
+  const [touched, setTouched] = useState<{ key: string; set: ReadonlySet<string> } | null>(null);
+  useEffect(() => {
+    if (target.kind !== "session") return;
+    let live = true;
+    reviewTouched(target).then(
+      (keys) => {
+        if (!live) return;
+        const next = touchedFor(target, "files", { touched: keys });
+        // The same marks again keep the rows as they are.
+        setTouched((prev) =>
+          prev !== null && prev.key === targetKey && prev.set.size === next.length && next.every((k) => prev.set.has(k)) ? prev : { key: targetKey, set: new Set(next) },
+        );
+      },
+      (err: unknown) => console.warn(`touched files read failed: ${describe(err)}`),
+    );
+    return () => {
+      live = false;
+    };
+    // `targetKey` names the target; Refresh and the git poll (`touchedSeq`) read it again.
+  }, [targetKey, refreshSeq, touchedSeq]);
+  const touchedSet = touched !== null && touched.key === targetKey ? touched.set : NO_TOUCHED_SET;
+
   const map = folders.key === targetKey ? folders.map : NO_FOLDERS;
   const rows = useMemo(() => filesRows(map, open), [map, open]);
   const order = useMemo(() => filesOrder(rows), [rows]);
@@ -753,7 +936,7 @@ function FilesBody({ target, refreshSeq }: { target: ReviewTarget; refreshSeq: n
       <nav className="review-tree" aria-label="Files">
         <ul className="review-rows">
           {rows.map((row) => (
-            <FilesRowItem key={row.key} row={row} selected={selected} />
+            <FilesRowItem key={row.key} row={row} selected={selected} touched={touchedSet} />
           ))}
         </ul>
       </nav>
@@ -771,7 +954,7 @@ function indent(depth: number): { paddingLeft: string } {
 }
 
 /** One row of the Files tree: a folder (opens and closes), a file or a link (selects), or a folder's state. */
-function FilesRowItem({ row, selected }: { row: FilesRow; selected: string | null }) {
+function FilesRowItem({ row, selected, touched }: { row: FilesRow; selected: string | null; touched: ReadonlySet<string> }) {
   if (row.kind === "loading") {
     return (
       <li className="muted review-files-note" style={indent(row.depth)}>
@@ -794,7 +977,11 @@ function FilesRowItem({ row, selected }: { row: FilesRow; selected: string | nul
     );
   }
   const dir = row.entryKind === "dir";
-  const label = `${row.path}${dir ? "/" : ""}${row.entryKind === "link" ? ", link" : ""}${row.ignored ? ", ignored" : ""}${row.unreadable ? ", unreadable name" : ""}`;
+  const isTouched = !dir && touched.has(row.path);
+  const label = withTouched(
+    `${row.path}${dir ? "/" : ""}${row.entryKind === "link" ? ", link" : ""}${row.ignored ? ", ignored" : ""}${row.unreadable ? ", unreadable name" : ""}`,
+    isTouched,
+  );
   return (
     <li>
       <button
@@ -815,6 +1002,7 @@ function FilesRowItem({ row, selected }: { row: FilesRow; selected: string | nul
           {row.name}
           {dir ? "/" : ""}
         </span>
+        {isTouched && <TouchedMark />}
         {row.entryKind === "link" && <span className="review-counts">link</span>}
       </button>
     </li>

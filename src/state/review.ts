@@ -8,10 +8,12 @@
 // top (if any), the filter, the layout, the selected file, and the last diff's render time for
 // Diagnostics. Story 8.2 adds the mode (Changes, vs base, Commits), the base asked for, the commit
 // shown and the commit list as last read. Story 8.3 adds Files mode's open folders (the file shown
-// is `selected`). Runtime only, never persisted.
+// is `selected`). Story 8.4 adds the line comments sent this run (Rust's, mirrored from
+// `review://comments`, each with its state) and the open comment box's anchor (file and line).
+// Runtime only, never persisted.
 
 import { create } from "zustand";
-import type { Banner, CommitLog, DiffFilter, ReviewMap, ReviewRequest, ReviewTarget } from "../ipc";
+import type { Banner, CommentState, CommitLog, DiffFilter, ReviewComment, ReviewMap, ReviewRequest, ReviewTarget } from "../ipc";
 import { modesFor, toggleFolder, type DiffLayout, type ReviewMode } from "../review/model";
 
 export type ReviewStoreState = {
@@ -48,6 +50,23 @@ export type ReviewStoreState = {
   refreshSeq: number;
   /** How long the last diff took to render after its text arrived, in ms (Diagnostics). */
   lastRenderMs: number | null;
+  /** Story 8.4: the line comments sent this run (every session's), oldest first, with their states. */
+  comments: readonly ReviewComment[];
+  /** Story 8.4: the open comment box's file and line, or `null` while it is closed. */
+  commentBox: CommentAnchor | null;
+  /** Story 8.4: the unsent comment text per target (`JSON.stringify(target)`), kept while the box moves; dropped when the pane closes. */
+  commentDrafts: Readonly<Record<string, string>>;
+  /** Story 8.4: rises when a session's touched files should be read again in Files (the git poll). */
+  touchedSeq: number;
+  setCommentDraft: (targetKey: string, text: string) => void;
+  /** Files: read the touched marks again. */
+  refreshTouched: () => void;
+  /** Every comment, as `review://comments` carries them (the newest word). */
+  applyComments: (comments: readonly ReviewComment[]) => void;
+  /** Some comments (a `review_comments_get` reply, a sent comment): added, or moved on to a later state. */
+  mergeComments: (comments: readonly ReviewComment[]) => void;
+  openCommentBox: (anchor: CommentAnchor) => void;
+  closeCommentBox: () => void;
   applySnapshot: (requests: ReviewMap) => void;
   /** Put one request (the reply of `review_open`) into the map at once. */
   applyRequest: (request: ReviewRequest) => void;
@@ -85,7 +104,12 @@ export type ReviewStoreState = {
   setRenderMs: (ms: number) => void;
 };
 
+/** Story 8.4: where a comment is anchored: a file (relative to the reviewed folder) and a line. */
+export type CommentAnchor = { path: string; line: number };
+
 export const EMPTY_REVIEWS: ReviewMap = Object.freeze({}) as ReviewMap;
+const NO_COMMENTS: readonly ReviewComment[] = Object.freeze([]);
+const NO_DRAFTS: Readonly<Record<string, string>> = Object.freeze({});
 const NO_ORDER: readonly string[] = Object.freeze([]);
 const NO_DISMISSED: Readonly<Record<string, number>> = Object.freeze({});
 const NO_FOLDERS: ReadonlySet<string> = new Set();
@@ -109,6 +133,23 @@ export const useReviewStore = create<ReviewStoreState>()((set) => ({
   root: null,
   refreshSeq: 0,
   lastRenderMs: null,
+  comments: NO_COMMENTS,
+  commentBox: null,
+  commentDrafts: NO_DRAFTS,
+  touchedSeq: 0,
+  setCommentDraft: (targetKey, text) =>
+    set((s) => {
+      if ((Object.hasOwn(s.commentDrafts, targetKey) ? s.commentDrafts[targetKey] : "") === text) return {};
+      const commentDrafts = { ...s.commentDrafts };
+      if (text === "") delete commentDrafts[targetKey];
+      else commentDrafts[targetKey] = text;
+      return { commentDrafts };
+    }),
+  refreshTouched: () => set((s) => ({ touchedSeq: s.touchedSeq + 1 })),
+  applyComments: (comments) => set({ comments }),
+  mergeComments: (incoming) => set((s) => ({ comments: mergeComments(s.comments, incoming) })),
+  openCommentBox: (commentBox) => set({ commentBox }),
+  closeCommentBox: () => set((s) => (s.commentBox === null ? {} : { commentBox: null })),
   applySnapshot: (requests) =>
     set((s) => {
       // A request that went (its session was removed) takes its dismissal with it.
@@ -146,20 +187,36 @@ export const useReviewStore = create<ReviewStoreState>()((set) => ({
             filesOpen: NO_FOLDERS,
             selected: null,
             root: null,
+            commentBox: null,
             refreshSeq: s.refreshSeq + 1,
           };
     }),
   closeTarget: () =>
-    set((s) => (s.target === null && s.requestId === null ? {} : { target: null, requestId: null, selected: null, order: NO_ORDER, root: null, commit: null, commitList: null, filesOpen: NO_FOLDERS })),
+    set((s) =>
+      s.target === null && s.requestId === null
+        ? {}
+        : {
+            target: null,
+            requestId: null,
+            selected: null,
+            order: NO_ORDER,
+            root: null,
+            commit: null,
+            commitList: null,
+            filesOpen: NO_FOLDERS,
+            commentBox: null,
+            commentDrafts: NO_DRAFTS,
+          },
+    ),
   setFilter: (filter) => set((s) => (s.filter === filter ? {} : { filter })),
   setMode: (mode, hasFolder = true) =>
     set((s) => {
       if (s.mode === mode || !modesFor(s.target, hasFolder).includes(mode)) return {};
       const kept = mode === "files" && s.mode === "changes" ? filesSelection(s.selected) : null;
-      if (kept === null) return { mode, selected: null, commit: null, order: NO_ORDER };
+      if (kept === null) return { mode, selected: null, commit: null, order: NO_ORDER, commentBox: null };
       const filesOpen = new Set(s.filesOpen);
       for (const folder of kept.folders) filesOpen.add(folder);
-      return { mode, selected: kept.path, commit: null, order: NO_ORDER, filesOpen };
+      return { mode, selected: kept.path, commit: null, order: NO_ORDER, filesOpen, commentBox: null };
     }),
   setBase: (base) => set((s) => (s.base === base ? {} : { base, commit: null, commitList: null, selected: null })),
   selectCommit: (commit) => set((s) => (s.commit === commit ? {} : { commit, selected: null, order: NO_ORDER })),
@@ -187,6 +244,32 @@ export function filesSelection(selected: string | null): { path: string; folders
 
 function sameOrder(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((p, i) => p === b[i]);
+}
+
+const STATE_RANK: Record<CommentState, number> = { queued: 0, sent: 1, read: 2, dropped: 3 };
+
+/**
+ * Story 8.4: `incoming` merged into `current` by id: a new comment is added (the list stays in id
+ * order, oldest first), a known one takes the incoming state only when it is later (queued → sent →
+ * read; dropped is final), so an older reply never moves a comment back. Reference-stable when
+ * nothing changes.
+ */
+export function mergeComments(current: readonly ReviewComment[], incoming: readonly ReviewComment[]): readonly ReviewComment[] {
+  let out: ReviewComment[] | null = null;
+  for (const comment of incoming) {
+    const list: readonly ReviewComment[] = out ?? current;
+    const at = list.findIndex((c) => c.id === comment.id);
+    if (at >= 0 && STATE_RANK[list[at]!.state] >= STATE_RANK[comment.state]) continue;
+    out = out ?? [...current];
+    if (at >= 0) out[at] = comment;
+    else out.push(comment);
+  }
+  return out === null ? current : out.sort((a, b) => a.id - b.id);
+}
+
+/** Story 8.4: session `sessionId`'s comments, oldest first. */
+export function commentsOf(comments: readonly ReviewComment[], sessionId: string): ReviewComment[] {
+  return comments.filter((c) => c.sessionId === sessionId);
 }
 
 /** True when both name the same node. */

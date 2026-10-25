@@ -14,8 +14,23 @@
 // Story 8.3: Files mode (wherever the pane has a folder) and `o`, Open in editor: Rust runs the
 // configured editor at the selected file and the line the view reports (`review/place.ts`); with
 // no editor set, the notice says so and Settings opens.
+//
+// Story 8.4: "Comment on line" (`c`, the palette, the toolbar's Comment button) on a session target
+// opens a one-line comment box anchored at the shown file and its current line (8.3's line rule);
+// ctrl+Enter sends it (Rust builds `Review comment on <file>:<line>: <comment>`, puts it in the
+// session's inbox and types it in at the next idle), Esc cancels. A project or a branch has no
+// comments: the command is disabled, its button titled `comments go to a session`.
 
-import { NO_EDITOR_SET, reviewClear, reviewOpen, reviewOpenEditor, type DiffFilter, type ReviewTarget } from "../ipc";
+import {
+  COMMENTS_GO_TO_A_SESSION,
+  NO_EDITOR_SET,
+  reviewClear,
+  reviewComment,
+  reviewOpen,
+  reviewOpenEditor,
+  type DiffFilter,
+  type ReviewTarget,
+} from "../ipc";
 import { useLiveStore } from "../state/live";
 import { isFlagged, requestIn, requestList, useReviewStore } from "../state/review";
 import { useSettingsStore } from "../state/settings";
@@ -178,6 +193,11 @@ export const NO_FILE_TO_OPEN = "Open in editor: no file selected";
 /** The file `o` opens: the selected file in Changes, vs base, a commit's files or Files; `null` without one. */
 export function editorPathOfPane(): string | null {
   const { selected, mode, commit } = useReviewStore.getState();
+  return shownFilePath(selected, mode, commit);
+}
+
+/** The file the pane shows for `selected` in `mode` (and `commit`): `null` for none, the commit list or a requested path's mark row. */
+export function shownFilePath(selected: string | null, mode: ReviewMode, commit: string | null): string | null {
   if (selected === null || (mode === "commits" && commit === null)) return null;
   // A requested path that names no changed file (`unchanged`, `missing`, outside) is a mark row.
   if (selected.startsWith("req:")) return null;
@@ -220,6 +240,93 @@ export async function openInEditor(): Promise<boolean> {
   }
 }
 
+// -- Story 8.4: line comments --------------------------------------------------------------------
+
+/** Why "Comment on line" cannot run for the pane showing `target` and `path`, or `null` when it can. */
+export function commentBlockedReason(target: ReviewTarget | null, path: string | null): string | null {
+  if (target === null) return "the Review pane is not open";
+  if (target.kind !== "session") return COMMENTS_GO_TO_A_SESSION;
+  if (path === null) return "no file selected";
+  return null;
+}
+
+/** Why the open pane cannot take a comment now, or `null` (the toolbar button's disabled title). */
+export function commentBlocked(): string | null {
+  if (!isReviewOpen()) return "the Review pane is not open";
+  return commentBlockedReason(useReviewStore.getState().target, editorPathOfPane());
+}
+
+/** The `when` of "Comment on line" (`c`): a session target showing a file, and no menu open. */
+export function canCommentOnLine(): boolean {
+  return commentBlocked() === null && !isContextMenuOpen();
+}
+
+/** "Comment on line": open the comment box at the shown file and its current line (line 1 when no view shows). */
+export function openCommentBox(): boolean {
+  if (commentBlocked() !== null) return false;
+  const path = editorPathOfPane();
+  if (path === null) return false;
+  useReviewStore.getState().openCommentBox({ path, line: currentLine() ?? 1 });
+  return true;
+}
+
+/** What a key does in the comment box: ctrl+Enter sends, Esc cancels, a bare Enter is swallowed (one line). */
+export type CommentKey = "send" | "cancel" | "swallow" | null;
+
+/** The slice of a key event {@link commentKeyAction} reads. */
+export type CommentKeyEvent = { key: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; metaKey: boolean; isComposing?: boolean };
+
+/**
+ * The comment box's keys, handled in the box (never by the global bindings): ctrl+Enter sends; Esc
+ * cancels (the pane stays open); Enter alone, or with shift, does nothing (the box is one line,
+ * and the global Enter never fires from it). Every other key is the text's.
+ */
+export function commentKeyAction(event: CommentKeyEvent): CommentKey {
+  if (event.isComposing === true) return null;
+  if (event.key === "Escape") return "cancel";
+  if (event.key !== "Enter") return null;
+  if (event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) return "send";
+  return "swallow";
+}
+
+/** The slice of a key event {@link handleCommentKey} reads and may claim. */
+export type CommentKeyDown = CommentKeyEvent & { preventDefault: () => void; stopPropagation?: () => void };
+
+/**
+ * The comment box's keydown: what {@link commentKeyAction} says, with the key claimed
+ * (`preventDefault`, so the window's dispatcher stays out: Esc closes the box, not the pane, and
+ * Enter never reaches the canvas) whenever it does something. Returns the action.
+ */
+export function handleCommentKey(event: CommentKeyDown): CommentKey {
+  const action = commentKeyAction(event);
+  if (action !== null) {
+    event.preventDefault();
+    event.stopPropagation?.();
+  }
+  return action;
+}
+
+/** The key the comment drafts are kept under for `target`. */
+export function draftKey(target: ReviewTarget): string {
+  return JSON.stringify(target);
+}
+
+/**
+ * Send the open box's comment: Rust delivers it, the box closes and the comment joins the list
+ * (`queued` until it is typed in). Rejects with Rust's reason (an empty comment, a project); the
+ * box then stays open.
+ */
+export async function sendComment(text: string): Promise<void> {
+  const { target, commentBox } = useReviewStore.getState();
+  if (target === null || commentBox === null) throw new Error("no comment box is open");
+  const sent = await reviewComment(target, commentBox.path, commentBox.line, text);
+  const store = useReviewStore.getState();
+  store.mergeComments([sent]);
+  // The text is delivered: the draft goes (a box that moved on keeps any newer text).
+  if ((store.commentDrafts[draftKey(target)] ?? "") === text) store.setCommentDraft(draftKey(target), "");
+  if (store.commentBox === commentBox) store.closeCommentBox();
+}
+
 /** The project `target` belongs to (whose status poll keeps the list fresh), or `null`. */
 export function projectOfTarget(target: ReviewTarget): string | null {
   if (target.kind !== "session") return target.projectId;
@@ -233,8 +340,14 @@ export function projectOfTarget(target: ReviewTarget): string | null {
 // branch) reads the list again. vs base and Commits never poll: they are read as they open and on
 // Refresh.
 useStatusStore.subscribe((state, previous) => {
-  if (state.statuses === previous.statuses || useUiStore.getState().pane !== "review" || !showsChanges()) return;
+  if (state.statuses === previous.statuses || useUiStore.getState().pane !== "review") return;
   const target = useReviewStore.getState().target;
+  // Story 8.4: in Files, a session's touched marks are read again on every git poll.
+  if (useReviewStore.getState().mode === "files" && target !== null && target.kind === "session") {
+    useReviewStore.getState().refreshTouched();
+    return;
+  }
+  if (!showsChanges()) return;
   const project = target === null ? null : projectOfTarget(target);
   if (project === null) return;
   const was = Object.hasOwn(previous.statuses, project) ? previous.statuses[project] : undefined;
@@ -276,16 +389,18 @@ function gitPollMs(): number {
 // While the pane is open on Changes for a target that needs its own poll, the list (and the
 // selected file) is read again every `poll.git_ms`; the pane keeps what it shows when nothing
 // changed. vs base and Commits never poll.
+// Story 8.4: in Files on a session in such a folder, the same poll reads the touched marks again.
 let ownPoll: ReturnType<typeof setInterval> | null = null;
 let ownPollKey = "";
 function syncOwnPoll(): void {
-  const { target, root } = useReviewStore.getState();
-  const open = useUiStore.getState().pane === "review" && target !== null && showsChanges() && needsOwnPoll(target, root);
-  const key = open ? `${JSON.stringify(target)}|${root}|${gitPollMs()}` : "";
+  const { target, root, mode } = useReviewStore.getState();
+  const files = mode === "files" && target !== null && target.kind === "session";
+  const open = useUiStore.getState().pane === "review" && target !== null && (showsChanges() || files) && needsOwnPoll(target, root);
+  const key = open ? `${JSON.stringify(target)}|${root}|${gitPollMs()}|${files}` : "";
   if (key === ownPollKey) return;
   ownPollKey = key;
   if (ownPoll !== null) clearInterval(ownPoll);
-  ownPoll = open ? setInterval(() => useReviewStore.getState().refresh(), gitPollMs()) : null;
+  ownPoll = open ? setInterval(() => (files ? useReviewStore.getState().refreshTouched() : useReviewStore.getState().refresh()), gitPollMs()) : null;
 }
 useReviewStore.subscribe(syncOwnPoll);
 useUiStore.subscribe(syncOwnPoll);
