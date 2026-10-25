@@ -146,3 +146,26 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-9-4-keybindings-and-palette-completeness.md`
   summary: There was no GUI pass for Story 9.4 (keybindings.json overrides, Diagnostics list, routed pane buttons), and Linux CI has not run.
   evidence: The machine was probably in use (the foreground guard stopped the 9.2 re-run twice). Check by hand: write keybindings.json with an override, a conflict and a bad key, then check the key and the Diagnostics list.
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-3-performance-budget.md`
+  summary: NFR-2 idle RSS is a MISS: 364 MB working set (245 MB private) against a 150 MB budget. Most of it is the WebView2 runtime, and Emils needs to decide what NFR-2 counts.
+  evidence: |
+    `docs/perf.md` Results. With 5 projects and no sessions the total is already 315 MB. `switchboard.exe` is 27 MB.
+    Levers not tried:
+    - WebView2 `MemoryUsageTargetLevel` low while the window is hidden or minimized (tray case only);
+    - browser flags dropping optional services;
+    - the renderer heap.
+    Tried and reverted: WebGL only while shown (no gain; the addon's dispose does not free the context).
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-3-performance-budget.md`
+  summary: Typing p95 is over 16 ms (16.2 ms shipped, 20.0 ms on the trial build). The median is 15.4 ms, a pass, but with little to spare, and the app's own share is not separated from the shell echo and the frame wait.
+  evidence: |
+    One pass of 50 keys per build, so the p95 rests on about 3 samples. Still to do:
+    - a Windows Terminal baseline with the same shell;
+    - a longer pass;
+    - a DevTools trace to confirm the rAF closes after xterm's render. The sample closes in rAF, before paint and composite.
+    Untested: AltGr characters and characters beyond the BMP (never sampled), focus and DSR replies taken as the echo, pop-out samples in the last second lost on close, and typing on the DOM renderer.
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-3-performance-budget.md`
+  summary: The typing ring mixes all terminals and cannot be reset. `perf_ready` also fires when the workspace load failed.
+  evidence: Edge-case review. Diagnostics shows the last 100 samples from every terminal (sessions, pop-outs, setup typing). A reset action or a per-terminal source would make a measuring pass cleaner.
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-3-performance-budget.md`
+  summary: Story 9.3 has no Linux figures (NFR-1 < 2 s on a cold Linux laptop), and Linux CI has not run.
+  evidence: Left for Emils; `docs/perf.md` "Linux laptop" says how to measure. GitHub Actions is suspended until month end.

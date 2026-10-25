@@ -9,6 +9,7 @@ pub mod inbox;
 pub mod ipc;
 pub mod mcp;
 pub mod notify;
+pub mod perf;
 pub mod persist;
 pub mod process;
 pub mod pty;
@@ -94,6 +95,9 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::approval_answer,
             ipc::edge_set_agent_allowed,
             ipc::workspace_set_agent_actions,
+            ipc::perf_ready,
+            ipc::perf_typing,
+            ipc::perf_get,
         ])
 }
 
@@ -245,6 +249,10 @@ pub(crate) fn focus_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 
 /// Build and run the Tauri application.
 pub fn run() {
+    // Story 9.3: the startup clock starts before anything else; the measuring script's opt-in
+    // variable is read and removed while this is still the only thread (no child inherits it).
+    perf::mark_process_start();
+    perf::take_perf_out_env();
     builder()
         .build(tauri::generate_context!())
         .expect("error while building Switchboard")
@@ -404,6 +412,36 @@ mod tests {
         assert_eq!(value["text"], emitted["text"]);
         // Stop watching before the temp dir goes.
         *app.state::<super::AppState>().keybindings_watcher.lock().unwrap() = None;
+    }
+
+    /// Story 9.3: `perf_get` starts empty; `perf_ready` records the startup once; `perf_typing`
+    /// fills the ring, and the stats appear from the fifth sample.
+    #[test]
+    fn perf_commands_are_registered_and_share_the_managed_store() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+
+        let value: serde_json::Value = invoke(&webview, "perf_get").expect("perf_get").deserialize().unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({ "startup_ms": null, "typing": { "samples": 0, "median_ms": null, "p95_ms": null } })
+        );
+
+        let first: u64 = invoke(&webview, "perf_ready").expect("perf_ready").deserialize().unwrap();
+        let again: u64 = invoke(&webview, "perf_ready").unwrap().deserialize().unwrap();
+        assert_eq!(first, again, "only the first report counts");
+
+        let args = serde_json::json!({ "samples": [4.0, 6.0, 5.0, 3.0] });
+        invoke_with(&webview, "perf_typing", InvokeBody::Json(args)).expect("perf_typing");
+        let value: serde_json::Value = invoke(&webview, "perf_get").unwrap().deserialize().unwrap();
+        assert_eq!(value["startup_ms"], serde_json::json!(first));
+        assert_eq!(value["typing"], serde_json::json!({ "samples": 4, "median_ms": null, "p95_ms": null }));
+
+        invoke_with(&webview, "perf_typing", InvokeBody::Json(serde_json::json!({ "samples": [7.0] }))).unwrap();
+        let value: serde_json::Value = invoke(&webview, "perf_get").unwrap().deserialize().unwrap();
+        assert_eq!(value["typing"], serde_json::json!({ "samples": 5, "median_ms": 5.0, "p95_ms": 7.0 }));
     }
 
     #[test]

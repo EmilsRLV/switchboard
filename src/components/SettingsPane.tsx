@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { runCommand } from "../commands/registry";
-import { diagnosticsGet, hasTauriRuntime, type Binary, type DiagnosticsSnapshot } from "../ipc";
-import { DIAGNOSTICS_REFRESH_MS, diagnosticsError, diagnosticsRows, keybindingsDiagnostics, mcpRefusalLines } from "./diagnostics";
+import { diagnosticsGet, hasTauriRuntime, perfGet, type Binary, type DiagnosticsSnapshot, type PerfSnapshot } from "../ipc";
+import { DIAGNOSTICS_REFRESH_MS, diagnosticsError, diagnosticsRows, keybindingsDiagnostics, mcpRefusalLines, perfRows } from "./diagnostics";
+import { typingSink } from "../perf";
 import { useKeybindingsStore } from "../state/keybindings";
 import { usePaletteStore } from "../state/palette";
 import { useReviewStore } from "../state/review";
@@ -114,10 +115,12 @@ export function SettingsPane() {
  * Settings → Diagnostics (Story 4.3): the hooks endpoint and its counters, read through
  * `diagnostics_get` on open and every 2 s while the pane is open; below them (Story 7.1) the last
  * refused `/mcp` requests, when there are any; Story 8.1 adds `last diff render: N ms`; Story 9.4
- * the Keybindings list (`keybindings.json`'s status, its errors and the conflicts it made).
+ * the Keybindings list (`keybindings.json`'s status, its errors and the conflicts it made); Story 9.3
+ * the Performance rows (`startup`, `typing`), read through `perf_get` on the same timer.
  */
 function Diagnostics() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot | null>(null);
+  const [perf, setPerf] = useState<PerfSnapshot | null>(null);
   const lastDiffRenderMs = useReviewStore((s) => s.lastRenderMs);
   const [error, setError] = useState<string | null>(null);
 
@@ -134,6 +137,15 @@ function Diagnostics() {
         (err: unknown) => {
           if (live) setError(String(err));
         },
+      );
+      // This window's typing samples go first, so the numbers include the keys just typed.
+      typingSink.flush();
+      perfGet().then(
+        (next) => {
+          if (live) setPerf(next);
+        },
+        // The hooks read reports failures; a perf read failing only leaves the rows as they were.
+        () => {},
       );
     };
     read();
@@ -178,6 +190,17 @@ function Diagnostics() {
           </ul>
         </>
       )}
+      <h4 className="diagnostics-caption" id="perf-caption">
+        Performance
+      </h4>
+      <dl className="diagnostics" aria-labelledby="perf-caption">
+        {perfRows(perf).map((row) => (
+          <div key={row.label} className="diagnostics-row">
+            <dt className="diagnostics-label">{row.label}</dt>
+            <dd className={row.attention ? "diagnostics-value attention" : "diagnostics-value"}>{row.value}</dd>
+          </div>
+        ))}
+      </dl>
       <KeybindingsDiagnostics />
     </section>
   );

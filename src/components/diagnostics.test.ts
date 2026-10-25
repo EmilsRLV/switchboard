@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { clockTime, diagnosticsError, diagnosticsRows, mcpRefusalLines } from "./diagnostics";
-import type { DiagnosticsSnapshot } from "../ipc";
+import { clockTime, diagnosticsError, diagnosticsRows, mcpRefusalLines, perfRows, typingText } from "./diagnostics";
+import type { DiagnosticsSnapshot, PerfSnapshot } from "../ipc";
 
 const base: DiagnosticsSnapshot = {
   endpoint: null,
@@ -56,5 +56,25 @@ describe("diagnosticsError", () => {
     expect(diagnosticsError(null, true)).toBeNull();
     expect(diagnosticsError("ipc down", true)).toBe("last read failed: ipc down");
     expect(diagnosticsError("ipc down", false)).toBe("ipc down");
+  });
+});
+
+describe("perfRows (Story 9.3)", () => {
+  const perf = (startup: number | null, samples: number, median: number | null, p95: number | null): PerfSnapshot => ({
+    startup_ms: startup,
+    typing: { samples, median_ms: median, p95_ms: p95 },
+  });
+
+  it("shows the startup ms and the typing median and p95", () => {
+    expect(perfRows(perf(734, 50, 6.04, 11.96))).toEqual([
+      { label: "startup", value: "734 ms", attention: false },
+      { label: "typing", value: "median 6.0 ms · p95 12.0 ms", attention: false },
+    ]);
+  });
+
+  it("says when there is nothing to show yet", () => {
+    expect(perfRows(null).map((r) => r.value)).toEqual(["reading…", "reading…"]);
+    expect(perfRows(perf(null, 4, null, null)).map((r) => r.value)).toEqual(["not measured yet", "not enough samples"]);
+    expect(typingText(perf(900, 0, null, null))).toBe("not enough samples");
   });
 });

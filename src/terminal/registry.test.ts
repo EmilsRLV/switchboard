@@ -113,6 +113,8 @@ vi.mock("../ipc", () => ({
   termPopOut: vi.fn(),
   termReturn: vi.fn(() => Promise.resolve()),
   workspaceRemoveProject: vi.fn(),
+  hasTauriRuntime: vi.fn(() => true),
+  perfTyping: vi.fn(() => Promise.resolve()),
 }));
 
 type FakeElement = {
@@ -121,6 +123,9 @@ type FakeElement = {
   children: FakeElement[];
   appendChild: (child: FakeElement) => FakeElement;
   remove: () => void;
+  /** Listeners added with `addEventListener` (Story 9.3's keydown stamp). */
+  listeners: Record<string, ((event: unknown) => void)[]>;
+  addEventListener: (type: string, listener: (event: unknown) => void) => void;
 };
 
 function element(): FakeElement {
@@ -128,6 +133,10 @@ function element(): FakeElement {
     className: "",
     parentElement: null,
     children: [],
+    listeners: {},
+    addEventListener(type, listener) {
+      (el.listeners[type] ??= []).push(listener);
+    },
     appendChild(child) {
       child.parentElement?.children.splice(child.parentElement.children.indexOf(child), 1);
       child.parentElement = el;
@@ -558,5 +567,87 @@ describe("openProjectTerminal", () => {
     ipc.termOpen.mockResolvedValue(info({ id: "plain-ide", project_id: "ide", cols: 111, rows: 33 }));
     expect(await openProjectTerminal("ide")).toBe(true);
     expect(ipc.termOpen).toHaveBeenCalledWith("ide", 111, 33);
+  });
+});
+
+describe("typing latency (Story 9.3)", () => {
+  it("times a typed key from its keydown to the frame that draws its echo, and batches the sample to Rust", async () => {
+    vi.useFakeTimers();
+    try {
+      const frames: (() => void)[] = [];
+      vi.stubGlobal("requestAnimationFrame", (fn: () => void) => frames.push(fn));
+      let now = 1_000;
+      vi.stubGlobal("performance", { now: () => now });
+      const { registry, ipc } = await load();
+      const holder = element();
+      registry.setHolder(holder as unknown as HTMLElement);
+      registry.ensureView("t");
+      const term = FakeTerminal.last!;
+      const view = holder.children[0]!;
+      const keydown = (key: string, timeStamp: number, mods: Partial<KeyboardEvent> = {}) =>
+        view.listeners.keydown!.forEach((fn) => fn({ ...keyEvent(key, mods), timeStamp }));
+
+      // A modifier chord is not typing: its output is written plainly.
+      keydown("c", 990, { ctrlKey: true });
+      term.dataHandler!("");
+      registry.writeIncoming("t", "^C");
+      expect(term.pendingCallbacks).toHaveLength(0);
+
+      keydown("a", 1_000);
+      now = 1_002;
+      term.dataHandler!("a");
+      expect(ipc.termWrite).toHaveBeenLastCalledWith("t", "a");
+      now = 1_006;
+      registry.writeIncoming("t", "a");
+      // Output after the echo is not timed again.
+      registry.writeIncoming("t", "b");
+      expect(term.pendingCallbacks).toHaveLength(1);
+      term.flushWrites();
+      expect(frames).toHaveLength(1);
+      now = 1_009;
+      frames.shift()!();
+      expect(ipc.perfTyping).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1_000);
+      expect(ipc.perfTyping).toHaveBeenCalledWith([9]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not time a key whose data went nowhere (popped out, main window), nor close it with a later key", async () => {
+    vi.useFakeTimers();
+    try {
+      const frames: (() => void)[] = [];
+      vi.stubGlobal("requestAnimationFrame", (fn: () => void) => frames.push(fn));
+      let now = 1_000;
+      vi.stubGlobal("performance", { now: () => now });
+      const { registry, ipc, useUiStore } = await load();
+      const holder = element();
+      registry.setHolder(holder as unknown as HTMLElement);
+      registry.ensureView("t");
+      const term = FakeTerminal.last!;
+      const view = holder.children[0]!;
+      const keydown = (key: string, timeStamp: number) => view.listeners.keydown!.forEach((fn) => fn({ ...keyEvent(key), timeStamp }));
+
+      useUiStore.setState({ poppedOut: { t: "term-1" } });
+      keydown("a", 1_000);
+      term.dataHandler!("a");
+      expect(ipc.termWrite).not.toHaveBeenCalled();
+      useUiStore.setState({ poppedOut: {} });
+
+      // Back in the pane: the next key is timed from its own keydown, not the dropped one's.
+      now = 1_200;
+      keydown("b", 1_200);
+      term.dataHandler!("b");
+      now = 1_203;
+      registry.writeIncoming("t", "b");
+      term.flushWrites();
+      now = 1_205;
+      frames.shift()!();
+      vi.advanceTimersByTime(1_000);
+      expect(ipc.perfTyping).toHaveBeenCalledWith([5]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

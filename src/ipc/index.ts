@@ -615,6 +615,16 @@ export type LiveSession = {
   status_text?: string | null;
 };
 
+/** Mirrors `perf::TypingStats`: the typing ring's size, median and p95 (both `null` below 5 samples). */
+export type TypingStats = { samples: number; median_ms: number | null; p95_ms: number | null };
+
+/** Mirrors `perf::PerfSnapshot` (Story 9.3): what `perf_get` returns. */
+export type PerfSnapshot = {
+  /** Process start → the first canvas frame, once the canvas reported it. */
+  startup_ms: number | null;
+  typing: TypingStats;
+};
+
 /** Mirrors `hooks::DiagnosticsSnapshot`: what `diagnostics_get` returns (Settings → Diagnostics). */
 export type DiagnosticsSnapshot = {
   /** `127.0.0.1:<port>` while the hooks endpoint is up. */
@@ -970,6 +980,9 @@ type Commands = {
   approval_answer: void;
   edge_set_agent_allowed: WorkspaceSnapshot;
   workspace_set_agent_actions: WorkspaceSnapshot;
+  perf_ready: number;
+  perf_typing: void;
+  perf_get: PerfSnapshot;
 };
 
 declare global {
@@ -1348,6 +1361,21 @@ export function sessionAcknowledge(sessionId: string, attentionSince: number | n
  */
 export function diagnosticsGet(): Promise<DiagnosticsSnapshot> {
   return call("diagnostics_get");
+}
+
+/** `ipc::perf_ready` (Story 9.3) -- the first canvas frame is drawn; resolves the startup ms (only the first call records). */
+export function perfReady(): Promise<number> {
+  return call("perf_ready");
+}
+
+/** `ipc::perf_typing` (Story 9.3) -- add typing latency samples (ms) to Rust's last-100 ring. */
+export function perfTyping(samples: number[]): Promise<void> {
+  return call("perf_typing", { samples });
+}
+
+/** `ipc::perf_get` (Story 9.3) -- the startup ms and the typing median / p95 for Diagnostics. */
+export function perfGet(): Promise<PerfSnapshot> {
+  return call("perf_get");
 }
 
 /** `ipc::app_quit` -- exit the app with status 0. Resolves only if the exit did not happen. */

@@ -432,6 +432,8 @@ pub struct AppState {
     /// Story 9.2: the tray icon, its counts line, whether it was created and whether this run
     /// has already said it is still running in the tray (`crate::tray`).
     pub tray: crate::tray::TrayState,
+    /// Story 9.3: the startup clock's reading and the typing ring (`crate::perf`). Memory only.
+    pub perf: crate::perf::Perf,
 }
 
 impl AppState {

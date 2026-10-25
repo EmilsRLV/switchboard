@@ -33,6 +33,7 @@ import {
 } from "../ipc";
 import { terminalInfo, useTerminalStore } from "../state/terminals";
 import { isPoppedOut, useUiStore } from "../state/ui";
+import { isTypingKey, TypingProbe, typingSink } from "../perf";
 import { terminalKeyAction } from "./keys";
 import { buildFont, buildTheme, documentTokens } from "./theme";
 
@@ -59,6 +60,8 @@ type View = {
    * queries in it (cursor position, device attributes) must not reach the new shell.
    */
   replaying: boolean;
+  /** Story 9.3: times one keystroke at a time, keydown → its echo drawn. */
+  probe: TypingProbe;
 };
 
 /** A chunk of output and the byte offset it ends at (`null`: unknown, written as it is). */
@@ -164,14 +167,27 @@ function createView(id: string, parent: HTMLElement): View {
   element.className = "terminal-view";
   parent.appendChild(element);
   term.open(element);
-  const view: View = { id, term, fit, element, renderer: "dom", sent: null, offset: null, replaying: false };
+  const view: View = { id, term, fit, element, renderer: "dom", sent: null, offset: null, replaying: false, probe: new TypingProbe() };
   loadWebgl(view);
 
   term.attachCustomKeyEventHandler((event) => handleKey(term, event));
+  // Story 9.3: stamp typing keys before xterm sees them (capture, on the view's own element).
+  element.addEventListener(
+    "keydown",
+    (event) => {
+      if (isTypingKey(event)) view.probe.keydown(event.timeStamp, performance.now());
+    },
+    true,
+  );
   term.onData((data) => {
     // While popped out, only the pop-out's view answers the program (its queries, DSR / DA).
-    if (view.replaying || (only === null && isPoppedOut(id))) return;
+    if (view.replaying || (only === null && isPoppedOut(id))) {
+      // Story 9.3: a stamped key that goes nowhere is not timed.
+      view.probe.cancel();
+      return;
+    }
     termWrite(id, data).catch((err: unknown) => log(`write to ${id}`, err));
+    view.probe.written();
   });
   return view;
 }
@@ -242,7 +258,19 @@ function writeChunk(view: View, data: string, offset: number | null): void {
     if (start < view.offset) data = decoder.decode(bytes.subarray(view.offset - start));
   }
   if (offset !== null) view.offset = offset;
-  if (data !== "") view.term.write(data);
+  if (data === "") return;
+  if (view.probe.output(performance.now())) {
+    // Story 9.3: the echo of a timed keystroke. The write callback runs once it is parsed, when
+    // xterm has queued its render frame; a frame requested now runs right after that render.
+    view.term.write(data, () =>
+      requestAnimationFrame(() => {
+        const sample = view.probe.drawn(performance.now());
+        if (sample !== null) typingSink.record(sample);
+      }),
+    );
+  } else {
+    view.term.write(data);
+  }
 }
 
 /** Output for `id`: written to its view (made on demand), queued while it replays. */

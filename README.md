@@ -1652,6 +1652,15 @@ appindicator library (`libayatana-appindicator3` or `libappindicator3`) is found
 `LD_LIBRARY_PATH` or the usual library folders. A banner says `tray unavailable: closing the window quits`. The `.deb` depends on `libayatana-appindicator3-1` for the
 icon.
 
+## Performance
+
+The budgets (cold start to an interactive canvas under 1 s, idle RSS under 150 MB not counting `claude`,
+added typing latency under 16 ms), how they are measured and the measured results are in
+[`docs/perf.md`](docs/perf.md). Settings (`ctrl+,`) → Diagnostics → **Performance** shows the app's own
+measuring points: `startup: N ms` (process start to the first canvas frame) and `typing: median N ms · p95 M ms`
+over the last 100 keystrokes in a terminal (`not enough samples` below 5). They are always on, memory only and
+never sent anywhere. [`scripts/perf/measure.ps1`](scripts/perf/measure.ps1) repeats the measurement on Windows.
+
 ## Settings
 
 One human-editable JSON file, written with every key present on first launch and never rewritten after

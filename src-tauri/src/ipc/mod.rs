@@ -1275,6 +1275,34 @@ pub fn diagnostics_get(state: State<'_, AppState>) -> DiagnosticsSnapshot {
     state.hooks.diagnostics(overrides)
 }
 
+/// Story 9.3: the frontend's first canvas frame (the workspace loaded, the canvas taking input)
+/// is drawn: record process start → now as the startup time, once (later calls change nothing).
+/// Returns the startup ms. With [`crate::perf::PERF_OUT_ENV`] set to an absolute path at launch
+/// (the measuring script only), the first call also appends it to that file.
+#[tauri::command]
+pub fn perf_ready(state: State<'_, AppState>) -> u64 {
+    let (ms, first) = state.perf.ready();
+    if first && let Some(path) = crate::perf::perf_out() {
+        // Best effort: the script reports a missing line itself.
+        let _ = crate::perf::append_startup_line(path, ms, std::process::id());
+    }
+    ms
+}
+
+/// Story 9.3: typing latency samples (ms, keydown → the frame drawing the echo) from a terminal
+/// view, in a batch; kept in memory in the last-100 ring.
+#[tauri::command]
+pub fn perf_typing(state: State<'_, AppState>, samples: Vec<f64>) {
+    state.perf.add_typing(&samples);
+}
+
+/// Story 9.3: Settings → Diagnostics' `startup` and `typing` rows: the startup ms (once the canvas
+/// reported its first frame) and the typing ring's median and p95.
+#[tauri::command]
+pub fn perf_get(state: State<'_, AppState>) -> crate::perf::PerfSnapshot {
+    state.perf.snapshot()
+}
+
 /// Resize a terminal's PTY (clamped to at least 2 × 1).
 #[tauri::command]
 pub async fn term_resize<R: Runtime>(app: AppHandle<R>, id: String, cols: u16, rows: u16) -> Result<(), String> {

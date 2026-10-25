@@ -44,6 +44,7 @@ import { useStatusStore } from "../state/status";
 import { stoppingSessionIds, useTerminalStore } from "../state/terminals";
 import { useUiStore } from "../state/ui";
 import { persistViewport, useWorkspaceStore } from "../state/workspace";
+import { reportFirstFrame } from "../perf";
 import { BranchNode, MoreNode, SessionNode } from "./ChildNode";
 import { FORK_HANDLE, checkFlowLink, linkFlowEdges, nodeRefOfFlowId, type LinkEdgeData, type LinkFlowEdge } from "./edges";
 import { MAX_ZOOM, MIN_ZOOM } from "./limits";
@@ -394,6 +395,12 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
 
   // The instance dies with the flow; commands check `isCanvasReady` before using it.
   useEffect(() => () => useCanvasStore.getState().setInstance(null), []);
+
+  // Story 9.3: the flow mounts only once the workspace snapshot is in, so its first painted frame
+  // is the end of startup (Rust holds the clock; only the first report counts).
+  useEffect(() => {
+    if (hasTauriRuntime()) reportFirstFrame();
+  }, []);
 
   // Folders dropped from the OS (Tauri's native drag-drop; HTML5 DnD is off in the webview):
   // the drop point comes in physical pixels, goes to CSS pixels, then to canvas coordinates.
