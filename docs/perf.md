@@ -235,7 +235,7 @@ The typing verdict is based on the median of the full time, an upper bound on wh
   - Reverted. Terminals load WebGL once, as before.
 - **Follow-ups** (in `deferred-work.md`):
   - WebView2 options. `MemoryUsageTargetLevel` low while the window is hidden or minimized helps the tray case, not the foreground budget. Browser flags that drop optional services need care.
-  - The app share grows with open terminals: 125 MB at 3 sessions, 139 MB at 10 (measured 2026-10-27, above), about 2 MB per session. Around 15 to 16 sessions would reach the budget (estimate). Levers if that matters: the renderer's per-terminal cost (scrollback, xterm buffers) and the 10,000-line scrollback default.
+  - The app share grows with open terminals: 125 MB at 3 sessions, 139 MB at 10 (measured 2026-10-27, above), about 2 MB per session. Around 15 to 16 sessions would reach the budget (estimate). Lever taken (2026-10-27, Emils): the scrollback default was lowered from 10,000 to 5,000 lines. The figures above were measured at 10,000. Scrollback fills as output arrives, so the saving shows with long-running sessions rather than with the idle stubs measured here.
   - Typing p95 over 16 ms (16.2 ms shipped; 20.0 ms on the trial build), cause not established. A longer typing pass would give a steadier p95.
 - **Typing: what the number contains.**
   - It includes the shell's own echo (ConPTY and `cmd`).

@@ -38,7 +38,7 @@ import { terminalKeyAction } from "./keys";
 import { buildFont, buildTheme, documentTokens } from "./theme";
 
 /** Lines of scrollback each view keeps. */
-export const SCROLLBACK = 10_000;
+export const SCROLLBACK = 5_000;
 
 export type Renderer = "webgl" | "dom";
 

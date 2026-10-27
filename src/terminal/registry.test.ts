@@ -219,7 +219,7 @@ describe("views and the hidden holder", () => {
     registry.ensureView("t");
     const term = FakeTerminal.last!;
     expect([term.cols, term.rows]).toEqual([132, 43]);
-    expect(term.options.scrollback).toBe(10_000);
+    expect(term.options.scrollback).toBe(5_000);
     const host = element();
     registry.showView("t", host as unknown as HTMLElement);
     expect(host.children).toHaveLength(1);

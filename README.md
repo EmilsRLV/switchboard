@@ -973,7 +973,7 @@ terminal, and **Restart**.
 The pane is wider than the others (`min(720px, 70vw)`) and its left edge drags it between 360 px and 90vw; the
 width is remembered in this browser profile (`localStorage`, best effort). Its header shows the project, its
 folder, the state (`running`, `stopping` during a Stop, `exited N`) and **Restart** (once exited), **Hide** and **Kill**; below it the
-terminal itself, with 10 000 lines of scrollback. Resizing the pane or the window refits the terminal and resizes
+terminal itself, with 5 000 lines of scrollback. Resizing the pane or the window refits the terminal and resizes
 the PTY (debounced to 50 ms). The pane shows one terminal at a time, the active tab (see
 [Tabs and pop-outs](#tabs-and-pop-outs)).
 
