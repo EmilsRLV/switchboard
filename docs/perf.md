@@ -181,6 +181,25 @@ Both NFR-setup runs were sampled with the 3 stub sessions only (excluded 3 × `s
 | crashpad handler | 10.5 / 3.0 | 11.0 / 3.1 | 10.4 / 2.9 |
 | **Total** | **315.3 / 174.3** | **363.7 / 244.9** | **371.4 / 244.3** |
 
+**Idle RSS with 10 sessions** (2026-10-27, shipped build, the same machine and script). Setup: 5 projects and 10 stub sessions (3 + 3 + 2 + 2 across four projects), each with its terminal tab open, sampled after 60 s idle:
+
+| Process | Working set (MB) | Private bytes (MB) |
+|---|---|---|
+| switchboard.exe | 34.3 | 12.9 |
+| renderer (the page) | 104.4 | 57.3 |
+| **App share** | **138.7** | **70.2** |
+| browser | 110.4 | 34.1 |
+| GPU | 81.5 | 235.5 |
+| network service | 36.6 | 11.1 |
+| storage service | 18.3 | 7.1 |
+| crashpad handler | 10.9 | 2.9 |
+| Whole tree (reported, not budgeted) | 396.4 | 360.9 |
+
+Excluded: 10 × `stubclaude.exe`, 10 × `conhost.exe`.
+
+- **The app share passes with 11 MB to spare.** It went from 125.1 MB at 3 sessions to 138.7 MB at 10, about 2 MB per extra session. At that rate the budget would be reached at roughly 15 to 16 sessions; that is an estimate, not measured.
+- **The GPU process** (not budgeted) grows the most: 135 → 236 MB private, about 14 MB per extra terminal. That fits one WebGL context per terminal.
+
 **Typing** (budget < 16 ms added; plain `cmd` terminal, 50 keys typed at about 8 keys/s):
 
 | Build | Samples | Median (ms) | p95 (ms) |
@@ -216,7 +235,7 @@ The typing verdict is based on the median of the full time, an upper bound on wh
   - Reverted. Terminals load WebGL once, as before.
 - **Follow-ups** (in `deferred-work.md`):
   - WebView2 options. `MemoryUsageTargetLevel` low while the window is hidden or minimized helps the tray case, not the foreground budget. Browser flags that drop optional services need care.
-  - The renderer share grows with open terminals (+30 MB for 3 sessions), so many more terminals could approach the budget. It is worth re-measuring with 10 sessions.
+  - The app share grows with open terminals: 125 MB at 3 sessions, 139 MB at 10 (measured 2026-10-27, above), about 2 MB per session. Around 15 to 16 sessions would reach the budget (estimate). Levers if that matters: the renderer's per-terminal cost (scrollback, xterm buffers) and the 10,000-line scrollback default.
   - Typing p95 over 16 ms (16.2 ms shipped; 20.0 ms on the trial build), cause not established. A longer typing pass would give a steadier p95.
 - **Typing: what the number contains.**
   - It includes the shell's own echo (ConPTY and `cmd`).

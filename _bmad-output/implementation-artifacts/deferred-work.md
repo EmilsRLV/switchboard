@@ -147,7 +147,7 @@
   summary: There was no GUI pass for Story 9.4 (keybindings.json overrides, Diagnostics list, routed pane buttons), and Linux CI has not run.
   evidence: The machine was probably in use (the foreground guard stopped the 9.2 re-run twice). Check by hand: write keybindings.json with an override, a conflict and a bad key, then check the key and the Diagnostics list.
 - source_spec: `_bmad-output/implementation-artifacts/spec-9-3-performance-budget.md`
-  summary: NFR-2 now counts the app's own share (Emils, 2026-10-25) and passes: 125 MB (switchboard.exe plus the renderer). The whole tree is 364 MB, and the share grows with open terminals; re-measure with many sessions.
+  summary: NFR-2 now counts the app's own share (Emils, 2026-10-25) and passes: 125 MB (switchboard.exe plus the renderer). The whole tree is 364 MB. Re-measured with 10 sessions (2026-10-27): the share is 138.7 MB, still a pass with 11 MB to spare, at about 2 MB per session, so around 15 to 16 sessions would reach the budget (estimate). The GPU process (not budgeted) reaches 236 MB private, about 14 MB per WebGL terminal.
   evidence: |
     `docs/perf.md` Results. With 5 projects and no sessions the total is already 315 MB. `switchboard.exe` is 27 MB.
     Levers not tried:
