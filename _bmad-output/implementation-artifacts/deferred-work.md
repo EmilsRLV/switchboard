@@ -148,6 +148,9 @@
   evidence: The machine was probably in use (the foreground guard stopped the 9.2 re-run twice). Check by hand: write keybindings.json with an override, a conflict and a bad key, then check the key and the Diagnostics list.
 - source_spec: `_bmad-output/implementation-artifacts/spec-9-3-performance-budget.md`
   summary: NFR-2 now counts the app's own share (Emils, 2026-10-25) and passes: 125 MB (switchboard.exe plus the renderer). The whole tree is 364 MB. Re-measured with 10 sessions (2026-10-27): the share is 138.7 MB, still a pass with 11 MB to spare, at about 2 MB per session, so around 15 to 16 sessions would reach the budget (estimate). The GPU process (not budgeted) reaches 236 MB private, about 14 MB per WebGL terminal.
+  With full scrollback (10 sessions, 12,000 lines each, 2026-10-27) NFR-2 **misses**: the share is 375 MB at 10,000 lines and 282 MB at 5,000 (the default since d770c9f).
+  - **Proposed fix:** keep xterm views only for visible terminals. Drop a hidden terminal's view on hide and rebuild it from Rust's 2 MiB `term_buffer` ring on show; the registry already replays it after a reload.
+  - **Other lever:** a lower scrollback.
   evidence: |
     `docs/perf.md` Results. With 5 projects and no sessions the total is already 315 MB. `switchboard.exe` is 27 MB.
     Levers not tried:

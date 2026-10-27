@@ -200,6 +200,24 @@ Excluded: 10 × `stubclaude.exe`, 10 × `conhost.exe`.
 - **The app share passes with 11 MB to spare.** It went from 125.1 MB at 3 sessions to 138.7 MB at 10, about 2 MB per extra session. At that rate the budget would be reached at roughly 15 to 16 sessions; that is an estimate, not measured.
 - **The GPU process** (not budgeted) grows the most: 135 → 236 MB private, about 14 MB per extra terminal. That fits one WebGL context per terminal.
 
+**Idle RSS with 10 sessions and full scrollback** (2026-10-27).
+
+**Why a second measurement.** Idle stubs print two lines, so their scrollback stays empty. Real sessions fill it.
+
+**Setup.** This pass used a stub that prints 12,000 lines of about 100 characters on start, more than either scrollback limit, and then idles. There were 10 sessions, each with its terminal tab open, sampled after 60 s idle. Both builds ran on the same machine and the same day, the old one from a copy of its exe:
+
+| Build | switchboard.exe | renderer | **App share** | GPU (private) | Whole tree |
+|---|---|---|---|---|---|
+| 10,000-line scrollback | 46.1 / 24.5 | 328.6 / 276.9 | **374.7 / 301.4** | 222.8 | 626.7 / 577.6 |
+| 5,000-line scrollback | 47.5 / 27.0 | 234.5 / 183.0 | **282.0 / 210.0** | 229.5 | 535.5 / 493.4 |
+
+All figures are in MB, working set / private.
+
+- **NFR-2 misses with full scrollback, on both builds.** The share is 375 MB at 10,000 lines and 282 MB at 5,000, against 150 MB. The empty-scrollback figures above (125 to 139 MB) are therefore the best case, not the typical one.
+- **What 5,000 lines saved:** 93 MB working set (91 MB private), all of it in the renderer. That is about 9 to 10 MB per terminal for the 5,000 dropped lines. A full 5,000-line terminal still costs the renderer about 13 MB.
+- **switchboard.exe** grows by about 20 MB when the sessions are full. That fits Rust's 2 MiB replay ring per terminal.
+- **The real lever.** Rust already keeps each terminal's output in that ring and can replay it. So the xterm view of a hidden terminal need not stay alive: it could be dropped on hide and rebuilt from `term_buffer` on show, which the registry already does after a reload. The renderer would then pay for one or two visible terminals, not all ten. This is recorded as a follow-up in `deferred-work.md`.
+
 **Typing** (budget < 16 ms added; plain `cmd` terminal, 50 keys typed at about 8 keys/s):
 
 | Build | Samples | Median (ms) | p95 (ms) |
@@ -214,7 +232,7 @@ One pass of 50 keys per build; the p95 of 50 samples rests on about 3 keystrokes
 | Budget | Measured (shipped build) | Result |
 |---|---|---|
 | Cold start < 1 s | median 447 ms in-app (window created at 54 ms) | **PASS** |
-| Idle RSS < 150 MB (app share) | 125.1 MB working set (55.9 MB private); whole tree 364 MB | **PASS** |
+| Idle RSS < 150 MB (app share) | 125.1 MB working set with 3 idle sessions (55.9 MB private); 282 MB with 10 sessions of full scrollback | **PASS** with empty scrollback; **MISS** with full scrollback |
 | Typing < 16 ms added | median 15.4 ms, p95 16.2 ms (full keydown → echo frame, including the shell's echo) | **PASS** on the median (0.6 ms to spare); p95 **over** |
 
 The typing verdict is based on the median of the full time, an upper bound on what the app adds. The p95 is recorded as over the budget.
