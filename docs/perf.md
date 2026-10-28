@@ -216,7 +216,29 @@ All figures are in MB, working set / private.
 - **NFR-2 misses with full scrollback, on both builds.** The share is 375 MB at 10,000 lines and 282 MB at 5,000, against 150 MB. The empty-scrollback figures above (125 to 139 MB) are therefore the best case, not the typical one.
 - **What 5,000 lines saved:** 93 MB working set (91 MB private), all of it in the renderer. That is about 9 to 10 MB per terminal for the 5,000 dropped lines. A full 5,000-line terminal still costs the renderer about 13 MB.
 - **switchboard.exe** grows by about 20 MB when the sessions are full. That fits Rust's 2 MiB replay ring per terminal.
-- **The real lever.** Rust already keeps each terminal's output in that ring and can replay it. So the xterm view of a hidden terminal need not stay alive: it could be dropped on hide and rebuilt from `term_buffer` on show, which the registry already does after a reload. The renderer would then pay for one or two visible terminals, not all ten. This is recorded as a follow-up in `deferred-work.md`.
+- **The real lever.** Rust already keeps each terminal's output in that ring and can replay it. So the xterm view of a hidden terminal need not stay alive: it could be dropped on hide and rebuilt from `term_buffer` on show, which the registry already does after a reload. The renderer would then pay for one or two visible terminals, not all ten. Taken in Story 9.5 (below).
+
+**Story 9.5: rendered views only while shown** (2026-10-28).
+
+**What changed.** Only a terminal on screen has a full xterm view (DOM, WebGL, 5,000-line scrollback). Every other terminal keeps a "shadow": an xterm that is never opened, with no scrollback, at the PTY size. The shadow follows the output so it can answer the program's queries; ConPTY asks for the cursor at start and waits for the reply. Showing a terminal rebuilds its full view from Rust's 2 MiB ring. Hiding it disposes the full view, with no replay.
+
+**Same setup as above** (filling stub, 12,000 lines per session, 60 s idle; final build). The 3-session row is the NFR setup with full scrollback:
+
+| Sessions | switchboard.exe | renderer | **App share** | GPU (private) | Whole tree |
+|---|---|---|---|---|---|
+| 10, before 9.5 (5,000 lines) | 47.5 / 27.0 | 234.5 / 183.0 | **282.0 / 210.0** | 229.5 | 535.5 / 493.4 |
+| 10, 9.5 | 41.6 / 24.2 | 141.9 / 89.6 | **183.5 / 113.8** | 108.4 | 423.4 / 276.4 |
+| 3, 9.5 | 31.3 / 13.7 | 119.0 / 67.0 | **150.3 / 80.7** | not recorded | 393.0 / 247.2 |
+
+All figures are in MB, working set / private.
+
+- **10 sessions:** 282 → 184 MB (−99 MB). Still a **MISS**.
+  - The renderer's private bytes halved (183 → 90 MB).
+  - The GPU process, which is not budgeted, also halved (230 → 108 MB private): there is one WebGL context now, not ten.
+- **3 sessions with full scrollback** (the NFR setup): 150.3 MB, on the budget line. A second run measured 152.0 MB. Call it a marginal **MISS**.
+- **Part of the remainder is garbage.** On the first 9.5 build, a diagnostic pass with WebView2's debug port open forced a garbage collection just before sampling. That took 10 sessions from about 190 to 163 MB. Even 4 minutes idle did not collect it. Most of it is the output burst itself: 12,000 lines per session arriving over IPC and parsed twice (shadow and full view). Real sessions produce output more slowly.
+- **The rest is the page.** Ten sessions with empty scrollback measured 139 MB; one full view adds about 13 MB on top.
+- **History:** a re-shown terminal's history is what the 2 MiB ring holds, capped at 5,000 lines. For the stub's 100-character lines that is all 5,000. Scroll position and selection reset to the bottom on each switch.
 
 **Typing** (budget < 16 ms added; plain `cmd` terminal, 50 keys typed at about 8 keys/s):
 
@@ -232,7 +254,7 @@ One pass of 50 keys per build; the p95 of 50 samples rests on about 3 keystrokes
 | Budget | Measured (shipped build) | Result |
 |---|---|---|
 | Cold start < 1 s | median 447 ms in-app (window created at 54 ms) | **PASS** |
-| Idle RSS < 150 MB (app share) | 125.1 MB working set with 3 idle sessions (55.9 MB private); 282 MB with 10 sessions of full scrollback | **PASS** with empty scrollback; **MISS** with full scrollback |
+| Idle RSS < 150 MB (app share) | 125.1 MB working set with 3 idle sessions (55.9 MB private). Full scrollback after Story 9.5: 150.3 MB with 3 sessions, 183.5 MB with 10 (282 MB before 9.5) | **PASS** with empty scrollback; full scrollback: marginal **MISS** at 3 sessions, **MISS** at 10 |
 | Typing < 16 ms added | median 15.4 ms, p95 16.2 ms (full keydown → echo frame, including the shell's echo) | **PASS** on the median (0.6 ms to spare); p95 **over** |
 
 The typing verdict is based on the median of the full time, an upper bound on what the app adds. The p95 is recorded as over the budget.

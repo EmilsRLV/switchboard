@@ -33,9 +33,10 @@ function useTermInfo(id: string | null): TermInfo | undefined {
 }
 
 /**
- * Keep `id`'s view in `host` while `show` holds: moved in, fitted (the PTY gets the size) and,
- * when `focus()` says so, focused; moved back to the hidden holder when it goes. Dragging an
- * edge or resizing the window refits and resizes the PTY, debounced.
+ * Keep `id`'s full view in `host` while `show` holds: made (Story 9.5: replayed from the ring),
+ * fitted (the PTY gets the size) and, when `focus()` says so, focused; disposed when it goes, its
+ * shadow answering the program again (a pop-out's view moves back to the hidden holder instead).
+ * Dragging an edge or resizing the window refits and resizes the PTY, debounced.
  */
 export function useHostedView(id: string | null, show: boolean, hostRef: React.RefObject<HTMLDivElement | null>, focus: () => boolean): void {
   // The view instance: a resumed session gets a fresh view under the same id (Story 4.4), and
@@ -81,9 +82,9 @@ export function useHostedView(id: string | null, show: boolean, hostRef: React.R
  * name), its folder, the state (`running` / `exited N`, or why the shell could not start) and
  * Restart (plain terminals only) / Close (an exited session terminal) / Pop out / Hide / Kill.
  * The body is the xterm view; focus inside it belongs to the terminal (`[data-terminal]`). A
- * popped-out terminal shows a placeholder instead ("In its own window"), its view kept writing in
- * the hidden holder. Hiding moves the view back to the hidden holder: the process and its output
- * carry on.
+ * popped-out terminal shows a placeholder instead ("In its own window"), with no full view here.
+ * Hiding disposes the full view (Story 9.5): the process carries on, its output followed by the
+ * terminal's shadow, and showing it again replays the ring.
  */
 export function TerminalPane() {
   const id = useUiStore((s) => s.activeTerminal);
@@ -310,8 +311,8 @@ function TerminalTab({ id }: { id: string }) {
 }
 
 /**
- * The always-mounted hidden holder: every terminal's view lives here while the pane does not
- * show it, so its process keeps writing into it.
+ * The always-mounted hidden holder: a full view is opened here before it moves into the pane, and
+ * a pop-out keeps its view here while not shown. Hidden terminals have no element (Story 9.5).
  */
 export function TerminalHolder() {
   return <div className="terminal-holder" aria-hidden="true" ref={setHolder} />;

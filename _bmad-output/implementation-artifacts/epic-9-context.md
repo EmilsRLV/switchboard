@@ -20,7 +20,7 @@ Make Switchboard something you can install on a second machine and live with eve
 - **Tray:** the tray icon summarises live sessions with busy/waiting counts. Close-to-tray is an option, not the default. With it on, closing the window leaves sessions and their PTYs running, and clicking the tray icon restores the window.
 - **Performance budgets (measured on the dev machine with 5 projects and 3 live sessions with terminals open):**
   - Cold start to an interactive canvas: under 1 s, and under 2 s on a cold Linux laptop.
-  - Idle RSS: under 150 MB, not counting the `claude` processes.
+  - Idle RSS: under 150 MB, not counting the `claude` processes. Only the app's own share counts: `switchboard.exe` plus the WebView2 renderer process(es) running its page. The shared webview runtime processes (browser, GPU, network/storage services, crash handler) are reported but not counted toward the budget.
   - Added terminal typing latency: under 16 ms, so typing feels like a native terminal.
   - Record the results and the measurement method in `docs/perf.md`.
 - **Keyboard completeness:** everything the UI can do, the palette can do, and everything the palette can do has a keybinding or can be bound. There is no menu bar. Required canvas keys: arrows move the selection, Enter opens, `n` starts a new session, `e` starts an edge, `/` opens the palette, Esc closes panes, and `ctrl+k` also opens the palette. A user `keybindings.json` overrides the defaults. Keybinding conflicts are reported in settings → diagnostics.

@@ -172,3 +172,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-9-3-performance-budget.md`
   summary: Story 9.3 has no Linux figures (NFR-1 < 2 s on a cold Linux laptop), and Linux CI has not run.
   evidence: Left for Emils; `docs/perf.md` "Linux laptop" says how to measure. GitHub Actions is suspended until month end.
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-5-visible-only-terminal-views.md`
+  summary: NFR-2 with full scrollback still misses after Story 9.5: 150.3 MB with 3 sessions (on the line) and 183.5 MB with 10.
+  evidence: `docs/perf.md`, Story 9.5 section. A forced garbage collection took about 27 MB off the 10-session figure, which V8 left uncollected even after 4 minutes idle. Further levers: (1) WebView2 `MemoryUsageTargetLevel` or a periodic low-memory hint; (2) feeding a hidden terminal's shadow only what it needs, so output is not parsed twice; (3) a measurement with real, slower session output instead of a 12,000-line burst.
+- source_spec: `_bmad-output/implementation-artifacts/spec-9-5-visible-only-terminal-views.md`
+  summary: A query chunk the full view owned but had not parsed yet when it was disposed (hidden) loses its answer.
+  evidence: Story 9.5 answer hand-over. The window is sub-millisecond (a query parsed in the same moment as a hide). It was recorded rather than fixed, as the Design Notes say.

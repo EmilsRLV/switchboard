@@ -1,7 +1,7 @@
 // What the frontend knows about each terminal Rust runs (Story 4.1): the `TermInfo` from
-// `term_open` / `term_restart` / `term_list`, updated by `term://exit`. The xterm views live in
-// `terminal/registry` (they are not state); this store only drives the pane header and the
-// `when`s of the terminal commands.
+// `term_open` / `term_restart` / `term_list`, updated by `term://exit`. The xterm models live in
+// `terminal/registry` (they are not state); this store drives the pane header and the `when`s
+// of the terminal commands, and its `cols` / `rows` size a hidden terminal's shadow (Story 9.5).
 
 import { create } from "zustand";
 import type { SessionState, TermInfo } from "../ipc";

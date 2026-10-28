@@ -8,12 +8,16 @@ import type { TermInfo } from "../ipc";
 /** What the mocked `Terminal` records. */
 class FakeTerminal {
   static last: FakeTerminal | null = null;
+  /** Every instance made in this test, in order. */
+  static all: FakeTerminal[] = [];
+  /** How often `open()` ran: only a full view is ever opened (Story 9.5). */
+  opened = 0;
   options: Record<string, unknown>;
   cols: number;
   rows: number;
   written: string[] = [];
-  /** Callbacks of writes not yet "parsed"; `flushWrites` runs them. */
-  pendingCallbacks: (() => void)[] = [];
+  /** Writes not yet "parsed", in order (Story 9.5's answer markers too); `flushWrites` or `parse` runs them. */
+  queue: { data: string; callback?: () => void }[] = [];
   resets = 0;
   focused = 0;
   blurred = 0;
@@ -29,17 +33,35 @@ class FakeTerminal {
     this.cols = (options.cols as number | undefined) ?? 80;
     this.rows = (options.rows as number | undefined) ?? 24;
     FakeTerminal.last = this;
+    FakeTerminal.all.push(this);
   }
   loadAddon(addon: { activate?: (term: FakeTerminal) => void }) {
     addon.activate?.(this);
   }
-  open() {}
+  open() {
+    this.opened += 1;
+  }
   write(data: string, callback?: () => void) {
-    this.written.push(data);
-    if (callback !== undefined) this.pendingCallbacks.push(callback);
+    // An empty write is the registry's answer marker (Story 9.5): ordered, but no output.
+    if (data !== "") this.written.push(data);
+    this.queue.push({ data, callback });
+  }
+  /** Callbacks of writes not yet "parsed". */
+  get pendingCallbacks(): (() => void)[] {
+    return this.queue.flatMap((op) => (op.callback === undefined ? [] : [op.callback]));
   }
   flushWrites() {
-    this.pendingCallbacks.splice(0).forEach((cb) => cb());
+    for (const op of this.queue.splice(0)) op.callback?.();
+  }
+  /** Parse up to the first queued write of `data`, which makes xterm answer `reply`, in write order. */
+  parse(data: string, reply: string) {
+    const at = this.queue.findIndex((op) => op.data === data);
+    if (at < 0) throw new Error(`not queued: ${JSON.stringify(data)}`);
+    const ops = this.queue.splice(0, at + 1);
+    const last = ops.pop()!;
+    for (const op of ops) op.callback?.();
+    this.dataHandler?.(reply);
+    last.callback?.();
   }
   reset() {
     this.resets += 1;
@@ -95,7 +117,12 @@ vi.mock("@xterm/addon-fit", () => ({
 }));
 vi.mock("@xterm/addon-unicode11", () => ({ Unicode11Addon: class {} }));
 vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {} }));
-vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: class {} }));
+vi.mock("@xterm/addon-webgl", () => ({
+  WebglAddon: class {
+    onContextLoss() {}
+    dispose() {}
+  },
+}));
 vi.mock("../ipc", () => ({
   termBuffer: vi.fn(),
   termWrite: vi.fn(() => Promise.resolve()),
@@ -151,6 +178,12 @@ function element(): FakeElement {
   return el;
 }
 
+/** `actual` holds exactly the instances in `expected`, in order (identity, not deep equality). */
+function expectSame<T>(actual: readonly T[], expected: readonly T[]): void {
+  expect(actual).toHaveLength(expected.length);
+  expected.forEach((item, i) => expect(actual[i]).toBe(item));
+}
+
 function info(overrides: Partial<TermInfo> = {}): TermInfo {
   return { id: "t", kind: "plain", project_id: "p", title: "p", cwd: "/p", exited: null, error: null, cols: 100, rows: 30, stopping: false, ...overrides };
 }
@@ -191,6 +224,7 @@ function keyEvent(key: string, mods: Partial<KeyboardEvent> = {}) {
 beforeEach(() => {
   proposed = undefined;
   FakeTerminal.last = null;
+  FakeTerminal.all = [];
   vi.stubGlobal("document", { createElement: () => element(), documentElement: {} });
   vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: () => "" }));
 });
@@ -208,55 +242,74 @@ describe("views and the hidden holder", () => {
     expect(registry.hasView("t")).toBe(false);
     registry.setHolder(element() as unknown as HTMLElement);
     expect(registry.hasView("t")).toBe(true);
+    expect(registry.viewKind("t")).toBe("shadow");
     expect(FakeTerminal.last?.written).toEqual(["a", "b"]);
   });
 
-  it("makes a hidden view at the PTY's size and moves it between holder and pane", async () => {
-    const { registry, useTerminalStore } = await load();
+  it("makes a hidden terminal's shadow at the PTY's size; showing adds a full view, hiding disposes it and keeps the shadow", async () => {
+    const { registry, ipc, useTerminalStore } = await load();
     useTerminalStore.getState().upsert(info({ cols: 132, rows: 43 }));
+    ipc.termBuffer.mockResolvedValue({ data: "", offset: 0 });
     const holder = element();
     registry.setHolder(holder as unknown as HTMLElement);
     registry.ensureView("t");
-    const term = FakeTerminal.last!;
-    expect([term.cols, term.rows]).toEqual([132, 43]);
-    expect(term.options.scrollback).toBe(5_000);
+    const shadow = FakeTerminal.last!;
+    expect([shadow.cols, shadow.rows]).toEqual([132, 43]);
+    expect(shadow.options.scrollback).toBe(0);
+    expect(shadow.opened).toBe(0);
+    expect(holder.children).toHaveLength(0);
+    expect(registry.viewRenderer("t")).toBeNull();
     const host = element();
     registry.showView("t", host as unknown as HTMLElement);
+    const full = FakeTerminal.last!;
+    expect(shadow.disposed).toBe(false);
+    expect(full).not.toBe(shadow);
+    expect(full.opened).toBe(1);
+    expect(full.options.scrollback).toBe(5_000);
+    expect([full.cols, full.rows]).toEqual([132, 43]);
     expect(host.children).toHaveLength(1);
+    expect(registry.viewKind("t")).toBe("full");
+    expect(registry.viewRenderer("t")).toBe("dom");
     registry.hideView("t");
+    expect(full.disposed).toBe(true);
     expect(host.children).toHaveLength(0);
-    expect(holder.children).toHaveLength(1);
-    expect(term.blurred).toBe(1);
+    expect(holder.children).toHaveLength(0);
+    expect(registry.viewKind("t")).toBe("shadow");
+    expect(shadow.disposed).toBe(false);
+    expectSame(FakeTerminal.all, [shadow, full]);
+    registry.showView("t", host as unknown as HTMLElement);
+    const again = FakeTerminal.last!;
     registry.disposeView("t");
-    expect(term.disposed).toBe(true);
+    expect(shadow.disposed).toBe(true);
+    expect(again.disposed).toBe(true);
     expect(registry.hasView("t")).toBe(false);
   });
 });
 
 describe("view versions (Story 4.4)", () => {
-  it("bump when a view is made or disposed, so the pane re-attaches a resumed session's fresh view", async () => {
-    const { registry } = await load();
+  it("bump when a model is disposed, so the pane re-attaches a resumed session's fresh view; making one does not", async () => {
+    const { registry, ipc } = await load();
+    ipc.termBuffer.mockResolvedValue({ data: "", offset: 0 });
     const seen: number[] = [];
     const stop = registry.subscribeViews(() => seen.push(registry.viewVersion("t")));
     registry.setHolder(element() as unknown as HTMLElement);
     expect(registry.viewVersion("t")).toBe(0);
     registry.ensureView("t");
     const first = FakeTerminal.last;
-    expect(registry.viewVersion("t")).toBe(1);
-    registry.ensureView("t");
-    expect(registry.viewVersion("t"), "the same view: no change").toBe(1);
+    expect(registry.viewVersion("t"), "making a model: no change").toBe(0);
     // A resume disposes the old view; the pane then shows a new one under the same id.
     registry.disposeView("t");
+    expect(registry.viewVersion("t")).toBe(1);
     const host = element();
     registry.showView("t", host as unknown as HTMLElement);
     expect(FakeTerminal.last).not.toBe(first);
     expect(host.children).toHaveLength(1);
-    expect(registry.viewVersion("t")).toBe(3);
-    expect(seen).toEqual([1, 2, 3]);
+    expect(registry.viewVersion("t")).toBe(1);
+    expect(seen).toEqual([1]);
     expect(registry.viewVersion("other")).toBe(0);
     stop();
     registry.disposeView("t");
-    expect(seen, "unsubscribed").toHaveLength(3);
+    expect(seen, "unsubscribed").toHaveLength(1);
   });
 });
 
@@ -294,11 +347,13 @@ describe("replay", () => {
     ipc.termBuffer.mockResolvedValue({ data: "\x1b[6n", offset: 4 });
     await registry.restore("t");
     const term = FakeTerminal.last!;
-    term.dataHandler?.("\x1b[1;1R");
+    term.parse("\x1b[6n", "\x1b[1;1R");
     expect(ipc.termWrite).not.toHaveBeenCalled();
-    term.flushWrites();
-    term.dataHandler?.("x");
-    expect(ipc.termWrite).toHaveBeenCalledWith("t", "x");
+    // A query in live output after the replay is answered.
+    registry.writeIncoming("t", "\x1b[c", 7);
+    term.parse("\x1b[c", "\x1b[?1;2c");
+    expect(ipc.termWrite).toHaveBeenCalledTimes(1);
+    expect(ipc.termWrite).toHaveBeenCalledWith("t", "\x1b[?1;2c");
   });
 });
 
@@ -361,6 +416,12 @@ describe("syncSize", () => {
     registry.setHolder(element() as unknown as HTMLElement);
     registry.ensureView("t");
     proposed = { cols: 90, rows: 25 };
+    registry.syncSize("t"); // a shadow: nothing to fit
+    expect(ipc.termResize).not.toHaveBeenCalled();
+    ipc.termBuffer.mockResolvedValue({ data: "", offset: 0 });
+    proposed = undefined;
+    registry.showView("t", element() as unknown as HTMLElement);
+    proposed = { cols: 90, rows: 25 };
     registry.syncSize("t"); // Rust does not know it yet
     expect(ipc.termResize).not.toHaveBeenCalled();
     useTerminalStore.getState().upsert(info());
@@ -379,7 +440,7 @@ describe("pop-outs (Story 4.5)", () => {
   it("the main window sends no size for a popped-out terminal, and one for the pane on its return", async () => {
     const { registry, ipc, useTerminalStore } = await load();
     registry.setHolder(element() as unknown as HTMLElement);
-    registry.ensureView("t");
+    registry.showView("t", element() as unknown as HTMLElement);
     useTerminalStore.getState().upsert(info());
     proposed = { cols: 90, rows: 25 };
     registry.syncSize("t");
@@ -409,7 +470,7 @@ describe("pop-outs (Story 4.5)", () => {
     ipc.termBuffer.mockResolvedValue({ data: "hello", offset: 5 });
     registry.setHolder(element() as unknown as HTMLElement);
     // The window shows its terminal before the list arrives.
-    registry.ensureView("t");
+    registry.showView("t", element() as unknown as HTMLElement);
     const term = FakeTerminal.last!;
     const stop = registry.connectTerminals({ only: "t" });
     await flush();
@@ -477,13 +538,21 @@ describe("pop-out events in the main window (Story 4.5)", () => {
 
   it("popped, then back: no size while out, the pane's size (even with the tab hidden) and a fresh replay on return", async () => {
     const { registry, ipc, handlers, useUiStore, stop } = await connected();
+    const host = element() as unknown as HTMLElement;
     proposed = { cols: 90, rows: 25 };
+    registry.showView("t", host);
     registry.syncSize("t"); // the pane fitted it: the last pane size
     expect(ipc.termResize).toHaveBeenLastCalledWith("t", 90, 25);
+    await flush();
     handlers.popped({ id: "t", label: "term-1" });
     expect(useUiStore.getState().poppedOut).toEqual({ t: "term-1" });
     registry.syncSize("t");
     expect(ipc.termResize).toHaveBeenCalledTimes(1);
+    // The pane shows the placeholder: the view goes, a shadow follows.
+    registry.hideView("t");
+    expect(registry.viewKind("t")).toBe("shadow");
+    await flush();
+    vi.mocked(ipc.termBuffer).mockClear();
     // The pop-out resized the PTY; the view comes back without the pane showing it.
     ipc.termBuffer.mockResolvedValue({ data: "after", offset: 5 });
     handlers.popped({ id: "t", label: null });
@@ -493,14 +562,19 @@ describe("pop-out events in the main window (Story 4.5)", () => {
     await flush();
     expect(ipc.termBuffer).toHaveBeenCalledWith("t");
     const tView = registry.ensureView("t")!.term as unknown as FakeTerminal;
+    expect(tView.opened, "returned into the shadow").toBe(0);
+    expect([tView.cols, tView.rows]).toEqual([90, 25]);
     expect(tView.written.slice(-2)).toEqual(["<reset>", "after"]);
-    // The layout effect's own sync on return changes nothing more.
+    // The pane shows it again: its layout effect's own sync changes nothing more.
+    registry.showView("t", host);
     registry.syncSize("t");
     expect(ipc.termResize).toHaveBeenCalledTimes(2);
+    await flush();
+    const replays = vi.mocked(ipc.termBuffer).mock.calls.length;
     // A second null (the reply after the event) does not replay again.
     registry.applyPopped("t", null);
     await flush();
-    expect(ipc.termBuffer).toHaveBeenCalledTimes(1);
+    expect(ipc.termBuffer).toHaveBeenCalledTimes(replays);
     stop();
   });
 
@@ -508,13 +582,16 @@ describe("pop-out events in the main window (Story 4.5)", () => {
     const { registry, ipc, handlers, stop } = await connected();
     const term = registry.ensureView("t")!.term as unknown as FakeTerminal;
     handlers.popped({ id: "t", label: "term-1" });
-    term.dataHandler?.("\x1b[1;1R");
+    registry.writeIncoming("t", "\x1b[6n", 4);
+    term.parse("\x1b[6n", "\x1b[1;1R");
     expect(ipc.termWrite).not.toHaveBeenCalled();
     handlers.popped({ id: "t", label: null });
     await flush();
     term.flushWrites();
-    term.dataHandler?.("x");
-    expect(ipc.termWrite).toHaveBeenCalledWith("t", "x");
+    registry.writeIncoming("t", "\x1b[c", 7);
+    term.parse("\x1b[c", "\x1b[?1;2c");
+    expect(ipc.termWrite).toHaveBeenCalledTimes(1);
+    expect(ipc.termWrite).toHaveBeenCalledWith("t", "\x1b[?1;2c");
     stop();
   });
 
@@ -562,7 +639,8 @@ describe("openProjectTerminal", () => {
     const { registry, ipc } = await load();
     const { openProjectTerminal } = await import("../commands/terminal");
     registry.setHolder(element() as unknown as HTMLElement);
-    registry.ensureView("plain-ide");
+    // The pane shows the tab it opened before the PTY exists.
+    registry.showView("plain-ide", element() as unknown as HTMLElement);
     proposed = { cols: 111, rows: 33 };
     ipc.termOpen.mockResolvedValue(info({ id: "plain-ide", project_id: "ide", cols: 111, rows: 33 }));
     expect(await openProjectTerminal("ide")).toBe(true);
@@ -581,9 +659,10 @@ describe("typing latency (Story 9.3)", () => {
       const { registry, ipc } = await load();
       const holder = element();
       registry.setHolder(holder as unknown as HTMLElement);
-      registry.ensureView("t");
+      const host = element();
+      registry.showView("t", host as unknown as HTMLElement);
       const term = FakeTerminal.last!;
-      const view = holder.children[0]!;
+      const view = host.children[0]!;
       const keydown = (key: string, timeStamp: number, mods: Partial<KeyboardEvent> = {}) =>
         view.listeners.keydown!.forEach((fn) => fn({ ...keyEvent(key, mods), timeStamp }));
 
@@ -624,9 +703,10 @@ describe("typing latency (Story 9.3)", () => {
       const { registry, ipc, useUiStore } = await load();
       const holder = element();
       registry.setHolder(holder as unknown as HTMLElement);
-      registry.ensureView("t");
+      const host = element();
+      registry.showView("t", host as unknown as HTMLElement);
       const term = FakeTerminal.last!;
-      const view = holder.children[0]!;
+      const view = host.children[0]!;
       const keydown = (key: string, timeStamp: number) => view.listeners.keydown!.forEach((fn) => fn({ ...keyEvent(key), timeStamp }));
 
       useUiStore.setState({ poppedOut: { t: "term-1" } });
@@ -649,5 +729,487 @@ describe("typing latency (Story 9.3)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("full views only while shown (Story 9.5)", () => {
+  type Buffer = { data: string; offset: number };
+  type Ipc = Awaited<ReturnType<typeof load>>["ipc"];
+
+  /** `term_buffer` replies held until the test gives them, in call order. */
+  function heldBuffers(ipc: Ipc) {
+    const answers: ((buffer: Buffer) => void)[] = [];
+    const failures: ((err: unknown) => void)[] = [];
+    ipc.termBuffer.mockImplementation(
+      () =>
+        new Promise<Buffer>((resolve, reject) => {
+          answers.push(resolve);
+          failures.push(reject);
+        }),
+    );
+    return { answers, failures };
+  }
+
+  const live = () => FakeTerminal.all.filter((t) => !t.disposed);
+  const host = () => element() as unknown as HTMLElement;
+
+  it("with 10 terminals and one shown, exactly one xterm is ever opened; every terminal has a scrollback-0 shadow", async () => {
+    const { registry, ipc } = await load();
+    ipc.termBuffer.mockResolvedValue({ data: "", offset: 0 });
+    registry.setHolder(element() as unknown as HTMLElement);
+    for (let i = 0; i < 10; i += 1) registry.writeIncoming(`t${i}`, "x", 1);
+    registry.showView("t3", host());
+    await flush();
+    expect(FakeTerminal.all.filter((t) => t.opened > 0)).toHaveLength(1);
+    const opened = live().filter((t) => t.opened > 0);
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.options.scrollback).toBe(5_000);
+    const shadows = live().filter((t) => t.opened === 0);
+    expect(shadows).toHaveLength(10);
+    for (const shadow of shadows) expect(shadow.options.scrollback).toBe(0);
+    expect(registry.viewKind("t3")).toBe("full");
+  });
+
+  it("show: a full view replays the ring with answers suppressed, then follows live output; the shadow keeps up, silent", async () => {
+    const { registry, ipc } = await load();
+    registry.setHolder(element() as unknown as HTMLElement);
+    registry.writeIncoming("t", "hello\x1b[6n", 9);
+    const shadow = FakeTerminal.last!;
+    const { answers } = heldBuffers(ipc);
+    registry.showView("t", host());
+    const full = FakeTerminal.last!;
+    expect(shadow.disposed).toBe(false);
+    expect(full.opened).toBe(1);
+    // Live output during the replay waits for the full view; what the ring covers is dropped.
+    registry.writeIncoming("t", "o\x1b[6n", 9);
+    registry.writeIncoming("t", "more", 13);
+    expect(full.written).toEqual([]);
+    // The shadow takes it at once, de-duplicated by its own offset.
+    expect(shadow.written).toEqual(["hello\x1b[6n", "more"]);
+    answers[0]!({ data: "hello\x1b[6n", offset: 9 });
+    await flush();
+    expect(full.written).toEqual(["<reset>", "hello\x1b[6n", "more"]);
+    expect(shadow.written, "a show leaves the shadow alone").toEqual(["hello\x1b[6n", "more"]);
+    full.parse("hello\x1b[6n", "\x1b[1;6R");
+    expect(ipc.termWrite).not.toHaveBeenCalled();
+    full.flushWrites();
+    // Live now: typing goes out.
+    full.dataHandler!("x");
+    expect(ipc.termWrite).toHaveBeenCalledTimes(1);
+    expect(ipc.termWrite).toHaveBeenCalledWith("t", "x");
+  });
+
+  it("plainly shown, the full view answers a query once and the shadow is silent; after hide the shadow answers once", async () => {
+    const { registry, ipc } = await load();
+    ipc.termBuffer.mockResolvedValue({ data: "", offset: 0 });
+    registry.setHolder(element() as unknown as HTMLElement);
+    registry.writeIncoming("t", "x", 1);
+    const shadow = FakeTerminal.last!;
+    registry.showView("t", host());
+    await flush();
+    const full = FakeTerminal.last!;
+    full.flushWrites();
+    registry.writeIncoming("t", "\x1b[6n", 5);
+    // Both parse the query; only the full view's answer goes out.
+    shadow.parse("\x1b[6n", "\x1b[1;2R");
+    expect(ipc.termWrite).not.toHaveBeenCalled();
+    full.parse("\x1b[6n", "\x1b[1;2R");
+    expect(ipc.termWrite).toHaveBeenCalledTimes(1);
+    registry.hideView("t");
+    registry.writeIncoming("t", "\x1b[c", 8);
+    shadow.parse("\x1b[c", "\x1b[?1;2c");
+    expect(ipc.termWrite).toHaveBeenCalledTimes(2);
+    expect(ipc.termWrite).toHaveBeenLastCalledWith("t", "\x1b[?1;2c");
+  });
+
+  it("a query arriving between showView and the term_buffer reply is answered exactly once", async () => {
+    const { registry, ipc } = await load();
+    registry.setHolder(element() as unknown as HTMLElement);
+    registry.writeIncoming("t", "ab", 2);
+    const shadow = FakeTerminal.last!;
+    const { answers } = heldBuffers(ipc);
+    registry.showView("t", host());
+    const full = FakeTerminal.last!;
+    registry.writeIncoming("t", "\x1b[6n", 6);
+    answers[0]!({ data: "ab\x1b[6n", offset: 6 });
+    await flush();
+    // The shadow owned it on arrival; the full view parses it inside its replayed buffer.
+    shadow.parse("\x1b[6n", "\x1b[1;3R");
+    full.parse("ab\x1b[6n", "\x1b[1;3R");
+    full.flushWrites();
+    shadow.flushWrites();
+    expect(ipc.termWrite).toHaveBeenCalledTimes(1);
+    expect(ipc.termWrite).toHaveBeenCalledWith("t", "\x1b[1;3R");
+  });
+
+  it("a query arriving before showView but parsed after it is answered exactly once (ConPTY's start-up DSR)", async () => {
+    const { registry, ipc } = await load();
+    registry.setHolder(element() as unknown as HTMLElement);
+    // Arrives while hidden; xterm has not parsed it yet when the pane shows the terminal.
+    registry.writeIncoming("t", "\x1b[6n", 4);
+    const shadow = FakeTerminal.last!;
+    const { answers } = heldBuffers(ipc);
+    registry.showView("t", host());
+    const full = FakeTerminal.last!;
+    answers[0]!({ data: "\x1b[6n", offset: 4 });
+    await flush();
+    shadow.parse("\x1b[6n", "\x1b[1;1R");
+    full.parse("\x1b[6n", "\x1b[1;1R");
+    expect(ipc.termWrite).toHaveBeenCalledTimes(1);
+    expect(ipc.termWrite).toHaveBeenCalledWith("t", "\x1b[1;1R");
+  });
+
+  it("while popped out (main window) neither model answers", async () => {
+    const { registry, ipc, useUiStore } = await load();
+    ipc.termBuffer.mockResolvedValue({ data: "", offset: 0 });
+    registry.setHolder(element() as unknown as HTMLElement);
+    registry.writeIncoming("t", "x", 1);
+    const shadow = FakeTerminal.last!;
+    registry.showView("t", host());
+    await flush();
+    const full = FakeTerminal.last!;
+    full.flushWrites();
+    useUiStore.setState({ poppedOut: { t: "term-1" } });
+    registry.writeIncoming("t", "\x1b[6n", 5);
+    shadow.parse("\x1b[6n", "\x1b[1;2R");
+    full.parse("\x1b[6n", "\x1b[1;2R");
+    registry.hideView("t");
+    registry.writeIncoming("t", "\x1b[c", 8);
+    shadow.parse("\x1b[c", "\x1b[?1;2c");
+    expect(ipc.termWrite).not.toHaveBeenCalled();
+  });
+
+  it("show: a failed term_buffer leaves the view empty, following live output, and is logged", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { registry, ipc } = await load();
+      registry.setHolder(element() as unknown as HTMLElement);
+      registry.writeIncoming("t", "old", 3);
+      const { failures } = heldBuffers(ipc);
+      registry.showView("t", host());
+      const full = FakeTerminal.last!;
+      registry.writeIncoming("t", "new", 6);
+      failures[0]!(new Error("gone"));
+      await flush();
+      expect(full.written).toEqual(["new"]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("replay t"));
+      registry.writeIncoming("t", "!", 7);
+      expect(full.written).toEqual(["new", "!"]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("hide: the full view (element and all) is disposed with no term_buffer call; the shadow kept the screen and follows on", async () => {
+    const { registry, ipc } = await load();
+    ipc.termBuffer.mockResolvedValue({ data: "", offset: 0 });
+    const holder = element();
+    registry.setHolder(holder as unknown as HTMLElement);
+    registry.writeIncoming("t", "ab", 2);
+    const shadow = FakeTerminal.last!;
+    const pane = element();
+    registry.showView("t", pane as unknown as HTMLElement);
+    await flush();
+    const full = FakeTerminal.last!;
+    registry.writeIncoming("t", "c", 3);
+    ipc.termBuffer.mockClear();
+    registry.hideView("t");
+    expect(ipc.termBuffer).not.toHaveBeenCalled();
+    expect(full.disposed).toBe(true);
+    expect(pane.children).toHaveLength(0);
+    expect(holder.children).toHaveLength(0);
+    expect(registry.viewKind("t")).toBe("shadow");
+    // The same shadow throughout: everything it was fed, in order, never reset.
+    registry.writeIncoming("t", "cd", 4); // straddles its offset
+    expect(shadow.written).toEqual(["ab", "c", "d"]);
+    expect(shadow.resets).toBe(0);
+    expectSame(live(), [shadow]);
+    // Shown again: one replay, into the new full view only.
+    registry.showView("t", pane as unknown as HTMLElement);
+    await flush();
+    expect(ipc.termBuffer).toHaveBeenCalledTimes(1);
+    expect(shadow.resets).toBe(0);
+  });
+
+  it("a hidden terminal's shadow answers a query exactly once; never while replaying or popped out (main window)", async () => {
+    const { registry, ipc, useUiStore } = await load();
+    registry.setHolder(element() as unknown as HTMLElement);
+    ipc.termBuffer.mockResolvedValue({ data: "\x1b[6n", offset: 4 });
+    await registry.restore("t");
+    const shadow = FakeTerminal.last!;
+    expect(registry.viewKind("t")).toBe("shadow");
+    shadow.parse("\x1b[6n", "\x1b[1;1R"); // the replayed query's answer
+    expect(ipc.termWrite).not.toHaveBeenCalled();
+    registry.writeIncoming("t", "q\x1b[6n", 9);
+    shadow.parse("q\x1b[6n", "\x1b[2;1R");
+    expect(ipc.termWrite).toHaveBeenCalledTimes(1);
+    expect(ipc.termWrite).toHaveBeenCalledWith("t", "\x1b[2;1R");
+    useUiStore.setState({ poppedOut: { t: "term-1" } });
+    registry.writeIncoming("t", "\x1b[c", 12);
+    shadow.parse("\x1b[c", "\x1b[?1;2c");
+    expect(ipc.termWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it("restore (reload, resume, return) replays into both models while shown, each de-duplicating by its own offset", async () => {
+    const { registry, ipc } = await load();
+    ipc.termBuffer.mockResolvedValue({ data: "", offset: 0 });
+    registry.setHolder(element() as unknown as HTMLElement);
+    registry.writeIncoming("t", "a", 1);
+    const shadow = FakeTerminal.last!;
+    registry.showView("t", host());
+    await flush();
+    const full = FakeTerminal.last!;
+    const { answers } = heldBuffers(ipc);
+    const replay = registry.restore("t");
+    registry.writeIncoming("t", "bc", 3);
+    registry.writeIncoming("t", "d", 4);
+    expect(shadow.written.slice(-1)).toEqual(["a"]);
+    answers[0]!({ data: "abc", offset: 3 });
+    await replay;
+    for (const t of [shadow, full]) expect(t.written.slice(-3)).toEqual(["<reset>", "abc", "d"]);
+  });
+
+  it("start hidden: a session launched while another terminal shows gets a shadow at the PTY's size that answers", async () => {
+    const { registry, ipc, useTerminalStore } = await load();
+    ipc.termBuffer.mockResolvedValue({ data: "", offset: 0 });
+    // No holder yet: its output waits, as before.
+    registry.writeIncoming("s", "\x1b[6n", 4);
+    expect(registry.hasView("s")).toBe(false);
+    registry.setHolder(element() as unknown as HTMLElement);
+    registry.showView("a", host());
+    expect(registry.viewKind("s")).toBe("shadow");
+    useTerminalStore.getState().upsert(info({ id: "u", cols: 120, rows: 40 }));
+    registry.writeIncoming("u", "\x1b[6n", 4);
+    const shadow = FakeTerminal.last!;
+    expect(registry.viewKind("u")).toBe("shadow");
+    expect([shadow.cols, shadow.rows]).toEqual([120, 40]);
+    expect(shadow.opened).toBe(0);
+    shadow.dataHandler!("\x1b[1;1R");
+    expect(ipc.termWrite).toHaveBeenCalledTimes(1);
+    expect(ipc.termWrite).toHaveBeenCalledWith("u", "\x1b[1;1R");
+  });
+
+  it("the shadow follows the PTY size the pane sends", async () => {
+    const { registry, useTerminalStore } = await load();
+    useTerminalStore.getState().upsert(info({ cols: 100, rows: 30 }));
+    registry.setHolder(element() as unknown as HTMLElement);
+    registry.writeIncoming("t", "x", 1);
+    const shadow = FakeTerminal.last!;
+    proposed = { cols: 90, rows: 25 };
+    registry.showView("t", host());
+    registry.syncSize("t");
+    expect([shadow.cols, shadow.rows]).toEqual([90, 25]);
+  });
+
+  it("rapid toggles: show, hide and show before a replay ends leave the right models, consistent offsets, no stale writes", async () => {
+    const { registry, ipc } = await load();
+    registry.setHolder(element() as unknown as HTMLElement);
+    registry.writeIncoming("t", "ab", 2);
+    const shadow = FakeTerminal.last!;
+    const { answers } = heldBuffers(ipc);
+    const pane = host();
+    registry.showView("t", pane);
+    const a = FakeTerminal.last!;
+    registry.hideView("t");
+    registry.showView("t", pane);
+    const c = FakeTerminal.last!;
+    expect(new Set([shadow, a, c]).size).toBe(3);
+    expect(answers, "one replay per show, none for the hide").toHaveLength(2);
+    registry.writeIncoming("t", "c", 3);
+    registry.writeIncoming("t", "d", 4);
+    answers[0]!({ data: "STALE-A", offset: 2 });
+    await flush();
+    expect(c.written, "a stale replay neither writes nor drains").toEqual([]);
+    answers[1]!({ data: "abc", offset: 3 });
+    await flush();
+    expect(c.written).toEqual(["<reset>", "abc", "d"]);
+    expect(a.written).toEqual([]);
+    expect(shadow.written).toEqual(["ab", "c", "d"]);
+    expectSame(live(), [shadow, c]);
+    expect(c.opened).toBe(1);
+    expect(registry.viewKind("t")).toBe("full");
+    registry.writeIncoming("t", "d", 4);
+    registry.writeIncoming("t", "e", 5);
+    expect(c.written).toEqual(["<reset>", "abc", "d", "e"]);
+    expect(shadow.written).toEqual(["ab", "c", "d", "e"]);
+  });
+
+  it("show and hide never bump the view version", async () => {
+    const { registry, ipc } = await load();
+    ipc.termBuffer.mockResolvedValue({ data: "", offset: 0 });
+    registry.setHolder(element() as unknown as HTMLElement);
+    registry.writeIncoming("t", "x", 1);
+    const listener = vi.fn();
+    const stop = registry.subscribeViews(listener);
+    const pane = host();
+    registry.showView("t", pane);
+    registry.hideView("t");
+    registry.showView("t", pane);
+    await flush();
+    expect(listener).not.toHaveBeenCalled();
+    expect(registry.viewVersion("t")).toBe(0);
+    stop();
+  });
+
+  it("restart resets both models; resume on a hidden terminal: a replay overtaken by disposal writes nothing", async () => {
+    const { registry, ipc } = await load();
+    ipc.termBuffer.mockResolvedValue({ data: "", offset: 0 });
+    registry.setHolder(element() as unknown as HTMLElement);
+    registry.writeIncoming("t", "x", 1);
+    const shadow = FakeTerminal.last!;
+    const pane = host();
+    registry.showView("t", pane);
+    await flush();
+    const full = FakeTerminal.last!;
+    const before = [shadow.resets, full.resets];
+    registry.resetView("t");
+    expect([shadow.resets, full.resets]).toEqual([before[0]! + 1, before[1]! + 1]);
+    registry.hideView("t");
+    registry.resetView("t");
+    expect(shadow.resets).toBe(before[0]! + 2);
+    const { answers } = heldBuffers(ipc);
+    const replay = registry.restore("t");
+    registry.disposeView("t");
+    expect(shadow.disposed).toBe(true);
+    answers[0]!({ data: "old run", offset: 7 });
+    await replay;
+    expect(registry.hasView("t")).toBe(false);
+    expect(FakeTerminal.all.some((t) => t.written.includes("old run"))).toBe(false);
+    // The new run's output makes a fresh shadow.
+    registry.writeIncoming("t", "new", 3);
+    expect(registry.viewKind("t")).toBe("shadow");
+    expect(FakeTerminal.last!.written).toEqual(["new"]);
+  });
+
+  it("a pop-out window's terminal has only its full view; hiding moves it to the holder", async () => {
+    const { registry, ipc } = await load();
+    ipc.termList.mockResolvedValue([info({ id: "t" })]);
+    ipc.termBuffer.mockResolvedValue({ data: "hi", offset: 2 });
+    const holder = element();
+    registry.setHolder(holder as unknown as HTMLElement);
+    const stop = registry.connectTerminals({ only: "t" });
+    await flush();
+    expect(registry.viewKind("t")).toBe("full");
+    const view = FakeTerminal.last!;
+    expect(view.written).toEqual(["<reset>", "hi"]);
+    const pane = element();
+    registry.showView("t", pane as unknown as HTMLElement);
+    expect(pane.children).toHaveLength(1);
+    registry.hideView("t");
+    expect(view.disposed).toBe(false);
+    expect(holder.children).toHaveLength(1);
+    expectSame(FakeTerminal.all, [view]);
+    stop();
+  });
+
+  it("a terminal shown before the holder mounts gets its full view and is sized when the holder comes", async () => {
+    const { registry, ipc, useTerminalStore } = await load();
+    useTerminalStore.getState().upsert(info());
+    proposed = { cols: 90, rows: 25 };
+    const pane = element();
+    expect(registry.showView("t", pane as unknown as HTMLElement)).toBeNull();
+    expect(registry.hasView("t")).toBe(false);
+    registry.setHolder(element() as unknown as HTMLElement);
+    expect(registry.viewKind("t")).toBe("full");
+    expect(pane.children).toHaveLength(1);
+    expect(ipc.termResize).toHaveBeenCalledTimes(1);
+    expect(ipc.termResize).toHaveBeenCalledWith("t", 90, 25);
+  });
+
+  it("a shadow made before its info arrived takes the PTY size the store learns; not after disconnecting", async () => {
+    const { registry, useTerminalStore } = await load();
+    registry.setHolder(element() as unknown as HTMLElement);
+    const stop = registry.connectTerminals();
+    registry.writeIncoming("s", "x", 1);
+    const shadow = FakeTerminal.last!;
+    expect([shadow.cols, shadow.rows]).toEqual([80, 24]);
+    useTerminalStore.getState().upsert(info({ id: "s", cols: 120, rows: 40 }));
+    expect([shadow.cols, shadow.rows]).toEqual([120, 40]);
+    stop();
+    useTerminalStore.getState().setSize("s", 100, 30);
+    expect([shadow.cols, shadow.rows]).toEqual([120, 40]);
+  });
+
+  it("a pop-out shown before connecting drops the shadow its show made; replays go into the full view only", async () => {
+    const { registry, ipc } = await load();
+    ipc.termList.mockResolvedValue([info({ id: "t" })]);
+    ipc.termBuffer.mockResolvedValue({ data: "hi", offset: 2 });
+    registry.setHolder(element() as unknown as HTMLElement);
+    // The window's layout effect runs before its connect effect.
+    registry.showView("t", host());
+    expect(FakeTerminal.all).toHaveLength(2);
+    const [shadow, full] = FakeTerminal.all as [FakeTerminal, FakeTerminal];
+    expect(shadow.opened).toBe(0);
+    const stop = registry.connectTerminals({ only: "t" });
+    expect(shadow.disposed).toBe(true);
+    await flush();
+    expectSame(live(), [full]);
+    expect(full.written).toEqual(["<reset>", "hi"]);
+    expect(shadow.written).toEqual([]);
+    stop();
+  });
+
+  it("disposeView forgets the host: a late write makes a shadow, not a full view in the stale host", async () => {
+    const { registry, ipc } = await load();
+    ipc.termBuffer.mockResolvedValue({ data: "", offset: 0 });
+    registry.setHolder(element() as unknown as HTMLElement);
+    const pane = element();
+    registry.showView("t", pane as unknown as HTMLElement);
+    registry.disposeView("t");
+    expect(pane.children).toHaveLength(0);
+    registry.writeIncoming("t", "late", 4);
+    expect(registry.viewKind("t")).toBe("shadow");
+    expect(pane.children).toHaveLength(0);
+    expect(FakeTerminal.last!.opened).toBe(0);
+  });
+
+  it("focusView on a terminal with only a shadow does nothing", async () => {
+    const { registry } = await load();
+    registry.setHolder(element() as unknown as HTMLElement);
+    registry.writeIncoming("t", "x", 1);
+    registry.focusView("t");
+    expect(FakeTerminal.last!.focused).toBe(0);
+  });
+
+  it("hiding in the main window a terminal whose slot has no shadow makes one and replays the ring into it", async () => {
+    const { registry, ipc } = await load();
+    ipc.termBuffer.mockResolvedValue({ data: "", offset: 0 });
+    registry.setHolder(element() as unknown as HTMLElement);
+    registry.showView("t", host());
+    // A window that was a pop-out (its shadow dropped) and then connects as the main window.
+    registry.connectTerminals({ only: "t" })();
+    registry.connectTerminals()();
+    const full = FakeTerminal.last!;
+    expect(live()).toHaveLength(1);
+    ipc.termBuffer.mockResolvedValue({ data: "abc", offset: 3 });
+    registry.hideView("t");
+    expect(full.disposed).toBe(true);
+    const shadow = FakeTerminal.last!;
+    expect(shadow).not.toBe(full);
+    expect(shadow.opened).toBe(0);
+    await flush();
+    expect(shadow.written).toEqual(["<reset>", "abc"]);
+    expect(registry.viewKind("t")).toBe("shadow");
+  });
+
+  it("a WebGL full view loses its canvases' GL contexts when hidden and when disposed", async () => {
+    vi.stubGlobal("WebGL2RenderingContext", class {});
+    const loseContext = vi.fn();
+    const canvas = () => ({ getContext: (kind: string) => (kind === "webgl2" ? { getExtension: () => ({ loseContext }) } : null) });
+    vi.stubGlobal("document", {
+      createElement: () => Object.assign(element(), { querySelectorAll: () => [canvas(), canvas()] }),
+      documentElement: {},
+    });
+    const { registry, ipc } = await load();
+    ipc.termBuffer.mockResolvedValue({ data: "", offset: 0 });
+    registry.setHolder(element() as unknown as HTMLElement);
+    const pane = host();
+    registry.showView("t", pane);
+    expect(registry.viewRenderer("t")).toBe("webgl");
+    registry.hideView("t");
+    expect(loseContext).toHaveBeenCalledTimes(2);
+    registry.showView("t", pane);
+    registry.disposeView("t");
+    expect(loseContext).toHaveBeenCalledTimes(4);
   });
 });

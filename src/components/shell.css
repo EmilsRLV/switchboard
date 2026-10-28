@@ -995,8 +995,9 @@
   background: var(--bg-raised);
 }
 
-/* Where views live while not shown: laid out (so they keep a size and keep rendering) but
-   off screen, invisible and inert. */
+/* Where a full view is opened before it moves into the pane (Story 9.5: hidden terminals have
+   only an unopened shadow, no element), and where a pop-out keeps its view while not shown:
+   laid out (so it has a size) but off screen, invisible and inert. */
 .terminal-holder {
   position: fixed;
   top: 0;
