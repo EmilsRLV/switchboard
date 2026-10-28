@@ -1296,11 +1296,30 @@ pub fn perf_typing(state: State<'_, AppState>, samples: Vec<f64>) {
     state.perf.add_typing(&samples);
 }
 
+/// What `perf_get` returns: the measuring points (Story 9.3) and the memory target level
+/// (Story 9.6).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PerfReport {
+    #[serde(flatten)]
+    pub perf: crate::perf::PerfSnapshot,
+    /// `normal`, `low`, or `unsupported` off Windows.
+    pub memory_level: crate::memlevel::Reported,
+}
+
 /// Story 9.3: Settings → Diagnostics' `startup` and `typing` rows: the startup ms (once the canvas
-/// reported its first frame) and the typing ring's median and p95.
+/// reported its first frame) and the typing ring's median and p95. Story 9.6: and the
+/// `memory target` row.
 #[tauri::command]
-pub fn perf_get(state: State<'_, AppState>) -> crate::perf::PerfSnapshot {
-    state.perf.snapshot()
+pub fn perf_get(state: State<'_, AppState>) -> PerfReport {
+    PerfReport { perf: state.perf.snapshot(), memory_level: state.memlevel.reported() }
+}
+
+/// Story 9.6: keyboard, pointer or wheel input in a window (the frontend sends at most one a
+/// second per window): the app is in use, so the memory target goes back to `Normal` at once
+/// when it was `Low`.
+#[tauri::command]
+pub fn memory_activity(state: State<'_, AppState>) {
+    state.memlevel.on_activity(std::time::Instant::now());
 }
 
 /// Resize a terminal's PTY (clamped to at least 2 × 1).

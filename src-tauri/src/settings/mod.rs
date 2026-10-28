@@ -434,6 +434,9 @@ pub struct AppState {
     pub tray: crate::tray::TrayState,
     /// Story 9.3: the startup clock's reading and the typing ring (`crate::perf`). Memory only.
     pub perf: crate::perf::Perf,
+    /// Story 9.6: the focused windows, the last use and WebView2's memory target level
+    /// (`crate::memlevel`). Memory only; no lock is held while applying.
+    pub memlevel: crate::memlevel::MemLevel,
 }
 
 impl AppState {

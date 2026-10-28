@@ -4,9 +4,14 @@ vi.mock("./ipc", () => ({
   hasTauriRuntime: vi.fn(() => false),
   perfReady: vi.fn(() => Promise.resolve(0)),
   perfTyping: vi.fn(() => Promise.resolve()),
+  memoryActivity: vi.fn(() => Promise.resolve()),
 }));
 
 import {
+  ACTIVITY_EVENTS,
+  ACTIVITY_THROTTLE_MS,
+  ActivityThrottle,
+  startActivityReporter,
   TYPING_BATCH,
   TYPING_FLUSH_MS,
   TYPING_STALE_MS,
@@ -227,5 +232,79 @@ describe("reportFirstFrame", () => {
     expect(report).not.toHaveBeenCalled();
     tasks[0]!();
     expect(report).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ActivityThrottle (Story 9.6)", () => {
+  it("reports the first input at once and at most one per second after that", () => {
+    const send = vi.fn(() => Promise.resolve());
+    const throttle = new ActivityThrottle(send);
+    expect(throttle.input(10_000)).toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
+    // Continuous typing: a key every 50 ms for 5 s.
+    for (let t = 10_050; t < 15_000; t += 50) throttle.input(t);
+    // 10.0 s, 11.0, 12.0, 13.0, 14.0: five calls in five seconds.
+    expect(send).toHaveBeenCalledTimes(5);
+    expect(ACTIVITY_THROTTLE_MS).toBe(1_000);
+  });
+
+  it("reports again as soon as a second has passed since the last report", () => {
+    const send = vi.fn(() => Promise.resolve());
+    const throttle = new ActivityThrottle(send);
+    throttle.input(0);
+    expect(throttle.input(999)).toBe(false);
+    expect(throttle.input(1_000)).toBe(true);
+    // After a long quiet spell (the app went Low), the very first input is reported.
+    expect(throttle.input(60_000)).toBe(true);
+    expect(send).toHaveBeenCalledTimes(3);
+  });
+
+  it("ignores a failed send", async () => {
+    const send = vi.fn(() => Promise.reject(new Error("gone")));
+    const throttle = new ActivityThrottle(send);
+    expect(throttle.input(0)).toBe(true);
+    await Promise.resolve();
+    expect(throttle.input(5_000)).toBe(true);
+  });
+});
+
+describe("startActivityReporter (Story 9.6)", () => {
+  const fakeTarget = () => {
+    const listeners = new Map<string, { fn: () => void; options: unknown }>();
+    return {
+      listeners,
+      addEventListener: vi.fn((type: string, fn: () => void, options: unknown) => listeners.set(type, { fn, options })),
+      removeEventListener: vi.fn((type: string) => listeners.delete(type)),
+    };
+  };
+
+  it("listens to keydown, pointerdown, pointermove and wheel in the capture phase, throttled", () => {
+    const target = fakeTarget();
+    const send = vi.fn(() => Promise.resolve());
+    let now = 0;
+    const stop = startActivityReporter(target as never, send, () => now);
+    expect([...target.listeners.keys()]).toEqual(["keydown", "pointerdown", "pointermove", "wheel"]);
+    expect(ACTIVITY_EVENTS).toContain("pointermove");
+    for (const { options } of target.listeners.values()) expect(options).toEqual({ capture: true, passive: true });
+    target.listeners.get("keydown")!.fn();
+    now = 300;
+    target.listeners.get("pointerdown")!.fn();
+    now = 600;
+    target.listeners.get("wheel")!.fn();
+    now = 900;
+    target.listeners.get("pointermove")!.fn();
+    expect(send).toHaveBeenCalledTimes(1);
+    now = 1_000;
+    target.listeners.get("keydown")!.fn();
+    expect(send).toHaveBeenCalledTimes(2);
+    stop();
+    expect(target.listeners.size).toBe(0);
+  });
+
+  it("does nothing outside Tauri", () => {
+    const target = fakeTarget();
+    const stop = startActivityReporter(target as never);
+    expect(target.addEventListener).not.toHaveBeenCalled();
+    stop();
   });
 });

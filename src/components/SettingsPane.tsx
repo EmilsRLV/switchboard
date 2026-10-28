@@ -116,7 +116,8 @@ export function SettingsPane() {
  * `diagnostics_get` on open and every 2 s while the pane is open; below them (Story 7.1) the last
  * refused `/mcp` requests, when there are any; Story 8.1 adds `last diff render: N ms`; Story 9.4
  * the Keybindings list (`keybindings.json`'s status, its errors and the conflicts it made); Story 9.3
- * the Performance rows (`startup`, `typing`), read through `perf_get` on the same timer.
+ * the Performance rows (`startup`, `typing`; Story 9.6 `memory target`), read through `perf_get`
+ * on the same timer.
  */
 function Diagnostics() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot | null>(null);

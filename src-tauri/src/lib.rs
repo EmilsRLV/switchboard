@@ -8,6 +8,7 @@ pub mod graph;
 pub mod inbox;
 pub mod ipc;
 pub mod mcp;
+pub mod memlevel;
 pub mod notify;
 pub mod perf;
 pub mod persist;
@@ -98,6 +99,7 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::perf_ready,
             ipc::perf_typing,
             ipc::perf_get,
+            ipc::memory_activity,
         ])
 }
 
@@ -130,6 +132,10 @@ pub(crate) fn on_run_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: 
 /// [`tray::hide_on_close`]); otherwise the close goes ahead and the app quits as it always did.
 pub(crate) fn on_window_event<R: tauri::Runtime>(window: &tauri::Window<R>, event: &tauri::WindowEvent) {
     use tauri::Manager;
+    // Story 9.6: which app windows are focused decides the memory target level.
+    if let tauri::WindowEvent::Focused(focused) = event {
+        window.state::<AppState>().memlevel.on_focus(window.label(), *focused, std::time::Instant::now());
+    }
     if let tauri::WindowEvent::CloseRequested { api, .. } = event
         && should_handle_close(window.label())
         && tray::hide_on_close(window.app_handle())
@@ -153,6 +159,10 @@ pub fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
 /// Window `label` was destroyed: a pop-out returns its terminal; the main window takes every
 /// pop-out with it.
 pub(crate) fn on_window_destroyed<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str) {
+    {
+        use tauri::Manager;
+        app.state::<AppState>().memlevel.on_destroyed(label, std::time::Instant::now());
+    }
     if label == MAIN_WINDOW {
         windows::close_all(app);
     } else if windows::is_popout_label(label) {
@@ -228,6 +238,8 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             claude::live::start(app.handle().clone());
             // A click on a toast reveals its session (Story 3.3).
             notify::listen_for_clicks(app.handle());
+            // Story 9.6: WebView2's memory target goes Low while the app is idle.
+            memlevel::start(app.handle());
             Ok(())
         })
 }
@@ -424,9 +436,14 @@ mod tests {
             .expect("mock webview should build");
 
         let value: serde_json::Value = invoke(&webview, "perf_get").expect("perf_get").deserialize().unwrap();
+        let memory = if super::memlevel::SUPPORTED { "normal" } else { "unsupported" };
         assert_eq!(
             value,
-            serde_json::json!({ "startup_ms": null, "typing": { "samples": 0, "median_ms": null, "p95_ms": null } })
+            serde_json::json!({
+                "startup_ms": null,
+                "typing": { "samples": 0, "median_ms": null, "p95_ms": null },
+                "memory_level": memory,
+            })
         );
 
         let first: u64 = invoke(&webview, "perf_ready").expect("perf_ready").deserialize().unwrap();
@@ -442,6 +459,61 @@ mod tests {
         invoke_with(&webview, "perf_typing", InvokeBody::Json(serde_json::json!({ "samples": [7.0] }))).unwrap();
         let value: serde_json::Value = invoke(&webview, "perf_get").unwrap().deserialize().unwrap();
         assert_eq!(value["typing"], serde_json::json!({ "samples": 5, "median_ms": 5.0, "p95_ms": 7.0 }));
+    }
+
+    /// Story 9.6: `memory_activity` is registered and records a use: at `Low` (idle, nothing
+    /// focused) it brings `Normal` back at once, which `perf_get` reports (`unsupported` off
+    /// Windows); a window gaining or losing focus feeds the same state.
+    #[test]
+    fn memory_activity_brings_the_normal_level_back() {
+        use super::memlevel::Level;
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let state = app.state::<super::AppState>();
+        let reported = |webview: &tauri::WebviewWindow<tauri::test::MockRuntime>| -> serde_json::Value {
+            invoke(webview, "perf_get").unwrap().deserialize::<serde_json::Value>().unwrap()["memory_level"].clone()
+        };
+        let expect = |level: &str| serde_json::json!(if super::memlevel::SUPPORTED { level } else { "unsupported" });
+        // Armed as the ticker's start would (no ticker thread in the mock app).
+        let _queue = state.memlevel.start_queue(std::time::Instant::now());
+
+        // Nothing focused, well past the grace: the ticker's beat goes Low.
+        state.memlevel.tick(std::time::Instant::now() + super::memlevel::UNFOCUS_GRACE * 2);
+        assert_eq!(state.memlevel.level(), Level::Low);
+        assert_eq!(reported(&webview), expect("low"));
+
+        invoke(&webview, "memory_activity").expect("memory_activity should be registered");
+        assert_eq!(state.memlevel.level(), Level::Normal, "Normal at once, no tick needed");
+        assert_eq!(reported(&webview), expect("normal"));
+
+        // Focus events from the window handler feed the same state.
+        let window = webview.as_ref().window();
+        state.memlevel.tick(std::time::Instant::now() + super::memlevel::IDLE_AFTER * 2);
+        assert_eq!(state.memlevel.level(), Level::Low);
+        super::on_window_event(&window, &tauri::WindowEvent::Focused(true));
+        assert_eq!(state.memlevel.level(), Level::Normal, "a window gaining focus is a use");
+    }
+
+    /// Story 9.6: a focused window destroyed without losing focus first (`on_window_destroyed`)
+    /// counts as a use: Low only once the unfocus grace has passed.
+    #[test]
+    fn a_destroyed_window_starts_the_unfocus_grace() {
+        use super::memlevel::{Level, UNFOCUS_GRACE};
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "term-1", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let state = app.state::<super::AppState>();
+        let _queue = state.memlevel.start_queue(std::time::Instant::now());
+        super::on_window_event(&webview.as_ref().window(), &tauri::WindowEvent::Focused(true));
+        // The destroy drops the focused label (Low past the grace) and is itself a use (not before).
+        super::on_window_destroyed(app.handle(), "term-1");
+        state.memlevel.tick(std::time::Instant::now() + UNFOCUS_GRACE / 2);
+        assert_eq!(state.memlevel.level(), Level::Normal, "within the grace");
+        state.memlevel.tick(std::time::Instant::now() + UNFOCUS_GRACE * 2);
+        assert_eq!(state.memlevel.level(), Level::Low, "nothing focused past the grace");
     }
 
     #[test]

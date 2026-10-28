@@ -42,6 +42,7 @@ import { useStatusStore } from "./state/status";
 import { useUiStore } from "./state/ui";
 import { useWorkspaceStore } from "./state/workspace";
 import { Canvas } from "./canvas/Canvas";
+import { startActivityReporter } from "./perf";
 import { ApprovalToasts } from "./components/ApprovalToasts";
 import { Banners } from "./components/Banners";
 import { ContextMenu } from "./components/ContextMenu";
@@ -250,6 +251,9 @@ export default function App() {
     // A terminal closed in a pop-out window (Story 4.5) leaves the pane too.
     return connectTerminals({ onClosed: forgetTerminal });
   }, []);
+
+  // Story 9.6: input here keeps WebView2's memory target at Normal (Low only while idle).
+  useEffect(() => startActivityReporter(), []);
 
   useKeybindings();
 

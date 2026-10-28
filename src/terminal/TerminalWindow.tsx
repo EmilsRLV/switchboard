@@ -4,6 +4,7 @@ import "../components/shell.css";
 import { forgetTerminal } from "../commands/terminal";
 import { Notice } from "../components/Notice";
 import { hasTauriRuntime } from "../ipc";
+import { startActivityReporter } from "../perf";
 import { useTerminalStore } from "../state/terminals";
 import { TERMINAL_ATTRIBUTE } from "./keys";
 import { connectTerminals } from "./registry";
@@ -28,6 +29,9 @@ export function TerminalWindow({ id }: { id: string }) {
     // Closed for good (its Close here or in the pane): Rust closes this window too.
     return connectTerminals({ only: id, onClosed: forgetTerminal });
   }, [id]);
+
+  // Story 9.6: input in a pop-out counts as use too (the memory target stays Normal).
+  useEffect(() => startActivityReporter(), []);
 
   const title = info?.title ?? "";
   useEffect(() => {

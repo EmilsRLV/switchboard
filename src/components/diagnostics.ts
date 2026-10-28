@@ -1,4 +1,4 @@
-import type { DiagnosticsSnapshot, McpRefusal, PerfSnapshot } from "../ipc";
+import type { DiagnosticsSnapshot, McpRefusal, MemoryLevel, PerfSnapshot } from "../ipc";
 import { keybindingsStatusText, type KeybindingsReport } from "../state/keybindings";
 
 /** How often Settings → Diagnostics re-reads `diagnostics_get` while the pane is open. */
@@ -49,19 +49,27 @@ export function renderTimeText(ms: number | null): string {
 /**
  * Story 9.3: the measuring points' rows: `startup` (process start → the first canvas frame, `N ms`)
  * and `typing` (keydown → echo drawn over the last 100 keystrokes: `median N ms · p95 M ms`, or
- * `not enough samples` below 5). Before the first `perf_get` read: both `reading…`.
+ * `not enough samples` below 5). Story 9.6 adds `memory target` (`normal`, `low`, or `not supported`
+ * off Windows). Before the first `perf_get` read: all `reading…`.
  */
 export function perfRows(perf: PerfSnapshot | null): DiagnosticsRow[] {
   if (perf === null) {
     return [
       { label: "startup", value: "reading…", attention: false },
       { label: "typing", value: "reading…", attention: false },
+      { label: "memory target", value: "reading…", attention: false },
     ];
   }
   return [
     { label: "startup", value: perf.startup_ms === null ? "not measured yet" : `${Math.round(perf.startup_ms)} ms`, attention: false },
     { label: "typing", value: typingText(perf), attention: false },
+    { label: "memory target", value: memoryLevelText(perf.memory_level), attention: false },
   ];
+}
+
+/** The `memory target` value (Story 9.6): WebView2's level, or `not supported` off Windows. */
+export function memoryLevelText(level: MemoryLevel): string {
+  return level === "unsupported" ? "not supported" : level;
 }
 
 /** The `typing` value: `median N ms · p95 M ms`, or `not enough samples` (fewer than 5). */

@@ -43,6 +43,11 @@ tauri = { version = "2", features = ["test"] }
 # Kill-on-close Job Objects for terminal shells (`pty`); already in the tree.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Console"] }
+# Story 9.6: WebView2's memory usage target level (`memlevel`); both already in the tree through Tauri.
+# Keep both at the versions wry uses: `PlatformWebview::controller()` returns wry's webview2_com
+# types, so a different version would not type-check against them.
+webview2-com = "0.39"
+windows = "0.62"
 
 # The PTY tests ask Windows whether a process still runs and who its children are.
 [target.'cfg(windows)'.dev-dependencies]

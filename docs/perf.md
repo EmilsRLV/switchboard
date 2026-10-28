@@ -240,6 +240,27 @@ All figures are in MB, working set / private.
 - **The rest is the page.** Ten sessions with empty scrollback measured 139 MB; one full view adds about 13 MB on top.
 - **History:** a re-shown terminal's history is what the 2 MiB ring holds, capped at 5,000 lines. For the stub's 100-character lines that is all 5,000. Scroll position and selection reset to the bottom on each switch.
 
+**Story 9.6: WebView2 low memory target while idle** (2026-10-28).
+
+**What changed.** The app sets WebView2's `MemoryUsageTargetLevel` to Low while it is idle, then back to Normal on the next key, pointer or wheel input, or focus. It applies to all app windows. Idle means no app window is focused (after a 2 s grace), or 30 s have passed without input. Settings → Diagnostics shows the current level as `memory target: normal / low`. On Linux the setting does nothing.
+
+**Trial first** (a throwaway build that set Low for good at startup): 148.1 MB (10 sessions) and 69.9 MB (3 sessions). Private bytes stayed the same: WebView2 moves pages out of RAM, it does not free them.
+
+**Final build** (same filling stub and passes as 9.5, sampled after 60 s idle, so at Low):
+
+| Sessions | switchboard.exe | renderer | **App share** | GPU (private) | Whole tree |
+|---|---|---|---|---|---|
+| 10, 9.5 | 41.6 / 24.2 | 141.9 / 89.6 | **183.5 / 113.8** | 108.4 | 423.4 / 276.4 |
+| 10, 9.6 | 42.7 / 26.3 | 6.8 / 89.0 | **49.5 / 115.3** | 84.7 | 73.2 / 254.0 |
+| 3, 9.6 | 31.3 / 13.3 | 6.6 / 68.4 | **37.9 / 81.7** | not recorded | 56.4 / 224.0 |
+
+All figures are in MB, working set / private.
+
+- **NFR-2 passes on its working-set definition**, with full scrollback, at both 3 and 10 sessions.
+- **Private bytes are unchanged.** The renderer still holds about 89 MB (10 sessions). The pages are trimmed to the standby list and page file and are faulted back in on use. Task Manager's memory column follows the working set.
+- **Typing after the idle**, the first input at Low being the click that wakes the app: median 15.3 ms, p95 16.0 ms (3 sessions, 50 keys). The 9.5 build gave 15.4 / 19.2 ms in the same pass, so there is no measurable cost.
+- **Diagnostics** read `low` after 40 s without input and `normal` right after one click.
+
 **Typing** (budget < 16 ms added; plain `cmd` terminal, 50 keys typed at about 8 keys/s):
 
 | Build | Samples | Median (ms) | p95 (ms) |
@@ -254,7 +275,7 @@ One pass of 50 keys per build; the p95 of 50 samples rests on about 3 keystrokes
 | Budget | Measured (shipped build) | Result |
 |---|---|---|
 | Cold start < 1 s | median 447 ms in-app (window created at 54 ms) | **PASS** |
-| Idle RSS < 150 MB (app share) | 125.1 MB working set with 3 idle sessions (55.9 MB private). Full scrollback after Story 9.5: 150.3 MB with 3 sessions, 183.5 MB with 10 (282 MB before 9.5) | **PASS** with empty scrollback; full scrollback: marginal **MISS** at 3 sessions, **MISS** at 10 |
+| Idle RSS < 150 MB (app share) | With Story 9.6 (Low memory target while idle) and full scrollback: 37.9 MB working set with 3 sessions, 49.5 MB with 10 (private 81.7 / 115.3 MB). Before 9.6: 150.3 / 183.5 MB; before 9.5: 282 MB (10) | **PASS** (working set; private bytes unchanged by 9.6) |
 | Typing < 16 ms added | median 15.4 ms, p95 16.2 ms (full keydown → echo frame, including the shell's echo) | **PASS** on the median (0.6 ms to spare); p95 **over** |
 
 The typing verdict is based on the median of the full time, an upper bound on what the app adds. The p95 is recorded as over the budget.

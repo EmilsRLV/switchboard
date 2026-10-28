@@ -9,7 +9,12 @@
 //   time: keys typed while one is in flight are not sampled. Samples go to Rust's last-100 ring
 //   (`perf_typing`) in batches, a second after the last one, so every window feeds one ring.
 
-import { hasTauriRuntime, perfReady, perfTyping } from "./ipc";
+//
+// Story 9.6: `startActivityReporter` tells Rust about keyboard, pointer (moves too) and wheel input in this
+// window (at most one `memory_activity` a second), so WebView2's memory target goes Low only while
+// the app is idle and back to Normal on the next input.
+
+import { hasTauriRuntime, memoryActivity, perfReady, perfTyping } from "./ipc";
 
 /** A keystroke whose echo has not been drawn within this long (ms) is given up on. */
 export const TYPING_STALE_MS = 1_000;
@@ -161,4 +166,53 @@ export function reportFirstFrame(
 /** Forget that the first frame was reported (tests only). */
 export function resetFirstFrameForTests(): void {
   reported = false;
+}
+
+/** At most one activity report per this many ms per window (Story 9.6). */
+export const ACTIVITY_THROTTLE_MS = 1_000;
+
+/** The input events that count as use (moving the mouse over the app too), listened to in the capture phase on `window`. */
+export const ACTIVITY_EVENTS = ["keydown", "pointerdown", "pointermove", "wheel"] as const;
+
+/**
+ * Leading-edge throttle: the first input reports at once (so a Low level goes back to Normal right
+ * away), later ones within `ACTIVITY_THROTTLE_MS` of the last report are dropped. Rust only goes
+ * Low after a longer quiet spell (its unfocus grace, 2 s, and its 30 s idle), so a dropped
+ * report always follows one Rust has already taken as use. A failed send is ignored.
+ */
+export class ActivityThrottle {
+  private last: number | null = null;
+
+  constructor(private readonly send: () => Promise<void>) {}
+
+  /** Input at `now` (ms, any monotonic clock): whether it was reported. */
+  input(now: number): boolean {
+    if (this.last !== null && now - this.last < ACTIVITY_THROTTLE_MS && now >= this.last) return false;
+    this.last = now;
+    this.send().catch(() => {});
+    return true;
+  }
+}
+
+/** The slice of `window` the reporter listens on (a fake in tests). */
+export type ActivityTarget = Pick<Window, "addEventListener" | "removeEventListener">;
+
+/**
+ * Report this window's input to Rust (`memory_activity`, Story 9.6): capture-phase `keydown`,
+ * `pointerdown`, `pointermove` and `wheel` on `window`, throttled to one call a second. Returns
+ * the stop function. Does nothing outside Tauri unless a sender is given.
+ */
+export function startActivityReporter(
+  target: ActivityTarget = window,
+  send: (() => Promise<void>) | null = hasTauriRuntime() ? memoryActivity : null,
+  now: () => number = () => performance.now(),
+): () => void {
+  if (send === null) return () => {};
+  const throttle = new ActivityThrottle(send);
+  const onInput = () => void throttle.input(now());
+  const options = { capture: true, passive: true } as const;
+  for (const type of ACTIVITY_EVENTS) target.addEventListener(type, onInput, options);
+  return () => {
+    for (const type of ACTIVITY_EVENTS) target.removeEventListener(type, onInput, options);
+  };
 }

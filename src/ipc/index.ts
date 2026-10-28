@@ -618,11 +618,16 @@ export type LiveSession = {
 /** Mirrors `perf::TypingStats`: the typing ring's size, median and p95 (both `null` below 5 samples). */
 export type TypingStats = { samples: number; median_ms: number | null; p95_ms: number | null };
 
-/** Mirrors `perf::PerfSnapshot` (Story 9.3): what `perf_get` returns. */
+/** Mirrors `memlevel::Reported` (Story 9.6): WebView2's memory target level, or `unsupported` off Windows. */
+export type MemoryLevel = "normal" | "low" | "unsupported";
+
+/** Mirrors `ipc::PerfReport` (Stories 9.3, 9.6): what `perf_get` returns. */
 export type PerfSnapshot = {
   /** Process start → the first canvas frame, once the canvas reported it. */
   startup_ms: number | null;
   typing: TypingStats;
+  /** Story 9.6: the memory target level now. */
+  memory_level: MemoryLevel;
 };
 
 /** Mirrors `hooks::DiagnosticsSnapshot`: what `diagnostics_get` returns (Settings → Diagnostics). */
@@ -983,6 +988,7 @@ type Commands = {
   perf_ready: number;
   perf_typing: void;
   perf_get: PerfSnapshot;
+  memory_activity: void;
 };
 
 declare global {
@@ -1376,6 +1382,11 @@ export function perfTyping(samples: number[]): Promise<void> {
 /** `ipc::perf_get` (Story 9.3) -- the startup ms and the typing median / p95 for Diagnostics. */
 export function perfGet(): Promise<PerfSnapshot> {
   return call("perf_get");
+}
+
+/** `ipc::memory_activity` (Story 9.6) -- input in this window: the memory target goes back to Normal. */
+export function memoryActivity(): Promise<void> {
+  return call("memory_activity");
 }
 
 /** `ipc::app_quit` -- exit the app with status 0. Resolves only if the exit did not happen. */
