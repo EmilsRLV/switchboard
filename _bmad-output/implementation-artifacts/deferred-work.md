@@ -179,8 +179,5 @@
   summary: A query chunk the full view owned but had not parsed yet when it was disposed (hidden) loses its answer.
   evidence: Story 9.5 answer hand-over. The window is sub-millisecond (a query parsed in the same moment as a hide). It was recorded rather than fixed, as the Design Notes say.
 - source_spec: `_bmad-output/implementation-artifacts/spec-9-6-low-memory-when-idle.md`
-  summary: The activity reporter in a terminal pop-out window is not exercised by any test or GUI pass.
-  evidence: Verification-gap review. The repo renders no components in tests. A GUI step would settle it: type in a pop-out for more than 30 s, and Diagnostics must still read `normal`.
-- source_spec: `_bmad-output/implementation-artifacts/spec-9-6-low-memory-when-idle.md`
   summary: No automated check shows that `SetMemoryUsageTargetLevel` actually reaches WebView2.
   evidence: The applier is replaced by a recorder in tests. Only the measuring pass shows the effect (renderer working set dropped from 142 to 6.8 MB at idle). It needs a real WebView2 runtime in CI.

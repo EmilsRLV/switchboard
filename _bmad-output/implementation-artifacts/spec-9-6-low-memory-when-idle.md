@@ -107,6 +107,12 @@ A trial build that set WebView2's `MemoryUsageTargetLevel` to Low at startup mea
   - Diagnostics: `low` after 40 s idle, `normal` right after a click.
 - **Not checked.** Linux CI is pending; GitHub Actions is suspended until month end.
 
+**Pop-out GUI pass (2026-10-30, same release build, foreground-guarded).** It settles triage row 14.
+- **Setup.** One stub session, popped out with its **Pop out** button. Settings → Diagnostics stayed visible in the main window, and the pop-out kept focus throughout.
+- **Active.** Pointer moves in the pop-out every 5 s, plus one key, for 47 s after the pop-out gained focus: `memory target: normal`. Without the pop-out's reporter it would have gone `low` at 30 s.
+- **Idle.** Then 40 s with no input: `low`.
+- **Wake.** One pointer move in the pop-out: `normal` within 3 s.
+
 ## Spec Change Log
 
 ## Review Triage Log
@@ -128,7 +134,7 @@ Review pass 1 (blind-hunter, edge-case-hunter, verification-gap; diff 8d8ba2d..w
 | 11 | blind | A fixed 1 s tick instead of a computed deadline | low | One wake per second is negligible; rejected |
 | 12 | blind | Each window entry point must opt in to the reporter | low | Only two window kinds exist; rejected |
 | 13 | blind | TS `PerfSnapshot` vs Rust `PerfReport` names differ | low | Naming only; rejected |
-| 14 | vg | The pop-out's reporter wiring is untested | medium (pre-verified) | The repo does not render components in tests. defer: add a pop-out step to a GUI pass |
+| 14 | vg | The pop-out's reporter wiring is untested | medium (pre-verified) | The repo does not render components in tests. Deferred, then settled by the 2026-10-30 pop-out GUI pass (Verification notes) |
 | 15 | edge | Hide-to-tray may not emit `Focused(false)` | maybe-false (low) | At worst Low arrives after 30 s instead of 2 s; rejected as low |
 | 16 | vg | No automated check that `SetMemoryUsageTargetLevel` really runs | medium (pre-verified) | Needs a real WebView2. Covered by the orchestrator's measurement (renderer working set 142 to 6.8 MB). defer |
 
