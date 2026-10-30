@@ -76,7 +76,7 @@ sessions.
 For checking an installed build by hand, on a machine (or user profile) that has never run Switchboard:
 
 1. Install as above and start Switchboard from the Start menu or the app launcher. The window opens on an
-   empty canvas with the hint `Add a project — ctrl+o, drop a folder, or ctrl+k`, and no wizard or modal.
+   empty canvas with the hint `Add a project — ctrl+o, drop a folder, or ctrl+k · F1 help`, and no wizard or modal.
 2. Both files now exist in the folder above; `settings.json` has `claude.path` filled in when `claude` was
    found.
 3. With native `claude` installed: no banner, and `ctrl+,` shows `claude` with its version. Without it: the
@@ -381,7 +381,7 @@ and only the size is restored. Delete the file to reset to the defaults in `taur
 ## Workspace
 
 The window is an infinite canvas (`@xyflow/react`, unstyled `base.css`, colours from the theme tokens) with
-a dot grid and, while it has no nodes, a quiet "Add a project — ctrl+o, drop a folder, or ctrl+k" hint. Pan with the **middle** or **right**
+a dot grid and, while it has no nodes, a quiet "Add a project — ctrl+o, drop a folder, or ctrl+k · F1 help" hint. Pan with the **middle** or **right**
 mouse button, or hold **Space** and drag with the left; zoom with the **wheel** (0.1× to 4×; double-click
 does not zoom); `ctrl+0` / palette "Fit view" fits the nodes, or with none returns to `x 0, y 0, zoom 1`.
 

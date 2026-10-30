@@ -186,7 +186,7 @@ export function Canvas() {
       </ReactFlowProvider>
       {empty && (
         <p className="canvas-hint">
-          Add a project — <kbd>ctrl+o</kbd>, drop a folder, or <kbd>ctrl+k</kbd>
+          Add a project — <kbd>ctrl+o</kbd>, drop a folder, or <kbd>ctrl+k</kbd> · <kbd>F1</kbd> help
         </p>
       )}
     </div>

@@ -82,7 +82,7 @@ import {
   stopSelectedSession,
 } from "./sessions";
 import { closeOpenPane, openPane, togglePane } from "./panes";
-import { isHelpPageShown, showHelpPage, startHelpPagePick } from "./help";
+import { isHelpPageShown, openHelpHere, showHelpPage, startHelpPagePick, toggleHelp } from "./help";
 import {
   canClearReview,
   canOpenReview,
@@ -245,7 +245,7 @@ export function builtinCommands(): Command[] {
     {
       id: "help.open",
       title: "Help",
-      run: () => openPane("help"),
+      run: openHelpHere,
     },
     {
       // F1's key-only carrier, like `settings.toggle`. F1 works from fields too (`EDITABLE_PASS_KEYS`);
@@ -254,7 +254,7 @@ export function builtinCommands(): Command[] {
       title: "Toggle help",
       keybinding: "f1",
       hidden: true,
-      run: () => togglePane("help"),
+      run: toggleHelp,
     },
     {
       // The palette as a pick list of the guide pages (the Contents rows' palette route).

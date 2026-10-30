@@ -176,6 +176,13 @@ export type UiState = {
   helpAnchor: string | null;
   /** Bumped on every Help navigation, so following the same link again scrolls again. */
   helpNav: number;
+  /**
+   * The pane Help opened over (Story 10.2), kept as it was left: closing Help brings it back.
+   * `null` when Help opened on the canvas or is not open.
+   */
+  helpReturn: Pane | null;
+  /** The guide page last shown this run (in memory only), or `null`: where F1 opens with nothing else to go by. */
+  helpLastRead: string | null;
   openPane: (pane: Pane) => void;
   /** Close whichever pane is open (no-op when none is). */
   closePane: () => void;
@@ -212,6 +219,8 @@ export type UiState = {
   setReviewWidth: (width: number | null) => void;
   /** Show guide page `page` (`null`: Contents) in the Help pane, scrolled to `anchor` (`null`: the top). */
   setHelpPage: (page: string | null, anchor?: string | null) => void;
+  /** Remember the pane Help opened over (`null`: none). */
+  setHelpReturn: (pane: Pane | null) => void;
 };
 
 const NO_IDS: readonly string[] = Object.freeze([]);
@@ -274,6 +283,8 @@ export const useUiStore = create<UiState>()((set, get) => ({
   helpPage: null,
   helpAnchor: null,
   helpNav: 0,
+  helpReturn: null,
+  helpLastRead: null,
   openPane: (pane) => set({ pane }),
   closePane: () => set({ pane: null }),
   togglePane: (pane) => set({ pane: get().pane === pane ? null : pane }),
@@ -343,7 +354,14 @@ export const useUiStore = create<UiState>()((set, get) => ({
     }),
   setTerminalWidth: (width) => set((s) => (s.terminalWidth === width ? {} : { terminalWidth: width })),
   setReviewWidth: (width) => set((s) => (s.reviewWidth === width ? {} : { reviewWidth: width })),
-  setHelpPage: (page, anchor = null) => set((s) => ({ helpPage: page, helpAnchor: page === null ? null : anchor, helpNav: s.helpNav + 1 })),
+  setHelpPage: (page, anchor = null) =>
+    set((s) => ({
+      helpPage: page,
+      helpAnchor: page === null ? null : anchor,
+      helpNav: s.helpNav + 1,
+      helpLastRead: page ?? s.helpLastRead,
+    })),
+  setHelpReturn: (pane) => set((s) => (s.helpReturn === pane ? {} : { helpReturn: pane })),
 }));
 
 // The tray's list closes for good when its last row leaves, so a later row shows the chip

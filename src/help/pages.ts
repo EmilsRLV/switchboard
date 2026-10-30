@@ -1,10 +1,19 @@
-// The guide pages (Story 10.1): one typed table, in Contents order. Each page is Markdown in
+// The guide pages (Stories 10.1, 10.2): one typed table, in Contents order. Each page is Markdown in
 // `docs/help/`, bundled at build time with Vite's `?raw` import (never fetched). This module is
 // loaded only with the Help pane or a help command (dynamic imports), so the page text stays out
 // of the main bundle.
 
+import branchesSource from "../../docs/help/branches.md?raw";
 import canvasSource from "../../docs/help/canvas.md?raw";
+import edgesSource from "../../docs/help/edges.md?raw";
 import keyboardSource from "../../docs/help/keyboard.md?raw";
+import projectsSource from "../../docs/help/projects.md?raw";
+import reviewSource from "../../docs/help/review.md?raw";
+import sessionsSource from "../../docs/help/sessions.md?raw";
+import settingsSource from "../../docs/help/settings.md?raw";
+import terminalsSource from "../../docs/help/terminals.md?raw";
+import termsSource from "../../docs/help/terms.md?raw";
+import toolSource from "../../docs/help/tool.md?raw";
 import { renderMarkdown, type HelpNode } from "./markdown";
 
 export type HelpPage = {
@@ -20,7 +29,16 @@ export type HelpPage = {
 
 export const HELP_PAGES: readonly HelpPage[] = [
   { id: "canvas", title: "Canvas & navigation", file: "canvas.md", source: canvasSource },
+  { id: "projects", title: "Projects", file: "projects.md", source: projectsSource },
+  { id: "sessions", title: "Sessions & launch sheet", file: "sessions.md", source: sessionsSource },
+  { id: "terminals", title: "Terminals, tabs & pop-outs", file: "terminals.md", source: terminalsSource },
+  { id: "edges", title: "Edges", file: "edges.md", source: edgesSource },
+  { id: "branches", title: "Branches & worktrees", file: "branches.md", source: branchesSource },
+  { id: "review", title: "Review", file: "review.md", source: reviewSource },
+  { id: "tool", title: "The app as a tool for Claude", file: "tool.md", source: toolSource },
+  { id: "settings", title: "Settings & diagnostics", file: "settings.md", source: settingsSource },
   { id: "keyboard", title: "Keyboard & palette", file: "keyboard.md", source: keyboardSource },
+  { id: "terms", title: "Terms", file: "terms.md", source: termsSource },
 ];
 
 /** The page with `id`, or `null`. */

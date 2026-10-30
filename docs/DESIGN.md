@@ -352,7 +352,11 @@ chrome follows every rule here.
   without animation, like every pane.
 - **The Help pane** (Story 10.1; F1, or **Help** in the palette) is a pane at the settings pane's width. Its header
   row holds the title `Help`, an ordinary **← Contents** button while a page shows, and **Close**. It opens on
-  **Contents**: the `Contents` section heading over a bordered list of the guide pages in order (one row per page,
+  the page for where the operator is (Story 10.2: the open pane's page, else the selection's, else the page last
+  read this run, else Contents), and closing it brings back the pane it opened over, as it was left: the edge inspector
+  only while an edge is selected, the terminal pane only while it has a tab, a sheet or Review only while it still
+  has its form or target (else Help closes to the canvas). Opening another pane from Help drops the remembered one.
+  **Contents** is the `Contents` section heading over a bordered list of the guide pages in order (one row per page,
   the import list's look: `--text-md`, rows split by 1-px `--border` lines, `--bg-hover` on hover, the 1-px
   `--focus` outline on keyboard focus). A page is prose in `--font-sans` `--text-md` (line height 1.5): its `#`
   heading in `--text-lg`, `##` in `--text-base`, deeper ones in `--text-md`, all 500; lists indented; inline code

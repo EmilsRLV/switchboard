@@ -154,13 +154,15 @@ const SHEETS = ["launch", "worktree", "removeWorktree"] as const;
 
 /**
  * Select edge `id` and show its inspector -- unless the launch, worktree or remove-worktree sheet
- * is open: then the edge is only selected ("Inspect edge" opens the inspector).
+ * is open (or covered by Help): then the edge is only selected ("Inspect edge" opens the inspector).
  */
 export function showEdge(id: string): void {
   const ui = useUiStore.getState();
   ui.closeContextMenu();
   ui.select({ kind: "edge", id });
-  const pane = useUiStore.getState().pane;
+  // Help over a sheet (Story 10.2) counts as that sheet: opening the inspector would drop its form.
+  const { pane: open, helpReturn } = useUiStore.getState();
+  const pane = open === "help" ? helpReturn : open;
   if (pane === null || !(SHEETS as readonly string[]).includes(pane)) openPane("edge");
 }
 

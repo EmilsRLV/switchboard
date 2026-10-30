@@ -21,8 +21,8 @@ Claude…** from the [command palette](keyboard.md#the-command-palette) to add f
 
 Click a node, or use the arrow keys, to select it; `esc` clears the selection. `enter` on a project node
 expands or collapses it. Right-click a project, session or branch node, without moving the mouse, for its menu;
-every entry there is also in the command palette. With a project node selected, `n` opens the launch sheet for a new session, and `r`
-opens the Review pane on its changes.
+every entry there is also in the command palette. With a project node selected, `n` opens the [launch sheet](sessions.md#the-launch-sheet) for a new session, and `r`
+opens the [Review pane](review.md) on its changes.
 
 When a column holds more than ten children, its last row reads **show all (N)**; click it or press `enter`
 on it to see the rest.
@@ -30,7 +30,7 @@ on it to see the rest.
 ## Edges
 
 Each project and session node has a **handle** on its right edge. Drag from it onto another node to draw an
-edge, or press `e` (**Link to…**) and pick the target. A **context edge** (dashed) gives a session another
+[edge](edges.md), or press `e` (**Link to…**) and pick the target. A **context edge** (dashed) gives a session another
 folder; a **cooperate edge** (a double line) lets two sessions message each other. Click an edge to select it;
 `delete` removes it.
 

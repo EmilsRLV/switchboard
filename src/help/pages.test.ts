@@ -8,10 +8,19 @@ function all(nodes: readonly HelpNode[]): HelpNode[] {
 }
 
 describe("the guide pages", () => {
-  it("are the two pages of Story 10.1, in order, each opening with its title as the heading", () => {
+  it("are the eleven pages of Story 10.2, in Contents order, each opening with its title as the heading", () => {
     expect(HELP_PAGES.map((p) => [p.id, p.title, p.file])).toEqual([
       ["canvas", "Canvas & navigation", "canvas.md"],
+      ["projects", "Projects", "projects.md"],
+      ["sessions", "Sessions & launch sheet", "sessions.md"],
+      ["terminals", "Terminals, tabs & pop-outs", "terminals.md"],
+      ["edges", "Edges", "edges.md"],
+      ["branches", "Branches & worktrees", "branches.md"],
+      ["review", "Review", "review.md"],
+      ["tool", "The app as a tool for Claude", "tool.md"],
+      ["settings", "Settings & diagnostics", "settings.md"],
       ["keyboard", "Keyboard & palette", "keyboard.md"],
+      ["terms", "Terms", "terms.md"],
     ]);
     for (const page of HELP_PAGES) {
       const [first] = renderHelpPage(page);

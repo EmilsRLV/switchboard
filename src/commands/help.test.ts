@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { usePaletteStore, paletteRows, runPaletteRow } from "../state/palette";
+import { useLaunchStore } from "../state/launch";
+import { useReviewStore } from "../state/review";
 import { useUiStore } from "../state/ui";
+import { HELP_PAGES } from "../help/pages";
 import { registerBuiltins } from "./builtins";
+import { showEdge } from "./edges";
 import { openWebLink, showHelpPage } from "./help";
+import { openPane } from "./panes";
+import type { LaunchForm } from "./launch";
 import { handleKeydown, type KeyEventLike } from "./keybindings";
 import { applyBindingOverrides, clearCommands, getCommand, listCommands, runCommand, subscribeBindings } from "./registry";
 
@@ -16,7 +22,7 @@ describe("help commands (Story 10.1)", () => {
   beforeEach(() => {
     clearCommands();
     usePaletteStore.setState({ isOpen: false, pick: null, query: "", selected: 0 });
-    useUiStore.setState({ pane: null, selection: null, contextMenu: null, notice: null, elsewhereOpen: false, helpPage: null, helpAnchor: null });
+    useUiStore.setState({ pane: null, selection: null, contextMenu: null, notice: null, elsewhereOpen: false, helpPage: null, helpAnchor: null, helpReturn: null, helpLastRead: null, openTerminals: [] });
     registerBuiltins();
   });
   afterEach(() => {
@@ -64,8 +70,11 @@ describe("help commands (Story 10.1)", () => {
     expect(runCommand("settings.open")).toBe(true);
     expect(useUiStore.getState().pane).toBe("settings");
     expect(useUiStore.getState().helpPage).toBeNull();
+    // Story 10.2: "Help" over the settings pane opens its page, and closing Help brings settings back.
     expect(runCommand("help.open")).toBe(true);
-    expect(useUiStore.getState()).toMatchObject({ pane: "help", helpPage: null });
+    expect(useUiStore.getState()).toMatchObject({ pane: "help", helpPage: "settings", helpReturn: "settings" });
+    expect(runCommand("pane.close")).toBe(true);
+    expect(useUiStore.getState()).toMatchObject({ pane: "settings", helpReturn: null, helpPage: null });
     expect(runCommand("pane.close")).toBe(true);
     expect(useUiStore.getState().pane).toBeNull();
   });
@@ -89,7 +98,8 @@ describe("help commands (Story 10.1)", () => {
     await flush();
     await vi.waitFor(() => expect(usePaletteStore.getState().pick).not.toBeNull());
     const pick = usePaletteStore.getState().pick!;
-    expect(pick.items.map((item) => item.title)).toEqual(["Canvas & navigation", "Keyboard & palette"]);
+    expect(pick.items.map((item) => item.title)).toEqual(HELP_PAGES.map((page) => page.title));
+    expect(pick.items).toHaveLength(11);
     runPaletteRow("keyboard");
     expect(usePaletteStore.getState().isOpen).toBe(false);
     expect(useUiStore.getState()).toMatchObject({ pane: "help", helpPage: "keyboard", helpAnchor: null });
@@ -118,5 +128,172 @@ describe("help commands (Story 10.1)", () => {
     invoke.mockRejectedValueOnce("not an http(s) link: javascript:alert(1)");
     await openWebLink("javascript:alert(1)");
     expect(useUiStore.getState().notice?.text).toBe("not an http(s) link: javascript:alert(1)");
+  });
+});
+
+describe("F1 from where you are and the return to the pane (Story 10.2)", () => {
+  const form: LaunchForm = {
+    name: "typed name",
+    model: "",
+    customModel: "",
+    effort: "",
+    permissionMode: "",
+    addDirs: [],
+    prompt: "",
+    background: false,
+    useWorktree: false,
+    worktreeName: "typed-name",
+    worktreeNameEdited: false,
+  };
+
+  beforeEach(() => {
+    clearCommands();
+    usePaletteStore.setState({ isOpen: false, pick: null, query: "", selected: 0 });
+    useUiStore.setState({
+      pane: null,
+      selection: null,
+      contextMenu: null,
+      notice: null,
+      elsewhereOpen: false,
+      helpPage: null,
+      helpAnchor: null,
+      helpReturn: null,
+      helpLastRead: null,
+      openTerminals: [],
+    });
+    useLaunchStore.getState().reset();
+    registerBuiltins();
+  });
+  afterEach(() => {
+    clearCommands();
+    useLaunchStore.getState().reset();
+  });
+
+  /** The launch sheet open with a typed form, as `sessions.ts` leaves it. */
+  function openTypedLaunchSheet(): void {
+    useLaunchStore.setState({ projectId: "p1", projectLabel: "demo", form });
+    useUiStore.getState().openPane("launch");
+  }
+
+  it("F1 over the launch sheet opens Sessions & launch sheet; Esc, Close or F1 bring the sheet back as typed", () => {
+    for (const close of [() => handleKeydown(key("Escape")), () => runCommand("pane.close"), () => handleKeydown(key("F1"))]) {
+      openTypedLaunchSheet();
+      expect(handleKeydown(key("F1"))).toBe(true);
+      expect(useUiStore.getState()).toMatchObject({ pane: "help", helpPage: "sessions", helpReturn: "launch" });
+      expect(useLaunchStore.getState()).toMatchObject({ projectId: "p1", form });
+      expect(close()).toBe(true);
+      expect(useUiStore.getState()).toMatchObject({ pane: "launch", helpReturn: null, helpPage: null });
+      expect(useLaunchStore.getState()).toMatchObject({ projectId: "p1", form });
+    }
+  });
+
+  it("each pane opens its page, worked out before Help replaces it", () => {
+    const rows = [
+      ["terminal", "terminals"],
+      ["edge", "edges"],
+      ["review", "review"],
+      ["import", "projects"],
+      ["settings", "settings"],
+      ["worktree", "branches"],
+      ["removeWorktree", "branches"],
+    ] as const;
+    for (const [pane, page] of rows) {
+      useUiStore.setState({ pane, helpReturn: null });
+      expect(runCommand("help.open"), pane).toBe(true);
+      expect(useUiStore.getState(), pane).toMatchObject({ pane: "help", helpPage: page, helpReturn: pane });
+    }
+  });
+
+  it("with no pane the selection picks the page; with nothing, the page last read, else Contents", () => {
+    useUiStore.setState({ selection: { kind: "project", id: "p" } });
+    handleKeydown(key("F1"));
+    expect(useUiStore.getState()).toMatchObject({ pane: "help", helpPage: "projects", helpReturn: null });
+    handleKeydown(key("F1"));
+    expect(useUiStore.getState().pane).toBeNull();
+
+    useUiStore.setState({ selection: null, helpLastRead: null });
+    runCommand("help.open");
+    expect(useUiStore.getState()).toMatchObject({ pane: "help", helpPage: null });
+    showHelpPage("review");
+    runCommand("pane.close");
+    runCommand("help.open");
+    expect(useUiStore.getState()).toMatchObject({ pane: "help", helpPage: "review" });
+  });
+
+  it("Help to canvas: Help opened with no pane closes to the canvas", () => {
+    runCommand("help.open");
+    expect(handleKeydown(key("Escape"))).toBe(true);
+    expect(useUiStore.getState()).toMatchObject({ pane: null, helpReturn: null });
+  });
+
+  it("Leave elsewhere: another pane opened from Help resets the remembered pane; the remembered pane itself keeps its state", () => {
+    openTypedLaunchSheet();
+    handleKeydown(key("F1"));
+    expect(runCommand("settings.open")).toBe(true);
+    expect(useUiStore.getState()).toMatchObject({ pane: "settings", helpReturn: null, helpPage: null });
+    expect(useLaunchStore.getState()).toMatchObject({ projectId: null, form: null });
+
+    const closeTarget = vi.spyOn(useReviewStore.getState(), "closeTarget");
+    useUiStore.setState({ pane: "review" });
+    runCommand("help.open");
+    expect(useUiStore.getState().helpReturn).toBe("review");
+    expect(closeTarget).not.toHaveBeenCalled();
+    expect(useUiStore.getState().pane).toBe("help");
+    expect(runCommand("settings.toggle")).toBe(true);
+    expect(useUiStore.getState().pane).toBe("settings");
+    expect(closeTarget).toHaveBeenCalledTimes(1);
+    closeTarget.mockRestore();
+  });
+
+  it("the edge inspector comes back only while an edge is still selected", () => {
+    useUiStore.setState({ pane: "edge", selection: { kind: "edge", id: "e1" } });
+    handleKeydown(key("F1"));
+    expect(useUiStore.getState()).toMatchObject({ pane: "help", helpPage: "edges", helpReturn: "edge" });
+    handleKeydown(key("Escape"));
+    expect(useUiStore.getState().pane).toBe("edge");
+
+    handleKeydown(key("F1"));
+    useUiStore.getState().clearSelection();
+    expect(useUiStore.getState().pane).toBe("help");
+    handleKeydown(key("Escape"));
+    expect(useUiStore.getState()).toMatchObject({ pane: null, helpReturn: null });
+  });
+
+  it("the terminal pane comes back only while it still has a tab", () => {
+    useUiStore.setState({ pane: "terminal", openTerminals: ["t1"] });
+    handleKeydown(key("F1"));
+    expect(useUiStore.getState()).toMatchObject({ pane: "help", helpPage: "terminals" });
+    useUiStore.setState({ openTerminals: [] });
+    runCommand("pane.close");
+    expect(useUiStore.getState().pane).toBeNull();
+  });
+
+  it("an edge clicked while Help covers a sheet is only selected: the sheet's form survives and comes back", () => {
+    openTypedLaunchSheet();
+    handleKeydown(key("F1"));
+    showEdge("e1");
+    expect(useUiStore.getState()).toMatchObject({ pane: "help", helpReturn: "launch", selection: { kind: "edge", id: "e1" } });
+    expect(useLaunchStore.getState()).toMatchObject({ projectId: "p1", form });
+    handleKeydown(key("Escape"));
+    expect(useUiStore.getState().pane).toBe("launch");
+    expect(useLaunchStore.getState()).toMatchObject({ projectId: "p1", form });
+  });
+
+  it("a sheet whose submit finished while Help covered it does not come back: Help closes to the canvas", () => {
+    openTypedLaunchSheet();
+    handleKeydown(key("F1"));
+    useLaunchStore.getState().reset();
+    handleKeydown(key("Escape"));
+    expect(useUiStore.getState()).toMatchObject({ pane: null, helpReturn: null });
+  });
+
+  it("opening the covered pane itself from Help keeps its state", () => {
+    openTypedLaunchSheet();
+    handleKeydown(key("F1"));
+    const next: LaunchForm = { ...form, name: "another name" };
+    useLaunchStore.setState({ form: next });
+    openPane("launch");
+    expect(useUiStore.getState()).toMatchObject({ pane: "launch", helpReturn: null, helpPage: null });
+    expect(useLaunchStore.getState()).toMatchObject({ projectId: "p1", form: next });
   });
 });
