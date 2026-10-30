@@ -125,6 +125,22 @@ Requirements are numbered `FR-<area>-<n>` so epics and specs can cite them. "Mus
 | FR-SYS-5 | Tray icon with live-session summary; close-to-tray option. | Should |
 | FR-SYS-6 | Auto-update. | Later |
 
+### 2.10 Help (`FR-HELP`)
+
+| ID | Req | Level |
+|---|---|---|
+| FR-HELP-1 | A Help pane, opened by F1 and by "Help" in the palette: a right-side pane like the others, Esc closes, low chrome. It opens on a Contents list of short guide pages. No welcome page, no overlay tour, no coach marks, no modal. | Must |
+| FR-HELP-2 | Guide pages, one per area: canvas & navigation; projects; sessions & launch sheet; terminals, tabs & pop-outs; edges (context, cooperate); branches & worktrees; review; the app as a tool for Claude (MCP server, approvals, peer messages, review requests); settings & diagnostics; keyboard & palette; terms. Hand-written Markdown under `docs/help/`, bundled at build time, so it is edited in the repo. Pages use the app's own terminology (project node, session node, branch node, worktree, context edge, cooperate edge, handle, terminal pane, tabs, pop-out, plain terminal, launch sheet, edge inspector, review pane, import pane, settings pane, Diagnostics, command palette, toast, attention colour). | Must |
+| FR-HELP-3 | Safe rendering: a small renderer for a Markdown subset (headings, paragraphs, lists, emphasis, inline and fenced code, links). Raw HTML is shown as text, never as markup; `http(s)` links open in the system browser only when clicked and no other scheme is opened; page links navigate inside the pane. No network access for help content (NFR-8); no new runtime dependency. | Must |
+| FR-HELP-4 | The keyboard page lists the registered commands with their effective bindings (`keybindings.json` applied), generated from the command registry. | Should |
+| FR-HELP-5 | Getting started checklist: a handful of first steps (open the palette, add a project, start a session, open a plain terminal, link two nodes, review changes) that tick themselves off from real app state whatever route was used. Shown on the first run as a small dismissible card on the canvas, never a modal; reopenable from Help; progress and dismissal persist. | Must |
+| FR-HELP-6 | Changelog and Roadmap pages in Help, from hand-curated `CHANGELOG.md` and `ROADMAP.md` at the repo root, bundled at build time; plain words, no story or requirement ids. Help shows the app's version; a test ties the newest changelog entry to it. | Must |
+| FR-HELP-7 | After the app's version changes, a quiet one-time "new in <version>" pointer (no accent, no OS toast) that opens the Changelog; recorded as seen once the Changelog is opened. Nothing on a fresh profile. | Should |
+| FR-HELP-8 | F1 is context-aware: it opens the page for the open pane or the selected node, else Contents. | Should |
+| FR-HELP-9 | Every Help action is a palette command and bindable (NFR-7). First-run, checklist and seen-version state live in an app-written `state.json` beside `settings.json` (never in `~/.claude`, NFR-5; never in the hand-edited `settings.json`). | Must |
+| FR-HELP-10 | Search across guide pages (titles and headings) from the palette. | Later |
+| FR-HELP-11 | The guide over MCP (`switchboard://help/<page>` resource), so a session reads the same text the operator does (UX principle 5). | Later |
+
 ## 3. Non-functional requirements
 
 | ID | Req |
@@ -160,3 +176,5 @@ File editing; LSP; debugging; other agents; macOS testing; cloud/remote sessions
 | Q4 | React vs Svelte for the frontend. | React 19 + `@xyflow/react` (mature graph lib, best Claude fluency). | Architecture (decided, revisit only if bundle/perf fails NFR-1/2) |
 | Q5 | Worktree root: Claude's own (`--worktree`) location vs app-managed `.worktrees/`. | App-managed by default so the node ↔ path mapping is ours; still recognise sessions launched with `--worktree`. | Epic 5 |
 | Q6 | Should the app ever auto-start sessions (e.g. on review request → open a reviewer session)? | Not in v1; agent-initiated starts go through FR-MCP-5 approval. | — |
+| Q7 | Where does the Getting started checklist live while the operator works: a card on the canvas, or only a Help page? (Panes are mutually exclusive, so a Help page closes as soon as the launch sheet or the terminal pane opens.) | A small dismissible card at the canvas's top-right, under the banner strip and under panes, plus the same list as a Help page. Not a welcome page: the canvas stays the home screen. **Decided (Emils, 2026-10-30): canvas card + Help page.** | Epic 10 |
+| Q8 | Should guide pages be exposed to sessions over MCP so Claude reads the same text as the operator? | Later (FR-HELP-11); the bundled Markdown makes it cheap once wanted. | — |

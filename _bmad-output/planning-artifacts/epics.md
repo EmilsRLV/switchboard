@@ -10,10 +10,11 @@ inputDocuments:
 
 ## Overview
 
-Nine epics, ordered so that every one ends with something usable on both platforms. Epics 1–4 give a
+Ten epics, ordered so that every one ends with something usable on both platforms. Epics 1–4 give a
 working "start and watch Claude sessions on a canvas" tool; 5–7 add branches, edges and the
-agent-facing side; 8 adds review; 9 ships it. Each story cites the PRD requirements it satisfies and
-becomes a spec in `implementation-artifacts/` when picked up.
+agent-facing side; 8 adds review; 9 ships it; 10 puts help, the changelog and the roadmap inside the
+app. Each story cites the PRD requirements it satisfies and becomes a spec in
+`implementation-artifacts/` when picked up.
 
 Left out on purpose (see PRD §5): editing, LSP, cloud sessions, macOS, other agents.
 
@@ -28,6 +29,7 @@ Left out on purpose (see PRD §5): editing, LSP, cloud sessions, macOS, other ag
 7. The app as a tool for Claude
 8. Review
 9. Ship it
+10. Help in the app
 
 ---
 
@@ -691,6 +693,173 @@ So that the app is keyboard-first in fact. (NFR-7, FR-CANVAS-6)
 **When** audited
 **Then** every UI button/menu item maps to a registered command; a `keybindings.json` overrides defaults; conflicts are reported in settings → diagnostics
 
+### Story 9.5: Rendered terminal views only while shown
+
+As the operator,
+I want hidden terminals to cost no rendering memory,
+So that many sessions fit the idle memory budget. (NFR-2)
+
+**Acceptance Criteria:**
+
+**Given** 10 stub sessions with full scrollback
+**When** only one terminal is shown
+**Then** hidden terminals keep a light shadow that still answers terminal queries, the shown one is rebuilt from the Rust output ring, and the measured app share drops (recorded in `docs/perf.md`)
+
+### Story 9.6: WebView2 low memory target while idle
+
+As the operator,
+I want the app to give memory back while I am not using it,
+So that NFR-2 holds with full scrollback. (NFR-2)
+
+**Acceptance Criteria:**
+
+**Given** the app unfocused, or focused with no input for 30 s
+**When** the idle threshold passes
+**Then** every app window's WebView2 memory target is Low, input or focus in any window (pop-outs included) brings Normal back at once, and Diagnostics shows the current target
+
+---
+
+## Epic 10: Help in the app
+
+Help that lives where the work is: a Help pane of short guide pages written in the app's own words, a
+Getting started checklist that ticks itself off as the operator really does each step, and the changelog
+and roadmap shipped inside the app. All of it is Markdown in the repo (`docs/help/*.md`, `CHANGELOG.md`,
+`ROADMAP.md`), bundled at build time with Vite `?raw` imports and rendered by a small safe renderer;
+nothing is fetched (NFR-8) and no runtime dependency is added. No overlay tour, no coach marks, no wizard:
+the canvas stays the home screen (PRD §4). Every new action is a registry command, so it is in the palette
+and bindable (NFR-7, Story 9.4). State that must outlive a run (checklist progress, the last version seen)
+goes in a new app-written `state.json` beside `settings.json`, never into `settings.json` (hand-edited and
+live-reloaded) or `workspace.json` (the graph).
+
+Guide text uses the app's own terms, as the Terms page lists them: project node, session node, branch
+node, worktree, context edge, cooperate edge, handle, terminal pane, tabs, pop-out, plain terminal, launch
+sheet, edge inspector, review pane, import pane, settings pane, Diagnostics, command palette, toast,
+attention colour.
+
+### Story 10.1: Help pane and guide renderer
+
+As the operator,
+I want F1 (or "Help" in the palette) to open a pane of short guide pages,
+So that I can look something up without leaving the app. (FR-HELP-1, FR-HELP-3, FR-HELP-4, FR-HELP-9)
+
+**Acceptance Criteria:**
+
+**Given** the app is running with the canvas, a pane or the palette in front
+**When** I press F1 or run "Help" from the palette
+**Then** a `help` pane (a new member of the `Pane` union in `src/state/ui.ts`) comes in on the right at the settings pane's width, open on **Contents**: the guide pages in order, then Getting started, Changelog and Roadmap as later stories add them; Esc and Close run `pane.close`; opening another pane closes it like every pane; it follows DESIGN.md (tokens only, no accent, prose in `--font-sans`, code and keys in `--font-mono`, no new motion) and DESIGN.md gains a "The Help pane" entry under Layout pieces
+
+**Given** a page under `docs/help/` (Markdown, bundled with a `?raw` import; the page list is one typed table in `src/help/pages.ts`)
+**When** it renders
+**Then** headings, paragraphs, bullet and numbered lists, emphasis, inline code, fenced code and links render; anything else (raw HTML, images) renders as its literal text, never as markup; an `http(s)` link opens in the system browser through the opener only when clicked, and no other scheme is ever opened; a link to another page (`projects.md`, optionally `#heading`) navigates inside the pane and **← Contents** goes back; the renderer is a pure function from Markdown to a plain element tree, unit-tested in node for each construct, for raw HTML and for a `javascript:` link (vitest has no DOM; `@lezer/markdown`, already a dependency, may do the parsing)
+
+**Given** the first two pages, **Canvas & navigation** and **Keyboard & palette**
+**When** I read the Keyboard page
+**Then** its command table is generated from the command registry when the page opens (title, effective key or `—`), so a rebind or an unbind in `keybindings.json` shows there, and the prose above it is the Markdown page
+
+**Given** focus is in a terminal
+**When** I press F1
+**Then** the key goes to the program in the terminal (a bare key is never a pass-through binding, Story 9.4), `ctrl+shift+k` → Help still opens the pane, and the Keyboard page says so
+
+**Given** the palette
+**When** I type "help"
+**Then** it lists `help.open` ("Help"), `help.page` ("Help: open page…", a pick list of the pages on the Link to… model) and `help.contents` ("Help: contents", while a page is shown); `help.toggle` (F1) is a hidden key carrier like `settings.toggle`; all are bindable, and the Story 9.4 audit passes with the pane's buttons and Contents rows routed through commands
+
+### Story 10.2: Guide pages and F1 from where you are
+
+As the operator,
+I want every part of the app explained in its own words, and F1 to open the page for what I am looking at,
+So that help answers the question I have now. (FR-HELP-2, FR-HELP-8)
+
+**Acceptance Criteria:**
+
+**Given** `docs/help/`
+**When** this story lands
+**Then** it holds, in Contents order: Canvas & navigation, Projects, Sessions & launch sheet, Terminals, tabs & pop-outs, Edges (context, cooperate), Branches & worktrees, Review, The app as a tool for Claude (the MCP server, approvals and "Always for this edge", peer messages and the unread badge, review requests), Settings & diagnostics, Keyboard & palette, Terms; each page is short (about 150–400 words), opens with what the thing is, then how to do it with the keys and palette titles as the app shows them, then the states one can see (state words, attention colour, badges), and uses only the Terms page's vocabulary for the app's parts (a review rule, with the Terms page as the reference)
+
+**Given** the page table and the files
+**When** the tests run
+**Then** a test asserts that every listed page exists and every file is listed, that no page holds raw HTML, that every page link and `#heading` resolves, and that every key named in the pages as `` `ctrl+k` `` is the default binding of some registered command (so a changed default fails the test, not the reader)
+
+**Given** a pane is open or a node is selected
+**When** I press F1 or run "Help"
+**Then** the pane opens on the matching page: launch sheet → Sessions & launch sheet; terminal pane → Terminals, tabs & pop-outs; edge inspector or a selected edge → Edges; Review pane → Review; import pane → Projects; settings pane → Settings & diagnostics; worktree and remove-worktree sheets → Branches & worktrees; a selected project, session or branch node with no pane → Projects, Sessions & launch sheet, Branches & worktrees; otherwise the page last read this run, else Contents; the mapping is a pure function with a test
+
+**Given** the empty canvas (Story 9.1)
+**When** it shows its hint
+**Then** the hint ends with `F1 help` in the same mono muted style, and the README's clean-machine checklist step 1 quotes the new text
+
+### Story 10.3: Getting started checklist
+
+As a new operator,
+I want a short checklist that ticks itself off as I do each thing for the first time,
+So that I learn the app by using it, not by reading. (FR-HELP-5, FR-HELP-9)
+
+**Acceptance Criteria:**
+
+**Given** a fresh profile (`workspace.json` was created on this launch, the first run of Story 9.1)
+**When** the canvas shows
+**Then** a compact **Getting started** card sits at the canvas's top-right under the banner strip (over the canvas; under panes, the palette, the menu and the toasts; no animation), listing six steps with their keys: Open the command palette (`ctrl+k`), Add a project (`ctrl+o` or drop a folder), Start a session (`n` on a project node), Open a plain terminal, Link two nodes (`e`), Review changes (`r`); a step whose command is enabled now is a button that runs it, otherwise plain text; **Dismiss** closes the card; no wizard, no overlay, no modal, no accent (the card is information)
+
+**Given** the card
+**When** I actually do a step by any route (mouse, key, palette, drag-and-drop, a pane button or an agent's approved `start_session`)
+**Then** its row ticks (a muted `✓` in `currentColor`) on the next render, decided from state, not from which button was pressed: projects > 0; a session the app launched reaching a live state; a plain terminal opened; edges > 0; the Review pane open on a target; the palette opened; a step already true when the card first shows is ticked at once; the detection is a pure function over the stores' state, with a test per step
+
+**Given** progress, a dismissal, or a card that has not been dismissed
+**When** the app restarts
+**Then** they are back: they live in a new app-written `state.json` beside `settings.json` (`%APPDATA%\switchboard\`, `$XDG_CONFIG_HOME/switchboard/`), schema-versioned, loaded with `load_or_init` and written atomically through `persist.rs`, never watched and never hand-edited (deleting it resets the checklist and nothing else); `settings.json` and `workspace.json` are untouched; the README's "Where things live" table gains the file
+
+**Given** all six steps done
+**When** the last one ticks
+**Then** the card reads `All done` and goes on its own at the next launch, or at once with Dismiss
+
+**Given** a profile that already has a `workspace.json`
+**When** the app updates to this build
+**Then** the card does not appear on its own; **Getting started** is a Help page with the same six rows (`help.gettingStarted`, "Help: getting started") and a **Show on canvas** button (`checklist.show`) that brings the card back; Dismiss is `checklist.dismiss`; both are in the palette and bindable
+
+### Story 10.4: Changelog and roadmap in Help
+
+As the operator,
+I want the changelog and roadmap readable inside the app, in plain words,
+So that I know what changed and what is coming without opening the repo. (FR-HELP-6)
+
+**Acceptance Criteria:**
+
+**Given** the repo root
+**When** this story lands
+**Then** `CHANGELOG.md` exists in Keep a Changelog shape: `# Changelog`, an empty `## Unreleased`, then `## 0.1.0 — <date>` (newest first) with bullets grouped by area (Canvas, Projects, Sessions, Terminals, Branches and worktrees, Edges, The app as a tool for Claude, Review, Settings and platform, Keyboard) that summarise Epics 1–9 as a user would see them, with no story ids, FR ids or file names; and `ROADMAP.md` exists with `## Next`, `## Later`, `## Known limitations` and `## Not planned`, seeded from the PRD's Later rows, the open questions still open (Q2 injection reliability, Q3 native peer messaging), the Deferred list in this file and the user-facing rows of `deferred-work.md` (a viewer for peer message text; resume and fork with the session's own model and permission mode; remembering a pop-out window's size and place; folder targets for context edges; following `/clear` to the new session id; the false `finished` when the operator's own Stop hook blocks; the memory budget with full scrollback; typing latency p95; Linux checks still owed), with §5 of the PRD under Not planned; both read in the Terms page's vocabulary
+
+**Given** the Help pane
+**When** I open **Changelog** or **Roadmap** from Contents, or run `help.changelog` ("Help: changelog") / `help.roadmap` ("Help: roadmap")
+**Then** the bundled file renders through the Story 10.1 renderer (so the two files are held to the same no-raw-HTML rule); Contents shows `Switchboard <version>` from `app_info` (Cargo's version: `tauri.conf.json` sets none) with the config folder path under it in mono
+
+**Given** the version
+**When** the tests run
+**Then** a test asserts that `package.json` and `src-tauri/Cargo.toml` carry the same version and that the newest released heading in `CHANGELOG.md` equals it, so a version bump without a changelog entry fails `npm test`
+
+### Story 10.5: What's new after an update
+
+As the operator,
+I want a quiet, one-time pointer to the changelog after the app's version changes,
+So that I notice what changed without being interrupted. (FR-HELP-7, FR-HELP-9)
+
+**Acceptance Criteria:**
+
+**Given** `state.json` records the last version seen and the app starts as a different version
+**When** the canvas shows
+**Then** a muted chip `new in <version>` sits at the canvas's bottom-left beside the Elsewhere chip, in its look (mono `--text-xs`, `--fg-muted`, 1-px `--border`; no accent, no OS toast, no banner, no motion); clicking it opens Help → Changelog and records the version as seen; it stays across launches until then
+
+**Given** a fresh profile
+**When** the app starts for the first time
+**Then** the current version is recorded silently and no chip shows (the checklist is the first-run surface)
+
+**Given** the chip
+**When** I open the Changelog by any route (Contents, `help.changelog`, `help.whatsNew`)
+**Then** the version is recorded as seen and the chip goes; the same version never shows it again, and any difference (newer, older, a dev build with a changed version) counts as a change
+
+**Given** the palette
+**When** I type "new"
+**Then** `help.whatsNew` ("What's new in <version>", a `dynamicTitle`) is listed whether or not the chip shows, and is the chip's command; the decision "show the chip" is a pure function of (stored version, current version, first run) with a test
+
 ---
 
 ## Deferred (recorded, not scheduled)
@@ -700,6 +869,7 @@ So that the app is keyboard-first in fact. (NFR-7, FR-CANVAS-6)
 - Remote branches and fetch/pull/push (FR-BRANCH-6)
 - Stage/commit from review (FR-REVIEW-7)
 - Auto-update (FR-SYS-6)
+- Help search and the guide over MCP (FR-HELP-10, FR-HELP-11)
 - Cloud sessions (`claude --cloud`), Remote Control attach
 - Structured chat view over `-p --output-format stream-json` as an alternative to the terminal (A2)
 - macOS
