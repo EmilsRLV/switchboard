@@ -79,6 +79,10 @@ const ALLOW_LIST: readonly Exemption[] = [
   { file: "/src/components/ReviewPane.tsx", handler: "() => select(row.key)", reason: `${ITEM} (a requested-file row); palette: review.nextFile / review.prevFile` },
   { file: "/src/components/ReviewPane.tsx", handler: "() => useReviewStore.getState().selectCommit(row.sha)", reason: `${ITEM} (a commit row)` },
   { file: "/src/components/ReviewPane.tsx", handler: "() => (dir ? useReviewStore.getState().toggleFolder(row.path) : select(row.path))", reason: `${ITEM} (a tree row: opens a folder or shows a file)` },
+  // -- Help pane (Story 10.1): which page is a choice among a dynamic set --------------------------
+  { file: "/src/components/HelpPane.tsx", handler: "() => showHelpPage(p.id)", reason: `${ITEM} (a Contents row: that page); palette: help.page (Help: open page…)` },
+  { file: "/src/components/HelpPane.tsx", handler: "() => showHelpPage(target.page, target.anchor)", reason: `${ITEM} (a page link: that page and heading); palette: help.page (Help: open page…)` },
+  { file: "/src/components/HelpPane.tsx", handler: "() => void openWebLink(target.url)", reason: `${ITEM} (a web link: that URL, http(s) only, in the system browser)` },
   // -- canvas --------------------------------------------------------------------------------------
   { file: "/src/canvas/Canvas.tsx", handler: "() => clickEdge(edgeId)", reason: "pointer gesture on the canvas (an edge's label selects it); palette: edge.select / edge.inspect" },
   { file: "/src/canvas/Canvas.tsx", handler: "suppress", reason: "pointer gesture: suppresses the webview's own menu (the node menu opens on right-press)" },

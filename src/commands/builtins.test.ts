@@ -53,7 +53,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the ninety-three commands with the spec's keybindings", () => {
+  it("register the ninety-seven commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -78,6 +78,10 @@ describe("built-in commands", () => {
       "edge.select",
       "elsewhere.close",
       "elsewhere.toggle",
+      "help.contents",
+      "help.open",
+      "help.page",
+      "help.toggle",
       "import.addSelected",
       "launch.addFolder",
       "launch.start",
@@ -225,7 +229,7 @@ describe("built-in commands", () => {
     expect(getCommand("review.layoutUnified")?.hidden).toBe(true);
   });
 
-  it("the key-only carriers are hidden from the palette, the seventy-nine actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the eighty-two actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -248,6 +252,9 @@ describe("built-in commands", () => {
       "edge.revokeAgentPolicy",
       "edge.select",
       "elsewhere.toggle",
+      "help.contents",
+      "help.open",
+      "help.page",
       "import.addSelected",
       "launch.addFolder",
       "launch.start",
@@ -346,7 +353,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(93);
+    expect(listCommands()).toHaveLength(97);
   });
 
   const PROJECT_ACTIONS = [
@@ -380,6 +387,8 @@ describe("built-in commands", () => {
     expect(titles()).toEqual([
       "Agent actions: allow all",
       "Expand project",
+      "Help",
+      "Help: open page…",
       "Link to…",
       "New session…",
       "Open in external editor",
@@ -915,12 +924,14 @@ describe("built-in commands", () => {
   it("the palette lists only enabled, visible commands, sorted by title", () => {
     usePaletteStore.getState().open();
     const titles = listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title);
-    expect(titles).toEqual(["Open settings", "Quit", "Re-detect binaries", "Toggle command palette"]);
+    expect(titles).toEqual(["Help", "Help: open page…", "Open settings", "Quit", "Re-detect binaries", "Toggle command palette"]);
 
     useCanvasStore.getState().setInstance(fakeCanvas());
     expect(listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title)).toEqual([
       "Add project folder…",
       "Fit view",
+      "Help",
+      "Help: open page…",
       "Import from Claude…",
       "Open settings",
       "Quit",

@@ -1,8 +1,9 @@
 // Opening and closing the right-hand panes (settings, import, terminal, launch, worktree, remove
-// worktree, edge, review) with their side effects: the import pane loads its list when opened,
+// worktree, edge, review, help) with their side effects: the import pane loads its list when opened,
 // the settings pane drops a stale action error when closed, the import pane forgets its
 // selection, the launch, worktree and remove-worktree sheets their forms, the Review pane its
-// target. Commands call these; components never touch the ui store's pane directly.
+// target, the Help pane its page (it opens on Contents again). Commands call these; components
+// never touch the ui store's pane directly.
 
 import { useImportStore } from "../state/import";
 import { useLaunchStore } from "../state/launch";
@@ -42,4 +43,5 @@ function leave(pane: Pane): void {
   if (pane === "worktree") useWorktreeStore.getState().reset();
   if (pane === "removeWorktree") useRemoveWorktreeStore.getState().reset();
   if (pane === "review") useReviewStore.getState().closeTarget();
+  if (pane === "help") useUiStore.getState().setHelpPage(null);
 }

@@ -82,6 +82,7 @@ import {
   stopSelectedSession,
 } from "./sessions";
 import { closeOpenPane, openPane, togglePane } from "./panes";
+import { isHelpPageShown, showHelpPage, startHelpPagePick } from "./help";
 import {
   canClearReview,
   canOpenReview,
@@ -239,6 +240,34 @@ export function builtinCommands(): Command[] {
       keybinding: "ctrl+,",
       hidden: true,
       run: () => togglePane("settings"),
+    },
+    // -- Story 10.1: the Help pane --------------------------------------------------------------
+    {
+      id: "help.open",
+      title: "Help",
+      run: () => openPane("help"),
+    },
+    {
+      // F1's key-only carrier, like `settings.toggle`. F1 works from fields too (`EDITABLE_PASS_KEYS`);
+      // inside a terminal it is the program's (`ctrl+shift+k` → Help still opens the pane).
+      id: "help.toggle",
+      title: "Toggle help",
+      keybinding: "f1",
+      hidden: true,
+      run: () => togglePane("help"),
+    },
+    {
+      // The palette as a pick list of the guide pages (the Contents rows' palette route).
+      id: "help.page",
+      title: "Help: open page…",
+      run: startHelpPagePick,
+    },
+    {
+      // The pane's ← Contents.
+      id: "help.contents",
+      title: "Help: contents",
+      when: isHelpPageShown,
+      run: () => showHelpPage(null),
     },
     {
       id: "pane.close",

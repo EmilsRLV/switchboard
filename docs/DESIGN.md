@@ -350,6 +350,19 @@ chrome follows every rule here.
 
   Tokens only; the accent appears only through `.pane-error`. It never takes the focus on opening and appears
   without animation, like every pane.
+- **The Help pane** (Story 10.1; F1, or **Help** in the palette) is a pane at the settings pane's width. Its header
+  row holds the title `Help`, an ordinary **← Contents** button while a page shows, and **Close**. It opens on
+  **Contents**: the `Contents` section heading over a bordered list of the guide pages in order (one row per page,
+  the import list's look: `--text-md`, rows split by 1-px `--border` lines, `--bg-hover` on hover, the 1-px
+  `--focus` outline on keyboard focus). A page is prose in `--font-sans` `--text-md` (line height 1.5): its `#`
+  heading in `--text-lg`, `##` in `--text-base`, deeper ones in `--text-md`, all 500; lists indented; inline code
+  and keys in mono `--text-sm`; a code block in the command preview look (`--bg`, 1-px `--border`,
+  `--radius-sm`, mono `--text-xs` `--fg-muted`, wrapping). A link is its text underlined in `--fg` (`--fg-muted` on
+  hover), never the accent: a page link shows that page (at its heading), a web link opens in the system browser
+  on a click (its URL on hover). Raw HTML and images show as their literal text. The Keyboard page ends with two
+  tables, `Commands` and `Key-only commands` (captions in the section-heading style): the title in `--fg`, the
+  effective key in mono `--text-sm` `--fg-muted` or `—`, rows split by 1-px `--border` lines. Tokens only, no
+  accent; it appears without animation and a heading link scrolls without motion.
 - **Settings → Agent actions** (Story 7.2) is one muted line under the section heading: `Ask: …` or, while the
   workspace allows all, `Allow all: …`, each naming the palette command that switches it.
 - **The context menu** is the palette's row look at the pointer: `--bg-raised`, 1-px border,

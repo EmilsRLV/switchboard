@@ -31,6 +31,7 @@ import {
   termClose,
   projectOpenEditor,
   projectOpenFolder,
+  openUrl,
   projectPickFolder,
   projectRevealClaudeDir,
   projectSetShowBranches,
@@ -174,6 +175,15 @@ describe("workspace command wrappers", () => {
     await expect(keybindingsGet()).resolves.toEqual(file);
     expect(invoke).toHaveBeenCalledWith("keybindings_get", {}, undefined);
     expect(KEYBINDINGS_CHANGED_EVENT).toBe("keybindings://changed");
+  });
+
+  it("the 10.1 open_url wrapper invokes its wire name with { url } and rejects with Rust's refusal", async () => {
+    const invoke = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await expect(openUrl("https://example.com")).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenCalledWith("open_url", { url: "https://example.com" }, undefined);
+    invoke.mockRejectedValueOnce("not an http(s) link: javascript:alert(1)");
+    await expect(openUrl("javascript:alert(1)")).rejects.toBe("not an http(s) link: javascript:alert(1)");
   });
 
   it("onKeybindingsChanged resolves with a no-op without a runtime", async () => {

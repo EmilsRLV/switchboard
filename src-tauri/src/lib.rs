@@ -31,6 +31,7 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::app_info,
             ipc::settings_get,
             ipc::settings_reveal,
+            ipc::open_url,
             ipc::keybindings_get,
             ipc::binaries_redetect,
             ipc::workspace_get,
@@ -923,6 +924,37 @@ mod tests {
         let err = invoke_with(&webview, "project_open_folder", InvokeBody::Json(serde_json::json!({ "projectId": "nope" })))
             .expect_err("unknown project");
         assert_eq!(err, serde_json::json!("unknown project"));
+    }
+
+    #[test]
+    fn open_url_is_registered_refuses_other_schemes_and_fails_cleanly_without_the_opener() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        // Not http(s): refused before the opener is reached, whatever the case of the scheme.
+        for url in ["javascript:alert(1)", "file:///C:/Windows/notepad.exe", "C:\\Windows", "mailto:a@b.c", "https://", " https://a.b", "https://a b", ""] {
+            let err = invoke_with(&webview, "open_url", InvokeBody::Json(serde_json::json!({ "url": url })))
+                .expect_err("refused");
+            assert_eq!(err, serde_json::json!(format!("not an http(s) link: {url}")), "{url}");
+        }
+        // http(s), any case: as far as the opener, which the mock app does not have (no browser opens).
+        for url in ["https://example.com/a?b=c", "HTTP://example.com"] {
+            let err = invoke_with(&webview, "open_url", InvokeBody::Json(serde_json::json!({ "url": url })))
+                .expect_err("no opener under test");
+            assert_eq!(err, serde_json::json!("could not open link: opener plugin not registered"), "{url}");
+        }
+    }
+
+    #[test]
+    fn is_web_url_accepts_http_and_https_only() {
+        use super::ipc::is_web_url;
+        assert!(is_web_url("https://example.com"));
+        assert!(is_web_url("http://127.0.0.1:8080/x"));
+        assert!(is_web_url("HtTpS://example.com"));
+        for url in ["", "http://", "https:/x", "ftp://a.b", "javascript:alert(1)", "https://a\nb", "\u{e9}https://a.b", "file://x"] {
+            assert!(!is_web_url(url), "{url:?}");
+        }
     }
 
     #[test]

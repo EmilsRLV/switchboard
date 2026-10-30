@@ -920,6 +920,7 @@ type Commands = {
   app_info: AppInfo;
   settings_get: SettingsSnapshot;
   settings_reveal: void;
+  open_url: void;
   keybindings_get: KeybindingsFile;
   binaries_redetect: SettingsSnapshot;
   workspace_get: WorkspaceSnapshot;
@@ -1038,6 +1039,14 @@ export function keybindingsGet(): Promise<KeybindingsFile> {
 /** `ipc::settings_reveal` -- open the config folder with `settings.json` selected. */
 export function settingsReveal(): Promise<void> {
   return call("settings_reveal");
+}
+
+/**
+ * `ipc::open_url` (Story 10.1) -- open `url` in the system browser. Rust refuses anything not
+ * starting with `http://` or `https://`; rejects with the cause.
+ */
+export function openUrl(url: string): Promise<void> {
+  return call("open_url", { url });
 }
 
 /** `ipc::binaries_redetect` -- re-run `claude`/`git` detection; resolves with the new snapshot. */

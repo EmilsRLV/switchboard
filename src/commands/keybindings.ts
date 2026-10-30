@@ -42,8 +42,11 @@ export type KeyEventLike = {
   defaultPrevented?: boolean;
 };
 
-/** Keys a bare binding may still claim while focus is in an editable element. */
-const EDITABLE_PASS_KEYS = new Set(["escape", "enter", "arrowup", "arrowdown", "arrowleft", "arrowright"]);
+/**
+ * Keys a bare binding may still claim while focus is in an editable element. F1 (Help, Story
+ * 10.1) is never typed text, so it works from fields and the Review editor too.
+ */
+const EDITABLE_PASS_KEYS = new Set(["escape", "enter", "arrowup", "arrowdown", "arrowleft", "arrowright", "f1"]);
 
 /**
  * True when the event target takes typed keys itself: an `<input>`, `<textarea>`, `<select>`

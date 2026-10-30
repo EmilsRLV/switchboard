@@ -30,9 +30,9 @@ import { useWorkspaceStore } from "./workspace";
  * The right-hand panes; `launch` is the new-session sheet (Story 4.2), `worktree` the new-worktree sheet (Story 5.2),
  * `removeWorktree` the remove-worktree confirmation (Story 5.4), `edge` the edge inspector of the
  * selected edge (Story 6.1), `review` the Review pane: a node's working-tree diff (Story 8.1; Story
- * 7.4's review request on top when opened from one).
+ * 7.4's review request on top when opened from one), `help` the Help pane (Story 10.1).
  */
-export type Pane = "settings" | "import" | "terminal" | "launch" | "worktree" | "removeWorktree" | "edge" | "review";
+export type Pane = "settings" | "import" | "terminal" | "launch" | "worktree" | "removeWorktree" | "edge" | "review" | "help";
 
 /** The terminal pane's narrowest width, in CSS pixels. */
 export const TERMINAL_MIN_WIDTH = 360;
@@ -170,6 +170,12 @@ export type UiState = {
   terminalWidth: number | null;
   /** The dragged Review pane width in CSS pixels, or `null` for the default (Story 8.1). */
   reviewWidth: number | null;
+  /** The guide page the Help pane shows, or `null` for Contents (Story 10.1). */
+  helpPage: string | null;
+  /** The heading the Help pane scrolls to on its page (a slug id), or `null` for the top. */
+  helpAnchor: string | null;
+  /** Bumped on every Help navigation, so following the same link again scrolls again. */
+  helpNav: number;
   openPane: (pane: Pane) => void;
   /** Close whichever pane is open (no-op when none is). */
   closePane: () => void;
@@ -204,6 +210,8 @@ export type UiState = {
   setPopped: (id: string, label: string | null) => void;
   setTerminalWidth: (width: number | null) => void;
   setReviewWidth: (width: number | null) => void;
+  /** Show guide page `page` (`null`: Contents) in the Help pane, scrolled to `anchor` (`null`: the top). */
+  setHelpPage: (page: string | null, anchor?: string | null) => void;
 };
 
 const NO_IDS: readonly string[] = Object.freeze([]);
@@ -263,6 +271,9 @@ export const useUiStore = create<UiState>()((set, get) => ({
   focusOnShow: true,
   terminalWidth: loadTerminalWidth(),
   reviewWidth: loadWidth(REVIEW_WIDTH_KEY),
+  helpPage: null,
+  helpAnchor: null,
+  helpNav: 0,
   openPane: (pane) => set({ pane }),
   closePane: () => set({ pane: null }),
   togglePane: (pane) => set({ pane: get().pane === pane ? null : pane }),
@@ -332,6 +343,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
     }),
   setTerminalWidth: (width) => set((s) => (s.terminalWidth === width ? {} : { terminalWidth: width })),
   setReviewWidth: (width) => set((s) => (s.reviewWidth === width ? {} : { reviewWidth: width })),
+  setHelpPage: (page, anchor = null) => set((s) => ({ helpPage: page, helpAnchor: page === null ? null : anchor, helpNav: s.helpNav + 1 })),
 }));
 
 // The tray's list closes for good when its last row leaves, so a later row shows the chip

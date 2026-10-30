@@ -197,6 +197,155 @@
   cursor: default;
 }
 
+/* --- help pane (Story 10.1): the settings pane's width; prose sans, code and keys mono ---- */
+
+.help-contents {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.help-contents li + li {
+  border-top: var(--line) solid var(--border);
+}
+
+.help-contents-row {
+  display: block;
+  width: 100%;
+  font: inherit;
+  font-size: var(--text-md);
+  text-align: left;
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  padding: 0.4rem 0.6rem;
+  cursor: pointer;
+}
+
+.help-contents-row:hover {
+  background: var(--bg-hover);
+}
+
+.help-contents-row:focus-visible {
+  outline: var(--line) solid var(--focus);
+  outline-offset: 1px;
+}
+
+.help-page {
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.help-h {
+  margin: 1rem 0 0.4rem;
+  font-weight: 500;
+}
+
+.help-h:first-child {
+  margin-top: 0;
+}
+
+.help-h1 {
+  font-size: var(--text-lg);
+}
+
+.help-h2 {
+  font-size: var(--text-base);
+}
+
+.help-h3 {
+  font-size: var(--text-md);
+}
+
+.help-p {
+  margin: 0 0 0.6rem;
+}
+
+.help-list {
+  margin: 0 0 0.6rem;
+  padding-left: 1.25rem;
+}
+
+.help-list .help-p,
+.help-list .help-list {
+  margin-bottom: 0.2rem;
+}
+
+.help-code,
+.help-key {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.help-pre {
+  margin: 0 0 0.6rem;
+  padding: 0.4rem 0.6rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  background: var(--bg);
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Links are text, underlined; never the accent. */
+.help-link {
+  font: inherit;
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.help-link:hover {
+  color: var(--fg-muted);
+}
+
+.help-link:focus-visible {
+  outline: var(--line) solid var(--focus);
+  outline-offset: 1px;
+}
+
+.help-table {
+  width: 100%;
+  margin: 0.6rem 0 0.4rem;
+  border-collapse: collapse;
+  font-size: var(--text-md);
+}
+
+.help-table caption {
+  text-align: left;
+  padding-bottom: 0.4rem;
+}
+
+.help-table th {
+  text-align: left;
+  font-weight: 500;
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+}
+
+.help-table th,
+.help-table td {
+  padding: 0.2rem 0.5rem 0.2rem 0;
+  border-bottom: var(--line) solid var(--border);
+  vertical-align: baseline;
+}
+
+.help-table td:last-child {
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
 .binary {
   display: grid;
   grid-template-columns: 4.5rem 1fr;

@@ -64,6 +64,8 @@ import "./components/shell.css";
 // The Review pane (Story 8.1) and its CodeMirror diff view are their own chunks, loaded when the
 // pane first opens.
 const ReviewPane = lazy(() => import("./components/ReviewPane"));
+// The Help pane (Story 10.1) likewise, so the guide pages' text stays out of the main bundle.
+const HelpPane = lazy(() => import("./components/HelpPane"));
 
 // Commands exist for the life of the module, not of a component: registered once here.
 registerBuiltins();
@@ -71,7 +73,7 @@ registerBuiltins();
 /**
  * The shell: banner strip on top, the canvas filling the rest with the transient notice laid
  * over its top edge, the Elsewhere tray at its bottom-left and the agent approval toasts (Story
- * 7.2) at its bottom-right, one pane (settings, import, terminal, the launch sheet, the worktree sheet, the remove-worktree sheet, the edge inspector or the Review pane of Story 8.1, loaded lazily) on the right when open,
+ * 7.2) at its bottom-right, one pane (settings, import, terminal, the launch sheet, the worktree sheet, the remove-worktree sheet, the edge inspector, the Review pane of Story 8.1 or the Help pane of Story 10.1, both loaded lazily) on the right when open,
  * the hidden holder that keeps every terminal's view alive while the terminal pane is not showing it, the command
  * palette over everything when open, the node context menu at the pointer when open. Every
  * key goes through the command registry's dispatcher (`useKeybindings`).
@@ -278,6 +280,13 @@ export default function App() {
             </Suspense>
           </ErrorBoundary>
         )}
+        {pane === "help" && (
+          <ErrorBoundary label="help pane" fallback={(message) => <PaneFailed label="Help" message={`could not show help: ${message}`} />}>
+            <Suspense fallback={null}>
+              <HelpPane />
+            </Suspense>
+          </ErrorBoundary>
+        )}
         {pane === "terminal" && <TerminalPane />}
         <TerminalHolder />
         <Palette />
@@ -289,16 +298,21 @@ export default function App() {
 
 /** What the Review pane leaves when it failed: one error line and Close; the rest of the app stays. */
 function ReviewPaneFailed({ message }: { message: string }) {
+  return <PaneFailed label="Review" message={`could not show the review: ${message}`} />;
+}
+
+/** A lazily loaded pane that failed: its title, Close and one error line. */
+function PaneFailed({ label, message }: { label: string; message: string }) {
   return (
-    <aside className="pane" aria-label="Review">
+    <aside className="pane" aria-label={label}>
       <header className="pane-header">
-        <h2 className="pane-title">Review</h2>
+        <h2 className="pane-title">{label}</h2>
         <button type="button" className="btn" onClick={() => runCommand("pane.close")} title="Close (Esc)">
           Close
         </button>
       </header>
       <p className="pane-error" role="alert">
-        could not show the review: {message}
+        {message}
       </p>
     </aside>
   );

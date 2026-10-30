@@ -920,6 +920,34 @@ fn project_path(state: &AppState, id: &str) -> Result<String, String> {
         .ok_or_else(|| "unknown project".to_string())
 }
 
+/// Story 10.1: a web link clicked in a Help page, opened in the system browser. Only `http://`
+/// and `https://` URLs (any case) are ever opened; anything else (`javascript:`, `file:`, a
+/// path) is refused before the opener is reached. Without the opener plugin (the mock app in
+/// tests) this is an `Err` naming that, so no test ever opens a browser.
+#[tauri::command]
+pub fn open_url<R: Runtime>(app: AppHandle<R>, url: String) -> Result<(), String> {
+    if !is_web_url(&url) {
+        return Err(format!("not an http(s) link: {url}"));
+    }
+    let Some(opener) = app.try_state::<tauri_plugin_opener::Opener<R>>() else {
+        return Err("could not open link: opener plugin not registered".to_string());
+    };
+    opener
+        .open_url(url, None::<&str>)
+        .map_err(|err| format!("could not open link: {err}"))
+}
+
+/// True for an `http://` or `https://` URL (the scheme in any case) with something after the
+/// scheme and no whitespace or control characters anywhere.
+pub fn is_web_url(url: &str) -> bool {
+    let rest = ["http://", "https://"].iter().find_map(|scheme| {
+        url.get(..scheme.len())
+            .filter(|prefix| prefix.eq_ignore_ascii_case(scheme))
+            .map(|_| &url[scheme.len()..])
+    });
+    rest.is_some_and(|rest| !rest.is_empty() && !url.chars().any(|c| c.is_whitespace() || c.is_control()))
+}
+
 /// Open a directory with the opener plugin. Without the plugin (the mock app in tests) this
 /// is an `Err` naming that, so no test ever opens a real file manager.
 fn open_dir<R: Runtime>(app: &AppHandle<R>, dir: &Path) -> Result<(), String> {
