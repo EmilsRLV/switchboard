@@ -379,6 +379,16 @@ chrome follows every rule here.
   `--radius-md`, rows split by a 1-px `--border` line, each with the state word (mono `--text-xs`, `busy` in
   `--fg`, the rest `--fg-muted`; no pulse), the name (`--text-md`, ellipsis), the shortened cwd (mono
   `--text-xs` `--fg-muted`, full path on hover) and an **Add folder** button. No accent.
+- **The Getting started card** (Story 10.3) sits at the canvas's top-right under the banner strip, offset below the
+  notice line: over the canvas (the Elsewhere tray's layer) and below the notice, panes, toasts, the palette and the
+  menu. It is information, not a wizard: no overlay, modal or motion. A compact `--bg-raised` box with a 1-px
+  `--border` and `--radius-md`: the title `Getting started` (`--text-md` / 500) and a small **Dismiss** button on one
+  row, then the six steps, one row each (`--text-md`): a step whose command is enabled now is its title as a button
+  (underlined text in the row's colour, `--fg-muted` on hover, the 1-px `--focus` outline), otherwise plain text;
+  its keys follow at the right in mono `--text-xs` `--fg-muted`. A ticked step's row is `--fg-muted` and starts with
+  a `✓` in `currentColor`. After the sixth step the rows give way to a muted `All done`. It shows on a fresh profile
+  only; the Help pane's Getting started page (after the guide pages in Contents) ends with the same rows under
+  a `Your progress` section heading and an ordinary **Show on canvas** button. Tokens only, no accent.
 - **The canvas** is `--bg` with a dot grid in `--fg-faint`; empty, it shows a centred mono hint in
   `--fg-muted`. Nothing on the canvas uses the accent except the attention states (a `finished` / `waiting` session card and its project's glow; see [States](#states)).
 

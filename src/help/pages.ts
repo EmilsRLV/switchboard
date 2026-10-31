@@ -1,4 +1,4 @@
-// The guide pages (Stories 10.1, 10.2): one typed table, in Contents order. Each page is Markdown in
+// The guide pages (Stories 10.1, 10.2, then Getting started, 10.3): one typed table, in Contents order. Each page is Markdown in
 // `docs/help/`, bundled at build time with Vite's `?raw` import (never fetched). This module is
 // loaded only with the Help pane or a help command (dynamic imports), so the page text stays out
 // of the main bundle.
@@ -6,6 +6,7 @@
 import branchesSource from "../../docs/help/branches.md?raw";
 import canvasSource from "../../docs/help/canvas.md?raw";
 import edgesSource from "../../docs/help/edges.md?raw";
+import gettingStartedSource from "../../docs/help/getting-started.md?raw";
 import keyboardSource from "../../docs/help/keyboard.md?raw";
 import projectsSource from "../../docs/help/projects.md?raw";
 import reviewSource from "../../docs/help/review.md?raw";
@@ -39,6 +40,8 @@ export const HELP_PAGES: readonly HelpPage[] = [
   { id: "settings", title: "Settings & diagnostics", file: "settings.md", source: settingsSource },
   { id: "keyboard", title: "Keyboard & palette", file: "keyboard.md", source: keyboardSource },
   { id: "terms", title: "Terms", file: "terms.md", source: termsSource },
+  // Story 10.3: after the guide pages; the pane appends the live checklist and Show on canvas.
+  { id: "getting-started", title: "Getting started", file: "getting-started.md", source: gettingStartedSource },
 ];
 
 /** The page with `id`, or `null`. */

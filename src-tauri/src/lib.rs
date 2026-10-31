@@ -1,6 +1,7 @@
 //! Switchboard core. Rust is the source of truth; the webview talks to it only
 //! through the thin commands in [`ipc`].
 
+pub mod appstate;
 pub mod approvals;
 pub mod claude;
 pub mod git;
@@ -33,6 +34,8 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::settings_reveal,
             ipc::open_url,
             ipc::keybindings_get,
+            ipc::state_get,
+            ipc::checklist_set,
             ipc::binaries_redetect,
             ipc::workspace_get,
             ipc::workspace_set_viewport,
@@ -224,6 +227,8 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             let stubs = stub_children_from_env(std::env::var(STUB_CHILDREN_ENV).ok().as_deref());
             let _ = app.state::<AppState>().stub_children.set(stubs);
             graph::initialise(app.handle());
+            // Story 10.3: `state.json`, after the workspace (which knows whether this is a fresh profile).
+            appstate::initialise(app.handle());
             if let Some(home) = claude::claude_home() {
                 let _ = app.state::<AppState>().claude_home.set(home);
             }
@@ -366,6 +371,60 @@ mod tests {
         assert_eq!(value["binaries"]["claude"]["status"], "pending");
         assert_eq!(value["binaries"]["git"]["status"], "pending");
         assert_eq!(value["banners"], serde_json::json!([]));
+    }
+
+    /// Story 10.3: `state_get` reports the first run and the checklist; `checklist_set` validates the
+    /// step ids, writes `state.json` atomically and replies with the new state.
+    #[test]
+    fn state_get_and_checklist_set_round_trip_through_state_json() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("switchboard").join("workspace.json");
+        let state = dir.path().join("switchboard").join("state.json");
+        // A fresh profile: the workspace is created on this launch, so the card is shown.
+        super::graph::initialise_at(app.handle(), Some(workspace));
+        super::appstate::initialise_at(app.handle(), Some(state.clone()));
+
+        let value: serde_json::Value = invoke(&webview, "state_get").expect("state_get").deserialize().unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({ "firstRun": true, "checklist": { "shown": true, "dismissed": false, "done": [] } })
+        );
+
+        let args = serde_json::json!({ "checklist": { "shown": true, "dismissed": true, "done": ["edge", "palette"] } });
+        let value: serde_json::Value =
+            invoke_with(&webview, "checklist_set", InvokeBody::Json(args)).expect("checklist_set").deserialize().unwrap();
+        assert_eq!(value["checklist"]["done"], serde_json::json!(["palette", "edge"]));
+        let file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+        assert_eq!(file["version"], 1);
+        assert_eq!(file["checklist"], serde_json::json!({ "shown": true, "dismissed": true, "done": ["palette", "edge"] }));
+
+        let args = serde_json::json!({ "checklist": { "shown": true, "dismissed": false, "done": ["wizard"] } });
+        let err = invoke_with(&webview, "checklist_set", InvokeBody::Json(args)).unwrap_err();
+        assert_eq!(err, serde_json::json!("unknown checklist step: wizard"));
+        let value: serde_json::Value = invoke(&webview, "state_get").unwrap().deserialize().unwrap();
+        assert_eq!(value["checklist"]["dismissed"], true, "a refused set changes nothing");
+    }
+
+    /// Story 10.3: a profile whose workspace already existed gets no card on its own.
+    #[test]
+    fn an_existing_profile_is_not_a_first_run() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace.json");
+        std::fs::write(&workspace, "{}").unwrap();
+        super::graph::initialise_at(app.handle(), Some(workspace));
+        super::appstate::initialise_at(app.handle(), Some(dir.path().join("state.json")));
+        let value: serde_json::Value = invoke(&webview, "state_get").unwrap().deserialize().unwrap();
+        assert_eq!(value["firstRun"], false);
+        assert_eq!(value["checklist"]["shown"], false);
+        assert!(dir.path().join("state.json").is_file(), "created with the defaults");
     }
 
     /// Story 9.4: `keybindings_get` reads `keybindings.json` beside `settings.json` (none, then the

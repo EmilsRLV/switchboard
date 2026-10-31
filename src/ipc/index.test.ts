@@ -58,6 +58,8 @@ import {
   inboxUnreadGet,
   INBOX_UNREAD_EVENT,
   keybindingsGet,
+  stateGet,
+  checklistSet,
   KEYBINDINGS_CHANGED_EVENT,
   onKeybindingsChanged,
   onInboxUnread,
@@ -175,6 +177,16 @@ describe("workspace command wrappers", () => {
     await expect(keybindingsGet()).resolves.toEqual(file);
     expect(invoke).toHaveBeenCalledWith("keybindings_get", {}, undefined);
     expect(KEYBINDINGS_CHANGED_EVENT).toBe("keybindings://changed");
+  });
+
+  it("the 10.3 state wrappers invoke state_get with {} and checklist_set with { checklist }", async () => {
+    const snapshot = { firstRun: true, checklist: { shown: true, dismissed: false, done: ["palette"] } };
+    const invoke = vi.fn().mockResolvedValue(snapshot);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
+    await expect(stateGet()).resolves.toEqual(snapshot);
+    expect(invoke).toHaveBeenCalledWith("state_get", {}, undefined);
+    await expect(checklistSet(snapshot.checklist)).resolves.toEqual(snapshot);
+    expect(invoke).toHaveBeenCalledWith("checklist_set", { checklist: snapshot.checklist }, undefined);
   });
 
   it("the 10.1 open_url wrapper invokes its wire name with { url } and rejects with Rust's refusal", async () => {

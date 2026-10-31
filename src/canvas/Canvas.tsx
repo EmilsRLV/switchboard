@@ -186,7 +186,8 @@ export function Canvas() {
       </ReactFlowProvider>
       {empty && (
         <p className="canvas-hint">
-          Add a project — <kbd>ctrl+o</kbd>, drop a folder, or <kbd>ctrl+k</kbd> · <kbd>F1</kbd> help
+          {/* One inline run: as flex items, the text pieces would lose their edge spaces. */}
+          <span>Add a project — <kbd>ctrl+o</kbd>, drop a folder, or <kbd>ctrl+k</kbd> · <kbd>F1</kbd> help</span>
         </p>
       )}
     </div>

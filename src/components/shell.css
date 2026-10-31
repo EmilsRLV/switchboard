@@ -945,6 +945,118 @@
   padding: 0.1rem 0.45rem;
 }
 
+/* --- Getting started card (Story 10.3) ------------------------------------------------- */
+/* The canvas's top-right, under the notice line: over the canvas, below the notice, panes,
+   toasts, palette and menu (the Elsewhere tray's layer). Information, not a wizard: compact, no
+   accent, no motion. The Help page's Getting started shows the same rows. */
+
+.checklist-card {
+  position: absolute;
+  top: 2.5rem;
+  right: 0.75rem;
+  z-index: 4;
+  width: 18rem;
+  max-width: calc(100% - 1.5rem);
+  /* A short window scrolls the card rather than cutting it off. */
+  max-height: calc(100% - 3.25rem);
+  overflow-y: auto;
+  background: var(--bg-raised);
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.5rem 0.75rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.checklist-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.checklist-title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 500;
+}
+
+.checklist-dismiss {
+  font-size: var(--text-xs);
+  padding: 0.1rem 0.45rem;
+}
+
+.checklist-all-done {
+  margin: 0;
+  font-size: var(--text-md);
+  color: var(--fg-muted);
+}
+
+.checklist-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.checklist-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: var(--text-md);
+  color: var(--fg);
+}
+
+/* A ticked step is muted; its ✓ takes the row's colour. */
+.checklist-row.is-done {
+  color: var(--fg-muted);
+}
+
+.checklist-tick {
+  flex: none;
+  width: 0.9rem;
+  color: currentColor;
+}
+
+.checklist-step {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.checklist-step:hover {
+  color: var(--fg-muted);
+}
+
+.checklist-step:focus-visible {
+  outline: var(--line) solid var(--focus);
+  outline-offset: 1px;
+}
+
+.checklist-keys {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+
+.help-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
 /* --- terminal pane (Story 4.1) -------------------------------------------------------- */
 /* Wider than the other panes (width inline: min(720px, 70vw) by default, dragged between
    360 px and 90vw), one terminal at a time (the active tab, Story 4.5). Terminal is the content: no chrome inside the

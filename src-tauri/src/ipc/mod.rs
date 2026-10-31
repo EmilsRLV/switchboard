@@ -89,6 +89,24 @@ pub fn keybindings_get(state: State<'_, AppState>) -> settings::keybindings::Key
     settings::keybindings::current_of(&state)
 }
 
+/// `state.json` as loaded (Story 10.3): whether this launch created the workspace (a fresh
+/// profile) and the Getting started checklist.
+#[tauri::command]
+pub fn state_get(state: State<'_, AppState>) -> crate::appstate::StateSnapshot {
+    state.read_state_file().snapshot()
+}
+
+/// Store the Getting started checklist and write `state.json` atomically (not when the file is
+/// from a newer build, or unreadable). Refuses an unknown step id. Async so the fsync runs off the
+/// main thread.
+#[tauri::command]
+pub async fn checklist_set<R: Runtime>(
+    app: AppHandle<R>,
+    checklist: crate::appstate::Checklist,
+) -> Result<crate::appstate::StateSnapshot, String> {
+    app.state::<AppState>().write_state_file().set_checklist(checklist)
+}
+
 /// Re-run binary detection (`claude`, `git`). Also emits `settings://changed`.
 #[tauri::command]
 pub async fn binaries_redetect<R: Runtime>(app: AppHandle<R>) -> Snapshot {

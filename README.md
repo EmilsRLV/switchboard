@@ -60,11 +60,13 @@ build over the old one.
 - `claude` is looked up on PATH, then in `~/.local/bin` (where the native installer puts it). `git` is
   looked up on PATH.
 
-**Where things live.** Settings and the canvas are two JSON files, both written on first launch:
+**Where things live.** Settings and the canvas are two JSON files, both written on first launch, beside
+`state.json`, the app's own small state (the Getting started checklist's progress and whether its card was
+dismissed; never hand-edited, and deleting it resets only the checklist):
 
 | OS | Folder |
 |---|---|
-| Windows | `%APPDATA%\switchboard\` (`settings.json`, `workspace.json`) |
+| Windows | `%APPDATA%\switchboard\` (`settings.json`, `workspace.json`, `state.json`) |
 | Linux | `$XDG_CONFIG_HOME/switchboard/` (default `~/.config/switchboard/`) |
 
 Uninstalling leaves them in place; delete the folder for a truly clean start. Switchboard reads Claude Code's
@@ -76,8 +78,9 @@ sessions.
 For checking an installed build by hand, on a machine (or user profile) that has never run Switchboard:
 
 1. Install as above and start Switchboard from the Start menu or the app launcher. The window opens on an
-   empty canvas with the hint `Add a project — ctrl+o, drop a folder, or ctrl+k · F1 help`, and no wizard or modal.
-2. Both files now exist in the folder above; `settings.json` has `claude.path` filled in when `claude` was
+   empty canvas with the hint `Add a project — ctrl+o, drop a folder, or ctrl+k · F1 help`, the Getting
+   started card at its top-right, and no wizard or modal.
+2. `settings.json`, `workspace.json` and `state.json` now exist in the folder above; `settings.json` has `claude.path` filled in when `claude` was
    found.
 3. With native `claude` installed: no banner, and `ctrl+,` shows `claude` with its version. Without it: the
    banner `claude not found — searched: …` lists the directories searched, and the canvas still works. On

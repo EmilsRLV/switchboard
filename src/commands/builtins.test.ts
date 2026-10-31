@@ -53,7 +53,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the ninety-seven commands with the spec's keybindings", () => {
+  it("register the one hundred commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -68,6 +68,8 @@ describe("built-in commands", () => {
       "branch.newWorktree",
       "branch.removeWorktree",
       "canvas.fitView",
+      "checklist.dismiss",
+      "checklist.show",
       "contextMenu.close",
       "edge.delete",
       "edge.inspect",
@@ -79,6 +81,7 @@ describe("built-in commands", () => {
       "elsewhere.close",
       "elsewhere.toggle",
       "help.contents",
+      "help.gettingStarted",
       "help.open",
       "help.page",
       "help.toggle",
@@ -229,7 +232,7 @@ describe("built-in commands", () => {
     expect(getCommand("review.layoutUnified")?.hidden).toBe(true);
   });
 
-  it("the key-only carriers are hidden from the palette, the eighty-two actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the eighty-five actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -244,6 +247,8 @@ describe("built-in commands", () => {
       "branch.newWorktree",
       "branch.removeWorktree",
       "canvas.fitView",
+      "checklist.dismiss",
+      "checklist.show",
       "edge.delete",
       "edge.inspect",
       "edge.link",
@@ -253,6 +258,7 @@ describe("built-in commands", () => {
       "edge.select",
       "elsewhere.toggle",
       "help.contents",
+      "help.gettingStarted",
       "help.open",
       "help.page",
       "import.addSelected",
@@ -353,7 +359,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(97);
+    expect(listCommands()).toHaveLength(100);
   });
 
   const PROJECT_ACTIONS = [
@@ -388,6 +394,7 @@ describe("built-in commands", () => {
       "Agent actions: allow all",
       "Expand project",
       "Help",
+      "Help: getting started",
       "Help: open page…",
       "Link to…",
       "New session…",
@@ -924,13 +931,14 @@ describe("built-in commands", () => {
   it("the palette lists only enabled, visible commands, sorted by title", () => {
     usePaletteStore.getState().open();
     const titles = listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title);
-    expect(titles).toEqual(["Help", "Help: open page…", "Open settings", "Quit", "Re-detect binaries", "Toggle command palette"]);
+    expect(titles).toEqual(["Help", "Help: getting started", "Help: open page…", "Open settings", "Quit", "Re-detect binaries", "Toggle command palette"]);
 
     useCanvasStore.getState().setInstance(fakeCanvas());
     expect(listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title)).toEqual([
       "Add project folder…",
       "Fit view",
       "Help",
+      "Help: getting started",
       "Help: open page…",
       "Import from Claude…",
       "Open settings",

@@ -47,6 +47,20 @@ describe("HelpPane", () => {
     expect(html).not.toContain(">f1</kbd>");
   });
 
+  it("the Getting started page (Story 10.3) ends with the live checklist and Show on canvas", () => {
+    const html = show("getting-started");
+    expect(html).toContain('aria-label="Your progress"');
+    expect(html.match(/<li class="checklist-row/g)).toHaveLength(6);
+    expect(html).toContain('<button type="button" class="checklist-step">Open the command palette</button>');
+    expect(html).toContain(">Show on canvas</button>");
+    expect(show("canvas")).not.toContain("Show on canvas");
+  });
+
+  it("Contents lists Getting started after the guide pages", () => {
+    const html = show(null);
+    expect(html.indexOf(">Getting started<")).toBeGreaterThan(html.indexOf(">Terms<"));
+  });
+
   it("the Canvas page has no command table", () => {
     const html = show("canvas");
     expect(html).toContain("Canvas &amp; navigation");

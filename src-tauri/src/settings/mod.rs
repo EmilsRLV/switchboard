@@ -437,6 +437,9 @@ pub struct AppState {
     /// Story 9.6: the focused windows, the last use and WebView2's memory target level
     /// (`crate::memlevel`). Memory only; no lock is held while applying.
     pub memlevel: crate::memlevel::MemLevel,
+    /// Story 10.3: `state.json` (the Getting started checklist), loaded in `setup` after the
+    /// workspace (`crate::appstate`).
+    pub state_file: RwLock<crate::appstate::AppStateStore>,
 }
 
 impl AppState {
@@ -466,6 +469,15 @@ impl AppState {
 
     pub fn write_workspace(&self) -> RwLockWriteGuard<'_, WorkspaceState> {
         self.workspace.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Read the `state.json` state; a poisoned lock is recovered rather than propagated.
+    pub fn read_state_file(&self) -> RwLockReadGuard<'_, crate::appstate::AppStateStore> {
+        self.state_file.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn write_state_file(&self) -> RwLockWriteGuard<'_, crate::appstate::AppStateStore> {
+        self.state_file.write().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Read the live state; a poisoned lock is recovered rather than propagated.

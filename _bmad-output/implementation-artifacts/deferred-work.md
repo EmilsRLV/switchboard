@@ -181,3 +181,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-9-6-low-memory-when-idle.md`
   summary: No automated check shows that `SetMemoryUsageTargetLevel` actually reaches WebView2.
   evidence: The applier is replaced by a recorder in tests. Only the measuring pass shows the effect (renderer working set dropped from 142 to 6.8 MB at idle). It needs a real WebView2 runtime in CI.
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-3-getting-started-checklist.md`
+  summary: The App.tsx startup wiring for the checklist (state_get → load, startChecklist) has no automated test.
+  evidence: Verification-gap review. No App.tsx startup effect in the repo is tested (keybindings, live follow the same pattern); it needs a test harness for App effects. The GUI pass covers it by hand.

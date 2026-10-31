@@ -1,7 +1,10 @@
 import { useEffect, useReducer, useRef, type ReactNode } from "react";
 import { openWebLink, showHelpPage } from "../commands/help";
 import { formatKeybinding } from "../commands/keybindings";
-import { listCommands, runCommand, subscribeBindings } from "../commands/registry";
+import { isCommandEnabled, listCommands, runCommand, subscribeBindings } from "../commands/registry";
+import { GETTING_STARTED_PAGE } from "../commands/help";
+import { useChecklistStore } from "../state/checklist";
+import { ChecklistRows, useStepCommandsRefresh } from "./ChecklistCard";
 import { HELP_PAGES, helpPage, renderHelpPage } from "../help/pages";
 import type { HelpNode } from "../help/markdown";
 import { usePaletteStore } from "../state/palette";
@@ -15,7 +18,8 @@ function headingDomId(id: string): string {
 /**
  * The Help pane (Story 10.1; F1, "Help" in the palette; Esc closes). It opens on Contents, the
  * guide pages in order; a page shows its Markdown through the safe renderer (`help/markdown`:
- * never HTML), and the Keyboard page ends with the commands and their keys now. Close and ←
+ * never HTML), the Keyboard page ends with the commands and their keys now, and the Getting
+ * started page with the live checklist and Show on canvas (Story 10.3). Close and ←
  * Contents run `pane.close` / `help.contents`; a Contents row or a page link shows that page and
  * a web link opens in the system browser (item-level: the palette route is "Help: open page…").
  * Loaded lazily, so the page text stays out of the main bundle.
@@ -85,6 +89,7 @@ export default function HelpPane() {
             <Block key={index} node={node} />
           ))}
           {page.id === "keyboard" && <CommandTable />}
+          {page.id === GETTING_STARTED_PAGE && <GettingStartedProgress />}
         </article>
       )}
     </aside>
@@ -181,6 +186,28 @@ function HelpLink({ node }: { node: Extract<HelpNode, { type: "link" }> }): Reac
     <button type="button" className="help-link" title={target.url} onClick={() => void openWebLink(target.url)}>
       <Inlines nodes={node.children} />
     </button>
+  );
+}
+
+/**
+ * The Getting started page's live checklist (Story 10.3): the card's rows, ticked as the operator
+ * goes, and **Show on canvas** (`checklist.show`), which brings the card back.
+ */
+function GettingStartedProgress() {
+  const done = useChecklistStore((s) => s.done);
+  // Show on canvas's `when` follows the card (Dismiss on it while this page is open, the load).
+  useChecklistStore((s) => s.loaded && s.shown && !s.dismissed && !s.allDoneAtLoad);
+  useStepCommandsRefresh();
+  return (
+    <section className="help-checklist" aria-label="Your progress">
+      <h4 className="pane-heading">Your progress</h4>
+      <ChecklistRows done={done} />
+      <div className="actions">
+        <button type="button" className="btn" disabled={!isCommandEnabled("checklist.show")} onClick={() => runCommand("checklist.show")}>
+          Show on canvas
+        </button>
+      </div>
+    </section>
   );
 }
 

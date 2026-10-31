@@ -88,6 +88,24 @@ export type KeybindingsFile = {
 /** Event name Rust emits with the re-read `KeybindingsFile` whenever the file changes. */
 export const KEYBINDINGS_CHANGED_EVENT = "keybindings://changed";
 
+// --- app state (`src-tauri/src/appstate.rs`, Story 10.3) ---------------------------------------
+
+/** Mirrors `appstate::Checklist`: the Getting started checklist as `state.json` keeps it. */
+export type ChecklistFile = {
+  /** The card was shown (a fresh profile, or "Show getting started"). */
+  shown: boolean;
+  dismissed: boolean;
+  /** The step ids done (latched), in checklist order. */
+  done: string[];
+};
+
+/** Mirrors `appstate::StateSnapshot`: what `state_get` and `checklist_set` return. */
+export type AppStateSnapshot = {
+  /** `workspace.json` was created on this launch (a fresh profile). */
+  firstRun: boolean;
+  checklist: ChecklistFile;
+};
+
 // --- workspace (`src-tauri/src/graph/mod.rs`, architecture §5.1) ---------------------------
 
 /** Mirrors `graph::Viewport`: the canvas pan offset in pixels and zoom factor. */
@@ -922,6 +940,8 @@ type Commands = {
   settings_reveal: void;
   open_url: void;
   keybindings_get: KeybindingsFile;
+  state_get: AppStateSnapshot;
+  checklist_set: AppStateSnapshot;
   binaries_redetect: SettingsSnapshot;
   workspace_get: WorkspaceSnapshot;
   workspace_set_viewport: WorkspaceSnapshot;
@@ -1034,6 +1054,19 @@ export function settingsGet(): Promise<SettingsSnapshot> {
 /** `ipc::keybindings_get` (Story 9.4) -- `keybindings.json` as it is on disk now, unparsed. */
 export function keybindingsGet(): Promise<KeybindingsFile> {
   return call("keybindings_get");
+}
+
+/** `ipc::state_get` (Story 10.3) -- `state.json` as loaded: the first run and the checklist. */
+export function stateGet(): Promise<AppStateSnapshot> {
+  return call("state_get");
+}
+
+/**
+ * `ipc::checklist_set` (Story 10.3) -- store the checklist and write `state.json` (not a newer
+ * build's file); rejects an unknown step id. Resolves with the new state.
+ */
+export function checklistSet(checklist: ChecklistFile): Promise<AppStateSnapshot> {
+  return call("checklist_set", { checklist });
 }
 
 /** `ipc::settings_reveal` -- open the config folder with `settings.json` selected. */

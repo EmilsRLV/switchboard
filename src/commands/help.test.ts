@@ -4,6 +4,7 @@ import { useLaunchStore } from "../state/launch";
 import { useReviewStore } from "../state/review";
 import { useUiStore } from "../state/ui";
 import { HELP_PAGES } from "../help/pages";
+import { isChecklistCardShown, resetChecklist, useChecklistStore } from "../state/checklist";
 import { registerBuiltins } from "./builtins";
 import { showEdge } from "./edges";
 import { openWebLink, showHelpPage } from "./help";
@@ -82,9 +83,9 @@ describe("help commands (Story 10.1)", () => {
   it("typing help in the palette lists Help and Help: open page…, and Help: contents only with a page shown; F1's carrier is hidden", () => {
     const rows = () =>
       paletteRows(null, listCommands({ enabledOnly: true, visibleOnly: true }), "help").map((row) => row.title);
-    expect(rows()).toEqual(["Help", "Help: open page…"]);
+    expect(rows()).toEqual(["Help", "Help: getting started", "Help: open page…"]);
     showHelpPage("canvas");
-    expect(rows()).toEqual(["Help", "Help: contents", "Help: open page…"]);
+    expect(rows()).toEqual(["Help", "Help: contents", "Help: getting started", "Help: open page…"]);
     expect(getCommand("help.toggle")).toMatchObject({ hidden: true, keybinding: "f1" });
     for (const id of ["help.open", "help.page", "help.contents"]) expect(getCommand(id)?.keybinding, id).toBeUndefined();
 
@@ -99,10 +100,33 @@ describe("help commands (Story 10.1)", () => {
     await vi.waitFor(() => expect(usePaletteStore.getState().pick).not.toBeNull());
     const pick = usePaletteStore.getState().pick!;
     expect(pick.items.map((item) => item.title)).toEqual(HELP_PAGES.map((page) => page.title));
-    expect(pick.items).toHaveLength(11);
+    expect(pick.items).toHaveLength(12);
     runPaletteRow("keyboard");
     expect(usePaletteStore.getState().isOpen).toBe(false);
     expect(useUiStore.getState()).toMatchObject({ pane: "help", helpPage: "keyboard", helpAnchor: null });
+  });
+
+  it("Story 10.3: Help: getting started opens its page; Show / Dismiss getting started move the card", () => {
+    expect(getCommand("help.gettingStarted")?.title).toBe("Help: getting started");
+    expect(runCommand("help.gettingStarted")).toBe(true);
+    expect(useUiStore.getState()).toMatchObject({ pane: "help", helpPage: "getting-started" });
+
+    resetChecklist();
+    // Before state.json answers neither works (show would write the defaults over the file).
+    expect(runCommand("checklist.show")).toBe(false);
+    expect(runCommand("checklist.dismiss")).toBe(false);
+    useChecklistStore.getState().load({ firstRun: false, checklist: { shown: false, dismissed: false, done: [] } });
+    expect(getCommand("checklist.show")?.title).toBe("Show getting started");
+    expect(getCommand("checklist.dismiss")?.title).toBe("Dismiss getting started");
+    expect(runCommand("checklist.dismiss")).toBe(false);
+    expect(runCommand("checklist.show")).toBe(true);
+    expect(isChecklistCardShown()).toBe(true);
+    expect(runCommand("checklist.show")).toBe(false);
+    expect(runCommand("checklist.dismiss")).toBe(true);
+    expect(isChecklistCardShown()).toBe(false);
+    expect(useChecklistStore.getState()).toMatchObject({ shown: true, dismissed: true });
+    expect(listCommands({ visibleOnly: true }).some((c) => c.id === "checklist.show")).toBe(true);
+    resetChecklist();
   });
 
   it("every help action is bindable: a rebound F1 moves the key, an unbound one removes it", () => {

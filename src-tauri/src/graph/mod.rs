@@ -762,6 +762,9 @@ pub struct WorkspaceState {
     /// Each project's linked worktrees as the status poll last listed them (Story 5.4,
     /// `crate::git::poll` via [`set_worktrees`]), whatever the branches toggle. Never persisted.
     pub worktrees: KnownWorktrees,
+    /// The file did not exist and was created on this launch (a fresh profile, Story 10.3: the
+    /// Getting started card shows). Never persisted.
+    pub first_run: bool,
 }
 
 impl WorkspaceState {
@@ -845,7 +848,10 @@ pub fn initialise_at<R: Runtime>(app: &AppHandle<R>, path: Option<PathBuf>) {
         eprintln!("workspace: cannot sweep temp files beside {}: {err}", path.display());
     }
     match store::load_or_init(&path) {
-        Ok(loaded) => st.accept(loaded.into_inner()),
+        Ok(loaded) => {
+            st.first_run = matches!(loaded, persist::Loaded::Created(_));
+            st.accept(loaded.into_inner());
+        }
         Err(LoadError::Parse(err)) => st.file_banner = Some(parse_banner(&path, &err)),
         Err(LoadError::Read(err)) => {
             st.read_only = Some("unreadable file");
@@ -2431,6 +2437,7 @@ mod tests {
             branches: HashMap::new(),
             branch_errors: HashMap::from([("p1".to_string(), "fatal: bad".to_string())]),
             worktrees: HashMap::new(),
+            first_run: true,
         };
         assert_eq!(
             serde_json::to_value(st.snapshot()).unwrap(),
@@ -2554,6 +2561,7 @@ mod tests {
         assert_eq!(st.workspace, Workspace::default());
         assert!(st.snapshot().banners.is_empty());
         assert_eq!(st.read_only, None);
+        assert!(st.first_run, "created on this launch: a fresh profile");
     }
 
     #[test]
@@ -2572,6 +2580,7 @@ mod tests {
         assert_eq!(st.file_banner, None);
         assert!(st.validation_banners.is_empty());
         assert_eq!(st.read_only, None);
+        assert!(!st.first_run, "the file existed: not a fresh profile");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "never rewritten on load");
     }
 

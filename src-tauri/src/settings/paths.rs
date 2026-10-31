@@ -12,6 +12,8 @@ pub const FILE_NAME: &str = "settings.json";
 pub const WORKSPACE_FILE_NAME: &str = "workspace.json";
 /// The keybinding overrides file name inside [`config_dir`], beside `settings.json` (Story 9.4).
 pub const KEYBINDINGS_FILE_NAME: &str = "keybindings.json";
+/// The app-written state file name inside [`config_dir`], beside `settings.json` (Story 10.3).
+pub const STATE_FILE_NAME: &str = "state.json";
 
 /// `<platform config dir>/switchboard`, or `None` when the platform has no config dir
 /// (no `%APPDATA%` / no home).
@@ -47,6 +49,16 @@ pub fn workspace_path_in(config_dir: &Path) -> PathBuf {
 /// `keybindings.json` inside a given config dir.
 pub fn keybindings_path_in(config_dir: &Path) -> PathBuf {
     config_dir.join(KEYBINDINGS_FILE_NAME)
+}
+
+/// Absolute path of `state.json` (Story 10.3).
+pub fn state_path() -> Option<PathBuf> {
+    config_dir().map(|dir| state_path_in(&dir))
+}
+
+/// `state.json` inside a given config dir.
+pub fn state_path_in(config_dir: &Path) -> PathBuf {
+    config_dir.join(STATE_FILE_NAME)
 }
 
 /// Directories searched for `claude` after PATH: `~/.local/bin` (where the native installer
@@ -90,6 +102,16 @@ mod tests {
         let dir = Path::new("/base").join("switchboard");
         assert_eq!(keybindings_path_in(&dir), dir.join("keybindings.json"));
         assert_eq!(keybindings_path_in(&dir).parent(), settings_path_in(&dir).parent());
+    }
+
+    #[test]
+    fn state_path_sits_beside_settings_json() {
+        let dir = Path::new("/base").join("switchboard");
+        assert_eq!(state_path_in(&dir), dir.join("state.json"));
+        assert_eq!(state_path_in(&dir).parent(), settings_path_in(&dir).parent());
+        let (settings, state) = (settings_path().unwrap(), state_path().unwrap());
+        assert_eq!(settings.parent(), state.parent());
+        assert_eq!(state.file_name().unwrap(), "state.json");
     }
 
     #[test]

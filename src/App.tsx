@@ -22,6 +22,7 @@ import {
   projectsStatusGet,
   reviewRequestsGet,
   settingsGet,
+  stateGet,
   workspaceGet,
 } from "./ipc";
 import { mirror } from "./ipc/mirror";
@@ -31,6 +32,7 @@ import { registerBuiltins } from "./commands/builtins";
 import { useKeybindings } from "./commands/keybindings";
 import { forgetTerminal } from "./commands/terminal";
 import { useApprovalsStore } from "./state/approvals";
+import { startChecklist, useChecklistStore } from "./state/checklist";
 import { useEdgesLiveStore } from "./state/edgesLive";
 import { useInboxStore } from "./state/inbox";
 import { useKeybindingsStore } from "./state/keybindings";
@@ -44,6 +46,7 @@ import { useWorkspaceStore } from "./state/workspace";
 import { Canvas } from "./canvas/Canvas";
 import { startActivityReporter } from "./perf";
 import { ApprovalToasts } from "./components/ApprovalToasts";
+import { ChecklistCard } from "./components/ChecklistCard";
 import { Banners } from "./components/Banners";
 import { ContextMenu } from "./components/ContextMenu";
 import { EdgePane } from "./components/EdgePane";
@@ -72,7 +75,7 @@ registerBuiltins();
 
 /**
  * The shell: banner strip on top, the canvas filling the rest with the transient notice laid
- * over its top edge, the Elsewhere tray at its bottom-left and the agent approval toasts (Story
+ * over its top edge, the Getting started card (Story 10.3) at its top-right under the notice, the Elsewhere tray at its bottom-left and the agent approval toasts (Story
  * 7.2) at its bottom-right, one pane (settings, import, terminal, the launch sheet, the worktree sheet, the remove-worktree sheet, the edge inspector, the Review pane of Story 8.1 or the Help pane of Story 10.1, both loaded lazily) on the right when open,
  * the hidden holder that keeps every terminal's view alive while the terminal pane is not showing it, the command
  * palette over everything when open, the node context menu at the pointer when open. Every
@@ -156,6 +159,25 @@ export default function App() {
       fail: (message) => setLiveLoadError(`live sessions load failed: ${message}`),
     });
   }, [applyLive, setLiveLoadError]);
+
+  // Story 10.3: `state.json`'s checklist, read once; the steps tick from the stores from now on.
+  useEffect(() => {
+    if (!hasTauriRuntime()) return;
+    let disposed = false;
+    stateGet().then(
+      (snapshot) => {
+        if (!disposed) useChecklistStore.getState().load(snapshot);
+      },
+      (err: unknown) => {
+        if (!disposed) useChecklistStore.getState().setLoadError(err instanceof Error ? err.message : String(err));
+      },
+    );
+    const stop = startChecklist();
+    return () => {
+      disposed = true;
+      stop();
+    };
+  }, []);
 
   // Story 6.3: what each context edge on a running session does now (runtime only).
   useEffect(() => {
@@ -264,6 +286,7 @@ export default function App() {
       <Banners />
       <div className="shell-body">
         <Canvas />
+        <ChecklistCard />
         <ElsewhereTray />
         <Notice />
         <ApprovalToasts />

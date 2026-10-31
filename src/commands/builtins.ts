@@ -82,7 +82,8 @@ import {
   stopSelectedSession,
 } from "./sessions";
 import { closeOpenPane, openPane, togglePane } from "./panes";
-import { isHelpPageShown, openHelpHere, showHelpPage, startHelpPagePick, toggleHelp } from "./help";
+import { isHelpPageShown, openHelpHere, showGettingStarted, showHelpPage, startHelpPagePick, toggleHelp } from "./help";
+import { isChecklistCardShown, isChecklistLoaded, useChecklistStore } from "../state/checklist";
 import {
   canClearReview,
   canOpenReview,
@@ -268,6 +269,27 @@ export function builtinCommands(): Command[] {
       title: "Help: contents",
       when: isHelpPageShown,
       run: () => showHelpPage(null),
+    },
+    // -- Story 10.3: the Getting started checklist --------------------------------------------------
+    {
+      id: "help.gettingStarted",
+      title: "Help: getting started",
+      run: showGettingStarted,
+    },
+    {
+      // The Help page's Show on canvas: the card back (not dismissed), progress kept.
+      id: "checklist.show",
+      title: "Show getting started",
+      when: () => isChecklistLoaded() && !isChecklistCardShown(),
+      run: () => useChecklistStore.getState().show(),
+    },
+    {
+      // The card's Dismiss: gone, and it stays gone across restarts.
+      id: "checklist.dismiss",
+      title: "Dismiss getting started",
+      // `isChecklistCardShown` holds only once loaded.
+      when: isChecklistCardShown,
+      run: () => useChecklistStore.getState().dismiss(),
     },
     {
       id: "pane.close",

@@ -18,6 +18,14 @@ export function showHelpPage(id: string | null, anchor: string | null = null): v
   useUiStore.getState().setHelpPage(id, anchor);
 }
 
+/** The Getting started page's id (Story 10.3). */
+export const GETTING_STARTED_PAGE = "getting-started";
+
+/** `help.gettingStarted` ("Help: getting started"): the Help pane on the Getting started page. */
+export function showGettingStarted(): void {
+  showHelpPage(GETTING_STARTED_PAGE);
+}
+
 /**
  * `help.open` ("Help"): open the Help pane on the page for where the operator is (Story 10.2):
  * the open pane's page, else the selection's, else the page last read this run, else Contents.
