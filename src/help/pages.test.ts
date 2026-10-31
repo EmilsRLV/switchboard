@@ -8,7 +8,7 @@ function all(nodes: readonly HelpNode[]): HelpNode[] {
 }
 
 describe("the guide pages", () => {
-  it("are the eleven pages of Story 10.2 then Getting started (10.3), in Contents order, each opening with its title as the heading", () => {
+  it("are the eleven pages of Story 10.2, Getting started (10.3), then Changelog and Roadmap (10.4), in Contents order, each opening with its title as the heading", () => {
     expect(HELP_PAGES.map((p) => [p.id, p.title, p.file])).toEqual([
       ["canvas", "Canvas & navigation", "canvas.md"],
       ["projects", "Projects", "projects.md"],
@@ -22,11 +22,15 @@ describe("the guide pages", () => {
       ["keyboard", "Keyboard & palette", "keyboard.md"],
       ["terms", "Terms", "terms.md"],
       ["getting-started", "Getting started", "getting-started.md"],
+      ["changelog", "Changelog", "CHANGELOG.md"],
+      ["roadmap", "Roadmap", "ROADMAP.md"],
     ]);
     for (const page of HELP_PAGES) {
       const [first] = renderHelpPage(page);
       expect(first?.type, page.id).toBe("heading");
       expect(first?.type === "heading" && plainText(first.children), page.id).toBe(page.title);
+      // The changelog and roadmap (the repo root's files) grow with the app: no word budget.
+      if (page.id === "changelog" || page.id === "roadmap") continue;
       const words = page.source.split(/\s+/).filter(Boolean).length;
       expect(words, page.id).toBeGreaterThanOrEqual(150);
       expect(words, page.id).toBeLessThanOrEqual(400);

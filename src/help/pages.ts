@@ -1,8 +1,10 @@
-// The guide pages (Stories 10.1, 10.2, then Getting started, 10.3): one typed table, in Contents order. Each page is Markdown in
-// `docs/help/`, bundled at build time with Vite's `?raw` import (never fetched). This module is
-// loaded only with the Help pane or a help command (dynamic imports), so the page text stays out
-// of the main bundle.
+// The guide pages (Stories 10.1, 10.2, then Getting started, 10.3, then the changelog and roadmap, 10.4): one typed table, in
+// Contents order. Each page is Markdown in `docs/help/` (the changelog and roadmap: the repo root), bundled at
+// build time with Vite's `?raw` import (never fetched). This module is loaded only with the Help pane or a
+// help command (dynamic imports), so the page text stays out of the main bundle.
 
+import changelogSource from "../../CHANGELOG.md?raw";
+import roadmapSource from "../../ROADMAP.md?raw";
 import branchesSource from "../../docs/help/branches.md?raw";
 import canvasSource from "../../docs/help/canvas.md?raw";
 import edgesSource from "../../docs/help/edges.md?raw";
@@ -22,7 +24,7 @@ export type HelpPage = {
   id: string;
   /** What Contents and "Help: open page…" show. */
   title: string;
-  /** The file name in `docs/help/`, as other pages link to it (`keyboard.md#…`). */
+  /** The file name in `docs/help/` (or the repo root), as other pages link to it (`keyboard.md#…`). */
   file: string;
   /** The page's Markdown. */
   source: string;
@@ -42,6 +44,9 @@ export const HELP_PAGES: readonly HelpPage[] = [
   { id: "terms", title: "Terms", file: "terms.md", source: termsSource },
   // Story 10.3: after the guide pages; the pane appends the live checklist and Show on canvas.
   { id: "getting-started", title: "Getting started", file: "getting-started.md", source: gettingStartedSource },
+  // Story 10.4: the changelog and roadmap, hand-written at the repo root (a page may link `CHANGELOG.md`).
+  { id: "changelog", title: "Changelog", file: "CHANGELOG.md", source: changelogSource },
+  { id: "roadmap", title: "Roadmap", file: "ROADMAP.md", source: roadmapSource },
 ];
 
 /** The page with `id`, or `null`. */

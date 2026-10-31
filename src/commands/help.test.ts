@@ -83,9 +83,9 @@ describe("help commands (Story 10.1)", () => {
   it("typing help in the palette lists Help and Help: open page…, and Help: contents only with a page shown; F1's carrier is hidden", () => {
     const rows = () =>
       paletteRows(null, listCommands({ enabledOnly: true, visibleOnly: true }), "help").map((row) => row.title);
-    expect(rows()).toEqual(["Help", "Help: getting started", "Help: open page…"]);
+    expect(rows()).toEqual(["Help", "Help: changelog", "Help: getting started", "Help: open page…", "Help: roadmap"]);
     showHelpPage("canvas");
-    expect(rows()).toEqual(["Help", "Help: contents", "Help: getting started", "Help: open page…"]);
+    expect(rows()).toEqual(["Help", "Help: changelog", "Help: contents", "Help: getting started", "Help: open page…", "Help: roadmap"]);
     expect(getCommand("help.toggle")).toMatchObject({ hidden: true, keybinding: "f1" });
     for (const id of ["help.open", "help.page", "help.contents"]) expect(getCommand(id)?.keybinding, id).toBeUndefined();
 
@@ -100,10 +100,34 @@ describe("help commands (Story 10.1)", () => {
     await vi.waitFor(() => expect(usePaletteStore.getState().pick).not.toBeNull());
     const pick = usePaletteStore.getState().pick!;
     expect(pick.items.map((item) => item.title)).toEqual(HELP_PAGES.map((page) => page.title));
-    expect(pick.items).toHaveLength(12);
+    expect(pick.items).toHaveLength(14);
     runPaletteRow("keyboard");
     expect(usePaletteStore.getState().isOpen).toBe(false);
     expect(useUiStore.getState()).toMatchObject({ pane: "help", helpPage: "keyboard", helpAnchor: null });
+  });
+
+  it("Story 10.4: Help: changelog and Help: roadmap are listed in the palette, unbound, and open their page", () => {
+    for (const [id, title, query, page] of [
+      ["help.changelog", "Help: changelog", "changelog", "changelog"],
+      ["help.roadmap", "Help: roadmap", "roadmap", "roadmap"],
+    ] as const) {
+      const command = getCommand(id);
+      expect(command?.title).toBe(title);
+      expect(command?.defaultBinding ?? null).toBeNull();
+      expect(command?.hidden ?? false).toBe(false);
+      const rows = paletteRows(null, listCommands({ enabledOnly: true, visibleOnly: true }), query).map((row) => row.title);
+      expect(rows, query).toContain(title);
+      useUiStore.setState({ pane: null, helpPage: null, helpAnchor: null });
+      expect(runCommand(id)).toBe(true);
+      expect(useUiStore.getState()).toMatchObject({ pane: "help", helpPage: page, helpAnchor: null });
+    }
+    // Bindable like any command.
+    applyBindingOverrides({ "help.roadmap": "ctrl+alt+r" });
+    try {
+      expect(getCommand("help.roadmap")?.binding).not.toBeNull();
+    } finally {
+      applyBindingOverrides({});
+    }
   });
 
   it("Story 10.3: Help: getting started opens its page; Show / Dismiss getting started move the card", () => {

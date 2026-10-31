@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, type ReactNode } from "react";
+import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { openWebLink, showHelpPage } from "../commands/help";
 import { formatKeybinding } from "../commands/keybindings";
 import { isCommandEnabled, listCommands, runCommand, subscribeBindings } from "../commands/registry";
@@ -7,7 +7,9 @@ import { useChecklistStore } from "../state/checklist";
 import { ChecklistRows, useStepCommandsRefresh } from "./ChecklistCard";
 import { HELP_PAGES, helpPage, renderHelpPage } from "../help/pages";
 import type { HelpNode } from "../help/markdown";
+import { appInfo } from "../ipc";
 import { usePaletteStore } from "../state/palette";
+import { useSettingsStore } from "../state/settings";
 import { useUiStore } from "../state/ui";
 
 /** The DOM id of a heading with slug `id`, kept apart from the rest of the app's ids. */
@@ -82,6 +84,7 @@ export default function HelpPane() {
               </li>
             ))}
           </ul>
+          <AppVersion />
         </nav>
       ) : (
         <article ref={bodyRef} tabIndex={-1} className="help-page" aria-label={page.title}>
@@ -93,6 +96,67 @@ export default function HelpPane() {
         </article>
       )}
     </aside>
+  );
+}
+
+/** The folder holding `settingsPath` (cut at its last `/` or `\`), or `null` with no path or no folder in it. */
+export function configFolder(settingsPath: string | null | undefined): string | null {
+  if (settingsPath === null || settingsPath === undefined) return null;
+  const cut = Math.max(settingsPath.lastIndexOf("/"), settingsPath.lastIndexOf("\\"));
+  if (cut < 0) return null;
+  // `/settings.json`: the root itself.
+  return cut === 0 ? settingsPath.slice(0, 1) : settingsPath.slice(0, cut);
+}
+
+/** The version `app_info` last gave, kept for this run so Contents does not flash `Switchboard` on each visit. */
+let knownVersion: string | null = null;
+
+/** Ask `app_info` for the version and keep it for this run; `null` (never a throw) when it fails, as with no Tauri. */
+export async function loadAppVersion(): Promise<string | null> {
+  try {
+    knownVersion = (await appInfo()).version;
+    return knownVersion;
+  } catch {
+    return null;
+  }
+}
+
+/** Tests only: forget the version `app_info` gave. */
+export function resetKnownVersion(): void {
+  knownVersion = null;
+}
+
+/**
+ * Contents' footer (Story 10.4): `Switchboard <version>`, the version from `app_info` (Cargo's), and
+ * the config folder under it. Before `app_info` answers, or when it fails (no Tauri), the line reads
+ * `Switchboard`; with no settings path the folder line is left out. Neither shows an error.
+ */
+function AppVersion() {
+  const [version, setVersion] = useState<string | null>(knownVersion);
+  const folder = configFolder(useSettingsStore((s) => s.snapshot?.path));
+  useEffect(() => {
+    let cancelled = false;
+    void loadAppVersion().then((loaded) => {
+      if (!cancelled && loaded !== null) setVersion(loaded);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return <VersionFooter version={version} folder={folder} />;
+}
+
+/** The footer's look, given what is known: `Switchboard`, `Switchboard <version>`, the folder in mono under it. */
+export function VersionFooter({ version, folder }: { version: string | null; folder: string | null }) {
+  return (
+    <footer className="help-version">
+      <div className="help-version-name">{version === null || version === "" ? "Switchboard" : `Switchboard ${version}`}</div>
+      {folder !== null && (
+        <div className="help-version-folder" title="Config folder">
+          {folder}
+        </div>
+      )}
+    </footer>
   );
 }
 

@@ -12,9 +12,12 @@ import { HELP_PAGES, pageIdOfFile, renderHelpPage } from "./pages";
 import { isWebUrl, type HelpNode } from "./markdown";
 
 /** The slice of `node:fs` the test reads with (the project has no Node typings), as the audit does. */
-type Fs = { readdirSync(path: URL): string[] };
+type Fs = { readdirSync(path: URL): string[]; readFileSync(path: URL, encoding: "utf8"): string };
 const fs = (await import(/* @vite-ignore */ "node:fs" as string)) as Fs;
 const HELP_DIR = new URL("../../docs/help/", import.meta.url);
+const REPO_ROOT = new URL("../../", import.meta.url);
+/** The pages that are files at the repo root, not in `docs/help/` (Story 10.4). */
+const ROOT_FILES = ["CHANGELOG.md", "ROADMAP.md"];
 
 /** Every node of a rendered tree, depth first. */
 function all(nodes: readonly HelpNode[]): HelpNode[] {
@@ -75,8 +78,17 @@ describe("the help content", () => {
 
   it("lists every docs/help page, and every listed page exists", () => {
     const files = fs.readdirSync(HELP_DIR).filter((f) => f.endsWith(".md")).sort();
-    expect(HELP_PAGES.map((p) => p.file).sort()).toEqual(files);
+    expect(HELP_PAGES.map((p) => p.file).filter((f) => !ROOT_FILES.includes(f)).sort()).toEqual(files);
     expect(new Set(HELP_PAGES.map((p) => p.id)).size).toBe(HELP_PAGES.length);
+  });
+
+  it("lists the changelog and roadmap, and they are the repo root's files", () => {
+    for (const file of ROOT_FILES) {
+      const page = HELP_PAGES.find((p) => p.file === file);
+      expect(page, file).toBeDefined();
+      expect(page!.source, file).toBe(fs.readFileSync(new URL(file, REPO_ROOT), "utf8"));
+    }
+    expect(HELP_PAGES.slice(-3).map((p) => p.id)).toEqual(["getting-started", "changelog", "roadmap"]);
   });
 
   it("no page contains raw HTML or an image", () => {
@@ -122,6 +134,12 @@ describe("the help content", () => {
       }
     }
     expect(keys).toBeGreaterThan(0);
+  });
+
+  it("the no-HTML rule catches raw HTML and an image, as in a root file", () => {
+    const names = syntaxNodes("# Roadmap\n\n- <b>soon</b>\n- ![x](y.png)\n").map((n) => n.name);
+    expect(names).toContain("HTMLTag");
+    expect(names).toContain("Image");
   });
 
   it("the key rule: spans with +, single characters and named keys are keys; other spans are not", () => {

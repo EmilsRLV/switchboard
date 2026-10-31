@@ -82,7 +82,16 @@ import {
   stopSelectedSession,
 } from "./sessions";
 import { closeOpenPane, openPane, togglePane } from "./panes";
-import { isHelpPageShown, openHelpHere, showGettingStarted, showHelpPage, startHelpPagePick, toggleHelp } from "./help";
+import {
+  isHelpPageShown,
+  openHelpHere,
+  showChangelog,
+  showGettingStarted,
+  showHelpPage,
+  showRoadmap,
+  startHelpPagePick,
+  toggleHelp,
+} from "./help";
 import { isChecklistCardShown, isChecklistLoaded, useChecklistStore } from "../state/checklist";
 import {
   canClearReview,
@@ -275,6 +284,17 @@ export function builtinCommands(): Command[] {
       id: "help.gettingStarted",
       title: "Help: getting started",
       run: showGettingStarted,
+    },
+    // -- Story 10.4: the changelog and roadmap in Help ----------------------------------------------
+    {
+      id: "help.changelog",
+      title: "Help: changelog",
+      run: showChangelog,
+    },
+    {
+      id: "help.roadmap",
+      title: "Help: roadmap",
+      run: showRoadmap,
     },
     {
       // The Help page's Show on canvas: the card back (not dismissed), progress kept.

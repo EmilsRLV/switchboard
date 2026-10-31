@@ -114,6 +114,13 @@ shadow, a font size or radius off the tokens, or uses the accent outside the att
 | [`_bmad-output/planning-artifacts/epics.md`](_bmad-output/planning-artifacts/epics.md) | 10 epics / 44 stories with acceptance criteria |
 | [`docs/research/claude-code-integration.md`](docs/research/claude-code-integration.md) | What was verified about Claude Code 2.1.301 and what still needs checking |
 
+What changed and what is coming, in plain words: [`CHANGELOG.md`](CHANGELOG.md) (newest first, `## Unreleased`
+on top, each release grouped by area) and [`ROADMAP.md`](ROADMAP.md) (Next, Later, Known limitations, Not planned). Both are bundled into the app:
+Help → Contents → **Changelog** / **Roadmap**, or **Help: changelog** / **Help: roadmap** in the palette. Contents
+ends with `Switchboard <version>` and the config folder. A test (`src/help/version.test.ts`) fails when
+`package.json`, `src-tauri/Cargo.toml` and the newest released `CHANGELOG.md` heading disagree, so a version bump
+needs its changelog entry; new work goes under `## Unreleased` until then.
+
 ## Dev loop
 
 Prerequisites: Rust 1.94 (MSVC toolchain on Windows), Node 24 LTS (what CI uses via `lts/*`; Node 25

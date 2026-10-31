@@ -19,8 +19,9 @@ filter, then `enter` picks.
 
 `f1` opens and closes this Help pane, as does **Help** in the palette. It opens on the page for the pane
 that is open or the node or edge that is selected, else the page you last read; closing it brings back the pane
-it covered, as you left it. **Help: open page…** jumps straight to
-a page and **Help: contents** returns to the list of pages. `esc` closes the pane, like every pane.
+it covered, as you left it. **Help: open page…** jumps to a page, **Help: contents** lists them, and
+**Help: changelog** and **Help: roadmap** show what changed and what is coming. `esc` closes the pane, like
+every pane.
 
 ## Keys in a terminal
 

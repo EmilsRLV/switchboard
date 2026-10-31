@@ -358,7 +358,11 @@ chrome follows every rule here.
   has its form or target (else Help closes to the canvas). Opening another pane from Help drops the remembered one.
   **Contents** is the `Contents` section heading over a bordered list of the guide pages in order (one row per page,
   the import list's look: `--text-md`, rows split by 1-px `--border` lines, `--bg-hover` on hover, the 1-px
-  `--focus` outline on keyboard focus). A page is prose in `--font-sans` `--text-md` (line height 1.5): its `#`
+  `--focus` outline on keyboard focus); after the guide pages come Getting started (Story 10.3), then Changelog
+  and Roadmap (Story 10.4). Under the list, the Contents footer (Story 10.4): `Switchboard <version>` (`--text-sm`
+  `--fg-muted`; the version from `app_info`, just `Switchboard` until it answers or when it fails, never an error)
+  and under it the config folder (mono `--text-xs` `--fg-muted`, wrapping anywhere, selectable; left out with no
+  settings path). A page is prose in `--font-sans` `--text-md` (line height 1.5): its `#`
   heading in `--text-lg`, `##` in `--text-base`, deeper ones in `--text-md`, all 500; lists indented; inline code
   and keys in mono `--text-sm`; a code block in the command preview look (`--bg`, 1-px `--border`,
   `--radius-sm`, mono `--text-xs` `--fg-muted`, wrapping). A link is its text underlined in `--fg` (`--fg-muted` on

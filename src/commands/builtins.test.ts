@@ -80,10 +80,12 @@ describe("built-in commands", () => {
       "edge.select",
       "elsewhere.close",
       "elsewhere.toggle",
+      "help.changelog",
       "help.contents",
       "help.gettingStarted",
       "help.open",
       "help.page",
+      "help.roadmap",
       "help.toggle",
       "import.addSelected",
       "launch.addFolder",
@@ -257,10 +259,12 @@ describe("built-in commands", () => {
       "edge.revokeAgentPolicy",
       "edge.select",
       "elsewhere.toggle",
+      "help.changelog",
       "help.contents",
       "help.gettingStarted",
       "help.open",
       "help.page",
+      "help.roadmap",
       "import.addSelected",
       "launch.addFolder",
       "launch.start",
@@ -359,7 +363,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(100);
+    expect(listCommands()).toHaveLength(102);
   });
 
   const PROJECT_ACTIONS = [
@@ -394,8 +398,10 @@ describe("built-in commands", () => {
       "Agent actions: allow all",
       "Expand project",
       "Help",
+      "Help: changelog",
       "Help: getting started",
       "Help: open page…",
+      "Help: roadmap",
       "Link to…",
       "New session…",
       "Open in external editor",
@@ -931,15 +937,17 @@ describe("built-in commands", () => {
   it("the palette lists only enabled, visible commands, sorted by title", () => {
     usePaletteStore.getState().open();
     const titles = listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title);
-    expect(titles).toEqual(["Help", "Help: getting started", "Help: open page…", "Open settings", "Quit", "Re-detect binaries", "Toggle command palette"]);
+    expect(titles).toEqual(["Help", "Help: changelog", "Help: getting started", "Help: open page…", "Help: roadmap", "Open settings", "Quit", "Re-detect binaries", "Toggle command palette"]);
 
     useCanvasStore.getState().setInstance(fakeCanvas());
     expect(listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title)).toEqual([
       "Add project folder…",
       "Fit view",
       "Help",
+      "Help: changelog",
       "Help: getting started",
       "Help: open page…",
+      "Help: roadmap",
       "Import from Claude…",
       "Open settings",
       "Quit",

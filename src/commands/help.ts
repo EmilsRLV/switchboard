@@ -26,6 +26,22 @@ export function showGettingStarted(): void {
   showHelpPage(GETTING_STARTED_PAGE);
 }
 
+/** The Changelog page's id (Story 10.4). */
+export const CHANGELOG_PAGE = "changelog";
+
+/** The Roadmap page's id (Story 10.4). */
+export const ROADMAP_PAGE = "roadmap";
+
+/** `help.changelog` ("Help: changelog"): the Help pane on the Changelog page. */
+export function showChangelog(): void {
+  showHelpPage(CHANGELOG_PAGE);
+}
+
+/** `help.roadmap` ("Help: roadmap"): the Help pane on the Roadmap page. */
+export function showRoadmap(): void {
+  showHelpPage(ROADMAP_PAGE);
+}
+
 /**
  * `help.open` ("Help"): open the Help pane on the page for where the operator is (Story 10.2):
  * the open pane's page, else the selection's, else the page last read this run, else Contents.

@@ -233,6 +233,21 @@
   outline-offset: 1px;
 }
 
+/* Contents' footer (Story 10.4): the version, then the config folder in mono. Muted, no accent. */
+.help-version {
+  margin-top: 0.75rem;
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+
+.help-version-folder {
+  margin-top: 0.15rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
 .help-page {
   font-family: var(--font-sans);
   font-size: var(--text-md);
