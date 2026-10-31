@@ -90,7 +90,8 @@ pub fn keybindings_get(state: State<'_, AppState>) -> settings::keybindings::Key
 }
 
 /// `state.json` as loaded (Story 10.3): whether this launch created the workspace (a fresh
-/// profile) and the Getting started checklist.
+/// profile), the Getting started checklist, and (Story 10.5) the running version
+/// (`CARGO_PKG_VERSION`, set on the store at load) with the version last seen.
 #[tauri::command]
 pub fn state_get(state: State<'_, AppState>) -> crate::appstate::StateSnapshot {
     state.read_state_file().snapshot()
@@ -105,6 +106,14 @@ pub async fn checklist_set<R: Runtime>(
     checklist: crate::appstate::Checklist,
 ) -> Result<crate::appstate::StateSnapshot, String> {
     app.state::<AppState>().write_state_file().set_checklist(checklist)
+}
+
+/// Story 10.5: the Changelog was opened -- record the running version as seen in `state.json`
+/// (written only when it changed, and not when the file is read-only). Async so the fsync runs
+/// off the main thread.
+#[tauri::command]
+pub async fn whats_new_seen<R: Runtime>(app: AppHandle<R>) -> crate::appstate::StateSnapshot {
+    app.state::<AppState>().write_state_file().mark_version_seen(env!("CARGO_PKG_VERSION"))
 }
 
 /// Re-run binary detection (`claude`, `git`). Also emits `settings://changed`.

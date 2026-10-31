@@ -83,9 +83,9 @@ describe("help commands (Story 10.1)", () => {
   it("typing help in the palette lists Help and Help: open page…, and Help: contents only with a page shown; F1's carrier is hidden", () => {
     const rows = () =>
       paletteRows(null, listCommands({ enabledOnly: true, visibleOnly: true }), "help").map((row) => row.title);
-    expect(rows()).toEqual(["Help", "Help: changelog", "Help: getting started", "Help: open page…", "Help: roadmap"]);
+    expect(rows()).toEqual(["Help", "Help: changelog", "Help: getting started", "Help: open page…", "Help: roadmap", "What's new"]);
     showHelpPage("canvas");
-    expect(rows()).toEqual(["Help", "Help: changelog", "Help: contents", "Help: getting started", "Help: open page…", "Help: roadmap"]);
+    expect(rows()).toEqual(["Help", "Help: changelog", "Help: contents", "Help: getting started", "Help: open page…", "Help: roadmap", "What's new"]);
     expect(getCommand("help.toggle")).toMatchObject({ hidden: true, keybinding: "f1" });
     for (const id of ["help.open", "help.page", "help.contents"]) expect(getCommand(id)?.keybinding, id).toBeUndefined();
 
@@ -139,7 +139,7 @@ describe("help commands (Story 10.1)", () => {
     // Before state.json answers neither works (show would write the defaults over the file).
     expect(runCommand("checklist.show")).toBe(false);
     expect(runCommand("checklist.dismiss")).toBe(false);
-    useChecklistStore.getState().load({ firstRun: false, checklist: { shown: false, dismissed: false, done: [] } });
+    useChecklistStore.getState().load({ firstRun: false, checklist: { shown: false, dismissed: false, done: [] }, version: "0.1.0", lastSeenVersion: "0.1.0" });
     expect(getCommand("checklist.show")?.title).toBe("Show getting started");
     expect(getCommand("checklist.dismiss")?.title).toBe("Dismiss getting started");
     expect(runCommand("checklist.dismiss")).toBe(false);

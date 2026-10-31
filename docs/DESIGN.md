@@ -383,6 +383,12 @@ chrome follows every rule here.
   `--radius-md`, rows split by a 1-px `--border` line, each with the state word (mono `--text-xs`, `busy` in
   `--fg`, the rest `--fg-muted`; no pulse), the name (`--text-md`, ellipsis), the shortened cwd (mono
   `--text-xs` `--fg-muted`, full path on hover) and an **Add folder** button. No accent.
+- **The what's-new chip** (Story 10.5) shares the Elsewhere tray's bottom-left row, after the `elsewhere N` chip
+  (alone, it takes the corner itself): a button `new in <version>` with the same chip look (mono `--text-xs`,
+  `--fg-muted`, `--bg-raised`, 1-px `--border`, `--radius-sm`; `--fg` text and a `--fg-muted` border on hover, the
+  1-px `--focus` outline). It shows after the running version changes, until the Changelog is opened, and never
+  on a fresh profile. Clicking it runs **What's new** (Help → Changelog). No accent, no banner, no OS
+  notification, no motion.
 - **The Getting started card** (Story 10.3) sits at the canvas's top-right under the banner strip, offset below the
   notice line: over the canvas (the Elsewhere tray's layer) and below the notice, panes, toasts, the palette and the
   menu. It is information, not a wizard: no overlay, modal or motion. A compact `--bg-raised` box with a 1-px
@@ -572,7 +578,7 @@ Only six motions exist; every one is instant (or static) under `prefers-reduced-
 | Attention pulse (the accent dot before `finished` / `waiting`: the busy pulse) | 1.2 s |
 | Project glow (the accent outline around a project needing you: opacity 1 → 0.4, ease-in-out, alternating, looping; opacity only) | 1.2 s |
 
-Panes (the terminal pane, the launch, worktree and remove-worktree sheets, the edge inspector and the Review pane too), terminal tabs and pop-out windows, banners, the notice, the menu, the Elsewhere tray, the agent approval toasts and the review toasts appear without animation. Edges appear and go without animation.
+Panes (the terminal pane, the launch, worktree and remove-worktree sheets, the edge inspector and the Review pane too), terminal tabs and pop-out windows, banners, the notice, the menu, the Elsewhere tray, the what's-new chip, the agent approval toasts and the review toasts appear without animation. Edges appear and go without animation.
 
 ## Icons
 

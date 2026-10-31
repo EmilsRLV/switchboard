@@ -87,6 +87,7 @@ describe("built-in commands", () => {
       "help.page",
       "help.roadmap",
       "help.toggle",
+      "help.whatsNew",
       "import.addSelected",
       "launch.addFolder",
       "launch.start",
@@ -265,6 +266,7 @@ describe("built-in commands", () => {
       "help.open",
       "help.page",
       "help.roadmap",
+      "help.whatsNew",
       "import.addSelected",
       "launch.addFolder",
       "launch.start",
@@ -363,7 +365,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(102);
+    expect(listCommands()).toHaveLength(103);
   });
 
   const PROJECT_ACTIONS = [
@@ -415,6 +417,7 @@ describe("built-in commands", () => {
       "Reveal Claude project dir",
       "Review changes",
       "Toggle command palette",
+      "What's new",
     ]);
     expect(nodeMenuCommands().map((c) => c.title)).toEqual([
       "New session…",
@@ -937,7 +940,7 @@ describe("built-in commands", () => {
   it("the palette lists only enabled, visible commands, sorted by title", () => {
     usePaletteStore.getState().open();
     const titles = listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title);
-    expect(titles).toEqual(["Help", "Help: changelog", "Help: getting started", "Help: open page…", "Help: roadmap", "Open settings", "Quit", "Re-detect binaries", "Toggle command palette"]);
+    expect(titles).toEqual(["Help", "Help: changelog", "Help: getting started", "Help: open page…", "Help: roadmap", "Open settings", "Quit", "Re-detect binaries", "Toggle command palette", "What's new"]);
 
     useCanvasStore.getState().setInstance(fakeCanvas());
     expect(listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title)).toEqual([
@@ -953,6 +956,7 @@ describe("built-in commands", () => {
       "Quit",
       "Re-detect binaries",
       "Toggle command palette",
+      "What's new",
     ]);
   });
 

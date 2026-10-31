@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type Ref } from "react";
 import { shortenPath } from "../canvas/nodes";
 import { addElsewhereFolder } from "../commands/projects";
 import { runCommand } from "../commands/registry";
@@ -27,9 +27,10 @@ export function addFolderLabel(row: Pick<ElsewhereRow, "name" | "session_id" | "
  * list above it with one row per session: the state word (`busy` in `--fg`, the rest muted),
  * the session's name (its id when it has none), its shortened cwd (full path on hover) and an
  * **Add folder** button that puts that folder on the canvas at the view centre; the row leaves
- * on the next poll, when the session sits under its new project. Esc (`elsewhere.close`, after
- * the menu) or a press outside the tray closes the list. Nothing here is persisted. Tokens
- * only; no accent.
+ * on the next poll, when the session sits under its new project. It shares the bottom-left
+ * corner row with the what's-new chip (Story 10.5), the tray first. Esc (`elsewhere.close`,
+ * after the menu) or a press outside the tray closes the list. Nothing here is persisted.
+ * Tokens only; no accent.
  */
 export function ElsewhereTray() {
   const rows = useLiveStore((s) => s.snapshot.elsewhere);
@@ -49,9 +50,14 @@ export function ElsewhereTray() {
     return () => document.removeEventListener("pointerdown", onPointerDown, true);
   }, [open]);
 
+  return <ElsewhereTrayView rows={rows} open={open} trayRef={ref} />;
+}
+
+/** The tray as drawn from its rows and whether the list is open (nothing with no rows). */
+export function ElsewhereTrayView({ rows, open, trayRef }: { rows: readonly ElsewhereRow[]; open: boolean; trayRef?: Ref<HTMLDivElement> }) {
   if (rows.length === 0) return null;
   return (
-    <div className="elsewhere" ref={ref}>
+    <div className="elsewhere" ref={trayRef}>
       {open && (
         <ul className="elsewhere-list" aria-label="Live sessions elsewhere">
           {rows.map((row) => (
@@ -77,7 +83,7 @@ export function ElsewhereTray() {
       )}
       <button
         type="button"
-        className="elsewhere-chip"
+        className="corner-chip elsewhere-chip"
         aria-expanded={open}
         title="Live sessions in folders not on the canvas"
         onClick={() => runCommand("elsewhere.toggle")}

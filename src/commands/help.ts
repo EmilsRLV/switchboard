@@ -6,16 +6,19 @@ import { helpPageFor } from "../help/context";
 import { openUrl } from "../ipc";
 import { usePaletteStore } from "../state/palette";
 import { useUiStore } from "../state/ui";
+import { useWhatsNewStore } from "../state/whatsNew";
 import { notify } from "./navigation";
 import { closeOpenPane, openPane } from "./panes";
 
 /**
  * Show guide page `id` (`null`: Contents) in the Help pane, opening the pane when it is not
- * showing, scrolled to the heading `anchor` (`null`: the top).
+ * showing, scrolled to the heading `anchor` (`null`: the top). Every route to a page comes
+ * through here, so showing the Changelog records the running version as seen (Story 10.5).
  */
 export function showHelpPage(id: string | null, anchor: string | null = null): void {
   if (useUiStore.getState().pane !== "help") openPane("help");
   useUiStore.getState().setHelpPage(id, anchor);
+  if (id === CHANGELOG_PAGE) useWhatsNewStore.getState().markSeen();
 }
 
 /** The Getting started page's id (Story 10.3). */
@@ -35,6 +38,12 @@ export const ROADMAP_PAGE = "roadmap";
 /** `help.changelog` ("Help: changelog"): the Help pane on the Changelog page. */
 export function showChangelog(): void {
   showHelpPage(CHANGELOG_PAGE);
+}
+
+/** `help.whatsNew`'s title (Story 10.5): "What's new in <version>" once the version is known. */
+export function whatsNewTitle(): string {
+  const { version } = useWhatsNewStore.getState();
+  return version ? `What's new in ${version}` : "What's new";
 }
 
 /** `help.roadmap` ("Help: roadmap"): the Help pane on the Roadmap page. */

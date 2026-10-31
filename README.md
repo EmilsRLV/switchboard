@@ -62,7 +62,8 @@ build over the old one.
 
 **Where things live.** Settings and the canvas are two JSON files, both written on first launch, beside
 `state.json`, the app's own small state (the Getting started checklist's progress and whether its card was
-dismissed; never hand-edited, and deleting it resets only the checklist):
+dismissed, and the last version whose changes you have seen; never hand-edited, and deleting it resets only the
+checklist and the seen version; on an existing profile that brings the `new in <version>` chip back once):
 
 | OS | Folder |
 |---|---|

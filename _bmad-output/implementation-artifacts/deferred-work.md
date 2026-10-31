@@ -184,3 +184,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-10-3-getting-started-checklist.md`
   summary: The App.tsx startup wiring for the checklist (state_get → load, startChecklist) has no automated test.
   evidence: Verification-gap review. No App.tsx startup effect in the repo is tested (keybindings, live follow the same pattern); it needs a test harness for App effects. The GUI pass covers it by hand.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-10-5-whats-new-after-an-update.md`
+  summary: A read-only state.json (newer schema after a downgrade, unreadable file, no config folder) brings the what's-new chip back every launch, and freezes the checklist the same way, because the UI cannot see that the file is read-only.
+  evidence: appstate.rs keeps mark_version_seen / set_checklist in memory when read_only is set, and StateSnapshot carries no readOnly; a fix exposes it and lets the chip and checklist say why (or stay hidden). Found in the 10.5 review (EC3/BH2).

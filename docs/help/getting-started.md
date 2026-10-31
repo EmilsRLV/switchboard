@@ -32,3 +32,9 @@ it again.
 
 Below, the same list shows your progress. **Show on canvas** (or **Show getting started** in the palette)
 brings the card back. **Help: getting started** opens this page.
+
+## After an update
+
+After Switchboard's version changes, a muted `new in <version>` chip shows at the bottom left of the canvas,
+beside any `elsewhere` chip, and stays across restarts until the Changelog is opened. Click it, or choose
+**What's new** in the palette, to read the [Changelog](CHANGELOG.md). Opened any way, the chip is gone.

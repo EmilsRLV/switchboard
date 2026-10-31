@@ -5,7 +5,6 @@ or a date.
 
 ## Next
 
-- **What's new after an update:** a quiet pointer to the changelog the first time a new version starts.
 - **Reading peer messages:** a way to see the text one session sent another. Today it reaches only the
   receiving session.
 - **Resume and fork as the session ran:** use the session's own model and permission mode. Today they use the

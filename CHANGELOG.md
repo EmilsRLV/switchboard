@@ -19,6 +19,8 @@ What changed in Switchboard, newest first. Each release lists what you can see a
 - The empty canvas hint now ends with `f1` for help.
 - This changelog and the roadmap, readable in Help (**Help: changelog**, **Help: roadmap**). Contents shows
   the running version and the config folder.
+- After an update, a quiet `new in <version>` chip at the bottom left of the canvas points to this changelog
+  until you open it. **What's new** in the command palette opens it too. A fresh profile never shows it.
 
 ## 0.1.0 — 2026-10-31
 

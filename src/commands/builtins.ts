@@ -91,6 +91,7 @@ import {
   showRoadmap,
   startHelpPagePick,
   toggleHelp,
+  whatsNewTitle,
 } from "./help";
 import { isChecklistCardShown, isChecklistLoaded, useChecklistStore } from "../state/checklist";
 import {
@@ -289,6 +290,13 @@ export function builtinCommands(): Command[] {
     {
       id: "help.changelog",
       title: "Help: changelog",
+      run: showChangelog,
+    },
+    // -- Story 10.5: what's new after an update (the canvas chip runs it) -------------------------
+    {
+      id: "help.whatsNew",
+      title: "What's new",
+      dynamicTitle: whatsNewTitle,
       run: showChangelog,
     },
     {

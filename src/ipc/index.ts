@@ -99,11 +99,15 @@ export type ChecklistFile = {
   done: string[];
 };
 
-/** Mirrors `appstate::StateSnapshot`: what `state_get` and `checklist_set` return. */
+/** Mirrors `appstate::StateSnapshot`: what `state_get`, `checklist_set` and `whats_new_seen` return. */
 export type AppStateSnapshot = {
   /** `workspace.json` was created on this launch (a fresh profile). */
   firstRun: boolean;
   checklist: ChecklistFile;
+  /** The running app version (Cargo's), Story 10.5. */
+  version: string;
+  /** The version whose changes were last seen; `null` when never recorded. */
+  lastSeenVersion: string | null;
 };
 
 // --- workspace (`src-tauri/src/graph/mod.rs`, architecture §5.1) ---------------------------
@@ -942,6 +946,7 @@ type Commands = {
   keybindings_get: KeybindingsFile;
   state_get: AppStateSnapshot;
   checklist_set: AppStateSnapshot;
+  whats_new_seen: AppStateSnapshot;
   binaries_redetect: SettingsSnapshot;
   workspace_get: WorkspaceSnapshot;
   workspace_set_viewport: WorkspaceSnapshot;
@@ -1067,6 +1072,14 @@ export function stateGet(): Promise<AppStateSnapshot> {
  */
 export function checklistSet(checklist: ChecklistFile): Promise<AppStateSnapshot> {
   return call("checklist_set", { checklist });
+}
+
+/**
+ * `ipc::whats_new_seen` (Story 10.5) -- record the running version as seen in `state.json`
+ * (written only when it changed, never a read-only file). Resolves with the new state.
+ */
+export function whatsNewSeen(): Promise<AppStateSnapshot> {
+  return call("whats_new_seen");
 }
 
 /** `ipc::settings_reveal` -- open the config folder with `settings.json` selected. */

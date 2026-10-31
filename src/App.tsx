@@ -32,7 +32,8 @@ import { registerBuiltins } from "./commands/builtins";
 import { useKeybindings } from "./commands/keybindings";
 import { forgetTerminal } from "./commands/terminal";
 import { useApprovalsStore } from "./state/approvals";
-import { startChecklist, useChecklistStore } from "./state/checklist";
+import { startChecklist } from "./state/checklist";
+import { applyStateError, applyStateReply } from "./state/appState";
 import { useEdgesLiveStore } from "./state/edgesLive";
 import { useInboxStore } from "./state/inbox";
 import { useKeybindingsStore } from "./state/keybindings";
@@ -53,6 +54,7 @@ import { EdgePane } from "./components/EdgePane";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { runCommand } from "./commands/registry";
 import { ElsewhereTray } from "./components/ElsewhereTray";
+import { WhatsNewChip } from "./components/WhatsNewChip";
 import { ImportPane } from "./components/ImportPane";
 import { LaunchPane } from "./components/LaunchPane";
 import { WorktreePane } from "./components/WorktreePane";
@@ -166,10 +168,10 @@ export default function App() {
     let disposed = false;
     stateGet().then(
       (snapshot) => {
-        if (!disposed) useChecklistStore.getState().load(snapshot);
+        if (!disposed) applyStateReply(snapshot);
       },
       (err: unknown) => {
-        if (!disposed) useChecklistStore.getState().setLoadError(err instanceof Error ? err.message : String(err));
+        if (!disposed) applyStateError(err instanceof Error ? err.message : String(err));
       },
     );
     const stop = startChecklist();
@@ -287,7 +289,10 @@ export default function App() {
       <div className="shell-body">
         <Canvas />
         <ChecklistCard />
-        <ElsewhereTray />
+        <div className="corner-row">
+          <ElsewhereTray />
+          <WhatsNewChip />
+        </div>
         <Notice />
         <ApprovalToasts />
         {pane === "settings" && <SettingsPane />}

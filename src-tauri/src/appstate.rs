@@ -3,7 +3,8 @@
 //! `workspace.json` it is app-written: never watched, never meant to be hand-edited, and deleting
 //! it resets only what it holds. Schema-versioned the same way (`graph::store`): an older version
 //! upgrades silently, a newer one is read for what this build understands and never written.
-//! Story 10.5 adds the last version seen beside `checklist`.
+//! Story 10.5 adds the last version seen beside `checklist` (schema 2): a version-1 file loads with
+//! it `null`, and an older build reads a version-2 file as newer and never overwrites it.
 
 use std::path::{Path, PathBuf};
 
@@ -14,7 +15,7 @@ use crate::persist::{self, LoadError};
 use crate::settings::{AppState, paths};
 
 /// Schema version written to `state.json`.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// The checklist's steps, in order; mirrored by `src/help/checklist.ts`.
 pub const STEP_IDS: [&str; 6] = ["palette", "project", "session", "terminal", "edge", "review"];
@@ -25,11 +26,14 @@ pub const STEP_IDS: [&str; 6] = ["palette", "project", "session", "terminal", "e
 pub struct AppStateFile {
     pub version: u32,
     pub checklist: Checklist,
+    /// The app version whose changes the operator has seen (Story 10.5): recorded on a fresh
+    /// profile and when the Changelog is opened. `None` in a file from before this story.
+    pub last_seen_version: Option<String>,
 }
 
 impl Default for AppStateFile {
     fn default() -> Self {
-        Self { version: SCHEMA_VERSION, checklist: Checklist::default() }
+        Self { version: SCHEMA_VERSION, checklist: Checklist::default(), last_seen_version: None }
     }
 }
 
@@ -50,6 +54,10 @@ pub struct StateSnapshot {
     /// The workspace file was created on this launch (a fresh profile).
     pub first_run: bool,
     pub checklist: Checklist,
+    /// The running app version (Story 10.5).
+    pub version: String,
+    /// The version last seen, `None` when never recorded.
+    pub last_seen_version: Option<String>,
 }
 
 /// The loaded file and where it goes, held in [`AppState`].
@@ -61,11 +69,28 @@ pub struct AppStateStore {
     pub read_only: Option<&'static str>,
     /// See [`StateSnapshot::first_run`].
     pub first_run: bool,
+    /// The running app version, passed in by the caller (`CARGO_PKG_VERSION` in the app).
+    pub version: String,
 }
 
 impl AppStateStore {
     pub fn snapshot(&self) -> StateSnapshot {
-        StateSnapshot { first_run: self.first_run, checklist: self.file.checklist.clone() }
+        StateSnapshot {
+            first_run: self.first_run,
+            checklist: self.file.checklist.clone(),
+            version: self.version.clone(),
+            last_seen_version: self.file.last_seen_version.clone(),
+        }
+    }
+
+    /// Record `version` as seen (the Changelog was opened) and write the file -- only when it
+    /// changed, and not when read-only (it is still kept in memory for this run).
+    pub fn mark_version_seen(&mut self, version: &str) -> StateSnapshot {
+        if self.file.last_seen_version.as_deref() != Some(version) {
+            self.file.last_seen_version = Some(version.to_string());
+            self.save();
+        }
+        self.snapshot()
     }
 
     /// Store a new checklist and write the file (not when read-only). An unknown step id is refused
@@ -110,18 +135,30 @@ pub fn validate(file: &mut AppStateFile) -> bool {
 }
 
 /// Read (or create) `state.json` at `path`. On the first run (the workspace was created on this
-/// launch) a checklist never shown is marked shown and written. An unparsable file leaves the
+/// launch) a checklist never shown is marked shown and the running `version` is recorded as seen
+/// (so a fresh profile never gets the what's-new chip), in one write. An unparsable file leaves the
 /// defaults in memory (logged once) and is replaced by the next write; an unreadable or newer one
 /// is never written this session.
-pub fn load(path: Option<PathBuf>, first_run: bool) -> AppStateStore {
-    let mut store = AppStateStore { path: path.clone(), first_run, ..AppStateStore::default() };
+pub fn load(path: Option<PathBuf>, first_run: bool, version: &str) -> AppStateStore {
+    let mut store =
+        AppStateStore { path: path.clone(), first_run, version: version.to_string(), ..AppStateStore::default() };
     match path.as_deref() {
         None => eprintln!("state: no platform config directory; the checklist is not kept"),
         Some(path) => load_into(&mut store, path),
     }
-    if first_run && !store.file.checklist.shown {
-        store.file.checklist.shown = true;
-        store.save();
+    if first_run {
+        let mut changed = false;
+        if !store.file.checklist.shown {
+            store.file.checklist.shown = true;
+            changed = true;
+        }
+        if store.file.last_seen_version.as_deref() != Some(version) {
+            store.file.last_seen_version = Some(version.to_string());
+            changed = true;
+        }
+        if changed {
+            store.save();
+        }
     }
     store
 }
@@ -168,12 +205,14 @@ pub fn initialise<R: Runtime>(app: &AppHandle<R>) {
 pub fn initialise_at<R: Runtime>(app: &AppHandle<R>, path: Option<PathBuf>) {
     let state = app.state::<AppState>();
     let first_run = state.read_workspace().first_run;
-    *state.write_state_file() = load(path, first_run);
+    *state.write_state_file() = load(path, first_run, env!("CARGO_PKG_VERSION"));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const V: &str = "0.2.0";
 
     fn read(path: &Path) -> serde_json::Value {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
@@ -184,11 +223,15 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_version_1_with_an_empty_checklist() {
+    fn defaults_are_version_2_with_an_empty_checklist_and_no_version_seen() {
         let text = persist::to_json(&AppStateFile::default()).unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&text).unwrap(),
-            serde_json::json!({ "version": 1, "checklist": { "shown": false, "dismissed": false, "done": [] } })
+            serde_json::json!({
+                "version": 2,
+                "checklist": { "shown": false, "dismissed": false, "done": [] },
+                "lastSeenVersion": null
+            })
         );
         assert_eq!(persist::parse_json::<AppStateFile>("{}").unwrap(), AppStateFile::default());
     }
@@ -197,17 +240,20 @@ mod tests {
     fn fresh_profile_creates_the_file_marked_shown() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("switchboard").join("state.json");
-        let store = load(Some(path.clone()), true);
+        let store = load(Some(path.clone()), true, V);
         assert!(store.file.checklist.shown);
         assert!(store.snapshot().first_run);
         assert_eq!(read(&path)["checklist"]["shown"], true);
+        assert_eq!(read(&path)["lastSeenVersion"], V, "a fresh profile records the version silently");
+        assert_eq!(store.snapshot().last_seen_version.as_deref(), Some(V));
+        assert_eq!(store.snapshot().version, V);
     }
 
     #[test]
     fn existing_profile_without_the_file_creates_it_not_shown() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
-        let store = load(Some(path.clone()), false);
+        let store = load(Some(path.clone()), false, V);
         assert!(!store.file.checklist.shown);
         assert!(!store.first_run);
         assert_eq!(read(&path), serde_json::to_value(AppStateFile::default()).unwrap());
@@ -219,7 +265,7 @@ mod tests {
         let path = dir.path().join("state.json");
         let original = r#"{ "version": 1, "checklist": { "shown": true, "dismissed": false, "done": ["edge", "palette"] }, "future": 1 }"#;
         std::fs::write(&path, original).unwrap();
-        let store = load(Some(path.clone()), false);
+        let store = load(Some(path.clone()), false, V);
         assert_eq!(
             store.file.checklist,
             Checklist { shown: true, dismissed: false, done: steps(&["palette", "edge"]) }
@@ -231,12 +277,12 @@ mod tests {
     fn set_checklist_writes_atomically_and_dismissal_survives_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
-        let mut store = load(Some(path.clone()), true);
+        let mut store = load(Some(path.clone()), true, V);
         let snap = store
             .set_checklist(Checklist { shown: true, dismissed: true, done: steps(&["review", "palette", "review"]) })
             .unwrap();
         assert_eq!(snap.checklist.done, steps(&["palette", "review"]));
-        let again = load(Some(path.clone()), false);
+        let again = load(Some(path.clone()), false, V);
         assert!(again.file.checklist.dismissed);
         assert_eq!(again.file.checklist.done, steps(&["palette", "review"]));
         // Only the file itself: no temp file left over.
@@ -248,7 +294,7 @@ mod tests {
     fn set_checklist_keeps_the_stored_steps_a_stale_write_never_unticks() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
-        let mut store = load(Some(path.clone()), true);
+        let mut store = load(Some(path.clone()), true, V);
         store.set_checklist(Checklist { shown: true, dismissed: false, done: steps(&["edge", "palette"]) }).unwrap();
         let snap = store.set_checklist(Checklist { shown: true, dismissed: true, done: steps(&["review"]) }).unwrap();
         assert_eq!(snap.checklist.done, steps(&["palette", "edge", "review"]));
@@ -258,7 +304,7 @@ mod tests {
 
     #[test]
     fn the_six_step_ids_match_the_frontend_in_order() {
-        let mut store = load(None, false);
+        let mut store = load(None, false, V);
         let six = ["palette", "project", "session", "terminal", "edge", "review"];
         let reversed: Vec<String> = six.iter().rev().map(|s| s.to_string()).collect();
         let snap = store.set_checklist(Checklist { shown: true, dismissed: false, done: reversed }).unwrap();
@@ -271,7 +317,7 @@ mod tests {
         // A file where the config dir should be: creating the state file there fails.
         let blocker = dir.path().join("switchboard");
         std::fs::write(&blocker, "").unwrap();
-        let store = load(Some(blocker.join("state.json")), false);
+        let store = load(Some(blocker.join("state.json")), false, V);
         assert_eq!(store.read_only, Some("unwritable"));
     }
 
@@ -279,7 +325,7 @@ mod tests {
     fn set_checklist_refuses_an_unknown_step_and_changes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
-        let mut store = load(Some(path.clone()), false);
+        let mut store = load(Some(path.clone()), false, V);
         let before = std::fs::read_to_string(&path).unwrap();
         let err = store.set_checklist(Checklist { shown: true, dismissed: false, done: steps(&["palette", "nope"]) }).unwrap_err();
         assert_eq!(err, "unknown checklist step: nope");
@@ -292,7 +338,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
         std::fs::write(&path, "{ not json").unwrap();
-        let mut store = load(Some(path.clone()), false);
+        let mut store = load(Some(path.clone()), false, V);
         assert_eq!(store.file, AppStateFile::default());
         assert_eq!(store.read_only, None);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json", "not rewritten on load");
@@ -305,7 +351,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
         std::fs::write(&path, "[1, 2").unwrap();
-        let store = load(Some(path.clone()), true);
+        let store = load(Some(path.clone()), true, V);
         assert!(store.file.checklist.shown);
         assert_eq!(read(&path)["checklist"]["shown"], true);
     }
@@ -314,15 +360,17 @@ mod tests {
     fn a_newer_schema_is_read_for_what_is_understood_and_never_written() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
-        let original = r#"{ "version": 2, "checklist": { "shown": false, "done": ["palette", "later"] }, "seenVersion": "9.9.9" }"#;
+        let original = r#"{ "version": 3, "checklist": { "shown": false, "done": ["palette", "later"] }, "lastSeenVersion": "0.1.0", "other": 1 }"#;
         std::fs::write(&path, original).unwrap();
-        let mut store = load(Some(path.clone()), true);
+        let mut store = load(Some(path.clone()), true, V);
         assert_eq!(store.read_only, Some("newer schema version"));
-        assert_eq!(store.file.version, 2);
+        assert_eq!(store.file.version, 3);
         assert_eq!(store.file.checklist.done, steps(&["palette"]));
         assert!(store.file.checklist.shown, "first run still shows the card, in memory");
         let snap = store.set_checklist(Checklist { shown: true, dismissed: true, done: steps(&["palette"]) }).unwrap();
         assert!(snap.checklist.dismissed, "kept in memory");
+        let snap = store.mark_version_seen("0.3.0");
+        assert_eq!(snap.last_seen_version.as_deref(), Some("0.3.0"), "kept in memory");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
 
@@ -340,7 +388,7 @@ mod tests {
         // A directory where the file should be: reading it fails (not NotFound).
         let path = dir.path().join("state.json");
         std::fs::create_dir(&path).unwrap();
-        let mut store = load(Some(path.clone()), true);
+        let mut store = load(Some(path.clone()), true, V);
         assert_eq!(store.read_only, Some("unreadable file"));
         store.set_checklist(Checklist { shown: true, dismissed: false, done: vec![] }).unwrap();
         assert!(path.is_dir());
@@ -348,8 +396,98 @@ mod tests {
 
     #[test]
     fn no_path_keeps_the_checklist_in_memory() {
-        let mut store = load(None, true);
+        let mut store = load(None, true, V);
         assert!(store.file.checklist.shown);
         assert!(store.set_checklist(Checklist { shown: true, dismissed: true, done: vec![] }).unwrap().checklist.dismissed);
+    }
+
+    // -- Story 10.5: the last version seen -----------------------------------------------------
+
+    #[test]
+    fn a_version_1_file_loads_with_no_version_seen_and_is_not_rewritten_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let original = r#"{ "version": 1, "checklist": { "shown": true, "dismissed": true, "done": ["palette"] } }"#;
+        std::fs::write(&path, original).unwrap();
+        let store = load(Some(path.clone()), false, V);
+        assert_eq!(store.read_only, None);
+        assert_eq!(store.file.version, SCHEMA_VERSION);
+        assert_eq!(store.snapshot().last_seen_version, None);
+        assert_eq!(store.snapshot().version, V);
+        assert!(store.file.checklist.dismissed);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn an_existing_profile_without_the_file_has_no_version_seen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let store = load(Some(path.clone()), false, V);
+        assert_eq!(store.snapshot().last_seen_version, None);
+        assert_eq!(read(&path)["lastSeenVersion"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn the_stored_version_survives_a_load_of_another_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let original = r#"{ "version": 2, "checklist": { "shown": true }, "lastSeenVersion": "0.1.0" }"#;
+        std::fs::write(&path, original).unwrap();
+        let store = load(Some(path.clone()), false, V);
+        assert_eq!(store.snapshot().last_seen_version.as_deref(), Some("0.1.0"));
+        assert_eq!(store.snapshot().version, V);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "loading never records it");
+    }
+
+    #[test]
+    fn mark_version_seen_writes_once_and_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, r#"{ "version": 2, "checklist": { "shown": true, "done": ["edge"] }, "lastSeenVersion": "0.1.0" }"#)
+            .unwrap();
+        let mut store = load(Some(path.clone()), false, V);
+        let snap = store.mark_version_seen(V);
+        assert_eq!(snap.last_seen_version.as_deref(), Some(V));
+        assert_eq!(read(&path)["lastSeenVersion"], V);
+        assert_eq!(read(&path)["checklist"]["done"], serde_json::json!(["edge"]), "the checklist is kept");
+        // Unchanged: no write (a marker added to the file stays).
+        let mut value = read(&path);
+        value["marker"] = serde_json::json!(1);
+        std::fs::write(&path, value.to_string()).unwrap();
+        store.mark_version_seen(V);
+        assert_eq!(read(&path)["marker"], 1);
+        let again = load(Some(path.clone()), false, V);
+        assert_eq!(again.snapshot().last_seen_version.as_deref(), Some(V));
+    }
+
+    #[test]
+    fn a_fresh_profile_with_a_bad_file_records_the_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, "[1, 2").unwrap();
+        load(Some(path.clone()), true, V);
+        assert_eq!(read(&path)["lastSeenVersion"], V);
+    }
+
+    #[test]
+    fn a_first_run_with_an_older_version_on_file_records_the_running_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, r#"{ "version": 2, "checklist": { "shown": true, "done": ["palette"] }, "lastSeenVersion": "0.1.0" }"#)
+            .unwrap();
+        let store = load(Some(path.clone()), true, V);
+        assert_eq!(store.snapshot().last_seen_version.as_deref(), Some(V));
+        assert_eq!(read(&path)["lastSeenVersion"], V);
+        assert_eq!(read(&path)["checklist"]["done"], serde_json::json!(["palette"]), "the checklist is kept");
+    }
+
+    #[test]
+    fn mark_version_seen_on_an_unreadable_file_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::create_dir(&path).unwrap();
+        let mut store = load(Some(path.clone()), false, V);
+        assert_eq!(store.mark_version_seen(V).last_seen_version.as_deref(), Some(V));
+        assert!(path.is_dir());
     }
 }

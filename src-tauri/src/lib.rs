@@ -36,6 +36,7 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::keybindings_get,
             ipc::state_get,
             ipc::checklist_set,
+            ipc::whats_new_seen,
             ipc::binaries_redetect,
             ipc::workspace_get,
             ipc::workspace_set_viewport,
@@ -389,9 +390,15 @@ mod tests {
         super::appstate::initialise_at(app.handle(), Some(state.clone()));
 
         let value: serde_json::Value = invoke(&webview, "state_get").expect("state_get").deserialize().unwrap();
+        let version = env!("CARGO_PKG_VERSION");
         assert_eq!(
             value,
-            serde_json::json!({ "firstRun": true, "checklist": { "shown": true, "dismissed": false, "done": [] } })
+            serde_json::json!({
+                "firstRun": true,
+                "checklist": { "shown": true, "dismissed": false, "done": [] },
+                "version": version,
+                "lastSeenVersion": version
+            })
         );
 
         let args = serde_json::json!({ "checklist": { "shown": true, "dismissed": true, "done": ["edge", "palette"] } });
@@ -399,14 +406,43 @@ mod tests {
             invoke_with(&webview, "checklist_set", InvokeBody::Json(args)).expect("checklist_set").deserialize().unwrap();
         assert_eq!(value["checklist"]["done"], serde_json::json!(["palette", "edge"]));
         let file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
-        assert_eq!(file["version"], 1);
+        assert_eq!(file["version"], 2);
         assert_eq!(file["checklist"], serde_json::json!({ "shown": true, "dismissed": true, "done": ["palette", "edge"] }));
+        assert_eq!(file["lastSeenVersion"], version);
 
         let args = serde_json::json!({ "checklist": { "shown": true, "dismissed": false, "done": ["wizard"] } });
         let err = invoke_with(&webview, "checklist_set", InvokeBody::Json(args)).unwrap_err();
         assert_eq!(err, serde_json::json!("unknown checklist step: wizard"));
         let value: serde_json::Value = invoke(&webview, "state_get").unwrap().deserialize().unwrap();
         assert_eq!(value["checklist"]["dismissed"], true, "a refused set changes nothing");
+    }
+
+    /// Story 10.5: an existing profile with an older version recorded sees it in `state_get`;
+    /// `whats_new_seen` records the running version and writes it.
+    #[test]
+    fn whats_new_seen_records_the_running_version() {
+        let app = mock_app();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview should build");
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace.json");
+        std::fs::write(&workspace, "{}").unwrap();
+        let state = dir.path().join("state.json");
+        std::fs::write(&state, r#"{ "version": 2, "checklist": { "shown": true }, "lastSeenVersion": "0.0.9" }"#).unwrap();
+        super::graph::initialise_at(app.handle(), Some(workspace));
+        super::appstate::initialise_at(app.handle(), Some(state.clone()));
+        let version = env!("CARGO_PKG_VERSION");
+
+        let value: serde_json::Value = invoke(&webview, "state_get").unwrap().deserialize().unwrap();
+        assert_eq!(value["version"], version);
+        assert_eq!(value["lastSeenVersion"], "0.0.9");
+
+        let value: serde_json::Value = invoke(&webview, "whats_new_seen").expect("whats_new_seen").deserialize().unwrap();
+        assert_eq!(value["lastSeenVersion"], version);
+        let file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+        assert_eq!(file["lastSeenVersion"], version);
+        assert_eq!(file["checklist"]["shown"], true, "the checklist is kept");
     }
 
     /// Story 10.3: a profile whose workspace already existed gets no card on its own.
