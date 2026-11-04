@@ -12,7 +12,8 @@ Claude…** from the [command palette](keyboard.md#the-command-palette) to add f
 ## Moving around
 
 - Pan by dragging with the middle or right mouse button, or hold Space and drag with the left button. A
-  right-drag pans; a right-click without moving opens a node's menu.
+  right-drag pans; a right-click without moving opens a node's menu, or on the empty canvas the canvas
+  menu.
 - Zoom with the mouse wheel. `ctrl+0` (**Fit view**) brings every node into view.
 - Drag a node to move it; a project node's children move with it. **Re-layout children** puts a column back
   in order.
@@ -21,8 +22,10 @@ Claude…** from the [command palette](keyboard.md#the-command-palette) to add f
 
 Click a node, or use the arrow keys, to select it; `esc` clears the selection. `enter` on a project node
 expands or collapses it. Right-click a project, session or branch node, without moving the mouse, for its menu;
-every entry there is also in the command palette. With a project node selected, `n` opens the [launch sheet](sessions.md#the-launch-sheet) for a new session, and `r`
-opens the [Review pane](review.md) on its changes.
+every entry there is also in the command palette. Right-click the empty canvas for the **canvas menu**: add
+projects, fit view, Help, settings. With a project node selected, `n` opens the
+[launch sheet](sessions.md#the-launch-sheet) for a new session, and `r` opens the [Review pane](review.md) on its
+changes.
 
 When a column holds more than ten children, its last row reads **show all (N)**; click it or press `enter`
 on it to see the rest.

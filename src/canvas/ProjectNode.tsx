@@ -1,5 +1,6 @@
 import { memo, type MouseEvent as ReactMouseEvent } from "react";
 import type { NodeProps } from "@xyflow/react";
+import { commandHint } from "../commands/keybindings";
 import { runCommand } from "../commands/registry";
 import { useUiStore } from "../state/ui";
 import { LinkHandles } from "./LinkHandles";
@@ -57,7 +58,7 @@ export const ProjectNode = memo(function ProjectNode({ data }: NodeProps<Project
               className="project-node-toggle nodrag"
               aria-expanded={project.expanded}
               aria-label={project.expanded ? "Collapse children" : `Expand ${childCount} children`}
-              title={project.expanded ? "Collapse" : "Expand"}
+              title={commandHint(chevronCommandId(project))}
               onClick={toggle}
             >
               <span className="project-node-chevron" aria-hidden="true">
@@ -95,7 +96,7 @@ export const ProjectNode = memo(function ProjectNode({ data }: NodeProps<Project
               type="button"
               className={"project-node-branches nodrag" + (project.showBranches ? " is-on" : "")}
               aria-pressed={project.showBranches}
-              title={project.showBranches ? "Hide branches" : "Show branches"}
+              title={commandHint("project.toggleBranches", project.showBranches ? "Hide branches" : "Show branches")}
               onClick={toggleBranches}
             >
               branches

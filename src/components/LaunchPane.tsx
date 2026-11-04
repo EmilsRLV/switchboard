@@ -13,6 +13,7 @@ import {
   skippedNote,
   startBlockedReason,
 } from "../commands/launch";
+import { commandHint } from "../commands/keybindings";
 import { isCommandEnabled, runCommand } from "../commands/registry";
 import { removeAddDir } from "../commands/sessions";
 import { shortenPath } from "../canvas/nodes";
@@ -75,7 +76,7 @@ export function LaunchPane() {
     <aside className="pane launch-pane" aria-label="New session" onKeyDown={onKeyDown}>
       <header className="pane-header">
         <h2 className="pane-title">New session</h2>
-        <button type="button" className="btn" onClick={() => runCommand("pane.close")} title="Close (Esc)">
+        <button type="button" className="btn" onClick={() => runCommand("pane.close")} title={commandHint("pane.close", "Close")}>
           Close
         </button>
       </header>
@@ -252,7 +253,7 @@ export function LaunchPane() {
         )}
         {notAdded !== null && <p className="launch-skipped">{notAdded}</p>}
         <div className="actions">
-          <button type="button" className="btn" onClick={() => runCommand("launch.addFolder")} disabled={!isCommandEnabled("launch.addFolder")}>
+          <button type="button" className="btn" title={commandHint("launch.addFolder")} onClick={() => runCommand("launch.addFolder")} disabled={!isCommandEnabled("launch.addFolder")}>
             Add folder…
           </button>
         </div>
@@ -276,6 +277,7 @@ export function LaunchPane() {
           <button
             type="button"
             className="btn"
+            title={commandHint("launch.start")}
             onClick={() => runCommand("launch.start")}
             disabled={!isCommandEnabled("launch.start")}
             aria-describedby={blocked !== null ? "launch-start-reason" : undefined}

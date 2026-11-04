@@ -125,6 +125,12 @@ export const NOTICE_MS = 3000;
 /** Where the context menu is open: a client (CSS pixel) point, usually the pointer. */
 export type MenuPoint = { x: number; y: number };
 
+/** Which context menu (Story 11.1): a right-clicked node's, or the canvas background's. */
+export type MenuKind = "node" | "canvas";
+
+/** An open context menu: where, and which one. */
+export type OpenMenu = MenuPoint & { menu: MenuKind };
+
 /**
  * A transient line in the banner strip: what a stub will do later, or why an action could
  * not run. Information, not attention: it renders without the accent. One at a time, the
@@ -139,8 +145,8 @@ export type UiState = {
   flashed: readonly string[];
   /** The selected node (or `more` row), or `null`; reference-stable while it stays selected. */
   selection: CanvasTarget | null;
-  /** The open context menu's anchor, or `null` while closed. */
-  contextMenu: MenuPoint | null;
+  /** The open context menu's anchor and kind, or `null` while closed. */
+  contextMenu: OpenMenu | null;
   /** The notice showing, or `null`. */
   notice: Notice | null;
   /**
@@ -195,7 +201,8 @@ export type UiState = {
   /** Select one node (replacing any selection); the same node again changes nothing. */
   select: (target: CanvasTarget) => void;
   clearSelection: () => void;
-  openContextMenu: (at: MenuPoint) => void;
+  /** Open a context menu at `at`; the node menu unless `menu` says otherwise. */
+  openContextMenu: (at: MenuPoint, menu?: MenuKind) => void;
   closeContextMenu: () => void;
   /** Show `text` as the notice, replacing any showing. */
   showNotice: (text: string) => void;
@@ -307,7 +314,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   select: (target) =>
     set((s) => (sameTarget(s.selection, target) ? {} : { selection: copyTarget(target) })),
   clearSelection: () => set((s) => (s.selection === null ? {} : { selection: null })),
-  openContextMenu: (at) => set({ contextMenu: { x: at.x, y: at.y } }),
+  openContextMenu: (at, menu = "node") => set({ contextMenu: { x: at.x, y: at.y, menu } }),
   closeContextMenu: () => set((s) => (s.contextMenu === null ? {} : { contextMenu: null })),
   showNotice: (text) => set({ notice: { text } }),
   clearNotice: () => set((s) => (s.notice === null ? {} : { notice: null })),

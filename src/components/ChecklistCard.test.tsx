@@ -24,7 +24,7 @@ describe("the Getting started card (Story 10.3)", () => {
     expect(html).toContain(">Dismiss</button>");
     expect(html.match(/<li /g)).toHaveLength(6);
     // The palette always opens: a button, ticked with the muted ✓.
-    expect(html).toMatch(/<li class="checklist-row is-done"><span class="checklist-tick" role="img" aria-label="done">✓<\/span><button type="button" class="checklist-step">Open the command palette<\/button><span class="checklist-keys">ctrl\+k<\/span><\/li>/);
+    expect(html).toMatch(/<li class="checklist-row is-done"><span class="checklist-tick" role="img" aria-label="done">✓<\/span><button type="button" class="checklist-step" title="Open the command palette · ctrl\+k">Open the command palette<\/button><span class="checklist-keys">ctrl\+k<\/span><\/li>/);
     // Nothing is selected, so "Start a session" cannot run now: plain text, not ticked.
     expect(html).toMatch(/<li class="checklist-row"><span class="checklist-tick" aria-hidden="true"><\/span><span class="checklist-step-text">Start a session<\/span>/);
     expect(html).toContain('<span class="checklist-step-text">Open a plain terminal</span></li>');
@@ -42,6 +42,7 @@ describe("the Getting started card (Story 10.3)", () => {
     useUiStore.setState({ selection: { kind: "project", id: "p1" } as never });
     useWorkspaceStore.setState({ snapshot: { workspace: { projects: [{ id: "p1" }], edges: [] } } as never });
     const html = renderToStaticMarkup(<ChecklistRows done={[]} />);
-    expect(html).toContain('<button type="button" class="checklist-step">Open a plain terminal</button>');
+    // Story 11.1: its tooltip is the step and the command's key (none here).
+    expect(html).toContain('<button type="button" class="checklist-step" title="Open a plain terminal">Open a plain terminal</button>');
   });
 });

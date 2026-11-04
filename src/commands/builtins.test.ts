@@ -11,8 +11,8 @@ import { useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 import { chevronCommandId } from "../canvas/nodes";
 import { builtinCommands, registerBuiltins } from "./builtins";
-import { handleKeydown, type KeyEventLike } from "./keybindings";
-import { menuGroup, nodeMenuCommands } from "./nodes";
+import { commandHint, displayBinding, formatKeybinding, handleKeydown, type KeyEventLike } from "./keybindings";
+import { canvasMenuCommands, menuGroup, nodeMenuCommands } from "./nodes";
 import { copySelectedBranchName } from "./navigation";
 import { useStatusStore } from "../state/status";
 import { clearCommands, getCommand, listCommands, runCommand } from "./registry";
@@ -822,6 +822,30 @@ describe("built-in commands", () => {
     expect(handleKeydown(key("0", { ctrlKey: true }))).toBe(true);
     await flush();
     expect(instance.setViewport).toHaveBeenCalledTimes(2);
+  });
+
+  it("Story 11.1: the canvas menu lists add, import | fit view | help, settings, with their keys", () => {
+    const keyOf = (c: ReturnType<typeof canvasMenuCommands>[number]) => {
+      const binding = displayBinding(c);
+      return binding === null ? null : formatKeybinding(binding);
+    };
+    // No canvas yet: only the commands that need none.
+    expect(canvasMenuCommands().map((c) => c.id)).toEqual(["help.open", "settings.open"]);
+    useCanvasStore.getState().setInstance(fakeCanvas());
+    // An empty canvas: Fit view still runs from its key (it goes home) but the menu leaves it out.
+    expect(canvasMenuCommands().map((c) => c.id)).toEqual(["project.add", "project.import", "help.open", "settings.open"]);
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(false)], []) });
+    const items = canvasMenuCommands();
+    expect(items.map((c) => [c.title, keyOf(c)])).toEqual([
+      ["Add project folder…", "ctrl+o"],
+      ["Import from Claude…", null],
+      ["Fit view", "ctrl+0"],
+      ["Help", "f1"],
+      ["Open settings", "ctrl+,"],
+    ]);
+    expect(items.map((c) => menuGroup(c))).toEqual([1, 1, 2, 3, 3]);
+    expect(commandHint("help.open")).toBe("Help · f1");
+    expect(commandHint("settings.open")).toBe("Open settings · ctrl+,");
   });
 
   it("Open settings only opens: chosen with the pane already open, it stays open", () => {

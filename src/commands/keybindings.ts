@@ -15,7 +15,7 @@
 import { useEffect } from "react";
 import { isInsideTerminal, layoutKey, terminalKeyAllowed } from "../terminal/keys";
 import { isContextMenuOpen } from "../state/ui";
-import { listCommands, runCommand } from "./registry";
+import { getCommand, listCommands, runCommand, type Command } from "./registry";
 
 export type Keybinding = {
   ctrl: boolean;
@@ -129,6 +129,30 @@ export function formatKeybinding(binding: Keybinding): string {
   if (binding.alt) parts.push("alt");
   parts.push(KEY_DISPLAY[binding.key] ?? binding.key);
   return parts.join("+");
+}
+
+/**
+ * Story 11.1: the binding a menu row or tooltip shows for `command`, read from the registry now:
+ * its own effective binding, or, with `keyFrom`, that command's (`help.open` shows F1). `null`
+ * when there is none (unbound, or `keyFrom` names nothing registered).
+ */
+export function displayBinding(command: Pick<Command, "keyFrom"> & { readonly binding: Keybinding | null }): Keybinding | null {
+  if (command.keyFrom === undefined) return command.binding;
+  return getCommand(command.keyFrom)?.binding ?? null;
+}
+
+/**
+ * Story 11.1: the tooltip of a button that runs command `id`: `label` (or the command's title, its
+ * `dynamicTitle` now when it has one),
+ * then ` · ` and its effective key when it has one (`Close · esc`). An id not registered gives
+ * `label`, or the id itself; it never throws.
+ */
+export function commandHint(id: string, label?: string): string {
+  const command = getCommand(id);
+  if (command === undefined) return label ?? id;
+  const text = label ?? command.dynamicTitle?.() ?? command.title;
+  const binding = displayBinding(command);
+  return binding === null ? text : `${text} · ${formatKeybinding(binding)}`;
 }
 
 /**

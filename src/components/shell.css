@@ -820,7 +820,7 @@
   color: var(--fg-muted);
 }
 
-/* --- node context menu ----------------------------------------------------------------- */
+/* --- context menu (node and canvas) ------------------------------------------------------ */
 
 .context-menu {
   position: fixed;
@@ -834,7 +834,9 @@
 }
 
 .context-menu-item {
-  display: block;
+  display: flex;
+  align-items: baseline;
+  gap: 1.5rem;
   width: 100%;
   text-align: left;
   font: inherit;
@@ -847,6 +849,15 @@
   white-space: nowrap;
   cursor: pointer;
   outline: none;
+}
+
+/* Story 11.1: the title, then the effective key (`.palette-row-key`) pushed to the right. */
+.context-menu-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .context-menu-item.is-selected {

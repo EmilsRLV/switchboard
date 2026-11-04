@@ -347,8 +347,11 @@ export function chevronCommandId(project: Pick<Project, "expanded">): "project.e
   return project.expanded ? "project.collapse" : "project.expand";
 }
 
-/** A right-button press as the canvas recorded it: where, and on which node wrapper (if any). */
-export type RightPress = { x: number; y: number; flowId: string | null };
+/**
+ * A right-button press as the canvas recorded it: where, on which node wrapper (if any), and
+ * whether it was on the canvas background (the pane or the empty-canvas hint, Story 11.1).
+ */
+export type RightPress = { x: number; y: number; flowId: string | null; onBackground: boolean };
 
 /**
  * What a right-button release means: the node under the press, when there was one and the
@@ -357,8 +360,22 @@ export type RightPress = { x: number; y: number; flowId: string | null };
  */
 export function rightClickTarget(press: RightPress | null, release: Position): CanvasTarget | null {
   if (press === null || press.flowId === null) return null;
-  if (Math.hypot(release.x - press.x, release.y - press.y) > DRAG_THRESHOLD) return null;
+  if (moved(press, release)) return null;
   return parseFlowId(press.flowId);
+}
+
+/**
+ * Story 11.1: whether a right-button release opens the canvas menu: the press was on the
+ * background (not a node, an edge or a handle) and the pointer moved at most
+ * {@link DRAG_THRESHOLD} since (else it was a pan).
+ */
+export function rightClickBackground(press: RightPress | null, release: Position): boolean {
+  return press !== null && press.onBackground && press.flowId === null && !moved(press, release);
+}
+
+/** True when the pointer went beyond {@link DRAG_THRESHOLD} between the press and the release. */
+function moved(press: Position, release: Position): boolean {
+  return Math.hypot(release.x - press.x, release.y - press.y) > DRAG_THRESHOLD;
 }
 
 /**

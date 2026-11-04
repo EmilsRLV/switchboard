@@ -1,6 +1,7 @@
 import { memo, useSyncExternalStore } from "react";
 import type { NodeProps } from "@xyflow/react";
 import type { ChildKind } from "../ipc";
+import { commandHint } from "../commands/keybindings";
 import { openReview } from "../commands/review";
 import { unreadBadge } from "../state/inbox";
 import { ForkHandles, LinkHandles } from "./LinkHandles";
@@ -90,7 +91,7 @@ function SessionCard({ className, ariaLabel, data }: { className: string; ariaLa
             <button
               type="button"
               className="session-review nodrag"
-              title="Open review request"
+              title={commandHint("review.open")}
               aria-label={`Open review request of ${child.label}`}
               onClick={(event) => {
                 event.stopPropagation();

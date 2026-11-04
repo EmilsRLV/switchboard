@@ -188,3 +188,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-10-5-whats-new-after-an-update.md`
   summary: A read-only state.json (newer schema after a downgrade, unreadable file, no config folder) brings the what's-new chip back every launch, and freezes the checklist the same way, because the UI cannot see that the file is read-only.
   evidence: appstate.rs keeps mark_version_seen / set_checklist in memory when read_only is set, and StateSnapshot carries no readOnly; a fix exposes it and lets the chip and checklist say why (or stay hidden). Found in the 10.5 review (EC3/BH2).
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-1-keys-where-the-action-is.md`
+  summary: Test `isBackground` in `src/canvas/Canvas.tsx` (pane / canvas-hint vs node, edge, handle, edge label), e.g. by extracting it and testing with fake `closest` objects.
+  evidence: Review found no test covers it; dropping `.react-flow__edge` from its exclusion would open the canvas menu over edges unnoticed. Settled by a test once extracted.

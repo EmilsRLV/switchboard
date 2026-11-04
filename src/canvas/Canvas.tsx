@@ -23,7 +23,7 @@ import {
 import "@xyflow/react/dist/base.css";
 import { clickEdge, link, refuseDrop } from "../commands/edges";
 import { clickNode } from "../commands/navigation";
-import { moveNode, rightClickNode } from "../commands/nodes";
+import { moveNode, rightClickCanvas, rightClickNode } from "../commands/nodes";
 import { dropProjects } from "../commands/projects";
 import {
   hasTauriRuntime,
@@ -55,6 +55,7 @@ import {
   forkLines,
   parseFlowId,
   physicalToClient,
+  rightClickBackground,
   rightClickTarget,
   toFlowNodes,
   type CanvasFlowNode,
@@ -208,24 +209,46 @@ function suppress(event: { preventDefault(): void }): void {
  * most `DRAG_THRESHOLD` since the press on a node, it selects the node and, for a project
  * or session card, opens its menu. Deciding at release also works where
  * the webview fires `contextmenu` on press (webkit2gtk), which a `contextmenu`-driven menu
- * would open at the start of every right-drag pan.
+ * would open at the start of every right-drag pan. Story 11.1: the same rule on the canvas
+ * background (`rightClickBackground`: the pane or the empty-canvas hint, never a node, an edge
+ * or a handle) opens the canvas menu instead, leaving the selection as it is.
  */
 let rightPress: RightPress | null = null;
 
 function onPointerDownCapture(event: ReactPointerEvent): void {
   if (event.button !== 2) return;
-  rightPress = { x: event.clientX, y: event.clientY, flowId: nodeIdAt(event.target) };
+  rightPress = {
+    x: event.clientX,
+    y: event.clientY,
+    flowId: nodeIdAt(event.target),
+    onBackground: isBackground(event.target),
+  };
 }
 
 function onPointerUpCapture(event: ReactPointerEvent): void {
   if (event.button !== 2) return;
   const release = { x: event.clientX, y: event.clientY };
-  const target = rightClickTarget(rightPress, release);
+  const press = rightPress;
   rightPress = null;
+  if (rightClickBackground(press, release)) {
+    rightClickCanvas(release);
+    return;
+  }
+  const target = rightClickTarget(press, release);
   if (target === null) return;
   // A project or session card with enabled entries gets the menu (Attach for a live
   // session); anything else, a historic session included, is only selected.
   rightClickNode(target, release);
+}
+
+/**
+ * Whether `target` is the canvas background: inside xyflow's pane (and not in a node, an edge
+ * or a handle drawn over it) or the empty-canvas hint.
+ */
+function isBackground(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  if (target.closest(".react-flow__node, .react-flow__edge, .react-flow__handle, .react-flow__edgelabel-renderer") !== null) return false;
+  return target.closest(".react-flow__pane, .canvas-hint") !== null;
 }
 
 /** The flow id of the node wrapper containing `target`, if any (xyflow's `data-id`). */

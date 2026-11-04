@@ -1,3 +1,4 @@
+import { commandHint } from "../commands/keybindings";
 import { runCommand } from "../commands/registry";
 import { useWhatsNewStore, type WhatsNewState } from "../state/whatsNew";
 
@@ -7,7 +8,7 @@ export function WhatsNewChipView({ version }: { version: string }) {
     <button
       type="button"
       className="corner-chip whats-new-chip"
-      title="Open the changelog"
+      title={commandHint("help.whatsNew", "Open the changelog")}
       onClick={() => runCommand("help.whatsNew")}
     >
       new in {version}

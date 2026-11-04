@@ -4,6 +4,18 @@ What changed in Switchboard, newest first. Each release lists what you can see a
 
 ## Unreleased
 
+### Canvas
+
+- Right-click the empty canvas, without moving, for the canvas menu: add a project folder, import from
+  Claude, fit view, Help and settings. A right-drag still pans.
+
+### Keyboard
+
+- Menu rows end with their key, in the palette's look, for the node menu and the canvas menu alike.
+- A button that runs a command names it and its key on hover, such as `Close · esc`. After a change to
+  `keybindings.json`, menus show the new keys the next time they open, and tooltips once the button is drawn
+  again.
+
 ### Help
 
 - A Help pane of short guide pages, one per area, written in the words the app itself uses. `f1` opens and

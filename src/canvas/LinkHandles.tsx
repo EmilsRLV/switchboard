@@ -1,4 +1,5 @@
 import { Handle, Position, useConnection } from "@xyflow/react";
+import { commandHint } from "../commands/keybindings";
 import { FORK_HANDLE, LINK_SOURCE_HANDLE, LINK_SOURCE_LEFT_HANDLE, LINK_TARGET_HANDLE, LINK_TARGET_RIGHT_HANDLE } from "./edges";
 
 /**
@@ -21,7 +22,7 @@ export function LinkHandles({ source, shown }: { source: boolean; shown: boolean
           position={Position.Right}
           className={"link-handle" + (shown ? " is-shown" : "")}
           isConnectableEnd={false}
-          title="Drag to link"
+          title={commandHint("edge.link", "Drag to link")}
           aria-label="Link to…"
         />
       )}

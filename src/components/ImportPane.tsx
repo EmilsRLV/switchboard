@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { commandHint } from "../commands/keybindings";
 import { isCommandEnabled, runCommand } from "../commands/registry";
 import { importRows, selectedToAdd, useImportStore } from "../state/import";
 import { usePaletteStore } from "../state/palette";
@@ -48,7 +49,7 @@ export function ImportPane() {
     <aside className="pane" aria-label="Import from Claude" onKeyDown={onKeyDown}>
       <header className="pane-header">
         <h2 className="pane-title">Import from Claude</h2>
-        <button ref={closeRef} type="button" className="btn" onClick={() => runCommand("pane.close")} title="Close (Esc)">
+        <button ref={closeRef} type="button" className="btn" onClick={() => runCommand("pane.close")} title={commandHint("pane.close", "Close")}>
           Close
         </button>
       </header>
@@ -92,7 +93,7 @@ export function ImportPane() {
           </ul>
         )}
         <div className="actions">
-          <button type="button" className="btn" onClick={() => runCommand("import.addSelected")} disabled={!isCommandEnabled("import.addSelected")}>
+          <button type="button" className="btn" title={commandHint("import.addSelected")} onClick={() => runCommand("import.addSelected")} disabled={!isCommandEnabled("import.addSelected")}>
             {adding ? "Adding…" : toAdd.length === 0 ? "Add selected" : `Add selected (${toAdd.length})`}
           </button>
         </div>

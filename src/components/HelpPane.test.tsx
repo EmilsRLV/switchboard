@@ -82,7 +82,7 @@ describe("HelpPane", () => {
     const html = show("getting-started");
     expect(html).toContain('aria-label="Your progress"');
     expect(html.match(/<li class="checklist-row/g)).toHaveLength(6);
-    expect(html).toContain('<button type="button" class="checklist-step">Open the command palette</button>');
+    expect(html).toContain('<button type="button" class="checklist-step" title="Open the command palette · ctrl+k">Open the command palette</button>');
     expect(html).toContain(">Show on canvas</button>");
     expect(show("canvas")).not.toContain("Show on canvas");
   });

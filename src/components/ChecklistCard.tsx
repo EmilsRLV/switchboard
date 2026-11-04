@@ -1,4 +1,5 @@
 import { useEffect, useReducer } from "react";
+import { commandHint } from "../commands/keybindings";
 import { isCommandEnabled, runCommand } from "../commands/registry";
 import { CHECKLIST_STEPS, subscribeSources, type StepId } from "../help/checklist";
 import { useCanvasStore } from "../state/canvas";
@@ -39,7 +40,7 @@ export function ChecklistRows({ done }: { done: readonly StepId[] }) {
               <span className="checklist-tick" aria-hidden="true" />
             )}
             {isCommandEnabled(step.command) ? (
-              <button type="button" className="checklist-step" onClick={() => runCommand(step.command)}>
+              <button type="button" className="checklist-step" title={commandHint(step.command, step.title)} onClick={() => runCommand(step.command)}>
                 {step.title}
               </button>
             ) : (
@@ -59,7 +60,7 @@ export function ChecklistCardView({ done }: { done: readonly StepId[] }) {
     <section className="checklist-card" aria-label="Getting started">
       <header className="checklist-header">
         <h2 className="checklist-title">Getting started</h2>
-        <button type="button" className="btn checklist-dismiss" onClick={() => runCommand("checklist.dismiss")}>
+        <button type="button" className="btn checklist-dismiss" title={commandHint("checklist.dismiss")} onClick={() => runCommand("checklist.dismiss")}>
           Dismiss
         </button>
       </header>

@@ -1,6 +1,7 @@
 import { useEffect, useRef, type Ref } from "react";
 import { shortenPath } from "../canvas/nodes";
 import { addElsewhereFolder } from "../commands/projects";
+import { commandHint } from "../commands/keybindings";
 import { runCommand } from "../commands/registry";
 import type { ElsewhereRow } from "../ipc";
 import { stateWord, useLiveStore } from "../state/live";
@@ -85,7 +86,7 @@ export function ElsewhereTrayView({ rows, open, trayRef }: { rows: readonly Else
         type="button"
         className="corner-chip elsewhere-chip"
         aria-expanded={open}
-        title="Live sessions in folders not on the canvas"
+        title={commandHint("elsewhere.toggle", "Live sessions in folders not on the canvas")}
         onClick={() => runCommand("elsewhere.toggle")}
       >
         elsewhere {rows.length}

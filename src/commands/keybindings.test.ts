@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  commandHint,
   formatKeybinding,
   handleKeydown,
   isEditableTarget,
@@ -7,7 +8,7 @@ import {
   parseKeybinding,
   type KeyEventLike,
 } from "./keybindings";
-import { clearCommands, registerCommand } from "./registry";
+import { applyBindingOverrides, clearCommands, registerCommand, registerCommands } from "./registry";
 
 /** A synthetic keydown; modifiers default to none. */
 function key(k: string, mods: Partial<Omit<KeyEventLike, "key" | "preventDefault">> = {}): KeyEventLike {
@@ -292,5 +293,50 @@ describe("handleKeydown on another keyboard layout", () => {
     expect(german.preventDefault).toHaveBeenCalledOnce();
     expect(handleKeydown(key("Л", { ctrlKey: true, shiftKey: true, code: "KeyK" }))).toBe(true);
     expect(ran).toEqual(["toggle", "palette"]);
+  });
+});
+
+describe("commandHint (Story 11.1)", () => {
+  beforeEach(() => {
+    clearCommands();
+    registerCommands([
+      { id: "pane.close", title: "Close pane", keybinding: "escape", hidden: true, run: () => {} },
+      { id: "project.expand", title: "Expand project", menu: "node", run: () => {} },
+      { id: "review.changes", title: "Review changes", keybinding: "r", run: () => {} },
+      { id: "help.open", title: "Help", keyFrom: "help.toggle", run: () => {} },
+      { id: "help.toggle", title: "Toggle help", keybinding: "f1", hidden: true, run: () => {} },
+    ]);
+  });
+  afterEach(() => clearCommands());
+
+  it("is the title, a middle dot and the effective key", () => {
+    expect(commandHint("pane.close")).toBe("Close pane · esc");
+  });
+
+  it("takes a label in place of the title", () => {
+    expect(commandHint("pane.close", "Close")).toBe("Close · esc");
+  });
+
+  it("is only the title for an unbound command", () => {
+    expect(commandHint("project.expand")).toBe("Expand project");
+  });
+
+  it("follows keybindings.json: a rebind shows the new key, an unbind none", () => {
+    expect(commandHint("review.changes")).toBe("Review changes · r");
+    applyBindingOverrides({ "review.changes": "ctrl+r" });
+    expect(commandHint("review.changes")).toBe("Review changes · ctrl+r");
+    applyBindingOverrides({ "review.changes": null });
+    expect(commandHint("review.changes")).toBe("Review changes");
+  });
+
+  it("shows the key of the keyFrom command", () => {
+    expect(commandHint("help.open")).toBe("Help · f1");
+    applyBindingOverrides({ "help.toggle": null });
+    expect(commandHint("help.open")).toBe("Help");
+  });
+
+  it("gives the label, or the id, for an unregistered id without throwing", () => {
+    expect(commandHint("nope", "X")).toBe("X");
+    expect(commandHint("nope")).toBe("nope");
   });
 });

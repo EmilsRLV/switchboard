@@ -1,6 +1,6 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { openWebLink, showHelpPage } from "../commands/help";
-import { formatKeybinding } from "../commands/keybindings";
+import { commandHint, formatKeybinding } from "../commands/keybindings";
 import { isCommandEnabled, listCommands, runCommand, subscribeBindings } from "../commands/registry";
 import { GETTING_STARTED_PAGE } from "../commands/help";
 import { useChecklistStore } from "../state/checklist";
@@ -62,11 +62,11 @@ export default function HelpPane() {
         <h2 className="pane-title">Help</h2>
         <div className="actions">
           {page !== null && (
-            <button type="button" className="btn" onClick={() => runCommand("help.contents")}>
+            <button type="button" className="btn" title={commandHint("help.contents")} onClick={() => runCommand("help.contents")}>
               ← Contents
             </button>
           )}
-          <button ref={closeRef} type="button" className="btn" onClick={() => runCommand("pane.close")} title="Close (Esc)">
+          <button ref={closeRef} type="button" className="btn" onClick={() => runCommand("pane.close")} title={commandHint("pane.close", "Close")}>
             Close
           </button>
         </div>
@@ -267,7 +267,7 @@ function GettingStartedProgress() {
       <h4 className="pane-heading">Your progress</h4>
       <ChecklistRows done={done} />
       <div className="actions">
-        <button type="button" className="btn" disabled={!isCommandEnabled("checklist.show")} onClick={() => runCommand("checklist.show")}>
+        <button type="button" className="btn" disabled={!isCommandEnabled("checklist.show")} title={commandHint("checklist.show")} onClick={() => runCommand("checklist.show")}>
           Show on canvas
         </button>
       </div>

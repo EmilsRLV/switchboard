@@ -61,8 +61,11 @@ export function filterPickItems<I extends PickItem>(items: readonly I[], query: 
   return items.filter((item) => item.title.toLowerCase().includes(needle));
 }
 
-/** One row the palette shows: a command (with its key) or a pick row (without). */
-export type PaletteRow = { id: string; title: string; binding: Keybinding | null };
+/**
+ * One row the palette shows: a command (with its key, and `keyFrom` when it shows another
+ * command's, Story 11.1) or a pick row (without).
+ */
+export type PaletteRow = { id: string; title: string; binding: Keybinding | null; keyFrom?: string };
 
 /**
  * The rows the palette shows for `query`: the pick list's rows (matched on titles) while it is a
@@ -70,11 +73,13 @@ export type PaletteRow = { id: string; title: string; binding: Keybinding | null
  */
 export function paletteRows(
   pick: PalettePick | null,
-  commands: readonly (Pick<Command, "id" | "title"> & { binding: Keybinding | null })[],
+  commands: readonly (Pick<Command, "id" | "title" | "keyFrom"> & { binding: Keybinding | null })[],
   query: string,
 ): PaletteRow[] {
   if (pick !== null) return filterPickItems(pick.items, query).map(({ id, title }) => ({ id, title, binding: null }));
-  return filterCommands(commands, query).map(({ id, title, binding }) => ({ id, title, binding }));
+  return filterCommands(commands, query).map(({ id, title, binding, keyFrom }) =>
+    keyFrom === undefined ? { id, title, binding } : { id, title, binding, keyFrom },
+  );
 }
 
 /**

@@ -26,6 +26,7 @@ import {
   panToReveal,
   parseFlowId,
   physicalToClient,
+  rightClickBackground,
   rightClickTarget,
   shortenPath,
   statusLine,
@@ -320,7 +321,7 @@ describe("rightClickAction", () => {
 });
 
 describe("rightClickTarget", () => {
-  const press = (flowId: string | null, x = 100, y = 100) => ({ x, y, flowId });
+  const press = (flowId: string | null, x = 100, y = 100) => ({ x, y, flowId, onBackground: false });
 
   it("is the pressed node when the pointer moved at most the threshold, for any node kind", () => {
     expect(DRAG_THRESHOLD).toBe(4);
@@ -338,6 +339,27 @@ describe("rightClickTarget", () => {
     expect(rightClickTarget(press("ide"), { x: 220, y: 100 })).toBeNull();
     expect(rightClickTarget(press(null), { x: 100, y: 100 })).toBeNull();
     expect(rightClickTarget(null, { x: 100, y: 100 })).toBeNull();
+  });
+});
+
+describe("rightClickBackground (Story 11.1)", () => {
+  const press = (onBackground: boolean, x = 100, y = 100) => ({ x, y, flowId: null, onBackground });
+
+  it("is true for a background press released within the threshold", () => {
+    expect(rightClickBackground(press(true), { x: 100, y: 100 })).toBe(true);
+    expect(rightClickBackground(press(true), { x: 104, y: 100 })).toBe(true);
+    expect(rightClickBackground(press(true), { x: 102, y: 103 })).toBe(true);
+  });
+
+  it("is false beyond the threshold (a pan)", () => {
+    expect(rightClickBackground(press(true), { x: 105, y: 100 })).toBe(false);
+    expect(rightClickBackground(press(true), { x: 103, y: 103 })).toBe(false);
+  });
+
+  it("is false for a press off the background (a node, an edge, a handle) or no press", () => {
+    expect(rightClickBackground(press(false), { x: 100, y: 100 })).toBe(false);
+    expect(rightClickBackground({ x: 100, y: 100, flowId: "ide", onBackground: true }, { x: 100, y: 100 })).toBe(false);
+    expect(rightClickBackground(null, { x: 100, y: 100 })).toBe(false);
   });
 });
 

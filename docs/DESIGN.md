@@ -377,15 +377,18 @@ chrome follows every rule here.
   `--radius-md`, items in `--text-md`, groups split by a 1-px `--border` line. Project, session and branch cards
   have one; it lists only enabled entries and does not open when there are none. Story 11.1: each row ends
   with its effective key in the palette's key look (mono `--text-sm` `--fg-muted`, `formatKeybinding`), nothing
-  when it has none; a rebind in `keybindings.json` shows there. The `⋯` button of a node toolbar (Story 11.2)
-  opens the same menu under itself.
+  when it has none; a rebind in `keybindings.json` shows there the next time it opens. The `⋯` button of a node
+  toolbar (Story 11.2) opens the same menu under itself.
 - **The canvas menu** (Story 11.1) is the context menu opened by a right-click on the canvas background that did
   not move (the node menu's rule): the commands tagged for it (add a project folder, import from Claude, fit
   view, help, settings) in the same look, with their keys. A right-drag still pans.
 - **Tooltips** (Story 11.1) are the native `title`: for every button that runs a command, the command's title,
   then ` · ` and its effective key when it has one (`Close · esc`, `New session… · n`), made by one helper from
-  the registry, so they follow `keybindings.json`. Item-level buttons (a toast's Allow, a tab's ×) keep their own
-  words. No custom tooltip surface: nothing to style, nothing to animate.
+  the registry, so they follow `keybindings.json` once the button is drawn again (a menu reads the keys each time
+  it opens); a button may name its command in its own words and still end with the key (`Comment on the current
+  line · c`). Item-level buttons (a toast's Allow, a tab's ×) and the Edge pane's Revoke, Retry and Restart with
+  flags, whose tooltips say what they do there, keep their own words. No custom tooltip surface: nothing to
+  style, nothing to animate.
 - **The Elsewhere tray** (live sessions in folders not on the canvas) sits at the canvas's bottom-left, over
   it and below the notice, panes, palette and menu. A chip `elsewhere N` (mono `--text-xs`, `--fg-muted`,
   `--bg-raised`, 1-px `--border`, `--radius-sm`; `--fg` text and a `--fg-muted` border on hover or while

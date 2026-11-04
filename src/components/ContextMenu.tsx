@@ -1,9 +1,10 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { menuGroup, nodeMenuCommands } from "../commands/nodes";
+import { displayBinding, formatKeybinding } from "../commands/keybindings";
+import { canvasMenuCommands, menuGroup, nodeMenuCommands } from "../commands/nodes";
 import { runCommand } from "../commands/registry";
 import type { Position } from "../ipc";
 import { clampSelection, paletteKeyAction } from "../state/palette";
-import { clampToArea, useUiStore, type MenuPoint } from "../state/ui";
+import { clampToArea, useUiStore, type OpenMenu } from "../state/ui";
 
 /**
  * The node context menu (right-click on a project or session card): the enabled commands tagged
@@ -13,6 +14,10 @@ import { clampToArea, useUiStore, type MenuPoint } from "../state/ui";
  * precedence), as does a press outside or the app losing focus. The selection it acts on was
  * made when the menu opened; should it stop having any rows (the project left the snapshot,
  * or was removed from it), the menu closes itself. Tokens only; no accent.
+ *
+ * Story 11.1: the same popup is the canvas menu (a right-click on the background: the commands
+ * tagged `menu: "canvas"`), and each row ends with its effective key in the palette's key look,
+ * read from the registry on every render so `keybindings.json` shows at the next opening.
  */
 export function ContextMenu() {
   const at = useUiStore((s) => s.contextMenu);
@@ -25,13 +30,14 @@ function close(): void {
   useUiStore.getState().closeContextMenu();
 }
 
-function ContextMenuPopup({ at }: { at: MenuPoint }) {
+/** The open menu at `at`; exported for its render test (the store hook reads the initial state on the server). */
+export function ContextMenuPopup({ at }: { at: OpenMenu }) {
   const ref = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<Position>(at);
   const [active, setActive] = useState(0);
 
   // The registry is not reactive; the `when` clauses are read on every render of the open menu.
-  const items = nodeMenuCommands();
+  const items = at.menu === "canvas" ? canvasMenuCommands() : nodeMenuCommands();
   const selected = clampSelection(active, items.length);
 
   // Nothing to offer: go away rather than linger as an empty box.
@@ -102,7 +108,7 @@ function ContextMenuPopup({ at }: { at: MenuPoint }) {
       ref={ref}
       className="context-menu"
       role="menu"
-      aria-label="Node actions"
+      aria-label={at.menu === "canvas" ? "Canvas actions" : "Node actions"}
       tabIndex={-1}
       style={{ left: position.x, top: position.y }}
       onKeyDown={onKeyDown}
@@ -110,6 +116,7 @@ function ContextMenuPopup({ at }: { at: MenuPoint }) {
     >
       {items.map((item, index) => {
         const previous = items[index - 1];
+        const binding = displayBinding(item);
         return (
           <Fragment key={item.id}>
             {previous !== undefined && menuGroup(previous) !== menuGroup(item) && (
@@ -123,7 +130,8 @@ function ContextMenuPopup({ at }: { at: MenuPoint }) {
               onPointerEnter={() => setActive(index)}
               onClick={() => run(index)}
             >
-              {item.title}
+              <span className="context-menu-title">{item.title}</span>
+              {binding !== null && <kbd className="palette-row-key">{formatKeybinding(binding)}</kbd>}
             </button>
           </Fragment>
         );

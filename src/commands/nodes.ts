@@ -29,8 +29,20 @@ const UNORDERED = Number.MAX_SAFE_INTEGER;
  * (then title, which `listCommands` already provides and the stable sort keeps).
  */
 export function nodeMenuCommands(): RegisteredCommand[] {
+  return menuCommands("node");
+}
+
+/**
+ * Story 11.1: the canvas menu's rows (a right-click on the background): the enabled commands
+ * tagged `menu: "canvas"`, in `menuOrder` like the node menu.
+ */
+export function canvasMenuCommands(): RegisteredCommand[] {
+  return menuCommands("canvas");
+}
+
+function menuCommands(menu: NonNullable<Command["menu"]>): RegisteredCommand[] {
   return listCommands({ enabledOnly: true })
-    .filter((command) => command.menu === "node")
+    .filter((command) => command.menu === menu && (command.menuWhen?.() ?? true))
     .sort((a, b) => (a.menuOrder ?? UNORDERED) - (b.menuOrder ?? UNORDERED));
 }
 
@@ -161,6 +173,14 @@ export function rightClickNode(target: CanvasTarget, at: MenuPoint): void {
   const ui = useUiStore.getState();
   ui.select(target);
   if (rightClickAction(target, nodeMenuCommands().length > 0) === "menu") ui.openContextMenu(at);
+}
+
+/**
+ * Story 11.1: a right-click release on the canvas background (the canvas's guard decided it was
+ * a click): open the canvas menu at the pointer. The selection is left as it is.
+ */
+export function rightClickCanvas(at: MenuPoint): void {
+  useUiStore.getState().openContextMenu(at, "canvas");
 }
 
 /**

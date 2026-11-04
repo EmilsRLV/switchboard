@@ -2,9 +2,9 @@ import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "rea
 import { useUiStore } from "../state/ui";
 import { isInsideTerminal } from "../terminal/keys";
 import { focusView } from "../terminal/registry";
-import { formatKeybinding } from "../commands/keybindings";
+import { displayBinding, formatKeybinding } from "../commands/keybindings";
 import { listCommands } from "../commands/registry";
-import { clampSelection, paletteKeyAction, paletteRows, runPaletteRow, usePaletteStore } from "../state/palette";
+import { clampSelection, paletteKeyAction, paletteRows, runPaletteRow, usePaletteStore, type PaletteRow } from "../state/palette";
 
 const OPTION_ID_PREFIX = "palette-option-";
 
@@ -110,7 +110,7 @@ function PaletteDialog() {
                 onClick={() => runRow(index)}
               >
                 <span className="palette-row-title">{row.title}</span>
-                {row.binding !== null && <kbd className="palette-row-key">{formatKeybinding(row.binding)}</kbd>}
+                <RowKey row={row} />
               </li>
             ))
           )}
@@ -118,4 +118,10 @@ function PaletteDialog() {
       </div>
     </div>
   );
+}
+
+/** A row's key (Story 11.1: `help.open` shows `help.toggle`'s F1, as the menus do), or nothing. */
+function RowKey({ row }: { row: PaletteRow }) {
+  const binding = displayBinding(row);
+  return binding === null ? null : <kbd className="palette-row-key">{formatKeybinding(binding)}</kbd>;
 }

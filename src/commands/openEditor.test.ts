@@ -141,7 +141,7 @@ describe("Files mode and Open in editor (Story 8.3)", () => {
     useReviewStore.getState().select("src/a.ts");
     expect(handleKeydown(key("o", { tagName: "INPUT" }))).toBe(false);
     expect(handleKeydown(key("o", { tagName: "SELECT" }))).toBe(false);
-    useUiStore.setState({ contextMenu: { x: 1, y: 1 } });
+    useUiStore.setState({ contextMenu: { x: 1, y: 1, menu: "node" } });
     expect(handleKeydown(key("o"))).toBe(false);
     useUiStore.setState({ contextMenu: null });
     usePaletteStore.setState({ isOpen: true });

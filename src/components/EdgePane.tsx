@@ -1,6 +1,7 @@
 import { useEffect, useState, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { cooperateSides, edgeLiveIn, endText, type EndText } from "../canvas/edges";
 import { retryEdge, saveEdgeLabel } from "../commands/edges";
+import { commandHint } from "../commands/keybindings";
 import { runCommand, runCommandAsync } from "../commands/registry";
 import type { ChildNode, Edge, EdgeLive, EdgesLiveMap, Project } from "../ipc";
 import { canRetryLive, isCooperate, isSessionContext, nowText, sideNowText, useEdgesLiveStore } from "../state/edgesLive";
@@ -91,7 +92,7 @@ function EdgeInspector({ edge, from, to, live, entries }: { edge: Edge; from: En
     <aside className="pane edge-pane" aria-label="Edge">
       <header className="pane-header">
         <h2 className="pane-title">Edge</h2>
-        <button type="button" className="btn" onClick={() => runCommand("pane.close")} title="Close (Esc)">
+        <button type="button" className="btn" onClick={() => runCommand("pane.close")} title={commandHint("pane.close", "Close")}>
           Close
         </button>
       </header>
@@ -169,7 +170,7 @@ function EdgeInspector({ edge, from, to, live, entries }: { edge: Edge; from: En
               Restart with flags
             </button>
           )}
-          <button type="button" className="btn" data-edge-delete onClick={() => runCommand("edge.delete")} title="Delete edge (Del)">
+          <button type="button" className="btn" data-edge-delete onClick={() => runCommand("edge.delete")} title={commandHint("edge.delete", "Delete edge")}>
             Delete
           </button>
         </div>

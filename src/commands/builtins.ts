@@ -23,7 +23,7 @@ import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
 import { elsewhereCount } from "../state/live";
 import { hasSelection, isContextMenuOpen, isElsewhereOpen, isPaneOpen, selectedProject, useUiStore } from "../state/ui";
-import { projectHasChildren } from "../state/workspace";
+import { hasProjects, projectHasChildren } from "../state/workspace";
 import {
   activateSelection,
   attachStub,
@@ -243,6 +243,10 @@ export function builtinCommands(): Command[] {
     {
       id: "settings.open",
       title: "Open settings",
+      // Story 11.1: on the canvas menu, showing its toggle's key.
+      menu: "canvas",
+      menuOrder: 31,
+      keyFrom: "settings.toggle",
       run: () => openPane("settings"),
     },
     {
@@ -256,6 +260,9 @@ export function builtinCommands(): Command[] {
     {
       id: "help.open",
       title: "Help",
+      menu: "canvas",
+      menuOrder: 30,
+      keyFrom: "help.toggle",
       run: openHelpHere,
     },
     {
@@ -357,6 +364,9 @@ export function builtinCommands(): Command[] {
       id: "canvas.fitView",
       title: "Fit view",
       keybinding: "ctrl+0",
+      menu: "canvas",
+      menuOrder: 20,
+      menuWhen: hasProjects,
       when: isCanvasReady,
       run: async () => {
         await useCanvasStore.getState().fitView();
@@ -366,12 +376,16 @@ export function builtinCommands(): Command[] {
       id: "project.add",
       title: "Add project folder…",
       keybinding: "ctrl+o",
+      menu: "canvas",
+      menuOrder: 10,
       when: () => isCanvasReady() && isPickerIdle(),
       run: addProjectFromPicker,
     },
     {
       id: "project.import",
       title: "Import from Claude…",
+      menu: "canvas",
+      menuOrder: 11,
       when: isCanvasReady,
       run: () => openPane("import"),
     },

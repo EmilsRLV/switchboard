@@ -1,5 +1,6 @@
 import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { launchKeyAction, launchKeyTarget } from "../commands/launch";
+import { commandHint } from "../commands/keybindings";
 import { isCommandEnabled, runCommand } from "../commands/registry";
 import { createBlockedReason, editWorktree } from "../commands/worktree";
 import { usePaletteStore } from "../state/palette";
@@ -48,7 +49,7 @@ export function WorktreePane() {
     <aside className="pane worktree-pane" aria-label="New worktree" onKeyDown={onKeyDown}>
       <header className="pane-header">
         <h2 className="pane-title">New worktree</h2>
-        <button type="button" className="btn" onClick={() => runCommand("pane.close")} title="Close (Esc)">
+        <button type="button" className="btn" onClick={() => runCommand("pane.close")} title={commandHint("pane.close", "Close")}>
           Close
         </button>
       </header>
@@ -56,10 +57,10 @@ export function WorktreePane() {
       <section className="pane-section">
         <p className="muted">A separate checkout of {projectLabel} for parallel work. Enter creates it.</p>
         <div className="worktree-mode" role="group" aria-label="Branch">
-          <button type="button" className="btn" aria-pressed={!existing} disabled={creating} onClick={() => runCommand("worktree.modeNew")}>
+          <button type="button" className="btn" aria-pressed={!existing} disabled={creating} title={commandHint("worktree.modeNew")} onClick={() => runCommand("worktree.modeNew")}>
             New branch
           </button>
-          <button type="button" className="btn" aria-pressed={existing} disabled={creating} onClick={() => runCommand("worktree.modeExisting")}>
+          <button type="button" className="btn" aria-pressed={existing} disabled={creating} title={commandHint("worktree.modeExisting")} onClick={() => runCommand("worktree.modeExisting")}>
             Existing branch
           </button>
         </div>
@@ -115,6 +116,7 @@ export function WorktreePane() {
           <button
             type="button"
             className="btn"
+            title={commandHint("worktree.create")}
             onClick={() => runCommand("worktree.create")}
             disabled={!isCommandEnabled("worktree.create")}
             aria-describedby={blocked !== null ? "worktree-create-reason" : undefined}

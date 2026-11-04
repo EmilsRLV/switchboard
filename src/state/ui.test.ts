@@ -131,10 +131,13 @@ describe("ui store", () => {
   it("openContextMenu stores the anchor, closeContextMenu clears it", () => {
     const s = useUiStore.getState();
     s.openContextMenu({ x: 300, y: 120 });
-    expect(useUiStore.getState().contextMenu).toEqual({ x: 300, y: 120 });
+    expect(useUiStore.getState().contextMenu).toEqual({ x: 300, y: 120, menu: "node" });
     expect(isContextMenuOpen()).toBe(true);
     s.openContextMenu({ x: 10, y: 10 });
-    expect(useUiStore.getState().contextMenu).toEqual({ x: 10, y: 10 });
+    expect(useUiStore.getState().contextMenu).toEqual({ x: 10, y: 10, menu: "node" });
+    s.openContextMenu({ x: 20, y: 30 }, "canvas");
+    expect(useUiStore.getState().contextMenu).toEqual({ x: 20, y: 30, menu: "canvas" });
+    expect(isContextMenuOpen()).toBe(true);
     s.closeContextMenu();
     expect(useUiStore.getState().contextMenu).toBeNull();
     expect(isContextMenuOpen()).toBe(false);
