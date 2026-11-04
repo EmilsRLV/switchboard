@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { commandHint } from "../commands/keybindings";
 import { isCommandEnabled, runCommand } from "../commands/registry";
 import {
   FORCE_CONFIRM_DELAY_MS,
@@ -60,7 +61,7 @@ export function RemoveWorktreePane() {
     <aside className="pane remove-worktree-pane" aria-label="Remove worktree" onKeyDown={onKeyDown}>
       <header className="pane-header">
         <h2 className="pane-title">Remove worktree</h2>
-        <button ref={closeRef} type="button" className="btn" onClick={() => runCommand("pane.close")} title="Close (Esc)">
+        <button ref={closeRef} type="button" className="btn" onClick={() => runCommand("pane.close")} title={commandHint("pane.close", "Close")}>
           Close
         </button>
       </header>
@@ -102,7 +103,7 @@ export function RemoveWorktreePane() {
           </code>
           {!removed && dirty === 0 && (
             <div className="actions launch-start">
-              <button type="button" className="btn" data-removes="true" disabled={!isCommandEnabled("worktree.remove")} onClick={() => runCommand("worktree.remove")}>
+              <button type="button" className="btn" data-removes="true" disabled={!isCommandEnabled("worktree.remove")} title={commandHint("worktree.remove")} onClick={() => runCommand("worktree.remove")}>
                 {removing ? "Removing…" : "Remove"}
               </button>
             </div>
@@ -114,6 +115,7 @@ export function RemoveWorktreePane() {
                 type="button"
                 className="btn"
                 disabled={!isCommandEnabled("worktree.forceRemove")}
+                title={commandHint("worktree.forceRemove")}
                 onClick={() => runCommand("worktree.forceRemove")}
               >
                 Force remove…
@@ -127,6 +129,7 @@ export function RemoveWorktreePane() {
                 className="btn"
                 data-removes="true"
                 disabled={!isCommandEnabled("worktree.discardAndRemove")}
+                title={commandHint("worktree.discardAndRemove")}
                 onClick={() => runCommand("worktree.discardAndRemove")}
               >
                 {removing ? "Removing…" : discardLabel(dirty)}

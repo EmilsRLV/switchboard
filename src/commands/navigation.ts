@@ -23,7 +23,7 @@ import {
 import { projectOpenEditor, projectOpenFolder, projectRevealClaudeDir, type ChildNode } from "../ipc";
 import { useCanvasStore, viewportCentre, type CanvasElement } from "../state/canvas";
 import { liveSession } from "../state/live";
-import { acknowledgeIfNeeded, NOTICE_MS, sameTarget, selectedProject, useUiStore, type Size } from "../state/ui";
+import { acknowledgeIfNeeded, currentSelection, NOTICE_MS, sameTarget, selectedProject, useUiStore, type Size } from "../state/ui";
 import { projectHasChildren, useWorkspaceStore } from "../state/workspace";
 import { setExpanded } from "./nodes";
 import type { Timers } from "./projects";
@@ -190,7 +190,7 @@ export function toggleShowAllOfSelected(): boolean {
  * `when` of `session.attach`.
  */
 export function selectedLiveSessionId(): string | null {
-  const selection = useUiStore.getState().selection;
+  const selection = currentSelection();
   if (selection === null || selection.kind !== "session") return null;
   return liveSession(selection.id) === null ? null : selection.id;
 }
@@ -233,7 +233,7 @@ export function revealClaudeProjectDir(projectId: string): Promise<boolean> {
 
 /** The selected branch card's child (Story 5.1), when a branch is selected and still listed; else `null`. */
 export function selectedBranch(): ChildNode | null {
-  const selection = useUiStore.getState().selection;
+  const selection = currentSelection();
   if (selection === null || selection.kind !== "branch") return null;
   const children = useWorkspaceStore.getState().snapshot?.children ?? [];
   return children.find((child) => child.kind === "branch" && child.id === selection.id) ?? null;

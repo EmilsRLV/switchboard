@@ -6,11 +6,11 @@ canvas's own keys, see [Selecting and acting](canvas.md#selecting-and-acting).
 
 ## The command palette
 
-Press `ctrl+k` to open the command palette. Type a few letters of a command's title to filter the list, move
-with the up and down arrows, and press `enter` to run the selected command; `esc` closes the palette. Only the
-commands that make sense right now are listed: **Show terminal** appears only with a session node selected
-whose session runs in a terminal pane, for example. A command's key, when it has one, shows at the right of its
-row.
+Press `ctrl+k` to open the command palette. Type part of a command's title to filter the list, move with the
+arrow keys, and press `enter` to run the selected command; `esc` closes the palette. Only the commands that
+make sense right now are listed: **Show terminal** appears only with a session node selected whose session runs
+in a terminal pane, for example. A command's key shows at the right of its row, as in menus and button
+tooltips.
 
 Some commands open the palette as a pick list instead, such as **Link to…** or **Help: open page…**: type to
 filter, then `enter` picks.
@@ -44,9 +44,10 @@ command id and its key, or `null` to remove the key:
 }
 ```
 
-The file reloads as soon as you save it. Settings → Diagnostics lists any errors and conflicts in it.
+Saved, the file reloads; menus show new keys when next opened, tooltips when next drawn. Settings →
+Diagnostics lists its errors and conflicts.
 
 ## All commands
 
-The table below lists every command with the key it has now, after `keybindings.json`; a dash (—) means no key.
+The table below lists every command with its key now, after `keybindings.json`; a dash (—) means none.
 Key-only commands, which the palette does not list, follow it.

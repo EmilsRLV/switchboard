@@ -26,8 +26,9 @@ import { useUiStore } from "../state/ui";
 import { useSettingsStore } from "../state/settings";
 import type { SettingsSnapshot } from "../ipc";
 import { registerBuiltins } from "../commands/builtins";
-import { applyBindingOverrides, clearCommands } from "../commands/registry";
-import HelpPane, { configFolder, loadAppVersion, resetKnownVersion, VersionFooter } from "./HelpPane";
+import { applyBindingOverrides, clearCommands, runCommand } from "../commands/registry";
+import { resetTour, useTourStore } from "../state/tour";
+import HelpPane, { Block, configFolder, loadAppVersion, resetKnownVersion, VersionFooter } from "./HelpPane";
 
 function show(page: string | null): string {
   useUiStore.setState({ pane: "help", helpPage: page, helpAnchor: null });
@@ -78,12 +79,22 @@ describe("HelpPane", () => {
     expect(html).not.toContain(">f1</kbd>");
   });
 
-  it("the Getting started page (Story 10.3) ends with the live checklist and Show on canvas", () => {
+  it("the Getting started page (Story 10.3) ends with the live checklist and Show on canvas", async () => {
     const html = show("getting-started");
     expect(html).toContain('aria-label="Your progress"');
     expect(html.match(/<li class="checklist-row/g)).toHaveLength(6);
-    expect(html).toContain('<button type="button" class="checklist-step">Open the command palette</button>');
+    expect(html).toContain('<button type="button" class="checklist-step" title="Open the command palette · ctrl+k">Open the command palette</button>');
     expect(html).toContain(">Show on canvas</button>");
+    // Story 11.6: Take the tour beside it.
+    expect(html).toContain('>Show on canvas</button><button type="button" class="btn" title="Take the tour">Take the tour</button>');
+    // Its click runs `tour.start` (the handler as written), which starts the tour.
+    const fs = (await import(/* @vite-ignore */ "node:fs" as string)) as { readFileSync(path: URL, encoding: "utf8"): string };
+    const source = fs.readFileSync(new URL("./HelpPane.tsx", import.meta.url), "utf8");
+    expect(source).toMatch(/onClick=\{\(\) => runCommand\("tour\.start"\)\}>\s*Take the tour\s*<\/button>/);
+    resetTour();
+    expect(runCommand("tour.start")).toBe(true);
+    expect(useTourStore.getState().on).toBe(true);
+    resetTour();
     expect(show("canvas")).not.toContain("Show on canvas");
   });
 
@@ -96,6 +107,64 @@ describe("HelpPane", () => {
     const html = show("canvas");
     expect(html).toContain("Canvas &amp; navigation");
     expect(html).not.toContain("help-table");
+  });
+
+  it("Story 11.4: the Edges page draws the draw-edge and edge-kinds figures under their section headings", () => {
+    const html = show("edges");
+    const drawing = html.indexOf('id="help-drawing-and-finding-edges"');
+    const drawEdge = html.indexOf('class="help-figure help-figure-draw-edge" role="img" aria-label="A hovered session node shows its handle');
+    const seeing = html.indexOf('id="help-what-you-can-see"');
+    const kinds = html.indexOf('class="help-figure help-figure-edge-kinds" role="img" aria-label="Five edges');
+    expect(drawing).toBeGreaterThan(-1);
+    expect(drawEdge).toBeGreaterThan(drawing);
+    expect(seeing).toBeGreaterThan(drawEdge);
+    expect(kinds).toBeGreaterThan(seeing);
+    for (const label of ["context", "cooperate", "pending", "failed", "selected"]) {
+      expect(html).toContain(`<span class="help-figure-label">${label}</span>`);
+    }
+    expect(html).not.toContain("figure draw-edge");
+  });
+
+  it("Story 11.4: each figure page draws its figure", () => {
+    expect(show("projects")).toContain('class="help-figure help-figure-node-anatomy"');
+    expect(show("sessions")).toContain('class="help-figure help-figure-session-states"');
+    expect(show("canvas")).toContain('class="help-figure help-figure-panes"');
+  });
+
+  it("Story 11.4: a figure with an unknown or odd name shows its alt text as a code block, never markup", () => {
+    const unknown = renderToStaticMarkup(<Block node={{ type: "figure", name: "nope", alt: "Drag the handle" }} />);
+    expect(unknown).toBe('<pre class="help-pre">Drag the handle</pre>');
+    const odd = renderToStaticMarkup(<Block node={{ type: "figure", name: "<b>x</b>", alt: "<i>alt</i>" }} />);
+    expect(odd).toBe('<pre class="help-pre">&lt;i&gt;alt&lt;/i&gt;</pre>');
+    const proto = renderToStaticMarkup(<Block node={{ type: "figure", name: "constructor", alt: "x" }} />);
+    expect(proto).toBe('<pre class="help-pre">x</pre>');
+    const known = renderToStaticMarkup(<Block node={{ type: "figure", name: "edge-kinds", alt: "Five edges" }} />);
+    expect(known.startsWith('<div class="help-figure help-figure-edge-kinds" role="img" aria-label="Five edges">')).toBe(true);
+  });
+
+  it("Story 11.5: a table with an unknown or odd name shows its text as a code block, never markup", () => {
+    expect(renderToStaticMarkup(<Block node={{ type: "table", name: "nope", text: "The rows" }} />)).toBe('<pre class="help-pre">The rows</pre>');
+    expect(renderToStaticMarkup(<Block node={{ type: "table", name: "<b>x</b>", text: "<i>y</i>" }} />)).toBe(
+      '<pre class="help-pre">&lt;i&gt;y&lt;/i&gt;</pre>',
+    );
+    expect(renderToStaticMarkup(<Block node={{ type: "table", name: "constructor", text: "x" }} />)).toBe('<pre class="help-pre">x</pre>');
+  });
+
+  it("Story 11.5: What you see is second in Contents and draws each figure above its table", () => {
+    const rows = [...show(null).matchAll(/class="help-contents-row">([^<]*)</g)].map((m) => m[1]);
+    expect(rows.slice(0, 2)).toEqual(["Canvas &amp; navigation", "What you see"]);
+    const html = show("legend");
+    const order = [
+      html.indexOf('class="help-figure help-figure-session-states"'),
+      html.indexOf('aria-label="The session states and what each means."'),
+      html.indexOf('id="help-colour-glow-and-badges"'),
+      html.indexOf('class="help-figure help-figure-edge-kinds"'),
+      html.indexOf('aria-label="The edge looks and what each means."'),
+    ];
+    for (const at of order) expect(at).toBeGreaterThan(-1);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(html).toContain("Claude needs an answer; enter opens its terminal");
+    expect(html).not.toContain("table session-states");
   });
 
   it("Story 10.4: Contents lists Getting started, Changelog and Roadmap last", () => {

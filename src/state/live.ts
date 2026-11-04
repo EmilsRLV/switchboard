@@ -170,10 +170,23 @@ export function attentionQueue(
   children: readonly ChildNode[],
   sessions: Readonly<Record<string, LiveSession>> = useLiveStore.getState().snapshot.sessions,
 ): AttentionTarget[] {
+  return attentionOrder(children, sessions, (id) => !acknowledging.has(id));
+}
+
+/**
+ * The session children that need attention, the one waiting longest first (`attention_since`,
+ * then id): {@link attentionQueue}'s order, kept to the ids `keep` accepts. Pure: the canvas
+ * glow's title (Story 11.5) names the first of a project's, the one `ctrl+j` would pick there.
+ */
+export function attentionOrder(
+  children: readonly ChildNode[],
+  sessions: Readonly<Record<string, LiveSession>>,
+  keep: (sessionId: string) => boolean = () => true,
+): AttentionTarget[] {
   const out: AttentionTarget[] = [];
   const seen = new Set<string>();
   for (const child of children) {
-    if (child.kind !== "session" || seen.has(child.id) || acknowledging.has(child.id)) continue;
+    if (child.kind !== "session" || seen.has(child.id) || !keep(child.id)) continue;
     const session = Object.hasOwn(sessions, child.id) ? sessions[child.id] : undefined;
     if (session === undefined || !needsAttention(session.state)) continue;
     seen.add(child.id);

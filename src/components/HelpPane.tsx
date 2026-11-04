@@ -1,12 +1,14 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { openWebLink, showHelpPage } from "../commands/help";
-import { formatKeybinding } from "../commands/keybindings";
+import { commandHint, formatKeybinding } from "../commands/keybindings";
 import { isCommandEnabled, listCommands, runCommand, subscribeBindings } from "../commands/registry";
 import { GETTING_STARTED_PAGE } from "../commands/help";
 import { useChecklistStore } from "../state/checklist";
 import { ChecklistRows, useStepCommandsRefresh } from "./ChecklistCard";
 import { HELP_PAGES, helpPage, renderHelpPage } from "../help/pages";
 import type { HelpNode } from "../help/markdown";
+import { figureFor } from "../help/figures";
+import { tableFor } from "../help/tables";
 import { appInfo } from "../ipc";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
@@ -62,11 +64,11 @@ export default function HelpPane() {
         <h2 className="pane-title">Help</h2>
         <div className="actions">
           {page !== null && (
-            <button type="button" className="btn" onClick={() => runCommand("help.contents")}>
+            <button type="button" className="btn" title={commandHint("help.contents")} onClick={() => runCommand("help.contents")}>
               ← Contents
             </button>
           )}
-          <button ref={closeRef} type="button" className="btn" onClick={() => runCommand("pane.close")} title="Close (Esc)">
+          <button ref={closeRef} type="button" className="btn" onClick={() => runCommand("pane.close")} title={commandHint("pane.close", "Close")}>
             Close
           </button>
         </div>
@@ -165,7 +167,8 @@ function headingTag(level: number): "h3" | "h4" | "h5" | "h6" {
   return level <= 1 ? "h3" : level === 2 ? "h4" : level === 3 ? "h5" : "h6";
 }
 
-function Block({ node }: { node: HelpNode }): ReactNode {
+/** One block of a rendered page (exported for tests). */
+export function Block({ node }: { node: HelpNode }): ReactNode {
   switch (node.type) {
     case "heading": {
       const Tag = headingTag(node.level);
@@ -189,6 +192,18 @@ function Block({ node }: { node: HelpNode }): ReactNode {
     }
     case "codeBlock":
       return <pre className="help-pre">{node.text}</pre>;
+    case "figure": {
+      // Story 11.4: a known figure is drawn; an unknown name shows its alt text as a code block,
+      // so a typo shows and is never markup.
+      const Figure = figureFor(node.name);
+      return Figure === null ? <pre className="help-pre">{node.alt}</pre> : <Figure alt={node.alt} />;
+    }
+    case "table": {
+      // Story 11.5: a known table is drawn from code (the meanings' one table); an unknown name
+      // shows the block's text as a code block, never markup.
+      const Table = tableFor(node.name);
+      return Table === null ? <pre className="help-pre">{node.text}</pre> : <Table label={node.text === "" ? node.name : node.text} />;
+    }
     case "item":
       return <Blocks nodes={node.children} />;
     default:
@@ -231,6 +246,8 @@ function Inline({ node }: { node: HelpNode }): ReactNode {
     case "paragraph":
     case "list":
     case "codeBlock":
+    case "figure":
+    case "table":
       // A block node inline (never produced by the renderer): shown as a block.
       return <Block node={node} />;
   }
@@ -255,7 +272,8 @@ function HelpLink({ node }: { node: Extract<HelpNode, { type: "link" }> }): Reac
 
 /**
  * The Getting started page's live checklist (Story 10.3): the card's rows, ticked as the operator
- * goes, and **Show on canvas** (`checklist.show`), which brings the card back.
+ * goes, and **Show on canvas** (`checklist.show`), which brings the card back, and **Take the
+ * tour** (`tour.start`, Story 11.6).
  */
 function GettingStartedProgress() {
   const done = useChecklistStore((s) => s.done);
@@ -267,8 +285,11 @@ function GettingStartedProgress() {
       <h4 className="pane-heading">Your progress</h4>
       <ChecklistRows done={done} />
       <div className="actions">
-        <button type="button" className="btn" disabled={!isCommandEnabled("checklist.show")} onClick={() => runCommand("checklist.show")}>
+        <button type="button" className="btn" disabled={!isCommandEnabled("checklist.show")} title={commandHint("checklist.show")} onClick={() => runCommand("checklist.show")}>
           Show on canvas
+        </button>
+        <button type="button" className="btn" title={commandHint("tour.start")} onClick={() => runCommand("tour.start")}>
+          Take the tour
         </button>
       </div>
     </section>

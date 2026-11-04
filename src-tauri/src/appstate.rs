@@ -5,6 +5,12 @@
 //! upgrades silently, a newer one is read for what this build understands and never written.
 //! Story 10.5 adds the last version seen beside `checklist` (schema 2): a version-1 file loads with
 //! it `null`, and an older build reads a version-2 file as newer and never overwrites it.
+//! Story 11.3 adds `hints` (schema 3): whether the canvas's inline hints are hidden (`true`), shown
+//! even without the checklist card (`false`) or follow the card (`null`, the default). A version-2
+//! file loads with `null` and is written as version 3 on the next write.
+//! Story 11.6 adds `tour` to schema 3, beside `hints`: whether the first-run tour was taken
+//! (finished or skipped). A version-2 file, or a version-3 file from before this story, loads with
+//! `done: false`; the tour still starts on its own only on a fresh profile (`first_run`).
 
 use std::path::{Path, PathBuf};
 
@@ -15,7 +21,7 @@ use crate::persist::{self, LoadError};
 use crate::settings::{AppState, paths};
 
 /// Schema version written to `state.json`.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// The checklist's steps, in order; mirrored by `src/help/checklist.ts`.
 pub const STEP_IDS: [&str; 6] = ["palette", "project", "session", "terminal", "edge", "review"];
@@ -29,12 +35,39 @@ pub struct AppStateFile {
     /// The app version whose changes the operator has seen (Story 10.5): recorded on a fresh
     /// profile and when the Changelog is opened. `None` in a file from before this story.
     pub last_seen_version: Option<String>,
+    /// The canvas's inline hints (Story 11.3).
+    pub hints: Hints,
+    /// The first-run tour (Story 11.6).
+    pub tour: Tour,
 }
 
 impl Default for AppStateFile {
     fn default() -> Self {
-        Self { version: SCHEMA_VERSION, checklist: Checklist::default(), last_seen_version: None }
+        Self {
+            version: SCHEMA_VERSION,
+            checklist: Checklist::default(),
+            last_seen_version: None,
+            hints: Hints::default(),
+            tour: Tour::default(),
+        }
     }
+}
+
+/// The first-run tour (Story 11.6): `done` once it was finished or skipped (`tour_set`). A re-run
+/// from the palette writes nothing new.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Tour {
+    pub done: bool,
+}
+
+/// The canvas's inline hints (Story 11.3): `hidden` is `None` to follow the Getting started card
+/// (shown while it shows), `Some(false)` to show them anyway (`hints.show`) and `Some(true)` to
+/// hide them (`hints.hide`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Hints {
+    pub hidden: Option<bool>,
 }
 
 /// The Getting started checklist: whether its card was ever shown (a fresh profile, or
@@ -58,6 +91,10 @@ pub struct StateSnapshot {
     pub version: String,
     /// The version last seen, `None` when never recorded.
     pub last_seen_version: Option<String>,
+    /// The inline hints setting (Story 11.3).
+    pub hints: Hints,
+    /// The first-run tour's state (Story 11.6).
+    pub tour: Tour,
 }
 
 /// The loaded file and where it goes, held in [`AppState`].
@@ -80,6 +117,8 @@ impl AppStateStore {
             checklist: self.file.checklist.clone(),
             version: self.version.clone(),
             last_seen_version: self.file.last_seen_version.clone(),
+            hints: self.file.hints.clone(),
+            tour: self.file.tour.clone(),
         }
     }
 
@@ -105,6 +144,24 @@ impl AppStateStore {
         checklist.done = normalise_steps(&union);
         self.file.checklist = checklist;
         self.save();
+        Ok(self.snapshot())
+    }
+
+    /// Store the inline hints setting and write the file (not when read-only: it is still kept in
+    /// memory for this run, as [`Self::set_checklist`] does). Nothing to refuse: every value is valid.
+    pub fn set_hints(&mut self, hidden: Option<bool>) -> Result<StateSnapshot, String> {
+        self.file.hints = Hints { hidden };
+        self.save();
+        Ok(self.snapshot())
+    }
+
+    /// Store the tour's state and write the file (not when read-only: it is still kept in memory
+    /// for this run, as [`Self::set_hints`] does), only when it changed.
+    pub fn set_tour(&mut self, done: bool) -> Result<StateSnapshot, String> {
+        if self.file.tour.done != done {
+            self.file.tour = Tour { done };
+            self.save();
+        }
         Ok(self.snapshot())
     }
 
@@ -223,14 +280,16 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_version_2_with_an_empty_checklist_and_no_version_seen() {
+    fn defaults_are_version_3_with_an_empty_checklist_no_version_seen_hints_following_the_card_and_no_tour() {
         let text = persist::to_json(&AppStateFile::default()).unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&text).unwrap(),
             serde_json::json!({
-                "version": 2,
+                "version": 3,
                 "checklist": { "shown": false, "dismissed": false, "done": [] },
-                "lastSeenVersion": null
+                "lastSeenVersion": null,
+                "hints": { "hidden": null },
+                "tour": { "done": false }
             })
         );
         assert_eq!(persist::parse_json::<AppStateFile>("{}").unwrap(), AppStateFile::default());
@@ -360,17 +419,20 @@ mod tests {
     fn a_newer_schema_is_read_for_what_is_understood_and_never_written() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
-        let original = r#"{ "version": 3, "checklist": { "shown": false, "done": ["palette", "later"] }, "lastSeenVersion": "0.1.0", "other": 1 }"#;
+        let original = r#"{ "version": 4, "checklist": { "shown": false, "done": ["palette", "later"] }, "lastSeenVersion": "0.1.0", "hints": { "hidden": true }, "other": 1 }"#;
         std::fs::write(&path, original).unwrap();
         let mut store = load(Some(path.clone()), true, V);
         assert_eq!(store.read_only, Some("newer schema version"));
-        assert_eq!(store.file.version, 3);
+        assert_eq!(store.file.version, 4);
         assert_eq!(store.file.checklist.done, steps(&["palette"]));
+        assert_eq!(store.snapshot().hints.hidden, Some(true), "the hints setting is read");
         assert!(store.file.checklist.shown, "first run still shows the card, in memory");
         let snap = store.set_checklist(Checklist { shown: true, dismissed: true, done: steps(&["palette"]) }).unwrap();
         assert!(snap.checklist.dismissed, "kept in memory");
         let snap = store.mark_version_seen("0.3.0");
         assert_eq!(snap.last_seen_version.as_deref(), Some("0.3.0"), "kept in memory");
+        let snap = store.set_hints(Some(false)).unwrap();
+        assert_eq!(snap.hints.hidden, Some(false), "kept in memory");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
 
@@ -489,5 +551,116 @@ mod tests {
         let mut store = load(Some(path.clone()), false, V);
         assert_eq!(store.mark_version_seen(V).last_seen_version.as_deref(), Some(V));
         assert!(path.is_dir());
+    }
+
+    // -- Story 11.3: the inline hints setting -------------------------------------------------
+
+    #[test]
+    fn a_version_2_file_loads_with_hints_following_the_card_and_is_written_as_version_3() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let original = r#"{ "version": 2, "checklist": { "shown": true, "done": ["palette"] }, "lastSeenVersion": "0.1.0" }"#;
+        std::fs::write(&path, original).unwrap();
+        let mut store = load(Some(path.clone()), false, V);
+        assert_eq!(store.read_only, None);
+        assert_eq!(store.snapshot().hints, Hints { hidden: None });
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "not rewritten on load");
+        store.set_checklist(Checklist { shown: true, dismissed: false, done: steps(&["project"]) }).unwrap();
+        let file = read(&path);
+        assert_eq!(file["version"], 3);
+        assert_eq!(file["hints"], serde_json::json!({ "hidden": null }));
+        assert_eq!(file["lastSeenVersion"], "0.1.0");
+        assert_eq!(file["checklist"]["done"], serde_json::json!(["palette", "project"]));
+    }
+
+    #[test]
+    fn set_hints_round_trips_every_value_through_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut store = load(Some(path.clone()), true, V);
+        store.set_checklist(Checklist { shown: true, dismissed: true, done: steps(&["edge"]) }).unwrap();
+        for hidden in [Some(true), Some(false), None] {
+            let snap = store.set_hints(hidden).unwrap();
+            assert_eq!(snap.hints.hidden, hidden);
+            assert_eq!(read(&path)["hints"]["hidden"], serde_json::to_value(hidden).unwrap());
+            let again = load(Some(path.clone()), false, V);
+            assert_eq!(again.snapshot().hints.hidden, hidden);
+            assert!(again.file.checklist.dismissed, "the checklist is kept");
+            assert_eq!(again.file.checklist.done, steps(&["edge"]));
+        }
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["state.json"]);
+    }
+
+    #[test]
+    fn set_hints_on_an_unreadable_file_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::create_dir(&path).unwrap();
+        let mut store = load(Some(path.clone()), false, V);
+        assert_eq!(store.set_hints(Some(true)).unwrap().hints.hidden, Some(true));
+        assert!(path.is_dir());
+    }
+    // -- Story 11.6: the first-run tour -------------------------------------------------------
+
+    #[test]
+    fn a_version_2_file_and_an_early_version_3_file_load_with_the_tour_not_done() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        for original in [
+            r#"{ "version": 2, "checklist": { "shown": true, "done": ["palette"] }, "lastSeenVersion": "0.1.0" }"#,
+            r#"{ "version": 3, "checklist": { "shown": true }, "lastSeenVersion": "0.1.0", "hints": { "hidden": true } }"#,
+        ] {
+            std::fs::write(&path, original).unwrap();
+            let store = load(Some(path.clone()), false, V);
+            assert_eq!(store.read_only, None);
+            assert_eq!(store.snapshot().tour, Tour { done: false });
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "not rewritten on load");
+        }
+    }
+
+    #[test]
+    fn set_tour_round_trips_through_a_restart_and_keeps_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut store = load(Some(path.clone()), true, V);
+        store.set_hints(Some(true)).unwrap();
+        store.set_checklist(Checklist { shown: true, dismissed: false, done: steps(&["palette"]) }).unwrap();
+        let snap = store.set_tour(true).unwrap();
+        assert!(snap.tour.done);
+        let file = read(&path);
+        assert_eq!(file["version"], 3);
+        assert_eq!(file["tour"], serde_json::json!({ "done": true }));
+        assert_eq!(file["hints"], serde_json::json!({ "hidden": true }), "the hints are kept");
+        let again = load(Some(path.clone()), false, V);
+        assert!(again.snapshot().tour.done);
+        assert_eq!(again.file.checklist.done, steps(&["palette"]));
+        // Unchanged: no write (a marker added to the file stays).
+        let mut value = read(&path);
+        value["marker"] = serde_json::json!(1);
+        std::fs::write(&path, value.to_string()).unwrap();
+        store.set_tour(true).unwrap();
+        assert_eq!(read(&path)["marker"], 1);
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["state.json"]);
+    }
+
+    #[test]
+    fn set_tour_on_a_newer_or_unreadable_file_keeps_it_in_memory_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let original = r#"{ "version": 4, "checklist": { "shown": true }, "tour": { "done": false }, "other": 1 }"#;
+        std::fs::write(&path, original).unwrap();
+        let mut store = load(Some(path.clone()), true, V);
+        assert_eq!(store.read_only, Some("newer schema version"));
+        assert!(!store.snapshot().tour.done);
+        assert!(store.set_tour(true).unwrap().tour.done, "kept in memory");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+
+        let unreadable = dir.path().join("dir-state.json");
+        std::fs::create_dir(&unreadable).unwrap();
+        let mut store = load(Some(unreadable.clone()), true, V);
+        assert!(store.set_tour(true).unwrap().tour.done);
+        assert!(unreadable.is_dir());
     }
 }

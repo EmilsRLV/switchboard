@@ -9,6 +9,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { commandHint } from "../commands/keybindings";
 import { runCommand } from "../commands/registry";
 import {
   reviewCommits,
@@ -399,10 +400,10 @@ export function ReviewPane() {
           {root ?? ""}
         </span>
         <span className="review-header-actions">
-          <button type="button" className="btn" onClick={() => runCommand("review.refresh")} title="Read the changes again">
+          <button type="button" className="btn" onClick={() => runCommand("review.refresh")} title={commandHint("review.refresh", "Read the changes again")}>
             Refresh
           </button>
-          <button type="button" className="btn" onClick={() => runCommand("pane.close")} title="Close (Esc)">
+          <button type="button" className="btn" onClick={() => runCommand("pane.close")} title={commandHint("pane.close", "Close")}>
             Close
           </button>
         </span>
@@ -412,7 +413,7 @@ export function ReviewPane() {
         {modes.length > 1 && (
           <span className="review-toggle" role="group" aria-label="Mode">
             {MODES.filter((m) => modes.includes(m.id)).map((m) => (
-              <button key={m.id} type="button" className="btn" aria-pressed={mode === m.id} title={m.title} onClick={() => runCommand(REVIEW_MODE_COMMANDS[m.id])}>
+              <button key={m.id} type="button" className="btn" aria-pressed={mode === m.id} title={commandHint(REVIEW_MODE_COMMANDS[m.id], m.title)} onClick={() => runCommand(REVIEW_MODE_COMMANDS[m.id])}>
                 {m.label}
               </button>
             ))}
@@ -426,7 +427,7 @@ export function ReviewPane() {
                 type="button"
                 className="btn"
                 aria-pressed={filter === f.id}
-                title={f.title}
+                title={commandHint(REVIEW_FILTER_COMMANDS[f.id], f.title)}
                 onClick={() => runCommand(REVIEW_FILTER_COMMANDS[f.id])}
               >
                 {f.label}
@@ -441,17 +442,17 @@ export function ReviewPane() {
           type="button"
           className="btn"
           disabled={commentBlocked !== null}
-          title={commentBlocked ?? "Comment on the current line (c)"}
+          title={commentBlocked ?? commandHint("review.comment", "Comment on the current line")}
           onClick={() => runCommand("review.comment")}
         >
           Comment
         </button>
         {!filesMode && (
           <span className="review-toggle" role="group" aria-label="Layout">
-            <button type="button" className="btn" aria-pressed={layout === "split"} onClick={() => runCommand(REVIEW_LAYOUT_COMMANDS.split)}>
+            <button type="button" className="btn" aria-pressed={layout === "split"} title={commandHint(REVIEW_LAYOUT_COMMANDS.split)} onClick={() => runCommand(REVIEW_LAYOUT_COMMANDS.split)}>
               Side by side
             </button>
-            <button type="button" className="btn" aria-pressed={layout === "unified"} onClick={() => runCommand(REVIEW_LAYOUT_COMMANDS.unified)}>
+            <button type="button" className="btn" aria-pressed={layout === "unified"} title={commandHint(REVIEW_LAYOUT_COMMANDS.unified)} onClick={() => runCommand(REVIEW_LAYOUT_COMMANDS.unified)}>
               Unified
             </button>
           </span>
@@ -466,7 +467,7 @@ export function ReviewPane() {
           <nav className="review-tree" aria-label={showCommitList ? "Commits" : "Changed files"}>
             {mode === "commits" && commit !== null && (
               <div className="review-commit-head">
-                <button type="button" className="btn" onClick={() => runCommand("review.backToCommits")} title="Back to the commit list">
+                <button type="button" className="btn" onClick={() => runCommand("review.backToCommits")} title={commandHint("review.backToCommits", "Back to the commit list")}>
                   ← Commits
                 </button>
                 {shownCommit !== null && (

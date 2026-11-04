@@ -3,8 +3,19 @@ import type { ChildNode, Project, WorkspaceSnapshot } from "../ipc";
 import { useCanvasStore } from "../state/canvas";
 import { useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
-import { menuGroup, moveNode, openContextMenuFor, relayoutChildren, removeProject, rightClickNode, setExpanded } from "./nodes";
-import { clearCommands, registerCommand } from "./registry";
+import {
+  canvasMenuCommands,
+  menuGroup,
+  moveNode,
+  nodeMenuCommands,
+  openContextMenuFor,
+  relayoutChildren,
+  removeProject,
+  rightClickCanvas,
+  rightClickNode,
+  setExpanded,
+} from "./nodes";
+import { clearCommands, registerCommand, registerCommands } from "./registry";
 
 vi.mock("../ipc", () => ({
   workspaceSetExpanded: vi.fn(),
@@ -234,7 +245,7 @@ describe("node actions", () => {
       run: () => {},
     });
     rightClickNode({ kind: "session", id: "live" }, { x: 7, y: 8 });
-    expect(useUiStore.getState().contextMenu).toEqual({ x: 7, y: 8 });
+    expect(useUiStore.getState().contextMenu).toEqual({ x: 7, y: 8, menu: "node" });
     useUiStore.getState().closeContextMenu();
     rightClickNode({ kind: "session", id: "historic" }, { x: 1, y: 1 });
     expect(useUiStore.getState().contextMenu).toBeNull();
@@ -244,6 +255,35 @@ describe("node actions", () => {
   it("openContextMenuFor selects the node and opens the menu at the point", () => {
     openContextMenuFor({ kind: "project", id: "ide" }, { x: 300, y: 120 });
     expect(useUiStore.getState().selection).toEqual({ kind: "project", id: "ide" });
-    expect(useUiStore.getState().contextMenu).toEqual({ x: 300, y: 120 });
+    expect(useUiStore.getState().contextMenu).toEqual({ x: 300, y: 120, menu: "node" });
+  });
+});
+
+describe("the canvas menu (Story 11.1)", () => {
+  it("lists the enabled canvas commands in menuOrder, apart from the node menu's", () => {
+    clearCommands();
+    let ready = true;
+    registerCommands([
+      { id: "settings.open", title: "Open settings", menu: "canvas", menuOrder: 31, run: () => {} },
+      { id: "project.add", title: "Add project folder…", menu: "canvas", menuOrder: 10, run: () => {} },
+      { id: "canvas.fitView", title: "Fit view", menu: "canvas", menuOrder: 20, when: () => ready, run: () => {} },
+      { id: "help.open", title: "Help", menu: "canvas", menuOrder: 30, run: () => {} },
+      { id: "project.import", title: "Import from Claude…", menu: "canvas", menuOrder: 11, run: () => {} },
+      { id: "project.remove", title: "Remove", menu: "node", menuOrder: 90, run: () => {} },
+    ]);
+    const ids = () => canvasMenuCommands().map((command) => command.id);
+    expect(ids()).toEqual(["project.add", "project.import", "canvas.fitView", "help.open", "settings.open"]);
+    expect(nodeMenuCommands().map((command) => command.id)).toEqual(["project.remove"]);
+    ready = false;
+    expect(ids()).toEqual(["project.add", "project.import", "help.open", "settings.open"]);
+    clearCommands();
+  });
+
+  it("rightClickCanvas opens the canvas menu at the point and keeps the selection", () => {
+    useUiStore.setState({ selection: { kind: "project", id: "ide" }, contextMenu: null });
+    rightClickCanvas({ x: 40, y: 50 });
+    expect(useUiStore.getState().contextMenu).toEqual({ x: 40, y: 50, menu: "canvas" });
+    expect(useUiStore.getState().selection).toEqual({ kind: "project", id: "ide" });
+    useUiStore.getState().closeContextMenu();
   });
 });

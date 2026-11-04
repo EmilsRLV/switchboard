@@ -1,9 +1,25 @@
-import { memo, type MouseEvent as ReactMouseEvent } from "react";
+import { memo, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from "react";
 import type { NodeProps } from "@xyflow/react";
+import { commandHint } from "../commands/keybindings";
 import { runCommand } from "../commands/registry";
+import { forcedOn } from "../help/tour";
+import { useTourStore } from "../state/tour";
 import { useUiStore } from "../state/ui";
+import { useWorkspaceStore } from "../state/workspace";
 import { LinkHandles } from "./LinkHandles";
-import { aheadBehind, BRANCHES_UNAVAILABLE, branchesChipShown, chevronCommandId, shortenPath, statusLine, type ProjectFlowNode } from "./nodes";
+import { NodeHint } from "./NodeHint";
+import { NodeToolbar, useHover } from "./NodeToolbar";
+import {
+  aheadBehind,
+  BRANCHES_UNAVAILABLE,
+  branchesChipShown,
+  chevronCommandId,
+  collapsedCountText,
+  liveBadgeText,
+  shortenPath,
+  statusLine,
+  type ProjectFlowNode,
+} from "./nodes";
 
 /**
  * A project node: a compact card with the folder name, a shortened path (full path on
@@ -18,10 +34,47 @@ import { aheadBehind, BRANCHES_UNAVAILABLE, branchesChipShown, chevronCommandId,
  * `project.expand` / `project.collapse`. Dragging, selection and the right-click menu are
  * the canvas's; the selected card shows an outline in `--fg`. While any of its sessions is
  * `finished` or `waiting` the card glows: a pulsing accent outline outside the selection's
- * (`project-glow`, Story 3.3). The card's edge handle (Story 6.1) sits on its right edge.
+ * (`project-glow`, Story 3.3), whose tooltip names the session (`fix login is waiting`, Story 11.5;
+ * the badges say what they count the same way). The card's edge handle (Story 6.1) sits on its right edge. While
+ * the card is hovered or selected (and not dragged), its node toolbar (Story 11.2) hangs to the
+ * right of it. The first project carries the inline hints (Story 11.3): under the card, or beside
+ * its handle while the handle shows. It is also the first-run tour's target (Story 11.6,
+ * `data-tour`: the card, its toolbar's `new`, its handle), and the tour forces its toolbar or its
+ * handle shown, as if hovered, while a stop points there.
  */
-export const ProjectNode = memo(function ProjectNode({ data }: NodeProps<ProjectFlowNode>) {
-  const { project, status, flashed, selected, childCount, liveCount, attention, branchesError } = data;
+/**
+ * Story 11.6: what the tour marks on project `id` now: `""` (not the first project), `"first"`, or
+ * what the current stop forces shown on it (`"toolbar"`, `"handle"`).
+ */
+export function tourMarkOf(id: string): "" | "first" | "toolbar" | "handle" {
+  if (useWorkspaceStore.getState().snapshot?.workspace.projects[0]?.id !== id) return "";
+  const tour = useTourStore.getState();
+  return (tour.on ? forcedOn(tour.stop, true) : null) ?? "first";
+}
+
+function subscribeTourMark(listener: () => void): () => void {
+  const stopWorkspace = useWorkspaceStore.subscribe(listener);
+  const stopTour = useTourStore.subscribe(listener);
+  return () => {
+    stopWorkspace();
+    stopTour();
+  };
+}
+
+function useTourMark(id: string): "" | "first" | "toolbar" | "handle" {
+  const snapshot = () => tourMarkOf(id);
+  return useSyncExternalStore(subscribeTourMark, snapshot, snapshot);
+}
+
+export const ProjectNode = memo(function ProjectNode({ data, dragging }: NodeProps<ProjectFlowNode>) {
+  const [hovered, hover] = useHover();
+  // Story 11.6: a string snapshot, so only the first card follows the tour.
+  const mark = useTourMark(data.project.id);
+  const first = mark !== "";
+  const forced = mark === "toolbar" || mark === "handle" ? mark : null;
+  const { project, status, flashed, selected, childCount, liveCount, attention, attentionText, branchesError } = data;
+  // Story 11.5: the glow names the session that needs you (`fix login is waiting`).
+  const glow = attention ? (attentionText ?? "a session needs you") : null;
   const line = statusLine(status);
   const divergence = aheadBehind(status);
   const isRepo = status?.kind === "repo";
@@ -40,14 +93,15 @@ export const ProjectNode = memo(function ProjectNode({ data }: NodeProps<Project
   };
 
   return (
-    <>
+    <div className="node-hover" {...hover}>
       <div
         className={
           "project-node" + (flashed ? " is-flash" : "") + (selected ? " is-selected" : "") + (attention ? " project-glow" : "")
         }
+        data-tour={first ? "project" : undefined}
         role="group"
-        aria-label={`Project ${project.label}${attention ? ", needs you" : ""}`}
-        title={attention ? `${project.label}: a session needs you` : undefined}
+        aria-label={`Project ${project.label}${liveCount > 0 ? `, ${liveBadgeText(liveCount)}` : ""}${glow === null ? "" : `, ${glow}`}`}
+        title={glow ?? undefined}
       >
         <div className="project-node-head">
           {childCount > 0 && (
@@ -56,21 +110,26 @@ export const ProjectNode = memo(function ProjectNode({ data }: NodeProps<Project
               type="button"
               className="project-node-toggle nodrag"
               aria-expanded={project.expanded}
-              aria-label={project.expanded ? "Collapse children" : `Expand ${childCount} children`}
-              title={project.expanded ? "Collapse" : "Expand"}
+              aria-label={project.expanded ? "Collapse children" : `Expand, ${collapsedCountText(childCount)}`}
+              title={commandHint(chevronCommandId(project))}
               onClick={toggle}
             >
               <span className="project-node-chevron" aria-hidden="true">
                 {project.expanded ? "▾" : "▸"}
               </span>
-              {!project.expanded && <span className="project-node-badge">{childCount}</span>}
+              {!project.expanded && (
+                // Story 11.5: the count says what it counts; the chevron keeps its command hint.
+                <span className="project-node-badge" title={collapsedCountText(childCount)}>
+                  {childCount}
+                </span>
+              )}
             </button>
           )}
           <span className="project-node-label" title={branchesError === null ? undefined : project.path}>
             {project.label}
           </span>
           {liveCount > 0 && (
-            <span className="project-node-live" title="live sessions">
+            <span className="project-node-live" title={liveBadgeText(liveCount)}>
               {liveCount} live
             </span>
           )}
@@ -95,7 +154,7 @@ export const ProjectNode = memo(function ProjectNode({ data }: NodeProps<Project
               type="button"
               className={"project-node-branches nodrag" + (project.showBranches ? " is-on" : "")}
               aria-pressed={project.showBranches}
-              title={project.showBranches ? "Hide branches" : "Show branches"}
+              title={commandHint("project.toggleBranches", project.showBranches ? "Hide branches" : "Show branches")}
               onClick={toggleBranches}
             >
               branches
@@ -103,7 +162,9 @@ export const ProjectNode = memo(function ProjectNode({ data }: NodeProps<Project
           )}
         </div>
       </div>
-      <LinkHandles source shown={selected} />
-    </>
+      <LinkHandles source shown={selected || forced === "handle"} tour={first} />
+      <NodeToolbar target={{ kind: "project", id: project.id }} shown={(hovered || selected || forced === "toolbar") && dragging !== true} tour={first} />
+      <NodeHint target={{ kind: "project", id: project.id }} handleShown={(hovered || selected) && dragging !== true} />
+    </div>
   );
 });

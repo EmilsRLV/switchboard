@@ -8,11 +8,13 @@ import { EMPTY_LIVE, unmarkAcknowledging, useLiveStore } from "../state/live";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
 import { useUiStore } from "../state/ui";
+import { resetChecklist, useChecklistStore } from "../state/checklist";
+import { resetHints, useHintsStore } from "../state/hints";
 import { useWorkspaceStore } from "../state/workspace";
 import { chevronCommandId } from "../canvas/nodes";
 import { builtinCommands, registerBuiltins } from "./builtins";
-import { handleKeydown, type KeyEventLike } from "./keybindings";
-import { menuGroup, nodeMenuCommands } from "./nodes";
+import { commandHint, displayBinding, formatKeybinding, handleKeydown, type KeyEventLike } from "./keybindings";
+import { canvasMenuCommands, hasNodeMenu, menuGroup, nodeMenuCommands, TOOLBAR_KINDS, toolbarCommands } from "./nodes";
 import { copySelectedBranchName } from "./navigation";
 import { useStatusStore } from "../state/status";
 import { clearCommands, getCommand, listCommands, runCommand } from "./registry";
@@ -53,7 +55,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the one hundred commands with the spec's keybindings", () => {
+  it("register the one hundred and ten commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -83,11 +85,14 @@ describe("built-in commands", () => {
       "help.changelog",
       "help.contents",
       "help.gettingStarted",
+      "help.legend",
       "help.open",
       "help.page",
       "help.roadmap",
       "help.toggle",
       "help.whatsNew",
+      "hints.hide",
+      "hints.show",
       "import.addSelected",
       "launch.addFolder",
       "launch.start",
@@ -152,6 +157,11 @@ describe("built-in commands", () => {
       "terminal.restart",
       "terminal.returnToPane",
       "terminal.toggle",
+      "tour.back",
+      "tour.next",
+      "tour.next.enter",
+      "tour.skip",
+      "tour.start",
       "worktree.create",
       "worktree.discardAndRemove",
       "worktree.forceRemove",
@@ -235,7 +245,7 @@ describe("built-in commands", () => {
     expect(getCommand("review.layoutUnified")?.hidden).toBe(true);
   });
 
-  it("the key-only carriers are hidden from the palette, the eighty-five actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the eighty-six actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -263,10 +273,13 @@ describe("built-in commands", () => {
       "help.changelog",
       "help.contents",
       "help.gettingStarted",
+      "help.legend",
       "help.open",
       "help.page",
       "help.roadmap",
       "help.whatsNew",
+      "hints.hide",
+      "hints.show",
       "import.addSelected",
       "launch.addFolder",
       "launch.start",
@@ -319,6 +332,7 @@ describe("built-in commands", () => {
       "terminal.restart",
       "terminal.returnToPane",
       "terminal.toggle",
+      "tour.start",
       "worktree.create",
       "worktree.discardAndRemove",
       "worktree.forceRemove",
@@ -365,7 +379,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(103);
+    expect(listCommands()).toHaveLength(111);
   });
 
   const PROJECT_ACTIONS = [
@@ -404,6 +418,7 @@ describe("built-in commands", () => {
       "Help: getting started",
       "Help: open page…",
       "Help: roadmap",
+      "Help: what you see",
       "Link to…",
       "New session…",
       "Open in external editor",
@@ -416,6 +431,7 @@ describe("built-in commands", () => {
       "Remove from canvas",
       "Reveal Claude project dir",
       "Review changes",
+      "Take the tour",
       "Toggle command palette",
       "What's new",
     ]);
@@ -824,6 +840,30 @@ describe("built-in commands", () => {
     expect(instance.setViewport).toHaveBeenCalledTimes(2);
   });
 
+  it("Story 11.1: the canvas menu lists add, import | fit view | help, settings, with their keys", () => {
+    const keyOf = (c: ReturnType<typeof canvasMenuCommands>[number]) => {
+      const binding = displayBinding(c);
+      return binding === null ? null : formatKeybinding(binding);
+    };
+    // No canvas yet: only the commands that need none.
+    expect(canvasMenuCommands().map((c) => c.id)).toEqual(["help.open", "settings.open"]);
+    useCanvasStore.getState().setInstance(fakeCanvas());
+    // An empty canvas: Fit view still runs from its key (it goes home) but the menu leaves it out.
+    expect(canvasMenuCommands().map((c) => c.id)).toEqual(["project.add", "project.import", "help.open", "settings.open"]);
+    useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(false)], []) });
+    const items = canvasMenuCommands();
+    expect(items.map((c) => [c.title, keyOf(c)])).toEqual([
+      ["Add project folder…", "ctrl+o"],
+      ["Import from Claude…", null],
+      ["Fit view", "ctrl+0"],
+      ["Help", "f1"],
+      ["Open settings", "ctrl+,"],
+    ]);
+    expect(items.map((c) => menuGroup(c))).toEqual([1, 1, 2, 3, 3]);
+    expect(commandHint("help.open")).toBe("Help · f1");
+    expect(commandHint("settings.open")).toBe("Open settings · ctrl+,");
+  });
+
   it("Open settings only opens: chosen with the pane already open, it stays open", () => {
     runCommand("settings.open");
     expect(useUiStore.getState().pane).toBe("settings");
@@ -940,7 +980,7 @@ describe("built-in commands", () => {
   it("the palette lists only enabled, visible commands, sorted by title", () => {
     usePaletteStore.getState().open();
     const titles = listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title);
-    expect(titles).toEqual(["Help", "Help: changelog", "Help: getting started", "Help: open page…", "Help: roadmap", "Open settings", "Quit", "Re-detect binaries", "Toggle command palette", "What's new"]);
+    expect(titles).toEqual(["Help", "Help: changelog", "Help: getting started", "Help: open page…", "Help: roadmap", "Help: what you see", "Open settings", "Quit", "Re-detect binaries", "Take the tour", "Toggle command palette", "What's new"]);
 
     useCanvasStore.getState().setInstance(fakeCanvas());
     expect(listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title)).toEqual([
@@ -951,10 +991,12 @@ describe("built-in commands", () => {
       "Help: getting started",
       "Help: open page…",
       "Help: roadmap",
+      "Help: what you see",
       "Import from Claude…",
       "Open settings",
       "Quit",
       "Re-detect binaries",
+      "Take the tour",
       "Toggle command palette",
       "What's new",
     ]);
@@ -1267,6 +1309,174 @@ describe("built-in commands", () => {
   });
 });
 
+describe("the node toolbar's commands (Story 11.2)", () => {
+  const words = (target: Parameters<typeof toolbarCommands>[0]) => toolbarCommands(target).map((c) => c.short);
+  const session = (id: string, hasTranscript: boolean): ChildNode => ({
+    id,
+    projectId: "ide",
+    kind: "session",
+    label: id,
+    detail: null,
+    position: null,
+    session: null,
+    branchId: null,
+    forkedFrom: null,
+    hasTranscript,
+    branch: null,
+  });
+  const branch = (id: string, worktree: { path: string; missing: boolean } | null): ChildNode => ({
+    id,
+    projectId: "ide",
+    kind: "branch",
+    label: id.slice("ide:".length),
+    detail: null,
+    position: null,
+    session: null,
+    branchId: null,
+    forkedFrom: null,
+    hasTranscript: false,
+    branch: { head: false, upstream: null, ahead: 0, behind: 0, upstreamGone: false, worktree },
+  });
+  const terminal = (sessionId: string, exited: number | null) =>
+    useTerminalStore.getState().upsert({
+      id: `session:${sessionId}`,
+      kind: "session",
+      project_id: "ide",
+      title: sessionId,
+      cwd: "/p/ide",
+      exited,
+      error: null,
+      cols: 80,
+      rows: 24,
+      stopping: false,
+    });
+  const live = (states: Record<string, SessionState>): LiveSnapshot => {
+    const sessions: Record<string, LiveSession> = {};
+    for (const [id, state] of Object.entries(states)) {
+      sessions[id] = { state, source: "poll", pid: 1, kind: "interactive", name: id, project_id: "ide", cwd: "/p/ide", started_at: 1, attention_since: null, last_line: null, detail: null };
+    }
+    return { sessions, elsewhere: [], banner: null };
+  };
+
+  beforeEach(() => {
+    clearCommands();
+    usePaletteStore.setState({ isOpen: false, query: "", selected: 0 });
+    useUiStore.setState({ pane: null, selection: null, contextMenu: null, elsewhereOpen: false, openTerminals: [], activeTerminal: null });
+    useLiveStore.setState({ snapshot: EMPTY_LIVE, received: false, loadError: null });
+    useTerminalStore.setState({ infos: {}, pendingExits: {} });
+    useStatusStore.setState({ statuses: { ide: { kind: "repo" } } } as never);
+    useWorkspaceStore.setState({
+      snapshot: workspaceWith(
+        [{ ...ideProject(true), showBranches: true }],
+        [session("live", true), session("gone", true), session("old", true), branch("ide:plain", null), branch("ide:wt", { path: "/w/wt", missing: false })],
+      ),
+      loadError: null,
+    });
+    registerBuiltins();
+  });
+  afterEach(() => {
+    clearCommands();
+    useStatusStore.setState({ statuses: {} } as never);
+  });
+
+  it("every toolbar command is a node-menu command with a word, and every kind's list is tagged", () => {
+    const tagged = listCommands().filter((c) => c.toolbar !== undefined);
+    expect(tagged.map((c) => c.id).sort()).toEqual(
+      [
+        "branch.newSession",
+        "branch.newWorktree",
+        "branch.removeWorktree",
+        "edge.link",
+        "project.newSession",
+        "project.terminal",
+        "review.changes",
+        "session.fork",
+        "session.resume",
+        "session.showTerminal",
+      ].sort(),
+    );
+    for (const command of tagged) {
+      expect(command.menu, command.id).toBe("node");
+      expect(command.short, command.id).toMatch(/^[a-z]+$/);
+    }
+    for (const ids of Object.values(TOOLBAR_KINDS)) {
+      for (const id of ids) expect(getCommand(id)?.toolbar, id).toBeDefined();
+      expect(ids, "Stop stays in the menu").not.toContain("session.stop");
+    }
+  });
+
+  it("an idle git project: new term link review, and the node menu has rows", () => {
+    expect(words({ kind: "project", id: "ide" })).toEqual(["new", "term", "link", "review"]);
+    expect(hasNodeMenu({ kind: "project", id: "ide" })).toBe(true);
+  });
+
+  it("a live session in a terminal: term fork link review", () => {
+    useLiveStore.getState().applySnapshot(live({ live: { kind: "busy" } }));
+    terminal("live", null);
+    expect(words({ kind: "session", id: "live" })).toEqual(["term", "fork", "link", "review"]);
+  });
+
+  it("an exited session without a terminal: resume fork link review", () => {
+    useLiveStore.getState().applySnapshot(live({ old: { kind: "exited" } }));
+    expect(words({ kind: "session", id: "old" })).toEqual(["resume", "fork", "link", "review"]);
+  });
+
+  it("an exited session whose terminal tab is still open: resume wins its slot over term", () => {
+    useLiveStore.getState().applySnapshot(live({ old: { kind: "exited" } }));
+    terminal("old", 0);
+    expect(withSelectionOf({ kind: "session", id: "old" }, () => [isEnabledNow("session.resume"), isEnabledNow("session.showTerminal")])).toEqual([true, true]);
+    expect(words({ kind: "session", id: "old" })).toEqual(["resume", "fork", "link", "review"]);
+  });
+
+  it("a branch without a worktree: new worktree review; with one: new remove review", () => {
+    expect(words({ kind: "branch", id: "ide:plain" })).toEqual(["new", "worktree", "review"]);
+    expect(words({ kind: "branch", id: "ide:wt" })).toEqual(["new", "remove", "review"]);
+  });
+
+  it("nothing enabled: a branch gone from the snapshot has no buttons and no menu", () => {
+    expect(words({ kind: "branch", id: "ide:vanished" })).toEqual([]);
+    expect(hasNodeMenu({ kind: "branch", id: "ide:vanished" })).toBe(false);
+  });
+
+  it("a hovered card reflects itself while another is selected, and the selection stays", () => {
+    useUiStore.getState().select({ kind: "branch", id: "ide:wt" });
+    const notify = vi.fn();
+    const unsubscribe = useUiStore.subscribe(notify);
+    expect(words({ kind: "project", id: "ide" })).toEqual(["new", "term", "link", "review"]);
+    expect(useUiStore.getState().selection).toEqual({ kind: "branch", id: "ide:wt" });
+    expect(notify).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it("the buttons do not depend on the open pane", () => {
+    useUiStore.setState({ pane: "terminal" });
+    expect(words({ kind: "project", id: "ide" })).toEqual(["new", "term", "link", "review"]);
+    useUiStore.setState({ pane: "launch" });
+    expect(words({ kind: "project", id: "ide" })).toEqual(["new", "term", "link", "review"]);
+    expect(words({ kind: "branch", id: "ide:plain" })).toEqual(["new", "worktree", "review"]);
+    // The store's pane is what keys and the palette still see.
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    expect(isEnabledNow("project.newSession")).toBe(false);
+  });
+});
+
+/** Run `fn` with `target` selected in the store (then the selection as it was). */
+function withSelectionOf<T>(target: { kind: "project" | "session" | "branch"; id: string }, fn: () => T): T {
+  const before = useUiStore.getState().selection;
+  useUiStore.setState({ selection: target });
+  try {
+    return fn();
+  } finally {
+    useUiStore.setState({ selection: before });
+  }
+}
+
+/** Whether command `id` is enabled as the store stands (pane included). */
+function isEnabledNow(id: string): boolean {
+  const command = getCommand(id);
+  return command !== undefined && (command.when?.() ?? true);
+}
+
 async function flush(): Promise<void> {
   for (let i = 0; i < 8; i += 1) await Promise.resolve();
 }
@@ -1345,3 +1555,68 @@ function fixtureSnapshot(): SettingsSnapshot {
     banners: [],
   };
 }
+
+describe("the inline hints commands (Story 11.3)", () => {
+  const snapshot = (dismissed: boolean, hidden: boolean | null) => ({
+    firstRun: false,
+    checklist: { shown: true, dismissed, done: [] },
+    version: "0.1.0",
+    lastSeenVersion: "0.1.0",
+    hints: { hidden },
+    tour: { done: false },
+  });
+
+  beforeEach(() => {
+    clearCommands();
+    resetChecklist();
+    resetHints();
+    useUiStore.setState({ pane: null });
+    registerBuiltins();
+  });
+  afterEach(() => clearCommands());
+
+  it("are palette commands with no default key", () => {
+    for (const [id, title] of [["hints.hide", "Hide canvas hints"], ["hints.show", "Show canvas hints"]] as const) {
+      const command = getCommand(id);
+      expect(command?.title).toBe(title);
+      expect(command?.keybinding, id).toBeUndefined();
+      expect(command?.hidden, id).toBeUndefined();
+    }
+  });
+
+  it("neither runs before state.json loaded", () => {
+    expect(runCommand("hints.hide")).toBe(false);
+    expect(runCommand("hints.show")).toBe(false);
+  });
+
+  it("hide while hints follow the shown card; show once they are hidden", () => {
+    useChecklistStore.getState().load(snapshot(false, null));
+    useHintsStore.getState().load(snapshot(false, null));
+    expect(runCommand("hints.show")).toBe(false);
+    expect(runCommand("hints.hide")).toBe(true);
+    expect(useHintsStore.getState().hidden).toBe(true);
+    expect(runCommand("hints.hide")).toBe(false);
+    expect(runCommand("hints.show")).toBe(true);
+    expect(useHintsStore.getState().hidden).toBe(false);
+  });
+
+  it("show after the card was dismissed (hints followed it away)", () => {
+    useChecklistStore.getState().load(snapshot(true, null));
+    useHintsStore.getState().load(snapshot(true, null));
+    expect(runCommand("hints.hide")).toBe(false);
+    expect(runCommand("hints.show")).toBe(true);
+    expect(useHintsStore.getState().hidden).toBe(false);
+    // Shown even with the card gone: hide is the way back.
+    expect(runCommand("hints.show")).toBe(false);
+    expect(runCommand("hints.hide")).toBe(true);
+  });
+
+  it("neither is offered once session, edge and review are all done", () => {
+    useChecklistStore.getState().load({ ...snapshot(false, null), checklist: { shown: true, dismissed: false, done: ["session", "edge"] } });
+    useHintsStore.getState().load(snapshot(false, null));
+    expect(runCommand("hints.hide")).toBe(true);
+    useChecklistStore.getState().latch(["review"]);
+    expect(runCommand("hints.show")).toBe(false);
+    expect(runCommand("hints.hide")).toBe(false);
+  });
+});

@@ -99,7 +99,16 @@ export type ChecklistFile = {
   done: string[];
 };
 
-/** Mirrors `appstate::StateSnapshot`: what `state_get`, `checklist_set` and `whats_new_seen` return. */
+/**
+ * Mirrors `appstate::Hints` (Story 11.3): `hidden` is `null` to follow the Getting started card
+ * (hints show while it shows), `false` to show them anyway (`hints.show`), `true` to hide them.
+ */
+export type HintsFile = { hidden: boolean | null };
+
+/** Mirrors `appstate::Tour` (Story 11.6): `done` once the first-run tour was finished or skipped. */
+export type TourFile = { done: boolean };
+
+/** Mirrors `appstate::StateSnapshot`: what `state_get`, `checklist_set`, `hints_set`, `tour_set` and `whats_new_seen` return. */
 export type AppStateSnapshot = {
   /** `workspace.json` was created on this launch (a fresh profile). */
   firstRun: boolean;
@@ -108,6 +117,10 @@ export type AppStateSnapshot = {
   version: string;
   /** The version whose changes were last seen; `null` when never recorded. */
   lastSeenVersion: string | null;
+  /** The canvas's inline hints setting (Story 11.3). */
+  hints: HintsFile;
+  /** The first-run tour's state (Story 11.6). */
+  tour: TourFile;
 };
 
 // --- workspace (`src-tauri/src/graph/mod.rs`, architecture §5.1) ---------------------------
@@ -946,6 +959,8 @@ type Commands = {
   keybindings_get: KeybindingsFile;
   state_get: AppStateSnapshot;
   checklist_set: AppStateSnapshot;
+  hints_set: AppStateSnapshot;
+  tour_set: AppStateSnapshot;
   whats_new_seen: AppStateSnapshot;
   binaries_redetect: SettingsSnapshot;
   workspace_get: WorkspaceSnapshot;
@@ -1072,6 +1087,22 @@ export function stateGet(): Promise<AppStateSnapshot> {
  */
 export function checklistSet(checklist: ChecklistFile): Promise<AppStateSnapshot> {
   return call("checklist_set", { checklist });
+}
+
+/**
+ * `ipc::hints_set` (Story 11.3) -- store the inline hints setting and write `state.json` (kept in
+ * memory only for a newer build's file). Resolves with the new state.
+ */
+export function hintsSet(hidden: boolean | null): Promise<AppStateSnapshot> {
+  return call("hints_set", { hidden });
+}
+
+/**
+ * `ipc::tour_set` (Story 11.6) -- record whether the first-run tour was taken and write
+ * `state.json` (kept in memory only for a newer build's or an unreadable file). Resolves with the new state.
+ */
+export function tourSet(done: boolean): Promise<AppStateSnapshot> {
+  return call("tour_set", { done });
 }
 
 /**

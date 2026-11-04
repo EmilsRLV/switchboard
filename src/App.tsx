@@ -61,6 +61,7 @@ import { WorktreePane } from "./components/WorktreePane";
 import { RemoveWorktreePane } from "./components/RemoveWorktreePane";
 import { Notice } from "./components/Notice";
 import { Palette } from "./components/Palette";
+import { Tour } from "./components/Tour";
 import { SettingsPane } from "./components/SettingsPane";
 import { connectTerminals } from "./terminal/registry";
 import { TerminalHolder, TerminalPane } from "./terminal/TerminalPane";
@@ -79,7 +80,8 @@ registerBuiltins();
  * The shell: banner strip on top, the canvas filling the rest with the transient notice laid
  * over its top edge, the Getting started card (Story 10.3) at its top-right under the notice, the Elsewhere tray at its bottom-left and the agent approval toasts (Story
  * 7.2) at its bottom-right, one pane (settings, import, terminal, the launch sheet, the worktree sheet, the remove-worktree sheet, the edge inspector, the Review pane of Story 8.1 or the Help pane of Story 10.1, both loaded lazily) on the right when open,
- * the hidden holder that keeps every terminal's view alive while the terminal pane is not showing it, the command
+ * the hidden holder that keeps every terminal's view alive while the terminal pane is not showing it, the
+ * first-run tour (Story 11.6) dimming all of that while it is on, the command
  * palette over everything when open, the node context menu at the pointer when open. Every
  * key goes through the command registry's dispatcher (`useKeybindings`).
  */
@@ -317,6 +319,7 @@ export default function App() {
         )}
         {pane === "terminal" && <TerminalPane />}
         <TerminalHolder />
+        <Tour />
         <Palette />
         <ContextMenu />
       </div>

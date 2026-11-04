@@ -22,6 +22,10 @@ import {
   withTab,
   withoutTab,
   isPoppedOut,
+  currentPane,
+  currentSelection,
+  withPane,
+  withSelection,
 } from "./ui";
 import { useTerminalStore } from "./terminals";
 import { EMPTY_LIVE, isAcknowledging, unmarkAcknowledging, useLiveStore } from "./live";
@@ -131,10 +135,13 @@ describe("ui store", () => {
   it("openContextMenu stores the anchor, closeContextMenu clears it", () => {
     const s = useUiStore.getState();
     s.openContextMenu({ x: 300, y: 120 });
-    expect(useUiStore.getState().contextMenu).toEqual({ x: 300, y: 120 });
+    expect(useUiStore.getState().contextMenu).toEqual({ x: 300, y: 120, menu: "node" });
     expect(isContextMenuOpen()).toBe(true);
     s.openContextMenu({ x: 10, y: 10 });
-    expect(useUiStore.getState().contextMenu).toEqual({ x: 10, y: 10 });
+    expect(useUiStore.getState().contextMenu).toEqual({ x: 10, y: 10, menu: "node" });
+    s.openContextMenu({ x: 20, y: 30 }, "canvas");
+    expect(useUiStore.getState().contextMenu).toEqual({ x: 20, y: 30, menu: "canvas" });
+    expect(isContextMenuOpen()).toBe(true);
     s.closeContextMenu();
     expect(useUiStore.getState().contextMenu).toBeNull();
     expect(isContextMenuOpen()).toBe(false);
@@ -517,5 +524,61 @@ describe("terminal tabs (Story 4.5)", () => {
     // A tab click focuses again.
     useUiStore.getState().openTab("session:s1");
     expect(useUiStore.getState().focusOnShow).toBe(true);
+  });
+});
+
+describe("the evaluation overrides (Story 11.2)", () => {
+  beforeEach(() => {
+    useUiStore.setState({ pane: "terminal", selection: { kind: "project", id: "a" } });
+  });
+  afterEach(() => {
+    useUiStore.setState({ pane: null, selection: null });
+  });
+
+  it("withSelection shows the override inside fn, nests, and restores it after", () => {
+    expect(currentSelection()).toEqual({ kind: "project", id: "a" });
+    const seen = withSelection({ kind: "session", id: "s" }, () => {
+      const inner = withSelection(null, () => [currentSelection(), hasSelection()]);
+      return [currentSelection(), ...inner];
+    });
+    expect(seen).toEqual([{ kind: "session", id: "s" }, null, false]);
+    expect(currentSelection()).toEqual({ kind: "project", id: "a" });
+    expect(useUiStore.getState().selection).toEqual({ kind: "project", id: "a" });
+  });
+
+  it("selectedProject reads the override", () => {
+    useWorkspaceStore.setState({ snapshot: { workspace: { projects: [{ id: "a" }, { id: "b" }] } } as unknown as WorkspaceSnapshot });
+    expect(withSelection({ kind: "project", id: "b" }, () => selectedProject()?.id)).toBe("b");
+    expect(withSelection({ kind: "session", id: "s" }, () => selectedProject())).toBeNull();
+    useWorkspaceStore.setState({ snapshot: null });
+  });
+
+  it("withPane shows the pane override to currentPane and isPaneOpen, and restores it", () => {
+    expect(withPane(null, () => [currentPane(), isPaneOpen()])).toEqual([null, false]);
+    expect(withPane("launch", () => currentPane())).toBe("launch");
+    expect(currentPane()).toBe("terminal");
+    expect(isPaneOpen()).toBe(true);
+  });
+
+  it("both are restored on a throw", () => {
+    expect(() =>
+      withSelection({ kind: "branch", id: "b" }, () =>
+        withPane(null, () => {
+          throw new Error("boom");
+        }),
+      ),
+    ).toThrow("boom");
+    expect(currentSelection()).toEqual({ kind: "project", id: "a" });
+    expect(currentPane()).toBe("terminal");
+  });
+
+  it("never writes the store or notifies a subscriber", () => {
+    const listener = vi.fn();
+    const unsubscribe = useUiStore.subscribe(listener);
+    const before = useUiStore.getState();
+    withSelection({ kind: "session", id: "s" }, () => withPane(null, () => currentSelection()));
+    expect(listener).not.toHaveBeenCalled();
+    expect(useUiStore.getState()).toBe(before);
+    unsubscribe();
   });
 });

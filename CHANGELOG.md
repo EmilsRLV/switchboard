@@ -4,6 +4,26 @@ What changed in Switchboard, newest first. Each release lists what you can see a
 
 ## Unreleased
 
+### Canvas
+
+- Right-click the empty canvas, without moving, for the canvas menu: add a project folder, import from
+  Claude, fit view, Help and settings. A right-drag still pans.
+- Hover or select a project, session or branch node for its toolbar beside it: up to four buttons for what
+  it can do now, such as **new**, **term**, **link** and **review**, then **⋯** for its menu.
+- The empty canvas shows a dashed card, `Drop a folder here`, with the keys to add a project, open the palette
+  and open Help under it. Click it to pick a folder.
+- While the Getting started card shows, short hints beside the first project and the first running session
+  name the next key, such as `n new session`, `drag to link · e` beside a hovered project's handle, and `r
+  review changes`. Each fades once its step is done. A newly added project is selected, so `n` works at once.
+  **Hide canvas hints** and **Show canvas hints** in the palette turn them off, or back on without the card.
+
+### Keyboard
+
+- Menu rows end with their key, in the palette's look, for the node menu and the canvas menu alike.
+- A button that runs a command names it and its key on hover, such as `Close · esc`. After a change to
+  `keybindings.json`, menus show the new keys the next time they open, and tooltips once the button is drawn
+  again.
+
 ### Help
 
 - A Help pane of short guide pages, one per area, written in the words the app itself uses. `f1` opens and
@@ -21,6 +41,23 @@ What changed in Switchboard, newest first. Each release lists what you can see a
   the running version and the config folder.
 - After an update, a quiet `new in <version>` chip at the bottom left of the canvas points to this changelog
   until you open it. **What's new** in the command palette opens it too. A fresh profile never shows it.
+- Pictures in Help, drawn with the app's own cards and lines. Three move: drawing an edge (Edges), a session
+  stepping through its states (Sessions), and a pane and the palette opening (Canvas); with reduced motion
+  on, each holds still on its last frame. Two are still: context, cooperate, pending, failed and selected
+  edges (Edges), and the parts of a project node (Projects).
+- Hover says what you see: a session node's tooltip starts with its state and what it means, such as
+  `waiting — Claude needs an answer; enter opens its terminal`. Hovering a glowing project node names the
+  session that needs you; hovering `N live` shows `N sessions running`, a collapsed count `N children,
+  collapsed`, the **review** flag `asks for review · click to open`, and an edge line what it is doing now,
+  in the edge inspector's words. The badges themselves read as before.
+- A **What you see** page, second in Contents (also **Help: what you see**), lists every session state and
+  edge look with its meaning, under their pictures, plus the attention colour, the glow and the badges. The
+  "What you can see" details of the Canvas, Projects, Sessions and Edges pages moved there.
+- A short first-run tour: on a fresh profile, six stops point out the canvas, adding a project, starting a
+  session, linking nodes, reading the canvas and the palette, dimming everything else. `right` or `enter`
+  goes on, `left` back and `esc` skips; `ctrl+k` still opens the palette over it. It runs once; **Take the
+  tour** in the palette and on the Getting started page runs it again, and the Getting started card links to
+  it until it is taken. This replaces the earlier stance of having no overlay tour.
 
 ## 0.1.0 — 2026-10-31
 

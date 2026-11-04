@@ -170,7 +170,7 @@ describe("keybindings.json", () => {
     expect(applyKeybindingsFile(file('{"review.refresh": "ctrl+`"}')).conflicts).toEqual(["ctrl+`: review.refresh, terminal.toggle"]);
     // Keys read as the file writes them.
     expect(applyKeybindingsFile(file('{"review.refresh": "esc"}')).conflicts).toEqual([
-      "escape: contextMenu.close, elsewhere.close, palette.close, pane.close, review.refresh, selection.clear",
+      "escape: contextMenu.close, elsewhere.close, palette.close, pane.close, review.refresh, selection.clear, tour.skip",
     ]);
   });
 

@@ -26,19 +26,20 @@ branch; a branch without a worktree gets one made first, and the sheet shows tha
 ## Removing a worktree
 
 **Remove worktree…** on a branch node with a worktree opens the remove-worktree sheet. It shows the folder,
-how many files are changed or untracked, and the commands under **Runs**. **Also delete branch** is off by
-default.
+how many files are changed or untracked, and the commands under **Runs**. **Also delete branch** starts
+off.
 
 - A clean worktree: **Remove** (**Remove worktree: remove**).
 - A worktree with changes: **Force remove…**, then **Discard N changed files and remove** (also **Remove
   worktree: force remove…** and **Remove worktree: discard changes and remove**).
 - A session running in the worktree, or a locked worktree, blocks removal until you stop or unlock it.
 
-Enter never removes: only a click, or the palette, does. A branch git refuses to delete because it is not
-merged is kept, and the sheet says so.
+Enter never removes: only a click, or the palette, does. If git will not delete an unmerged branch, it stays; the
+sheet says so.
 
 ## What you can see
 
-A branch node shows its name, with a star for the branch checked out in the project's folder. Its second
+A branch node shows its name, with a star for the branch checked out in the project's folder. Hover it
+for a **toolbar** of what can run. Its second
 line shows `↑n ↓m` against its upstream, `upstream gone`, and the worktree's folder, or `missing` when the
 folder is gone. When branches cannot be read, the project node's path line reads `branches unavailable`.

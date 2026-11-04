@@ -1,8 +1,10 @@
-import { useEffect, useReducer } from "react";
+import { useEffect, useReducer, useSyncExternalStore } from "react";
+import { commandHint } from "../commands/keybindings";
 import { isCommandEnabled, runCommand } from "../commands/registry";
 import { CHECKLIST_STEPS, subscribeSources, type StepId } from "../help/checklist";
 import { useCanvasStore } from "../state/canvas";
 import { cardVisible, isChecklistComplete, useChecklistStore } from "../state/checklist";
+import { useTourStore } from "../state/tour";
 
 /**
  * Re-render whenever a store that decides a step command's `when` (or a tick) changes, so a row's
@@ -39,7 +41,7 @@ export function ChecklistRows({ done }: { done: readonly StepId[] }) {
               <span className="checklist-tick" aria-hidden="true" />
             )}
             {isCommandEnabled(step.command) ? (
-              <button type="button" className="checklist-step" onClick={() => runCommand(step.command)}>
+              <button type="button" className="checklist-step" title={commandHint(step.command, step.title)} onClick={() => runCommand(step.command)}>
                 {step.title}
               </button>
             ) : (
@@ -53,13 +55,21 @@ export function ChecklistRows({ done }: { done: readonly StepId[] }) {
   );
 }
 
-/** The card itself: title, the rows (or `All done`), Dismiss. */
-export function ChecklistCardView({ done }: { done: readonly StepId[] }) {
+/**
+ * The card itself: title, the **tour** link while the first-run tour was never taken (Story 11.6),
+ * the rows (or `All done`), Dismiss.
+ */
+export function ChecklistCardView({ done, tourDone = true }: { done: readonly StepId[]; tourDone?: boolean }) {
   return (
     <section className="checklist-card" aria-label="Getting started">
       <header className="checklist-header">
         <h2 className="checklist-title">Getting started</h2>
-        <button type="button" className="btn checklist-dismiss" onClick={() => runCommand("checklist.dismiss")}>
+        {!tourDone && (
+          <button type="button" className="checklist-tour" title={commandHint("tour.start")} onClick={() => runCommand("tour.start")}>
+            tour
+          </button>
+        )}
+        <button type="button" className="btn checklist-dismiss" title={commandHint("checklist.dismiss")} onClick={() => runCommand("checklist.dismiss")}>
           Dismiss
         </button>
       </header>
@@ -72,16 +82,40 @@ export function ChecklistCardView({ done }: { done: readonly StepId[] }) {
  * The Getting started card (Story 10.3) at the canvas's top-right, under the notice line: over
  * the canvas, below panes, the palette, the menu and toasts. Information, not a wizard: no
  * overlay, no accent, no motion. It shows on a fresh profile until dismissed, and after all six
- * steps reads `All done` until the next launch.
+ * steps reads `All done` until the next launch. Story 11.6: held back while the first-run tour
+ * is on; it shows again (as above) when the tour ends.
  */
 export function ChecklistCard() {
-  const visible = useChecklistStore(cardVisible);
-  return visible ? <ShownChecklistCard /> : null;
+  const shows = useSyncExternalStore(subscribeCard, cardShowsNow, cardShowsNow);
+  return shows ? <ShownChecklistCard /> : null;
+}
+
+function subscribeCard(listener: () => void): () => void {
+  const stopChecklist = useChecklistStore.subscribe(listener);
+  const stopTour = useTourStore.subscribe(listener);
+  return () => {
+    stopChecklist();
+    stopTour();
+  };
+}
+
+function cardShowsNow(): boolean {
+  return cardOnCanvas(cardVisible(useChecklistStore.getState()), useTourStore.getState().on);
+}
+
+function tourDoneNow(): boolean {
+  return useTourStore.getState().done;
+}
+
+/** Story 11.6: the card is on the canvas while it is visible (Story 10.3) and the tour is not on. */
+export function cardOnCanvas(visible: boolean, touring: boolean): boolean {
+  return visible && !touring;
 }
 
 /** The card while it shows: only then does it follow the stores its rows' commands read. */
 function ShownChecklistCard() {
   const done = useChecklistStore((s) => s.done);
+  const tourDone = useSyncExternalStore(useTourStore.subscribe, tourDoneNow, tourDoneNow);
   useStepCommandsRefresh();
-  return <ChecklistCardView done={done} />;
+  return <ChecklistCardView done={done} tourDone={tourDone} />;
 }

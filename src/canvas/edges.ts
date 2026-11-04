@@ -5,7 +5,8 @@
 
 import type { Edge as FlowEdge } from "@xyflow/react";
 import type { ChildNode, Edge, EdgeKind, EdgeLive, EdgeLiveState, EdgesLiveMap, NodeRef, Project } from "../ipc";
-import { childFlowId, edgeFlowId, flowIdOf, nodeRects, parseFlowId, type CanvasFlowNode, type CanvasTarget } from "./nodes";
+import { commandKey } from "../commands/keybindings";
+import { ACTIVATE_COMMAND, childFlowId, edgeFlowId, flowIdOf, nodeRects, parseFlowId, type CanvasFlowNode, type CanvasTarget } from "./nodes";
 
 /** The id of a session or project card's link handle (the drag source, on its right edge). */
 export const LINK_SOURCE_HANDLE = "link-out";
@@ -139,8 +140,8 @@ export function liveEdgeClass(state: EdgeLiveState | null): string | null {
   return null;
 }
 
-/** What a drawn edge renders from. */
-export type LinkEdgeData = { edgeId: string; label: string | null; selected: boolean; live: EdgeLiveState | null };
+/** What a drawn edge renders from. `hover` is its line's tooltip ({@link edgeHoverText}, Story 11.5). */
+export type LinkEdgeData = { edgeId: string; label: string | null; selected: boolean; live: EdgeLiveState | null; hover: string };
 export type LinkFlowEdge = FlowEdge<LinkEdgeData, EdgeKind>;
 
 /**
@@ -164,6 +165,14 @@ export function linkFlowEdges(
     const parent = node.parentId === undefined ? undefined : byId.get(node.parentId);
     return { column: node.parentId ?? node.id, x: node.position.x + (parent?.position.x ?? 0) };
   };
+  // A cooperate side's name in the hover text: its card's label, else its id.
+  const nameOf = (ref: NodeRef): string => {
+    const id = flowIdOfRef(ref);
+    const node = id === null ? undefined : byId.get(id);
+    if (node?.type === "project") return node.data.project.label;
+    if (node?.type === "session" || node?.type === "branch") return node.data.child.label;
+    return ref.id;
+  };
   const out: LinkFlowEdge[] = [];
   for (const edge of edges) {
     const source = flowIdOfRef(edge.from);
@@ -180,7 +189,7 @@ export function linkFlowEdges(
       target,
       ...edgeSides(placeOf(source), placeOf(target)),
       type: edge.kind,
-      data: { edgeId: edge.id, label: edge.label, selected, live: state },
+      data: { edgeId: edge.id, label: edge.label, selected, live: state, hover: edgeHoverText(edge, live, nameOf) },
       className: ["link-edge", selected ? "is-selected" : null, liveClass].filter((c) => c !== null).join(" "),
       selectable: false,
       focusable: false,
@@ -310,4 +319,57 @@ export function linkTargets(
     }
   }
   return out;
+}
+
+// --- meanings (Story 11.5) -------------------------------------------------------------------
+
+/** A live state in the edge inspector's words: `pending (waiting for idle)`, `applied`, `failed (not confirmed)`. */
+export function liveStateText(live: EdgeLive): string {
+  return live.detail === null ? live.state : `${live.state} (${live.detail})`;
+}
+
+/** What the inspector says of a cooperate side with no live state (Story 6.4). */
+export const SIDE_NOT_LIVE = "peer named at the next resume";
+
+/**
+ * A stored edge line's tooltip (Story 11.5), in the edge inspector's words: `context edge`, then
+ * its live state (`context edge · pending (waiting for idle)`); `cooperate edge`, then its sides'
+ * states, one when they agree (`cooperate edge · notified`), else each as `<name>: <state>`
+ * (`cooperate edge · A: notified · B: pending`). With no live state, the kind alone. `nameOf`
+ * names a cooperate side (its card's label); by default its id.
+ */
+export function edgeHoverText(
+  edge: Pick<Edge, "id" | "kind" | "from" | "to">,
+  live: EdgesLiveMap,
+  nameOf: (ref: NodeRef) => string = (ref) => ref.id,
+): string {
+  const kind = `${edge.kind} edge`;
+  if (edge.kind === "context") {
+    const now = edgeLiveIn(live, edge.id);
+    return now === null ? kind : `${kind} · ${liveStateText(now)}`;
+  }
+  const sides = [edge.from, edge.to].map((end) => ({ end, now: edgeLiveIn(live, sideKey(edge.id, end.id)) }));
+  if (sides.every((side) => side.now === null)) return kind;
+  const texts = sides.map((side) => (side.now === null ? null : liveStateText(side.now)));
+  if (texts[0] === texts[1]) return `${kind} · ${texts[0]}`;
+  return [kind, ...sides.map((side, i) => `${nameOf(side.end)}: ${texts[i] ?? SIDE_NOT_LIVE}`)].join(" · ");
+}
+
+/** One look an edge line can have, as the What you see page lists it (Story 11.5). */
+export type EdgeLook = { look: "context" | "cooperate" | "pending" | "failed" | "selected"; meaning: string };
+
+/**
+ * The edge looks and what each means, in the edge-kinds figure's order: the What you see page's
+ * rows. The key in `selected` is `selection.activate`'s effective key.
+ */
+export function edgeLooks(): EdgeLook[] {
+  const key = commandKey(ACTIVATE_COMMAND);
+  return [
+    { look: "context", meaning: "dashed: gives a session the target's folder (--add-dir)" },
+    { look: "cooperate", meaning: "double: two sessions that know each other and may message" },
+    { look: "pending", meaning: "muted: waiting for the session to go idle, or held back while you type" },
+    { look: "failed", meaning: "attention colour: not confirmed, or the folder is missing; Retry sends it again" },
+    // As edges.md says: selecting an edge opens the edge inspector, or the key does.
+    { look: "selected", meaning: key === null ? "the selected edge; selecting it opens its inspector" : `the selected edge; selecting it opens its inspector, or press ${key}` },
+  ];
 }

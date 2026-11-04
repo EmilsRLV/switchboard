@@ -6,7 +6,7 @@
 // next launch or resume.
 
 import { create } from "zustand";
-import { edgeLiveIn } from "../canvas/edges";
+import { edgeLiveIn, liveStateText, SIDE_NOT_LIVE } from "../canvas/edges";
 import type { Edge, EdgeLive, EdgesLiveMap } from "../ipc";
 
 export type EdgesLiveStoreState = {
@@ -52,11 +52,6 @@ export function canRetryLive(live: EdgeLive | null): boolean {
   return live !== null && (live.state === "failed" || (live.state === "pending" && live.detail === TYPING_DETAIL));
 }
 
-/** A live state in words: `pending (waiting for idle)`, `applied`, `failed (not confirmed)`. */
-function stateText(live: EdgeLive): string {
-  return live.detail === null ? live.state : `${live.state} (${live.detail})`;
-}
-
 /**
  * The inspector's "Now:" line: the live state and its detail (`pending (waiting for idle)`,
  * `applied`, `failed (not confirmed)`); with none, what the edge does at the next launch or
@@ -64,7 +59,7 @@ function stateText(live: EdgeLive): string {
  */
 export function nowText(edge: Pick<Edge, "kind" | "from">, live: EdgeLive | null): string | null {
   if (edge.kind !== "context") return null;
-  if (live !== null) return stateText(live);
+  if (live !== null) return liveStateText(live);
   if (edge.from.type === "project") return "--add-dir for every new session on this project";
   return "--add-dir at the next resume";
 }
@@ -75,5 +70,5 @@ export function nowText(edge: Pick<Edge, "kind" | "from">, live: EdgeLive | null
  * session's prompt at its next resume.
  */
 export function sideNowText(name: string, live: EdgeLive | null): string {
-  return `${name}: ${live === null ? "peer named at the next resume" : stateText(live)}`;
+  return `${name}: ${live === null ? SIDE_NOT_LIVE : liveStateText(live)}`;
 }

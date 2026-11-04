@@ -369,7 +369,7 @@ describe("show all from the keyboard", () => {
   });
 
   it("clickNode selects the node and closes the menu; on a more row it also toggles show all", () => {
-    useUiStore.setState({ contextMenu: { x: 1, y: 1 } });
+    useUiStore.setState({ contextMenu: { x: 1, y: 1, menu: "node" } });
     clickNode("session:stub-1-ide");
     expect(selection()).toEqual({ kind: "session", id: "stub-1-ide" });
     expect(useUiStore.getState().contextMenu).toBeNull();

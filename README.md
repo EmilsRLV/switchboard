@@ -62,8 +62,10 @@ build over the old one.
 
 **Where things live.** Settings and the canvas are two JSON files, both written on first launch, beside
 `state.json`, the app's own small state (the Getting started checklist's progress and whether its card was
-dismissed, and the last version whose changes you have seen; never hand-edited, and deleting it resets only the
-checklist and the seen version; on an existing profile that brings the `new in <version>` chip back once):
+dismissed, the last version whose changes you have seen, whether the canvas hints are hidden or shown
+(`hints.hidden`), and whether the first-run tour was taken (`tour.done`); never hand-edited, and deleting it
+resets only the checklist, the seen version, the hints setting and the tour (which starts on its own only on
+a fresh profile); on an existing profile that brings the `new in <version>` chip back once):
 
 | OS | Folder |
 |---|---|
@@ -79,8 +81,10 @@ sessions.
 For checking an installed build by hand, on a machine (or user profile) that has never run Switchboard:
 
 1. Install as above and start Switchboard from the Start menu or the app launcher. The window opens on an
-   empty canvas with the hint `Add a project — ctrl+o, drop a folder, or ctrl+k · F1 help`, the Getting
-   started card at its top-right, and no wizard or modal.
+   empty canvas with the dashed ghost card `Drop a folder here` at its centre and, under it, `ctrl+o pick a
+   folder · ctrl+k palette · f1 help` (a click on it opens the folder picker), the Getting started card at its
+   top-right, and no wizard or modal. After a project is added, a muted hint under it reads `n new session ·
+   hover for more`.
 2. `settings.json`, `workspace.json` and `state.json` now exist in the folder above; `settings.json` has `claude.path` filled in when `claude` was
    found.
 3. With native `claude` installed: no banner, and `ctrl+,` shows `claude` with its version. Without it: the
@@ -392,7 +396,7 @@ and only the size is restored. Delete the file to reset to the defaults in `taur
 ## Workspace
 
 The window is an infinite canvas (`@xyflow/react`, unstyled `base.css`, colours from the theme tokens) with
-a dot grid and, while it has no nodes, a quiet "Add a project — ctrl+o, drop a folder, or ctrl+k · F1 help" hint. Pan with the **middle** or **right**
+a dot grid and, while it has no nodes, a dashed ghost card "Drop a folder here" (a click adds a project) over "ctrl+o pick a folder · ctrl+k palette · f1 help". Pan with the **middle** or **right**
 mouse button, or hold **Space** and drag with the left; zoom with the **wheel** (0.1× to 4×; double-click
 does not zoom); `ctrl+0` / palette "Fit view" fits the nodes, or with none returns to `x 0, y 0, zoom 1`.
 

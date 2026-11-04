@@ -10,12 +10,13 @@ The words these pages use for the parts of Switchboard.
   [Sessions & launch sheet](sessions.md).
 - **Branch node**: one local git branch of a project.
 - **Worktree**: a separate checkout of a branch in its own folder. See [Branches & worktrees](branches.md).
-- **Context edge**: a dashed line that gives a session another folder. See [Edges](edges.md).
+- **Context edge**: a dashed line giving a session another folder. See [Edges](edges.md).
 - **Cooperate edge**: a double line between two sessions that may message each other.
-- **Handle**: the small dot on a node's right edge that you drag to draw an edge.
-- **Elsewhere tray**: live sessions whose folder is not on the canvas, at the bottom left.
+- **Handle**: the small dot on a node's right edge, dragged to draw an edge.
+- **Toolbar**: the buttons beside a hovered or selected project, session or branch node.
+- **Elsewhere tray**: live sessions whose folder is off the canvas, at the bottom left.
 - **Attention colour**: the one colour Switchboard uses for a session that needs you (`finished` or
-  `waiting`), for a failed edge and for an approval toast.
+  `waiting`), a failed edge and an approval toast.
 
 ## Panes
 
@@ -33,7 +34,7 @@ The panes open on the right, one at a time; `esc` closes the one in front.
 
 ## Terminals
 
-- **Terminal pane**: the pane that shows the terminals Switchboard runs. See
+- **Terminal pane**: the pane showing the terminals Switchboard runs. See
   [Terminals, tabs & pop-outs](terminals.md).
 - **Tabs**: one per terminal in the terminal pane.
 - **Plain terminal**: a shell in a project's folder, one per project.
@@ -46,5 +47,5 @@ The panes open on the right, one at a time; `esc` closes the one in front.
 - **Toast**: a box at the bottom right asking for an answer.
 - **Review request**: Claude asking you to look at its work. See
   [The app as a tool for Claude](tool.md).
-- **Notice**: a short line at the top that says what just happened.
-- **Banner**: a line at the top that stays while something is wrong, such as `claude` not found.
+- **Notice**: a short line at the top saying what just happened.
+- **Banner**: a top line that stays while something is wrong, such as `claude` not found.

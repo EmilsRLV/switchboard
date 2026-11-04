@@ -25,6 +25,8 @@ import {
   flowIdOfRef,
   isDuplicateEdge,
   edgeLiveIn,
+  edgeHoverText,
+  edgeLooks,
   linkFlowEdges,
   liveEdgeClass,
   linkTargets,
@@ -153,7 +155,7 @@ describe("linkFlowEdges", () => {
       data: { edgeId: "e1", label: "API shape", selected: false },
       ariaLabel: "context edge: API shape",
     });
-    expect(drawn[1]?.data).toEqual({ edgeId: "e2", label: null, selected: true, live: null });
+    expect(drawn[1]?.data).toEqual({ edgeId: "e2", label: null, selected: true, live: null, hover: "cooperate edge" });
     expect(edgeAriaLabel({ kind: "cooperate", label: null })).toBe("cooperate edge");
   });
 
@@ -281,5 +283,55 @@ describe("linkTargets and endText", () => {
     expect(endText(ref("session", "s2"), projects, children)).toEqual({ label: "api", project: "b" });
     expect(endText(ref("branch", "a:main"), projects, children)).toEqual({ label: "main", project: "a" });
     expect(endText(ref("session", "gone"), projects, children)).toEqual({ label: "session gone", project: null });
+  });
+});
+
+describe("Story 11.5: an edge line's hover text", () => {
+  const live = (state: "pending" | "applied" | "notified" | "failed", detail: string | null = null, sessionId = "s1") => ({
+    state,
+    detail,
+    edgeId: "e",
+    sessionId,
+    path: null,
+  });
+  const context: Pick<Edge, "id" | "kind" | "from" | "to"> = { id: "e1", kind: "context", from: { type: "session", id: "s1" }, to: { type: "project", id: "p" } };
+  const cooperate: Pick<Edge, "id" | "kind" | "from" | "to"> = { id: "c1", kind: "cooperate", from: { type: "session", id: "A" }, to: { type: "session", id: "B" } };
+
+  it("a context edge reads its live state in the inspector's words, or its kind alone", () => {
+    expect(edgeHoverText(context, { e1: live("pending", "waiting for idle") })).toBe("context edge · pending (waiting for idle)");
+    expect(edgeHoverText(context, { e1: live("applied") })).toBe("context edge · applied");
+    expect(edgeHoverText(context, { e1: live("failed", "not confirmed") })).toBe("context edge · failed (not confirmed)");
+    expect(edgeHoverText(context, {})).toBe("context edge");
+  });
+
+  it("a cooperate edge shows one state when its sides agree, else each side by name", () => {
+    const sides = (a: ReturnType<typeof live> | null, b: ReturnType<typeof live> | null): EdgesLiveMap => ({
+      ...(a === null ? {} : { [sideKey("c1", "A")]: a }),
+      ...(b === null ? {} : { [sideKey("c1", "B")]: b }),
+    });
+    expect(edgeHoverText(cooperate, sides(live("notified"), live("notified")))).toBe("cooperate edge · notified");
+    expect(edgeHoverText(cooperate, sides(live("notified"), live("pending")))).toBe("cooperate edge · A: notified · B: pending");
+    expect(edgeHoverText(cooperate, sides(null, null))).toBe("cooperate edge");
+    expect(edgeHoverText(cooperate, sides(live("failed"), null), (ref) => `name ${ref.id}`)).toBe(
+      "cooperate edge · name A: failed · name B: peer named at the next resume",
+    );
+  });
+
+  it("linkFlowEdges names a cooperate edge's sides by their cards' labels", () => {
+    const edges = [edge("c1", ref("session", "s1"), ref("session", "s2"), "cooperate")];
+    const entries: EdgesLiveMap = {
+      [sideKey("c1", "s1")]: live("notified", null, "s1"),
+      [sideKey("c1", "s2")]: live("pending", null, "s2"),
+    };
+    const projects = [project("a", true, 80), project("b", true, 560)];
+    const children = [session("s1", "a", "fix login"), session("s2", "b", "api shape")];
+    const drawnNodes = toFlowNodes({ projects, statuses: {}, flashed: [], children, selection: null, dragging: {} });
+    const [drawn] = linkFlowEdges(edges, drawnNodes, null, entries);
+    expect(drawn?.data?.hover).toBe("cooperate edge · fix login: notified · api shape: pending");
+  });
+
+  it("lists the five edge looks of the edge-kinds figure, each with a meaning", () => {
+    expect(edgeLooks().map((l) => l.look)).toEqual(["context", "cooperate", "pending", "failed", "selected"]);
+    for (const look of edgeLooks()) expect(look.meaning, look.look).not.toBe("");
   });
 });

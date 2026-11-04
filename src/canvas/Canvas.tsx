@@ -23,7 +23,7 @@ import {
 import "@xyflow/react/dist/base.css";
 import { clickEdge, link, refuseDrop } from "../commands/edges";
 import { clickNode } from "../commands/navigation";
-import { moveNode, rightClickNode } from "../commands/nodes";
+import { moveNode, rightClickCanvas, rightClickNode } from "../commands/nodes";
 import { dropProjects } from "../commands/projects";
 import {
   hasTauriRuntime,
@@ -45,8 +45,10 @@ import { stoppingSessionIds, useTerminalStore } from "../state/terminals";
 import { useUiStore } from "../state/ui";
 import { persistViewport, useWorkspaceStore } from "../state/workspace";
 import { reportFirstFrame } from "../perf";
+import { isTourOn, tourFirstFrame } from "../state/tour";
 import { BranchNode, MoreNode, SessionNode } from "./ChildNode";
 import { FORK_HANDLE, checkFlowLink, linkFlowEdges, nodeRefOfFlowId, type LinkEdgeData, type LinkFlowEdge } from "./edges";
+import { GhostCard } from "./GhostCard";
 import { MAX_ZOOM, MIN_ZOOM } from "./limits";
 import {
   DRAG_THRESHOLD,
@@ -55,6 +57,7 @@ import {
   forkLines,
   parseFlowId,
   physicalToClient,
+  rightClickBackground,
   rightClickTarget,
   toFlowNodes,
   type CanvasFlowNode,
@@ -106,15 +109,24 @@ function LinkLabel({ x, y, data }: { x: number; y: number; data: LinkEdgeData | 
 }
 
 /**
+ * A stored edge's tooltip (Story 11.5): an SVG `<title>` in the edge's own `<g>` (xyflow's edge
+ * wrapper), so it shows on hover anywhere over the line, its hit width included.
+ */
+function EdgeTitle({ data }: { data: LinkEdgeData | undefined }) {
+  return data === undefined ? null : <title>{data.hover}</title>;
+}
+
+/**
  * A context edge (Story 6.1): a dashed 1-px `--border-strong` curve; `--focus` while selected.
  * Story 6.3: muted while it is being applied to a running session (`is-pending` on the edge),
  * in the attention accent once that failed (the line carries `.attention`).
  */
-function ContextEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps<LinkFlowEdge>) {
+export function ContextEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps<LinkFlowEdge>) {
   const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
   const failed = data?.live === "failed";
   return (
     <>
+      <EdgeTitle data={data} />
       <BaseEdge path={path} className={failed ? "attention link-line link-context" : "link-line link-context"} interactionWidth={LINK_HIT_WIDTH} />
       <LinkLabel x={labelX} y={labelY} data={data} />
     </>
@@ -126,11 +138,12 @@ function ContextEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targe
  * its middle pixel drawn over in the canvas colour; `--focus` while selected. Story 6.4: muted
  * while a side's peer line is pending, in the attention accent once a side failed.
  */
-function CooperateEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps<LinkFlowEdge>) {
+export function CooperateEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps<LinkFlowEdge>) {
   const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
   const failed = data?.live === "failed";
   return (
     <>
+      <EdgeTitle data={data} />
       <BaseEdge path={path} className={failed ? "attention link-line link-cooperate" : "link-line link-cooperate"} interactionWidth={LINK_HIT_WIDTH} />
       <path d={path} className="link-cooperate-gap" fill="none" />
       <LinkLabel x={labelX} y={labelY} data={data} />
@@ -176,6 +189,7 @@ export function Canvas() {
     // the webview's native menu never shows.
     <div
       className="canvas"
+      data-tour="canvas"
       ref={setCanvasElement}
       onPointerDownCapture={onPointerDownCapture}
       onPointerUpCapture={onPointerUpCapture}
@@ -184,12 +198,8 @@ export function Canvas() {
       <ReactFlowProvider>
         <Flow initialViewport={workspace?.viewport ?? HOME_VIEWPORT} />
       </ReactFlowProvider>
-      {empty && (
-        <p className="canvas-hint">
-          {/* One inline run: as flex items, the text pieces would lose their edge spaces. */}
-          <span>Add a project — <kbd>ctrl+o</kbd>, drop a folder, or <kbd>ctrl+k</kbd> · <kbd>F1</kbd> help</span>
-        </p>
-      )}
+      {/* Story 11.3: the ghost card, centred in the canvas element while there is no project. */}
+      {empty && <GhostCard />}
     </div>
   );
 }
@@ -208,24 +218,46 @@ function suppress(event: { preventDefault(): void }): void {
  * most `DRAG_THRESHOLD` since the press on a node, it selects the node and, for a project
  * or session card, opens its menu. Deciding at release also works where
  * the webview fires `contextmenu` on press (webkit2gtk), which a `contextmenu`-driven menu
- * would open at the start of every right-drag pan.
+ * would open at the start of every right-drag pan. Story 11.1: the same rule on the canvas
+ * background (`rightClickBackground`: the pane or the ghost card, never a node, an edge
+ * or a handle) opens the canvas menu instead, leaving the selection as it is.
  */
 let rightPress: RightPress | null = null;
 
 function onPointerDownCapture(event: ReactPointerEvent): void {
   if (event.button !== 2) return;
-  rightPress = { x: event.clientX, y: event.clientY, flowId: nodeIdAt(event.target) };
+  rightPress = {
+    x: event.clientX,
+    y: event.clientY,
+    flowId: nodeIdAt(event.target),
+    onBackground: isBackground(event.target),
+  };
 }
 
 function onPointerUpCapture(event: ReactPointerEvent): void {
   if (event.button !== 2) return;
   const release = { x: event.clientX, y: event.clientY };
-  const target = rightClickTarget(rightPress, release);
+  const press = rightPress;
   rightPress = null;
+  if (rightClickBackground(press, release)) {
+    rightClickCanvas(release);
+    return;
+  }
+  const target = rightClickTarget(press, release);
   if (target === null) return;
   // A project or session card with enabled entries gets the menu (Attach for a live
   // session); anything else, a historic session included, is only selected.
   rightClickNode(target, release);
+}
+
+/**
+ * Whether `target` is the canvas background: inside xyflow's pane (and not in a node, an edge
+ * or a handle drawn over it) or the ghost card (Story 11.3).
+ */
+function isBackground(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  if (target.closest(".react-flow__node, .react-flow__edge, .react-flow__handle, .react-flow__edgelabel-renderer") !== null) return false;
+  return target.closest(".react-flow__pane, .ghost-card") !== null;
 }
 
 /** The flow id of the node wrapper containing `target`, if any (xyflow's `data-id`). */
@@ -399,8 +431,11 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
 
   // Story 9.3: the flow mounts only once the workspace snapshot is in, so its first painted frame
   // is the end of startup (Rust holds the clock; only the first report counts).
+  // Story 11.6: the first-run tour starts after that frame too (when due; also without Tauri,
+  // from the loaded flags).
   useEffect(() => {
     if (hasTauriRuntime()) reportFirstFrame();
+    tourFirstFrame();
   }, []);
 
   // Folders dropped from the OS (Tauri's native drag-drop; HTML5 DnD is off in the webview):
@@ -409,6 +444,8 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
     let cancelled = false;
     let stop: (() => void) | null = null;
     onFileDrop((drop) => {
+      // Story 11.6: nothing changes under the tour's dim.
+      if (isTourOn()) return;
       const client = physicalToClient(drop.position, window.devicePixelRatio);
       if (!dropHitsCanvas(client, useCanvasStore.getState().element)) return;
       const position = clientToFlow(client);

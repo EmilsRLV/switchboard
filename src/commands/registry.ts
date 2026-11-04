@@ -33,14 +33,36 @@ export type Command = {
   when?: () => boolean;
   /** Key-only carrier: the dispatcher sees it, the palette never lists it. */
   hidden?: boolean;
-  /** Also listed in a context menu: `"node"` is the menu of a right-clicked node. */
-  menu?: "node";
+  /**
+   * Also listed in a context menu: `"node"` is the menu of a right-clicked node, `"canvas"` the
+   * menu of a right-click on the canvas background (Story 11.1).
+   */
+  menu?: "node" | "canvas";
   /**
    * Where the command sits in its context menu: ascending, with a separator wherever the
    * tens digit changes (`10, 11 ┃ 20, 21, 22 ┃ 30, 31 ┃ 40`). The palette ignores it (title
    * order); commands without one come after those with one.
    */
   menuOrder?: number;
+  /**
+   * Story 11.1: the id of the command whose effective binding menus and tooltips show for this
+   * one (`help.open` shows `help.toggle`'s F1). Display only: dispatch never reads it.
+   */
+  keyFrom?: string;
+  /**
+   * Story 11.1: an extra condition for listing the command in its context menu, on top of
+   * `when` (Fit view runs on an empty canvas, going home, but the canvas menu leaves it out then).
+   */
+  menuWhen?: () => boolean;
+  /**
+   * Story 11.2: the command's slot on a card's node toolbar (only `menu: "node"` commands carry
+   * one): 1 new / term / resume, 2 term / fork / worktree / remove, 3 link, 4 review. Commands of
+   * one card kind that share a slot are either/or: the first enabled one (`toolbarCommands`'s
+   * per-kind order) takes it.
+   */
+  toolbar?: number;
+  /** Story 11.2: the toolbar button's word (`new`, `term`, `review`); required with `toolbar`. */
+  short?: string;
   /** The action. A returned promise is awaited only to log a rejection. */
   run: () => void | Promise<void>;
 };

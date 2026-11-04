@@ -10,10 +10,11 @@ inputDocuments:
 
 ## Overview
 
-Ten epics, ordered so that every one ends with something usable on both platforms. Epics 1–4 give a
+Eleven epics, ordered so that every one ends with something usable on both platforms. Epics 1–4 give a
 working "start and watch Claude sessions on a canvas" tool; 5–7 add branches, edges and the
 agent-facing side; 8 adds review; 9 ships it; 10 puts help, the changelog and the roadmap inside the
-app. Each story cites the PRD requirements it satisfies and becomes a spec in
+app; 11 (added 2026-11-04) makes the app show what it can do: visible controls, hints, figures and a
+first-run tour. Each story cites the PRD requirements it satisfies and becomes a spec in
 `implementation-artifacts/` when picked up.
 
 Left out on purpose (see PRD §5): editing, LSP, cloud sessions, macOS, other agents.
@@ -30,6 +31,7 @@ Left out on purpose (see PRD §5): editing, LSP, cloud sessions, macOS, other ag
 8. Review
 9. Ship it
 10. Help in the app
+11. Learn by looking
 
 ---
 
@@ -726,7 +728,9 @@ Getting started checklist that ticks itself off as the operator really does each
 and roadmap shipped inside the app. All of it is Markdown in the repo (`docs/help/*.md`, `CHANGELOG.md`,
 `ROADMAP.md`), bundled at build time with Vite `?raw` imports and rendered by a small safe renderer;
 nothing is fetched (NFR-8) and no runtime dependency is added. No overlay tour, no coach marks, no wizard:
-the canvas stays the home screen (PRD §4). Every new action is a registry command, so it is in the palette
+the canvas stays the home screen (PRD §4). *(Reversed in part on 2026-11-04: Epic 11 adds a skippable
+first-run tour with spotlights and inline hints; see the sprint change proposal of that date and FR-HELP-16.
+"No welcome page" and "the canvas is the home screen" stand.)* Every new action is a registry command, so it is in the palette
 and bindable (NFR-7, Story 9.4). State that must outlive a run (checklist progress, the last version seen)
 goes in a new app-written `state.json` beside `settings.json`, never into `settings.json` (hand-edited and
 live-reloaded) or `workspace.json` (the graph).
@@ -859,6 +863,191 @@ So that I notice what changed without being interrupted. (FR-HELP-7, FR-HELP-9)
 **Given** the palette
 **When** I type "new"
 **Then** `help.whatsNew` ("What's new in <version>", a `dynamicTitle`) is listed whether or not the chip shows, and is the chip's command; the decision "show the chip" is a pure function of (stored version, current version, first run) with a test
+
+---
+
+## Epic 11: Learn by looking
+
+Added 2026-11-04 (sprint change proposal of that date). After using the app with all ten epics in, the
+operator found it hard to learn and hard to read at a glance: the first run is a blank canvas with one line
+of text; most actions hide behind a right-click or a key; nothing says how to draw an edge or what a handle is;
+the state words, the attention colour, the glow and the badges explain themselves nowhere but in prose. This
+epic makes the app show what it can do, in this order: keys where the action is (menus with keys, tooltips
+from the registry, a canvas menu); a toolbar on every card while it is hovered or selected; a ghost card on
+the empty canvas and faint hints that fade once the thing has been done; figures in Help, built from the
+app's own cards and edges and moved by CSS; meanings on every state, badge and edge, and a What you see page;
+and a short first-run tour with spotlights.
+
+**The reversal.** Epic 10 decided "no overlay tour, no coach marks, no wizard". Story 11.6 reverses the tour
+part deliberately: a dimmed layer with a cut-out and a small card, at most about six stops, once on a fresh
+profile, `esc` to skip, the palette still reachable over it, and never again unless asked for. The rest
+stands: no welcome page, the canvas is the home screen, the Getting started card stays a card, no modal
+without a one-key way out (PRD FR-HELP-1 as revised, UX principle 6).
+
+**The rules that hold.** Low chrome and keyboard-first: every visible control is added beside its key, never
+in its place, and shows on hover or selection, never permanently. Every new action is a registry command
+(palette and bindable, NFR-7; the Story 9.4 audit covers every new button). No network (NFR-8), no new
+dependency, no video or image assets: figures are React components over the app's own CSS classes, so they
+follow the tokens by construction (the design lint reads their CSS). Persistent UI state (`hints.hidden`,
+`tour.done`) goes into `state.json` (schema 3, on the Story 10.3 / 10.5 pattern), never into `settings.json`
+or `workspace.json`. The fixed card sizes stay: toolbars and hints sit outside the card box. Every new
+motion honours `prefers-reduced-motion` and is in DESIGN.md's Motion table.
+
+### Story 11.1: Keys where the action is
+
+As the operator,
+I want every menu row and every button to tell me its key, and a right-click on the canvas to offer the canvas's own actions,
+So that I learn the keys by using the mouse. (FR-HELP-12, NFR-7)
+
+**Acceptance Criteria:**
+
+**Given** the node context menu (`src/components/ContextMenu.tsx`, rows from `nodeMenuCommands()` in `src/commands/nodes.ts`)
+**When** it opens on a project, session or branch card
+**Then** each row ends with its effective key in the palette's key look (`<kbd className="palette-row-key">`, `formatKeybinding`, as `src/components/Palette.tsx` draws it), nothing when the command has none; a rebind or an unbind in `keybindings.json` shows there the next time the menu opens (the registry's `binding` is read on render, like the palette); DESIGN.md's context menu entry describes the column
+
+**Given** a right-click on the canvas background that moved at most `DRAG_THRESHOLD` since the press (`rightPress` / `rightClickTarget` in `src/canvas/nodes.ts` return `null` off a node today)
+**When** I release
+**Then** a **canvas menu** opens at the pointer in the context menu's look: the enabled commands tagged `menu: "canvas"` (`Command.menu` widens from `"node"` to `"node" | "canvas"` in `src/commands/registry.ts`) in their `menuOrder`: **Add project folder…** (`ctrl+o`), **Import from Claude…**, **Fit view** (`ctrl+0`), **Help** (`f1`), **Open settings**; a right-drag still pans; `contextMenu.close` (Esc), a press outside and losing focus close it as they close the node menu; a `canvasMenuCommands()` sibling of `nodeMenuCommands()` has a test
+
+**Given** a button in the chrome that runs a command (pane headers' Close, the card's chevron and `branches` chip, the review flag, the Getting started rows, the Review and terminal pane toolbars, the Help pane's buttons)
+**When** I hover it
+**Then** its `title` is the command's title, ` · ` and its effective key when it has one (`Close · esc`, `Review changes · r`; `Expand project` alone, since that command has no key: Enter is `selection.activate`), from one helper `commandHint(id)` in `src/commands/keybindings.ts` that reads the registry (tested for a bound, an unbound and a rebound command); item-level buttons (a toast's Allow, a tab's ×) keep their own words; the handle's `title` becomes `Drag to link · e`; a vitest in `src/commands/` lists every `title=` on a `runCommand` button in `src/components` and `src/canvas` and fails on one that is a literal string rather than the helper (the audit test's file-reading pattern), with an allow-list for the item-level ones
+
+**Given** `docs/help/keyboard.md` and `canvas.md`
+**When** this story lands
+**Then** the Keyboard page says that menus and tooltips show the keys, the Canvas page names the canvas menu, and `CHANGELOG.md`'s Unreleased gains the three changes under Canvas and Keyboard
+
+### Story 11.2: The node toolbar
+
+As the operator,
+I want a card to show its main actions when I hover or select it,
+So that I never have to guess what a node can do. (FR-HELP-12, NFR-7)
+
+**Acceptance Criteria:**
+
+**Given** a project, session or branch card
+**When** I hover it or it is selected (`data.selected`, the handle's rule in `LinkHandles.tsx`)
+**Then** a toolbar sits attached under the card's bottom edge, outside the fixed 240 × 80 / 208 × 40 box (xyflow's `NodeToolbar`, already in `@xyflow/react` 12, or a plain element outside the card; either way `nodes.ts` geometry, `toFlowNodes` and the arrow keys are untouched): at most four short mono `--text-xs` text buttons and `⋯`, in DESIGN.md's **node toolbar** look; it is absent from the DOM while the card is neither hovered nor selected, so a 50-node pan stays smooth (the Story 9.3 measure, re-run once with the toolbar code in place); it appears and goes without animation
+
+**Given** the registry
+**When** a command carries a new `toolbar?: number` (its order; only commands tagged `menu: "node"` may) 
+**Then** the toolbar lists that card's enabled ones in that order, cut at four, from one pure `toolbarCommands(target)` in `src/commands/nodes.ts` with a test per card kind: a project shows `new` (`project.newSession`), `term` (`project.terminal`), `link` (`edge.link`), `review` (`review.changes`); a session shows `term` (`session.showTerminal`) or `resume` (`session.resume`, whichever is enabled), `fork`, `link`, `review` (**Stop** stays in `⋯`: a destructive action is never one hover away); a branch shows `new` (`branch.newSession`), `worktree` (`branch.newWorktree`) or `remove` (`branch.removeWorktree`), `review`; a disabled command is left out, never greyed; a command's short word is a new `short?: string` on the command (falls back to the title cut at the first space, so a toolbar entry without one is a test failure)
+
+**Given** a toolbar button
+**When** I click it
+**Then** the card is selected first and the command runs through `runCommand` (one local function, so `audit.test.ts` passes without a new allow-list entry); the button is `nodrag`, so a press on it never starts a drag; its tooltip is the Story 11.1 `commandHint`; `⋯` opens the node context menu under the button (`openContextMenu` with the button's bottom-left, the `rightClickNode` route) and carries `Menu · right-click`
+
+**Given** the keyboard
+**When** a card is selected with the arrows
+**Then** the toolbar shows but is not in the Tab order (keys are the keyboard's route; the palette lists the same commands); the card's accessible name is unchanged
+
+**Given** `docs/help/canvas.md`, `projects.md`, `sessions.md`, `branches.md`
+**When** this story lands
+**Then** each names the toolbar in one sentence where it lists the card's actions, the Terms page gains **Toolbar**, DESIGN.md's Node anatomy says the toolbar is outside the box, and the changelog's Unreleased gains it
+
+### Story 11.3: The ghost card and inline hints
+
+As a new operator,
+I want the empty canvas to show where a project goes, and the first things I can do to be written next to where I do them,
+So that the first minutes need no reading. (FR-HELP-13, FR-HELP-5, FR-HELP-9)
+
+**Acceptance Criteria:**
+
+**Given** a canvas with no projects (`Canvas.tsx`'s `empty`)
+**When** it shows
+**Then** the mono hint line gives way to the **ghost card** in DESIGN.md's look: a dashed `--fg-faint` box of the project card's size at the view's centre, `Drop a folder here`, and under it `ctrl+o pick a folder · ctrl+k palette · f1 help` (the keys from the registry, so a rebind shows; `content.test.ts`'s rule that a key named in help is a default binding applies to the card's text through the same helper); a click on it runs `project.add` (one `runCommand`, the audit passes); the canvas around it still pans and takes drops; it is gone with the first project and back with the last removed, without animation; the README's clean-machine checklist step 1 quotes the new words
+
+**Given** the Getting started checklist is showing (`cardVisible` in `src/state/checklist.ts`: a fresh profile, not dismissed) and hints are not hidden
+**When** the canvas draws
+**Then** **inline hints** sit by the thing they explain, from a pure `hintsFor(sources, done, hidden)` in a new `src/help/hints.ts` (one test per hint): under the first project card in `projects` order, `n new session · hover for more` until step `session` is done; beside that card's handle, `drag to link · e`, drawn only while the handle shows (hover or selected) until step `edge` is done; under the first session card in a live state, `r review changes` until step `review` is done; at most one hint per card and three on the canvas; each is a mono `--text-xs` `--fg-muted` caption outside the card box with no border or surface, letting clicks through, never the accent; a hint whose card is under an open pane is not drawn
+
+**Given** a hint showing
+**When** its step latches (the checklist store's `done`, Story 10.3) or hints are hidden
+**Then** it fades out over 300 ms (opacity only; instant under reduced motion; DESIGN.md's Motion table gains the row) and is removed; it never comes back for that step
+
+**Given** the palette
+**When** I type "hints"
+**Then** `hints.hide` ("Hide canvas hints", `when` hints show) and `hints.show` ("Show canvas hints", `when` they are hidden or the checklist card is not showing) are listed and bindable; `hints.show` also shows hints on a profile whose checklist was dismissed or never shown (for the undone steps); `hidden` lives in `state.json` as `hints: { hidden: boolean }` (schema 3 in `src-tauri/src/appstate.rs`: a version-2 file loads with it `false`; a newer file stays read-only; `state_get` carries it, a `hints_set` IPC writes it atomically; tests per the Story 10.3 matrix rows); the README's "Where things live" sentence names it; `settings.json` and `workspace.json` are untouched
+
+**Given** `docs/help/getting-started.md`
+**When** this story lands
+**Then** it says each step has a hint on the canvas until it is done, and how to hide and show them; the changelog's Unreleased gains the ghost card and the hints under Canvas
+
+### Story 11.4: Figures in Help
+
+As the operator,
+I want the help pages to show me how an edge is drawn and what a card is made of, moving, instead of describing it,
+So that I understand it in a glance. (FR-HELP-14, FR-HELP-3, NFR-8)
+
+**Acceptance Criteria:**
+
+**Given** a fenced block in a help page whose info string is `figure <name>` (``` ```figure draw-edge ```), its text the alt text
+**When** the renderer runs (`src/help/markdown.ts`: `FencedCode`'s `CodeInfo` child, skipped today as a mark, is read for this one case)
+**Then** it yields a new `HelpNode` `{ type: "figure"; name; alt }`; any other fenced block renders as before; the Help pane (`src/components/HelpPane.tsx`'s `Block`) draws the figure from a typed table `FIGURES` in a new `src/help/figures/index.ts` (name → component), and for a name not in the table draws the alt text as a code block (today's behaviour, so a typo is visible and never markup); `src/help/content.test.ts` asserts that every figure named in a page exists in the table and every figure in the table is used by some page; the renderer's tests cover the block, a figure with no name and a name with odd characters (literal text)
+
+**Given** the first five figures, in `src/help/figures/*.tsx` with their keyframes in `src/help/figures.css`
+**When** they render
+**Then** **draw-edge** (Edges page) shows a project card and a session card; the handle appears on the hovered card, a dashed line is pulled to the other card and settles as a context edge; then two session cards and the double line of a cooperate edge; **edge-kinds** (Edges, still) shows the five looks side by side with mono labels: context, cooperate, pending, failed, selected; **node-anatomy** (Projects) shows a project card with its rows named: chevron and count, label, `N live`, path, git line, `branches` chip, handle; **session-states** (Sessions) shows a session card under its project card stepping `starting → busy → waiting → busy → finished → idle → exited`, the project glowing on the attention states; **panes** (Canvas) shows a pane coming in over the canvas on the right and the palette over the dimmed page; every one is built from the app's own classes (`project-node`, `child-node`, `session-state`, `session-dot`, `link-handle`, `link-line`, `link-context`, `link-cooperate`, `pane`) on the pane's surface in DESIGN.md's **Help figures** look, moves by CSS only (opacity, transform, `stroke-dashoffset`), loops every 4–8 s with a pause, shows its end frame still under `prefers-reduced-motion: reduce`, has `role="img"` and the alt text as its name, and uses the accent only through the allow-listed classes; the design lint reads `figures.css` like every CSS under `src/`
+
+**Given** the figures
+**When** the tests run
+**Then** a node test renders every figure in `FIGURES` with `react-dom/server`'s `renderToStaticMarkup` and asserts its alt text is in the markup, no inline `style` carries a colour, and no class outside the app's own CSS files is used (the class names are collected from `nodes.css`, `shell.css` and `figures.css`); the Help pane's lazy chunk still holds the page text and the figures (the main bundle gains nothing: `pages.ts` imports `figures/index.ts`)
+
+**Given** `docs/help/edges.md`, `projects.md`, `sessions.md`, `canvas.md`
+**When** this story lands
+**Then** each holds its figure(s) at the top of the section it illustrates, with the prose under it cut to what the picture does not say (the Story 10.2 word budget still holds); DESIGN.md's Layout pieces and Motion table describe figures; the changelog's Unreleased gains them under Help
+
+### Story 11.5: Status at a glance
+
+As the operator,
+I want every state word, glow, badge and edge to say what it means where I see it,
+So that I read the canvas without a page open. (FR-HELP-15, FR-PROJ-4, FR-SESS-7)
+
+**Acceptance Criteria:**
+
+**Given** one table of meanings, `stateMeaning(state)` in `src/canvas/nodes.ts` (exhaustive over `SessionState["kind"]`, a test per state; an unrecognised poll state gets `as the session reports it`)
+**When** a card draws
+**Then** the session card's tooltip (`sessionCardTitle`) leads with `<state> — <meaning>` while the poll has seen the session (`busy — Claude is working`, `waiting — Claude needs an answer; enter opens its terminal`, `finished — the turn ended; look at what it did`, `idle — waiting for you`, `starting — launched, no output yet`, `stopping — being stopped`, `exited — the process ended`); the project glow's title names the session and why (`<name> is waiting`); the `N live` badge's title reads `N sessions running`, the count badge's `N children, collapsed`, the unread badge's `N unread peer messages` (unchanged), the review flag's `asks for review · click to open`, a branch card's worktree chip its path (unchanged); the aria labels carry the same words
+
+**Given** a stored edge
+**When** I hover its line
+**Then** an SVG `<title>` on the edge reads its kind and live state in the edge inspector's words (`context edge · pending (waiting for idle)`, `cooperate edge · notified`, `context edge · failed (not confirmed)`, `context edge` with no live state), from a pure `edgeHoverText(edge, live)` in `src/canvas/edges.ts` with a test per state; the label's own tooltip (the full label) stays
+
+**Given** `docs/help/legend.md`, a new page **What you see** (`id: "legend"`), second in Contents after Canvas & navigation (`HELP_PAGES` in `src/help/pages.ts`; `pages.test.ts` and `help.test.ts` counts go up by one)
+**When** I open it (Contents, `help.legend` "Help: what you see" in the palette and bindable, or a link from the Canvas, Sessions, Projects and Edges pages' "What you can see" sections, which shrink to one sentence and the link)
+**Then** it shows the **session-states** figure over a row per state with the state word in its own look and the meaning from the same table (the page's rows are rendered by the pane like the Keyboard page's table, so the words come from `stateMeaning`, not from a second copy), then the attention colour, the glow, the badges and the Elsewhere chip, then the **edge-kinds** figure over a row per edge look; `content.test.ts` holds it to the Terms page's vocabulary like every page; F1 on a selected session or edge keeps opening Sessions or Edges (`src/help/context.ts` is unchanged)
+
+**Given** the changelog
+**When** this story lands
+**Then** Unreleased gains the meanings on hover and the page under Help, and `ROADMAP.md`'s Later keeps "Searching the help" as is
+
+### Story 11.6: The first-run tour
+
+As a new operator,
+I want a short guided tour that points at the canvas, a card, its toolbar, a handle and the palette, once,
+So that I know where things are before I start. (FR-HELP-16, FR-HELP-9, UX principle 6; reverses Epic 10's "no overlay tour")
+
+**Acceptance Criteria:**
+
+**Given** a fresh profile (`first_run`, the Story 10.3 signal) whose `state.json` has `tour.done: false`
+**When** the canvas has painted its first frame (`reportFirstFrame` in `Canvas.tsx`)
+**Then** the tour starts on its own, once: a `Tour` component in `src/components/Tour.tsx`, its state in `src/state/tour.ts` (`on`, `stop`), its stops in a typed table in `src/help/tour.ts`; the Getting started card is held back until the tour ends or is skipped (then shows as Story 10.3 says); a profile that existed before this build never starts it on its own; a `state.json` that is read-only (newer schema, unwritable) runs the tour at most once per launch and never writes
+
+**Given** the stops table (each: id, title, one or two sentences, an optional target `[data-tour="<id>"]` attribute set on the real element, an optional figure from Story 11.4)
+**When** the tour is on
+**Then** the stops are, in order: **The canvas** (target: the ghost card or, with projects, the canvas; "Projects are cards; sessions and branches hang under them"); **Add a project** (target: the ghost card or the first project card; the keys); **Start a session** (target: the first project card's toolbar `new`, which the tour makes visible as if hovered; with no project, the `node-anatomy` figure); **Link nodes** (target: the first project card's handle, shown as if hovered; with no project, the `draw-edge` figure); **Read the canvas** (the `session-states` figure; "the attention colour means a session needs you; `ctrl+j` goes there"); **Everything is a command** (no target: "`ctrl+k` lists every command with its key; `f1` opens help for where you are"); the stop's text names keys as `kbd`; the whole table has a test that every target id named exists in the markup (a static scan of `src/`, the audit's pattern) and every figure named is in `FIGURES`
+
+**Given** the tour's look (DESIGN.md **The tour**)
+**When** a stop shows
+**Then** a dim layer at the palette backdrop's colour covers the shell, panes and toasts at z 14 (under the palette's 15 and the menu's 20; `shell.css`'s stack comment is updated) as four rectangles around the target's client rect, leaving a cut-out with the selected node's 1-px `--focus` outline at 2-px offset; the tour card sits beside the cut-out (right, else left, else below; `clampToArea` keeps it in the window) or centred with no target; the cut-out moves to the next target over 150 ms, instant under reduced motion; the card appears without animation; no accent, no shadow (the lint passes); the layer takes pointer events, so nothing underneath is clicked during the tour (PRD Q15); a target that scrolls or resizes (window resize) re-measures on the next frame
+
+**Given** the tour card's buttons and the keys
+**When** I use them
+**Then** **Back** / **Next** / **Skip** (and **Finish** on the last stop) run `tour.back`, `tour.next`, `tour.skip` through `runCommand` (the audit passes); the three are hidden key carriers (`←`, `→` and `enter`, `esc`) with `when: isTourOn()`, registered so that `tour.skip` comes first in the Esc order (before `contextMenu.close`) and `tour.next` before `selection.activate`; `tour.start` ("Take the tour") is a visible palette command always, bindable, and also a **Take the tour** button on the Getting started help page beside **Show on canvas** (and a **tour** link in the Getting started card's header while the tour has never been taken); `ctrl+k` still opens the palette over the tour and `palette.close` brings the tour back as it was; focus moves to the card's Next on each stop and returns where it was when the tour ends
+
+**Given** Finish or Skip
+**When** the tour ends
+**Then** `state.json` records `tour: { done: true }` (schema 3 with Story 11.3's `hints`; a `tour_set` IPC on the `checklist_set` pattern; a version-2 file loads with `done: false`); it never starts on its own again; `tour.start` runs it any time, from the first stop, without writing until it ends; the README's "Where things live" sentence names it; `docs/help/getting-started.md` gains a **The tour** section, DESIGN.md gains the entry, and the changelog's Unreleased records the tour under Help, with one line saying it replaces the earlier "no tour" stance
 
 ---
 

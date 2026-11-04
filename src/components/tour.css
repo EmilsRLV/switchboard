@@ -1,0 +1,102 @@
+/* The first-run tour (Story 11.6; DESIGN.md "The tour"). A layer at the palette backdrop's colour
+   (--bg at 55%) over the whole window at z 14: over the shell, panes (10) and toasts (12), under
+   the palette (15) and the menu (20). It is four rectangles around the stop's target, so the
+   target shows through a cut-out drawn with the selected node's 1-px --focus outline at a 2-px
+   offset; never a box-shadow spread. The layer takes the pointer: nothing under it is clicked.
+   The cut-out moves over 150 ms (the reveal pan's duration; instant under reduced motion); the
+   card appears without animation. No accent, no shadow, no gradient. */
+
+.tour {
+  position: fixed;
+  inset: 0;
+  z-index: 14;
+}
+
+.tour-layer {
+  position: absolute;
+  inset: 0;
+  /* Read-only: the layer takes every press, so nothing underneath can be clicked. */
+  pointer-events: auto;
+}
+
+.tour-dim,
+.tour-cutout {
+  position: absolute;
+  transition:
+    left 150ms ease-out,
+    top 150ms ease-out,
+    width 150ms ease-out,
+    height 150ms ease-out;
+}
+
+.tour-dim {
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+}
+
+.tour-cutout {
+  outline: var(--line) solid var(--focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-dim,
+  .tour-cutout {
+    transition: none;
+  }
+}
+
+.tour-card {
+  position: absolute;
+  box-sizing: border-box;
+  width: min(360px, 90vw);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: 0.75rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: var(--bg-raised);
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--fg);
+}
+
+.tour-title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 500;
+}
+
+.tour-text {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+.tour-kbd {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+/* A figure inside the card: the Help figure's frame, as wide as the card's text. */
+.tour-card .help-figure {
+  margin: 0;
+}
+
+.tour-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.tour-step {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+
+.tour-buttons {
+  display: flex;
+  gap: 0.4rem;
+}

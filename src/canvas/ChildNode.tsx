@@ -1,15 +1,19 @@
-import { memo, useSyncExternalStore } from "react";
+import { memo, useEffect, useReducer, useSyncExternalStore } from "react";
 import type { NodeProps } from "@xyflow/react";
 import type { ChildKind } from "../ipc";
+import { subscribeBindings } from "../commands/registry";
 import { openReview } from "../commands/review";
 import { unreadBadge } from "../state/inbox";
 import { ForkHandles, LinkHandles } from "./LinkHandles";
+import { NodeHint } from "./NodeHint";
+import { NodeToolbar, useHover } from "./NodeToolbar";
 import {
   branchCardParts,
   branchCardTitle,
   childAriaLabel,
   hasBranchSecondLine,
   moreLabel,
+  REVIEW_FLAG_TEXT,
   sessionCardMeta,
   sessionCardTitle,
   type BranchFlowNode,
@@ -44,6 +48,9 @@ import {
  * session); selection is an outline in `--fg`, never the accent.
  */
 function ChildCard({ data, kind }: { data: ChildNodeData; kind: ChildKind }) {
+  // Story 11.5: the state's meaning names a key (`enter`); re-render on a rebind.
+  const [, bump] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => subscribeBindings(bump), []);
   const { child, selected, attention } = data;
   const className =
     `child-node child-node-${kind}` + (selected ? " is-selected" : "") + (attention ? " session-attention" : "");
@@ -90,8 +97,8 @@ function SessionCard({ className, ariaLabel, data }: { className: string; ariaLa
             <button
               type="button"
               className="session-review nodrag"
-              title="Open review request"
-              aria-label={`Open review request of ${child.label}`}
+              title={REVIEW_FLAG_TEXT}
+              aria-label={`${child.label} ${REVIEW_FLAG_TEXT}`}
               onClick={(event) => {
                 event.stopPropagation();
                 void openReview(child.id);
@@ -176,23 +183,34 @@ function BranchCard({ className, ariaLabel, data }: { className: string; ariaLab
   );
 }
 
-export const SessionNode = memo(function SessionNode({ data }: NodeProps<SessionFlowNode>) {
+/**
+ * A session card, with its node toolbar (Story 11.2) while hovered or selected and not dragged.
+ * The first live session carries the `review` hint (Story 11.3) to its right, except while the
+ * toolbar shows (it offers `review` itself).
+ */
+export const SessionNode = memo(function SessionNode({ data, dragging }: NodeProps<SessionFlowNode>) {
+  const [hovered, hover] = useHover();
+  const toolbarShown = (hovered || data.selected) && dragging !== true;
   return (
-    <>
+    <div className="node-hover" {...hover}>
       <ChildCard data={data} kind="session" />
       <ForkHandles />
       <LinkHandles source shown={data.selected} />
-    </>
+      <NodeToolbar target={{ kind: "session", id: data.child.id }} shown={toolbarShown} />
+      <NodeHint target={{ kind: "session", id: data.child.id }} handleShown={false} drawn={!toolbarShown} />
+    </div>
   );
 });
 
-/** A branch card: an edge may end on it (Story 6.1) but never start from it. */
-export const BranchNode = memo(function BranchNode({ data }: NodeProps<BranchFlowNode>) {
+/** A branch card: an edge may end on it (Story 6.1) but never start from it. Its node toolbar as a session's. */
+export const BranchNode = memo(function BranchNode({ data, dragging }: NodeProps<BranchFlowNode>) {
+  const [hovered, hover] = useHover();
   return (
-    <>
+    <div className="node-hover" {...hover}>
       <ChildCard data={data} kind="branch" />
       <LinkHandles source={false} shown={false} />
-    </>
+      <NodeToolbar target={{ kind: "branch", id: data.child.id }} shown={(hovered || data.selected) && dragging !== true} />
+    </div>
   );
 });
 
@@ -240,5 +258,5 @@ function minuteSnapshot(): number {
 
 /** `Date.now()`, refreshed once a minute while any session card is mounted. */
 function useMinute(): number {
-  return useSyncExternalStore(subscribeMinute, minuteSnapshot);
+  return useSyncExternalStore(subscribeMinute, minuteSnapshot, minuteSnapshot);
 }

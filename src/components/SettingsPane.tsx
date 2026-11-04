@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { commandHint } from "../commands/keybindings";
 import { runCommand } from "../commands/registry";
 import { diagnosticsGet, hasTauriRuntime, perfGet, type Binary, type DiagnosticsSnapshot, type PerfSnapshot } from "../ipc";
 import { DIAGNOSTICS_REFRESH_MS, diagnosticsError, diagnosticsRows, keybindingsDiagnostics, mcpRefusalLines, perfRows } from "./diagnostics";
@@ -42,7 +43,7 @@ export function SettingsPane() {
           type="button"
           className="btn"
           onClick={() => runCommand("pane.close")}
-          title="Close (Esc)"
+          title={commandHint("pane.close", "Close")}
         >
           Close
         </button>
@@ -63,6 +64,7 @@ export function SettingsPane() {
               <button
                 type="button"
                 className="btn"
+                title={commandHint("settings.reveal")}
                 onClick={() => runCommand("settings.reveal")}
                 disabled={snapshot.path === null}
               >
@@ -80,7 +82,7 @@ export function SettingsPane() {
             <BinaryRow binary={snapshot.binaries.claude} />
             <BinaryRow binary={snapshot.binaries.git} />
             <div className="actions">
-              <button type="button" className="btn" onClick={() => runCommand("binaries.redetect")} disabled={busy}>
+              <button type="button" className="btn" title={commandHint("binaries.redetect")} onClick={() => runCommand("binaries.redetect")} disabled={busy}>
                 {busy ? "Detecting…" : "Re-detect"}
               </button>
             </div>

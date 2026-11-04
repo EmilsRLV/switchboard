@@ -17,9 +17,9 @@ import {
 } from "../ipc";
 import { useCanvasStore } from "../state/canvas";
 import { useStatusStore } from "../state/status";
-import { sameTarget, selectedProject, useUiStore, type MenuPoint } from "../state/ui";
+import { currentSelection, sameTarget, selectedProject, useUiStore, withPane, withSelection, type MenuPoint } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
-import { listCommands, type Command, type RegisteredCommand } from "./registry";
+import { getCommand, isEnabled, listCommands, type Command, type RegisteredCommand } from "./registry";
 
 /** Commands without a `menuOrder` sort after every command with one. */
 const UNORDERED = Number.MAX_SAFE_INTEGER;
@@ -29,9 +29,68 @@ const UNORDERED = Number.MAX_SAFE_INTEGER;
  * (then title, which `listCommands` already provides and the stable sort keeps).
  */
 export function nodeMenuCommands(): RegisteredCommand[] {
+  return menuCommands("node");
+}
+
+/**
+ * Story 11.1: the canvas menu's rows (a right-click on the background): the enabled commands
+ * tagged `menu: "canvas"`, in `menuOrder` like the node menu.
+ */
+export function canvasMenuCommands(): RegisteredCommand[] {
+  return menuCommands("canvas");
+}
+
+function menuCommands(menu: NonNullable<Command["menu"]>): RegisteredCommand[] {
   return listCommands({ enabledOnly: true })
-    .filter((command) => command.menu === "node")
+    .filter((command) => command.menu === menu && (command.menuWhen?.() ?? true))
     .sort((a, b) => (a.menuOrder ?? UNORDERED) - (b.menuOrder ?? UNORDERED));
+}
+
+// -- Story 11.2: the node toolbar ------------------------------------------------------------------
+
+/** The card kinds that carry a node toolbar. */
+export type ToolbarKind = NodeTarget["kind"];
+
+/**
+ * Each card kind's toolbar commands, by priority: sorted by their `toolbar` slot, the first
+ * enabled command of a slot takes it (an exited session whose terminal tab is still open has
+ * both Resume and Show terminal: `resume` wins). Stop and the other destructive or rare
+ * commands are never here; they stay in the node menu (`⋯`).
+ */
+export const TOOLBAR_KINDS: Readonly<Record<ToolbarKind, readonly string[]>> = {
+  project: ["project.newSession", "project.terminal", "edge.link", "review.changes"],
+  session: ["session.resume", "session.showTerminal", "session.fork", "edge.link", "review.changes"],
+  branch: ["branch.newSession", "branch.newWorktree", "branch.removeWorktree", "review.changes"],
+};
+
+/** At most this many buttons before `⋯`. */
+export const TOOLBAR_MAX = 4;
+
+/**
+ * Story 11.2: the toolbar buttons of `target`'s card: its kind's commands (tagged `toolbar`, on
+ * the node menu) that are enabled for that card -- evaluated as if it were selected and no pane
+ * were open, without touching the store -- one per slot, in slot order, cut at four. A disabled
+ * command is left out, never greyed.
+ */
+export function toolbarCommands(target: NodeTarget): RegisteredCommand[] {
+  const ids = TOOLBAR_KINDS[target.kind];
+  const candidates = ids
+    .map((id) => getCommand(id))
+    .filter((command): command is RegisteredCommand => command !== undefined && command.menu === "node" && command.toolbar !== undefined);
+  const enabled = withSelection(target, () => withPane(null, () => candidates.filter((command) => isEnabled(command))));
+  // A stable sort keeps the priority order within a slot.
+  const sorted = [...enabled].sort((a, b) => (a.toolbar ?? UNORDERED) - (b.toolbar ?? UNORDERED));
+  const out: RegisteredCommand[] = [];
+  for (const command of sorted) {
+    if (out.some((taken) => taken.toolbar === command.toolbar)) continue;
+    out.push(command);
+  }
+  return out.slice(0, TOOLBAR_MAX);
+}
+
+/** Story 11.2: whether `target`'s node menu (the toolbar's `⋯`) would list anything, as it opens now. */
+export function hasNodeMenu(target: NodeTarget): boolean {
+  return withSelection(target, () => nodeMenuCommands().length > 0);
 }
 
 /** The menu group of a command (its `menuOrder`'s tens); a separator goes between groups. */
@@ -130,7 +189,7 @@ export function relayoutChildren(projectId: string): Promise<boolean> {
  * its children -- and still does once the reply is in (a node selected meanwhile stays).
  */
 export async function removeProject(projectId: string): Promise<boolean> {
-  const selection = useUiStore.getState().selection;
+  const selection = currentSelection();
   const children = useWorkspaceStore.getState().snapshot?.children ?? [];
   const pointedAtIt =
     selection !== null &&
@@ -161,6 +220,14 @@ export function rightClickNode(target: CanvasTarget, at: MenuPoint): void {
   const ui = useUiStore.getState();
   ui.select(target);
   if (rightClickAction(target, nodeMenuCommands().length > 0) === "menu") ui.openContextMenu(at);
+}
+
+/**
+ * Story 11.1: a right-click release on the canvas background (the canvas's guard decided it was
+ * a click): open the canvas menu at the pointer. The selection is left as it is.
+ */
+export function rightClickCanvas(at: MenuPoint): void {
+  useUiStore.getState().openContextMenu(at, "canvas");
 }
 
 /**

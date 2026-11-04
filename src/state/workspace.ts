@@ -32,6 +32,11 @@ export function projectHasChildren(projectId: string): boolean {
   return useWorkspaceStore.getState().snapshot?.children.some((child) => child.projectId === projectId) ?? false;
 }
 
+/** True when the workspace has at least one project (Story 11.1: the canvas menu's Fit view). */
+export function hasProjects(): boolean {
+  return (useWorkspaceStore.getState().snapshot?.workspace.projects.length ?? 0) > 0;
+}
+
 // A stable empty list so selectors return the same reference while there is nothing to show
 // (a fresh `[]` per call would make React's store subscription re-render forever).
 const NO_BANNERS: readonly Banner[] = Object.freeze([]);

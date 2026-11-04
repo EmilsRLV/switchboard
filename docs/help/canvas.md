@@ -11,21 +11,26 @@ Claude…** from the [command palette](keyboard.md#the-command-palette) to add f
 
 ## Moving around
 
-- Pan by dragging with the middle or right mouse button, or hold Space and drag with the left button. A
-  right-drag pans; a right-click without moving opens a node's menu.
+- Pan by dragging with the middle or right mouse button, or hold Space and left-drag. A
+  right-drag pans; a right-click without moving opens a node's menu, or on the empty canvas the canvas
+  menu.
 - Zoom with the mouse wheel. `ctrl+0` (**Fit view**) brings every node into view.
 - Drag a node to move it; a project node's children move with it. **Re-layout children** puts a column back
   in order.
 
 ## Selecting and acting
 
-Click a node, or use the arrow keys, to select it; `esc` clears the selection. `enter` on a project node
-expands or collapses it. Right-click a project, session or branch node, without moving the mouse, for its menu;
-every entry there is also in the command palette. With a project node selected, `n` opens the [launch sheet](sessions.md#the-launch-sheet) for a new session, and `r`
-opens the [Review pane](review.md) on its changes.
+```figure panes
+A pane slides in on the right, then the palette opens over the dimmed canvas.
+```
 
-When a column holds more than ten children, its last row reads **show all (N)**; click it or press `enter`
-on it to see the rest.
+Click a node, or use the arrow keys, to select it; `esc` clears the selection. `enter` on a project node
+expands or collapses it. Right-click a project, session or branch node for its menu; every entry there is also in the command palette.
+Hover a node for its **toolbar**. Right-click the empty canvas for the **canvas menu**: add projects, fit
+view, Help, settings. With a project node selected, `n` opens the [launch sheet](sessions.md#the-launch-sheet)
+and `r` the [Review pane](review.md).
+
+Past ten children, a column's last row reads **show all (N)**; click it or press `enter` on it.
 
 ## Edges
 
@@ -36,6 +41,5 @@ folder; a **cooperate edge** (a double line) lets two sessions message each othe
 
 ## What you can see
 
-A session node starts its second line with its state: `busy` with a pulsing dot, `idle`, `exited`. A session
-that is `finished` or `waiting` needs you: its border and state word take the attention colour, and its project
-node glows. `ctrl+j` goes to the session that has needed you longest.
+What a node's state words, the attention colour, the glow, the badges and the edge lines mean is on
+[What you see](legend.md); hover a node, a badge or an edge line for its state and what it means.

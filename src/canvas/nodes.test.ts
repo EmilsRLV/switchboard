@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { registerBuiltins } from "../commands/builtins";
+import { applyBindingOverrides, clearCommands } from "../commands/registry";
+import { markAcknowledging, unmarkAcknowledging } from "../state/live";
 import type { ChildNode, Project, ProjectStatusMap } from "../ipc";
 import {
   CARD_HEIGHT,
@@ -26,6 +29,7 @@ import {
   panToReveal,
   parseFlowId,
   physicalToClient,
+  rightClickBackground,
   rightClickTarget,
   shortenPath,
   statusLine,
@@ -63,6 +67,14 @@ import {
   forkLinePath,
   forkLines,
   forkedFromText,
+  collapsedCountText,
+  glowText,
+  liveBadgeText,
+  REVIEW_FLAG_TEXT,
+  stateLine,
+  stateMeaning,
+  STATE_MEANING_KINDS,
+  type StateMeaningKind,
 } from "./nodes";
 import type { BranchMeta, LiveSession, SessionMeta, SessionState } from "../ipc";
 
@@ -320,7 +332,7 @@ describe("rightClickAction", () => {
 });
 
 describe("rightClickTarget", () => {
-  const press = (flowId: string | null, x = 100, y = 100) => ({ x, y, flowId });
+  const press = (flowId: string | null, x = 100, y = 100) => ({ x, y, flowId, onBackground: false });
 
   it("is the pressed node when the pointer moved at most the threshold, for any node kind", () => {
     expect(DRAG_THRESHOLD).toBe(4);
@@ -338,6 +350,27 @@ describe("rightClickTarget", () => {
     expect(rightClickTarget(press("ide"), { x: 220, y: 100 })).toBeNull();
     expect(rightClickTarget(press(null), { x: 100, y: 100 })).toBeNull();
     expect(rightClickTarget(null, { x: 100, y: 100 })).toBeNull();
+  });
+});
+
+describe("rightClickBackground (Story 11.1)", () => {
+  const press = (onBackground: boolean, x = 100, y = 100) => ({ x, y, flowId: null, onBackground });
+
+  it("is true for a background press released within the threshold", () => {
+    expect(rightClickBackground(press(true), { x: 100, y: 100 })).toBe(true);
+    expect(rightClickBackground(press(true), { x: 104, y: 100 })).toBe(true);
+    expect(rightClickBackground(press(true), { x: 102, y: 103 })).toBe(true);
+  });
+
+  it("is false beyond the threshold (a pan)", () => {
+    expect(rightClickBackground(press(true), { x: 105, y: 100 })).toBe(false);
+    expect(rightClickBackground(press(true), { x: 103, y: 103 })).toBe(false);
+  });
+
+  it("is false for a press off the background (a node, an edge, a handle) or no press", () => {
+    expect(rightClickBackground(press(false), { x: 100, y: 100 })).toBe(false);
+    expect(rightClickBackground({ x: 100, y: 100, flowId: "ide", onBackground: true }, { x: 100, y: 100 })).toBe(false);
+    expect(rightClickBackground(null, { x: 100, y: 100 })).toBe(false);
   });
 });
 
@@ -1394,5 +1427,110 @@ describe("sessions on a branch (Story 5.3)", () => {
     expect(down?.target).toEqual({ kind: "session", id: "w1" });
     expect(nearestInDirection(rectOf(rects, "session", "w1"), rects, "down")?.target).toEqual({ kind: "branch", id: "ide:x" });
     expect(nearestInDirection(rectOf(rects, "session", "w1"), rects, "up")?.target).toEqual({ kind: "branch", id: "ide:feat" });
+  });
+});
+
+// --- Story 11.5: status at a glance ----------------------------------------------------------
+
+describe("Story 11.5: what states and badges mean", () => {
+  const meanings: Record<StateMeaningKind, string> = {
+    busy: "Claude is working",
+    waiting: "Claude needs an answer; enter opens its terminal",
+    finished: "the turn ended; look at what it did",
+    idle: "waiting for you",
+    starting: "launched, no output yet",
+    stopping: "being stopped",
+    exited: "the process ended",
+    other: "as the session reports it",
+  };
+
+  beforeAll(() => {
+    clearCommands();
+    registerBuiltins();
+  });
+  afterAll(() => {
+    applyBindingOverrides({});
+    clearCommands();
+  });
+
+  for (const [kind, words] of Object.entries(meanings) as [StateMeaningKind, string][]) {
+    it(`stateMeaning(${kind}) reads "${words}"`, () => {
+      expect(stateMeaning(kind)).toBe(words);
+    });
+  }
+
+  it("lists every state once, and the waiting key follows a rebind", () => {
+    expect([...STATE_MEANING_KINDS].sort()).toEqual(Object.keys(meanings).sort());
+    applyBindingOverrides({ "selection.activate": "ctrl+o" });
+    try {
+      expect(stateMeaning("waiting")).toBe("Claude needs an answer; ctrl+o opens its terminal");
+    } finally {
+      applyBindingOverrides({});
+    }
+    expect(stateMeaning("waiting")).toBe(meanings.waiting);
+  });
+
+  const meta: SessionMeta = { startedAt: "", lastActive: "", branch: null, messages: 0 };
+  const child = { ...stub(1, "a"), label: "fix login" };
+
+  it("the card's tooltip and accessible name lead with the state and its meaning", () => {
+    const waiting = { child, attention: true, detail: null, lastLine: null, state: { kind: "waiting" } as SessionState };
+    expect(sessionCardTitle(waiting, meta).split("\n")[0]).toBe("waiting — Claude needs an answer; enter opens its terminal");
+    expect(childAriaLabel("session", waiting)).toBe("Session fix login, waiting — Claude needs an answer; enter opens its terminal, needs you");
+    const other = { child, attention: false, detail: null, lastLine: null, state: { kind: "other", raw: "thinking" } as SessionState };
+    expect(sessionCardTitle(other, meta)).toBe("thinking — as the session reports it\nfix login");
+    const stopping = { child, attention: false, detail: null, lastLine: null, state: { kind: "busy" } as SessionState, stopping: true };
+    expect(sessionCardTitle(stopping, meta).split("\n")[0]).toBe("stopping — being stopped");
+    expect(childAriaLabel("session", stopping)).toBe("Session fix login, stopping — being stopped");
+  });
+
+  it("a session the poll has not seen has no state line", () => {
+    const historic = { child, attention: false, detail: null, lastLine: null, state: null };
+    expect(sessionCardTitle(historic, meta)).toBe("fix login");
+    expect(stateLine(null)).toBeNull();
+    expect(childAriaLabel("session", historic)).toBe("Session fix login");
+  });
+
+  it("the glow names the session ctrl+j would pick in that project", () => {
+    const projects = [project("a", "/p/a")];
+    const session = (state: SessionState, since: number | null): LiveSession => ({
+      state,
+      source: "poll",
+      pid: 1,
+      kind: "interactive",
+      name: null,
+      project_id: "a",
+      cwd: "/p/a",
+      started_at: 0,
+      attention_since: since,
+      last_line: null,
+      detail: null,
+    });
+    const children: ChildNode[] = [
+      { ...stub(1, "a"), id: "s1", label: "tidy up" },
+      { ...stub(2, "a"), id: "s2", label: "fix login" },
+      { ...stub(3, "a"), id: "s3", label: "busy one" },
+    ];
+    const live = { s1: session({ kind: "finished" }, 200), s2: session({ kind: "waiting" }, 100), s3: session({ kind: "busy" }, null) };
+    const [node] = toFlowNodes(inputs({ projects, children, live }));
+    expect(asProject(node).data.attentionText).toBe("fix login is waiting");
+    // Being acknowledged, ctrl+j skips it, and so does the glow.
+    markAcknowledging("s2");
+    try {
+      expect(asProject(toFlowNodes(inputs({ projects, children, live }))[0]).data.attentionText).toBe("tidy up is finished");
+    } finally {
+      unmarkAcknowledging("s2");
+    }
+    expect(glowText("fix login", { kind: "waiting" })).toBe("fix login is waiting");
+    const calm = toFlowNodes(inputs({ projects, children, live: { s3: session({ kind: "busy" }, null) } }));
+    expect(asProject(calm[0]).data.attentionText).toBeNull();
+  });
+
+  it("the badges say what they count", () => {
+    expect(liveBadgeText(1)).toBe("1 session running");
+    expect(liveBadgeText(3)).toBe("3 sessions running");
+    expect(collapsedCountText(5)).toBe("5 children, collapsed");
+    expect(collapsedCountText(1)).toBe("1 child, collapsed");
+    expect(REVIEW_FLAG_TEXT).toBe("asks for review · click to open");
   });
 });

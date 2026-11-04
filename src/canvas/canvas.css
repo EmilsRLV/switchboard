@@ -39,23 +39,57 @@
   opacity: 0.6;
 }
 
-/* Empty-state hint: centred, muted, never in the way of a gesture. */
-.canvas-hint {
+/* Story 11.3: the ghost card, the empty canvas's state. A layer over the canvas that lets the
+   pointer through (so the canvas still pans and takes drops), with, at its centre, a box of the
+   project card's size (240 x 80): a dashed 1-px --fg-faint border, no surface, --radius-md,
+   `Drop a folder here` in --text-md --fg-muted; under the box, the keys line in the old
+   empty-canvas hint's mono --text-md --fg-muted (too wide for the box). Only the card (box and
+   keys) takes the pointer: a click adds a project. No accent, no animation. */
+.ghost-layer {
   position: absolute;
   inset: 0;
-  margin: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  pointer-events: none;
-  user-select: none;
-  color: var(--fg-muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-md);
-  text-align: center;
   padding: 0 1rem;
+  pointer-events: none;
 }
 
-.canvas-hint kbd {
-  margin-left: 0.3em;
+.ghost-card {
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: var(--text-md);
+  cursor: pointer;
+  pointer-events: auto;
+  user-select: none;
+}
+
+.ghost-card-box {
+  box-sizing: border-box;
+  width: 240px;
+  height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: var(--line) dashed var(--fg-faint);
+  border-radius: var(--radius-md);
+}
+
+.ghost-card:hover .ghost-card-box {
+  color: var(--fg);
+}
+
+.ghost-card-keys {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  color: var(--fg-muted);
+  text-align: center;
 }

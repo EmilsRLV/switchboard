@@ -1,0 +1,493 @@
+/* Help figures (Story 11.4; DESIGN.md "Help figures"). A figure is a page-wide box at most 160 px
+   tall on --bg-raised inside a 1-px --border, --radius-sm, holding a stage drawn with the app's
+   own card, handle, edge, pane and palette classes (nodes.css, shell.css). A stage too wide for
+   the pane is scaled down with transform, never resized. Labels are mono --text-xs --fg-muted.
+   Figures move by CSS alone (opacity, transform, stroke-dashoffset), each loop holding its end
+   frame before it starts again; every animated element carries `.help-anim`, and the base rules
+   below are the end frame, which is all that shows under reduced motion. The accent appears only
+   through the canvas's allow-listed classes (.session-attention, .session-attention-word,
+   .project-glow, .attention). */
+
+.help-figure {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 150px;
+  margin: 0 0 0.6rem;
+  overflow: hidden;
+  background: var(--bg-raised);
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-sm);
+  /* A picture: the cards in it are never picked or dragged. */
+  user-select: none;
+}
+
+.help-figure-stage {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.help-figure-node {
+  position: absolute;
+  cursor: default;
+}
+
+.help-figure .project-node,
+.help-figure .child-node {
+  cursor: default;
+}
+
+.help-figure-edges {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* The handle on a card's right edge, where LinkHandles puts it (xyflow's right position). */
+.help-figure-handle {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translate(50%, -50%);
+}
+
+/* The cooperate edge's middle pixel is drawn in the surface it sits on: here the figure's. */
+.help-figure .react-flow__edge .link-cooperate-gap {
+  stroke: var(--bg-raised);
+}
+
+.help-figure-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+/* --- draw-edge: 540 x 160, scaled to fit ------------------------------------------------- */
+
+.help-figure-draw-edge {
+  height: 140px;
+}
+
+.help-figure-draw-edge .help-figure-stage {
+  width: 540px;
+  height: 160px;
+  transform: translate(-50%, -50%) scale(0.74);
+}
+
+/* The line being dragged grows from the handle. */
+.help-figure .help-anim-drag {
+  transform-box: fill-box;
+  opacity: 0;
+}
+
+.help-figure .help-anim-drag-context {
+  transform-origin: 0 100%;
+}
+
+.help-figure .help-anim-drag-cooperate {
+  transform-origin: 0 50%;
+}
+
+.help-figure-draw-edge .help-anim-handle-context {
+  animation: help-handle-context 8s linear infinite;
+}
+
+.help-figure-draw-edge .help-anim-drag-context {
+  animation: help-drag-context 8s ease-out infinite;
+}
+
+.help-figure-draw-edge .help-anim-context {
+  animation: help-edge-context 8s linear infinite;
+}
+
+.help-figure-draw-edge .help-anim-handle-cooperate {
+  animation: help-handle-cooperate 8s linear infinite;
+}
+
+.help-figure-draw-edge .help-anim-drag-cooperate {
+  animation: help-drag-cooperate 8s ease-out infinite;
+}
+
+.help-figure-draw-edge .help-anim-cooperate {
+  animation: help-edge-cooperate 8s linear infinite;
+}
+
+@keyframes help-handle-context {
+  0%,
+  8% {
+    opacity: 0;
+  }
+  12%,
+  40% {
+    opacity: 1;
+  }
+  44%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes help-drag-context {
+  0%,
+  12% {
+    opacity: 1;
+    transform: scale(0);
+  }
+  30% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  34%,
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+
+@keyframes help-edge-context {
+  0%,
+  30% {
+    opacity: 0;
+  }
+  34%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes help-handle-cooperate {
+  0%,
+  42% {
+    opacity: 0;
+  }
+  46%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes help-drag-cooperate {
+  0%,
+  46% {
+    opacity: 0;
+    transform: scale(0);
+  }
+  47% {
+    opacity: 1;
+    transform: scale(0);
+  }
+  64% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  68%,
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+
+@keyframes help-edge-cooperate {
+  0%,
+  64% {
+    opacity: 0;
+  }
+  68%,
+  100% {
+    opacity: 1;
+  }
+}
+
+/* --- edge-kinds: five short edges in a row, still ---------------------------------------- */
+
+.help-figure-edge-kinds {
+  height: 76px;
+}
+
+.help-figure-edge-kinds .help-figure-stage {
+  display: flex;
+  gap: 1.25rem;
+}
+
+.help-figure-kind {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.help-figure-kind-line {
+  overflow: visible;
+}
+
+/* --- node-anatomy: 400 x 150, unscaled, labels on leader lines, still ---------------------- */
+
+.help-figure-node-anatomy {
+  height: 156px;
+}
+
+.help-figure-node-anatomy .help-figure-stage {
+  width: 400px;
+  height: 150px;
+}
+
+.help-figure-callout {
+  position: absolute;
+  transform: translateY(-50%);
+}
+
+.help-figure-callout-end {
+  transform: translate(-100%, -50%);
+}
+
+.help-figure-leader {
+  stroke: var(--fg-faint);
+  stroke-width: var(--line);
+}
+
+/* --- session-states: 7 states, 1 s each, `exited` held 2 s, over an 8-s loop --------------- */
+
+.help-figure-session-states {
+  height: 156px;
+}
+
+.help-figure-session-states .help-figure-stage {
+  width: 240px;
+  height: 132px;
+}
+
+.help-figure .help-anim-step,
+.help-figure .help-anim-glow,
+.help-figure .help-anim-live {
+  opacity: 0;
+}
+
+/* One keyframe set, each step shifted to its second of the loop by a negative delay. */
+.help-figure-session-states .help-anim-step {
+  animation: help-step 8s linear infinite;
+}
+
+.help-figure-session-states .help-anim-step-0 {
+  animation-delay: 0s;
+}
+
+.help-figure-session-states .help-anim-step-1 {
+  animation-delay: -7s;
+}
+
+.help-figure-session-states .help-anim-step-2 {
+  animation-delay: -6s;
+}
+
+.help-figure-session-states .help-anim-step-3 {
+  animation-delay: -5s;
+}
+
+.help-figure-session-states .help-anim-step-4 {
+  animation-delay: -4s;
+}
+
+.help-figure-session-states .help-anim-step-5 {
+  animation-delay: -3s;
+}
+
+.help-figure-session-states .help-anim-step-last {
+  animation: help-step-last 8s linear infinite;
+}
+
+/* The glowing project card over the plain one: on while the session is waiting or finished. */
+.help-figure-session-states .help-anim-glow {
+  animation: help-glow 8s linear infinite;
+}
+
+/* `1 live` until the session exits. */
+.help-figure-session-states .help-anim-live {
+  animation: help-live 8s linear infinite;
+}
+
+@keyframes help-step {
+  0%,
+  12% {
+    opacity: 1;
+  }
+  12.5%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes help-step-last {
+  0%,
+  74.5% {
+    opacity: 0;
+  }
+  75%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes help-glow {
+  0%,
+  24.5% {
+    opacity: 0;
+  }
+  25%,
+  37% {
+    opacity: 1;
+  }
+  37.5%,
+  49.5% {
+    opacity: 0;
+  }
+  50%,
+  62% {
+    opacity: 1;
+  }
+  62.5%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes help-live {
+  0%,
+  74.5% {
+    opacity: 1;
+  }
+  75%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* --- panes: a miniature canvas, 480 x 220, scaled to fit ---------------------------------- */
+
+.help-figure-panes {
+  height: 150px;
+}
+
+.help-figure-panes .help-figure-stage {
+  width: 480px;
+  height: 220px;
+  transform: translate(-50%, -50%) scale(0.6);
+}
+
+.help-figure-canvas {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--bg);
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.help-figure .pane {
+  position: absolute;
+  z-index: 1;
+  width: 180px;
+  overflow: hidden;
+  gap: 0.6rem;
+}
+
+.help-figure-bar {
+  display: block;
+  height: 6px;
+  width: 100%;
+  background: var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.help-figure-bar-short {
+  width: 60%;
+}
+
+.help-figure .palette-backdrop {
+  position: absolute;
+  z-index: 2;
+  padding-top: 28px;
+}
+
+.help-figure .palette {
+  width: 300px;
+  max-height: none;
+}
+
+.help-figure .palette-input {
+  color: var(--fg);
+}
+
+.help-figure-panes .help-anim-pane {
+  animation: help-pane 6s ease-out infinite;
+}
+
+.help-figure-panes .help-anim-palette {
+  animation: help-palette 6s linear infinite;
+}
+
+@keyframes help-pane {
+  0%,
+  10% {
+    transform: translateX(100%);
+  }
+  20%,
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@keyframes help-palette {
+  0%,
+  42% {
+    opacity: 0;
+  }
+  46%,
+  100% {
+    opacity: 1;
+  }
+}
+
+/* Reduced motion: no loop, the end frame still (the base rules above). After every animation
+   rule, at the same specificity, so it wins. */
+@media (prefers-reduced-motion: reduce) {
+  .help-figure .help-anim {
+    animation: none;
+  }
+}
+
+/* --- the What you see tables (Story 11.5; DESIGN.md "The What you see page") ----------------
+   Rows drawn from code: the term in its own canvas look (the state word with its dot, or a short
+   edge line in the edge's classes) in mono --text-sm, then its meaning in --fg, wrapping. */
+
+.help-legend .help-legend-word {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.help-legend td:last-child {
+  color: var(--fg);
+  white-space: normal;
+}
+
+.help-legend-edge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.help-legend-line {
+  flex: none;
+  overflow: visible;
+}
+
+/* The cooperate edge's middle pixel is drawn in the pane's surface. */
+.help-legend .react-flow__edge .link-cooperate-gap {
+  stroke: var(--bg-raised);
+}

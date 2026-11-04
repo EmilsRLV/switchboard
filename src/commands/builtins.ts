@@ -22,8 +22,8 @@ import { isCanvasReady, useCanvasStore } from "../state/canvas";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
 import { elsewhereCount } from "../state/live";
-import { hasSelection, isContextMenuOpen, isElsewhereOpen, isPaneOpen, selectedProject, useUiStore } from "../state/ui";
-import { projectHasChildren } from "../state/workspace";
+import { currentPane, hasSelection, isContextMenuOpen, isElsewhereOpen, isPaneOpen, selectedProject, useUiStore } from "../state/ui";
+import { hasProjects, projectHasChildren } from "../state/workspace";
 import {
   activateSelection,
   attachStub,
@@ -88,12 +88,16 @@ import {
   showChangelog,
   showGettingStarted,
   showHelpPage,
+  showLegend,
   showRoadmap,
   startHelpPagePick,
   toggleHelp,
   whatsNewTitle,
 } from "./help";
 import { isChecklistCardShown, isChecklistLoaded, useChecklistStore } from "../state/checklist";
+import { areHintsOn, isHintsLoaded, useHintsStore } from "../state/hints";
+import { anyHintStepUndone } from "../help/hints";
+import { isTourOn, useTourStore } from "../state/tour";
 import {
   canClearReview,
   canOpenReview,
@@ -200,6 +204,19 @@ function arrowCommand(direction: Direction, title: string): Command {
   };
 }
 
+/**
+ * Story 11.6: the `when` of the tour's keys: the tour is on and the palette is not open over it
+ * (then the palette has the arrows, Enter and Esc).
+ */
+function tourKeys(): boolean {
+  return isTourOn() && !isPaletteOpen();
+}
+
+/** Story 11.3: a step some hint names (`session`, `edge`, `review`) is still undone, so the hints commands mean something. */
+function hintStepsLeft(): boolean {
+  return anyHintStepUndone(useChecklistStore.getState().done);
+}
+
 export function builtinCommands(): Command[] {
   return [
     {
@@ -243,6 +260,10 @@ export function builtinCommands(): Command[] {
     {
       id: "settings.open",
       title: "Open settings",
+      // Story 11.1: on the canvas menu, showing its toggle's key.
+      menu: "canvas",
+      menuOrder: 31,
+      keyFrom: "settings.toggle",
       run: () => openPane("settings"),
     },
     {
@@ -256,6 +277,9 @@ export function builtinCommands(): Command[] {
     {
       id: "help.open",
       title: "Help",
+      menu: "canvas",
+      menuOrder: 30,
+      keyFrom: "help.toggle",
       run: openHelpHere,
     },
     {
@@ -304,6 +328,12 @@ export function builtinCommands(): Command[] {
       title: "Help: roadmap",
       run: showRoadmap,
     },
+    // -- Story 11.5: the What you see page ----------------------------------------------------------
+    {
+      id: "help.legend",
+      title: "Help: what you see",
+      run: showLegend,
+    },
     {
       // The Help page's Show on canvas: the card back (not dismissed), progress kept.
       id: "checklist.show",
@@ -318,6 +348,69 @@ export function builtinCommands(): Command[] {
       // `isChecklistCardShown` holds only once loaded.
       when: isChecklistCardShown,
       run: () => useChecklistStore.getState().dismiss(),
+    },
+    // -- Story 11.3: the canvas's inline hints (no default key) ------------------------------------
+    {
+      id: "hints.hide",
+      title: "Hide canvas hints",
+      when: () => isHintsLoaded() && hintStepsLeft() && areHintsOn(),
+      run: () => useHintsStore.getState().setHidden(true),
+    },
+    {
+      // Shown for the undone steps even with the Getting started card dismissed or never shown.
+      id: "hints.show",
+      title: "Show canvas hints",
+      when: () => isHintsLoaded() && hintStepsLeft() && !areHintsOn(),
+      run: () => useHintsStore.getState().setHidden(false),
+    },
+    // -- Story 11.6: the first-run tour ------------------------------------------------------------
+    {
+      // Always in the palette, bindable, no default key. From stop 1, also while on. An open context
+      // menu (z 20, over the tour) and the open pane (which would cover targets; Help hands back to
+      // the pane it covered, so repeat) go first; nothing on the canvas changes.
+      id: "tour.start",
+      title: "Take the tour",
+      run: () => {
+        useUiStore.getState().closeContextMenu();
+        for (let i = 0; i < 3 && isPaneOpen(); i++) closeOpenPane();
+        useTourStore.getState().start();
+      },
+    },
+    {
+      // The card's Next (Finish on the last stop). Before `selection.activate`: while the tour is
+      // on, the dispatcher runs only the tour's keys and the palette's.
+      id: "tour.next",
+      title: "Tour: next",
+      keybinding: "arrowright",
+      hidden: true,
+      when: tourKeys,
+      run: () => useTourStore.getState().next(),
+    },
+    {
+      // Next's second key, a key-only carrier like `palette.toggleFromTerminal`.
+      id: "tour.next.enter",
+      title: "Tour: next (enter)",
+      keybinding: "enter",
+      hidden: true,
+      when: tourKeys,
+      run: () => useTourStore.getState().next(),
+    },
+    {
+      id: "tour.back",
+      title: "Tour: back",
+      keybinding: "arrowleft",
+      hidden: true,
+      when: tourKeys,
+      run: () => useTourStore.getState().back(),
+    },
+    {
+      // First in the Esc order while the tour is on (the other Esc carriers are not dispatched then).
+      id: "tour.skip",
+      title: "Skip the tour",
+      keybinding: "escape",
+      hidden: true,
+      when: tourKeys,
+      run: () => useTourStore.getState().end(),
     },
     {
       id: "pane.close",
@@ -357,6 +450,9 @@ export function builtinCommands(): Command[] {
       id: "canvas.fitView",
       title: "Fit view",
       keybinding: "ctrl+0",
+      menu: "canvas",
+      menuOrder: 20,
+      menuWhen: hasProjects,
       when: isCanvasReady,
       run: async () => {
         await useCanvasStore.getState().fitView();
@@ -366,12 +462,16 @@ export function builtinCommands(): Command[] {
       id: "project.add",
       title: "Add project folder…",
       keybinding: "ctrl+o",
+      menu: "canvas",
+      menuOrder: 10,
       when: () => isCanvasReady() && isPickerIdle(),
       run: addProjectFromPicker,
     },
     {
       id: "project.import",
       title: "Import from Claude…",
+      menu: "canvas",
+      menuOrder: 11,
       when: isCanvasReady,
       run: () => openPane("import"),
     },
@@ -406,6 +506,8 @@ export function builtinCommands(): Command[] {
       title: "Resume",
       menu: "node",
       menuOrder: 7,
+      toolbar: 1,
+      short: "resume",
       when: canResumeSession,
       run: async () => {
         await resumeSelectedSession();
@@ -417,6 +519,8 @@ export function builtinCommands(): Command[] {
       title: "Fork",
       menu: "node",
       menuOrder: 8,
+      toolbar: 2,
+      short: "fork",
       when: canForkSession,
       run: async () => {
         await forkSelectedSession();
@@ -427,6 +531,8 @@ export function builtinCommands(): Command[] {
       title: "Show terminal",
       menu: "node",
       menuOrder: 9,
+      toolbar: 1,
+      short: "term",
       when: canShowSessionTerminal,
       run: async () => {
         await showSelectedSessionTerminal();
@@ -461,7 +567,9 @@ export function builtinCommands(): Command[] {
       keybinding: "n",
       menu: "node",
       menuOrder: 10,
-      when: () => hasSelectedProject() && useUiStore.getState().pane !== "launch",
+      toolbar: 1,
+      short: "new",
+      when: () => hasSelectedProject() && currentPane() !== "launch",
       run: withSelectedProject(openLaunchSheet),
     },
     {
@@ -469,6 +577,8 @@ export function builtinCommands(): Command[] {
       title: "Plain terminal…",
       menu: "node",
       menuOrder: 11,
+      toolbar: 2,
+      short: "term",
       when: hasSelectedProject,
       run: withSelectedProject(openProjectTerminal),
     },
@@ -652,6 +762,8 @@ export function builtinCommands(): Command[] {
       title: "New worktree…",
       menu: "node",
       menuOrder: 51,
+      toolbar: 2,
+      short: "worktree",
       when: canNewWorktreeOnBranch,
       run: async () => {
         await openWorktreeSheetForBranch();
@@ -666,6 +778,8 @@ export function builtinCommands(): Command[] {
       keybinding: "n",
       menu: "node",
       menuOrder: 52,
+      toolbar: 1,
+      short: "new",
       when: canNewSessionOnBranch,
       run: async () => {
         await openLaunchSheetForBranch();
@@ -678,6 +792,8 @@ export function builtinCommands(): Command[] {
       title: "Remove worktree…",
       menu: "node",
       menuOrder: 53,
+      toolbar: 2,
+      short: "remove",
       when: canRemoveWorktree,
       run: async () => {
         await openRemoveWorktreeSheet();
@@ -691,6 +807,8 @@ export function builtinCommands(): Command[] {
       keybinding: "e",
       menu: "node",
       menuOrder: 13,
+      toolbar: 3,
+      short: "link",
       when: canLink,
       run: () => {
         startLink();
@@ -780,6 +898,8 @@ export function builtinCommands(): Command[] {
       keybinding: "r",
       menu: "node",
       menuOrder: 60,
+      toolbar: 4,
+      short: "review",
       when: () => canReviewSelection() && (noSurfaceOpen() || isPaletteOpen() || isContextMenuOpen()),
       run: () => {
         reviewSelection();
