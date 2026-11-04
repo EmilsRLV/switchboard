@@ -1,7 +1,7 @@
-import { memo, useSyncExternalStore } from "react";
+import { memo, useEffect, useReducer, useSyncExternalStore } from "react";
 import type { NodeProps } from "@xyflow/react";
 import type { ChildKind } from "../ipc";
-import { commandHint } from "../commands/keybindings";
+import { subscribeBindings } from "../commands/registry";
 import { openReview } from "../commands/review";
 import { unreadBadge } from "../state/inbox";
 import { ForkHandles, LinkHandles } from "./LinkHandles";
@@ -13,6 +13,7 @@ import {
   childAriaLabel,
   hasBranchSecondLine,
   moreLabel,
+  REVIEW_FLAG_TEXT,
   sessionCardMeta,
   sessionCardTitle,
   type BranchFlowNode,
@@ -47,6 +48,9 @@ import {
  * session); selection is an outline in `--fg`, never the accent.
  */
 function ChildCard({ data, kind }: { data: ChildNodeData; kind: ChildKind }) {
+  // Story 11.5: the state's meaning names a key (`enter`); re-render on a rebind.
+  const [, bump] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => subscribeBindings(bump), []);
   const { child, selected, attention } = data;
   const className =
     `child-node child-node-${kind}` + (selected ? " is-selected" : "") + (attention ? " session-attention" : "");
@@ -93,8 +97,8 @@ function SessionCard({ className, ariaLabel, data }: { className: string; ariaLa
             <button
               type="button"
               className="session-review nodrag"
-              title={commandHint("review.open")}
-              aria-label={`Open review request of ${child.label}`}
+              title={REVIEW_FLAG_TEXT}
+              aria-label={`${child.label} ${REVIEW_FLAG_TEXT}`}
               onClick={(event) => {
                 event.stopPropagation();
                 void openReview(child.id);
@@ -254,5 +258,5 @@ function minuteSnapshot(): number {
 
 /** `Date.now()`, refreshed once a minute while any session card is mounted. */
 function useMinute(): number {
-  return useSyncExternalStore(subscribeMinute, minuteSnapshot);
+  return useSyncExternalStore(subscribeMinute, minuteSnapshot, minuteSnapshot);
 }

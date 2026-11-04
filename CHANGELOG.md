@@ -45,6 +45,14 @@ What changed in Switchboard, newest first. Each release lists what you can see a
   stepping through its states (Sessions), and a pane and the palette opening (Canvas); with reduced motion
   on, each holds still on its last frame. Two are still: context, cooperate, pending, failed and selected
   edges (Edges), and the parts of a project node (Projects).
+- Hover says what you see: a session node's tooltip starts with its state and what it means, such as
+  `waiting — Claude needs an answer; enter opens its terminal`. Hovering a glowing project node names the
+  session that needs you; hovering `N live` shows `N sessions running`, a collapsed count `N children,
+  collapsed`, the **review** flag `asks for review · click to open`, and an edge line what it is doing now,
+  in the edge inspector's words. The badges themselves read as before.
+- A **What you see** page, second in Contents (also **Help: what you see**), lists every session state and
+  edge look with its meaning, under their pictures, plus the attention colour, the glow and the badges. The
+  "What you can see" details of the Canvas, Projects, Sessions and Edges pages moved there.
 
 ## 0.1.0 — 2026-10-31
 

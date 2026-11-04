@@ -18,6 +18,9 @@ import { BranchNode, SessionNode } from "./ChildNode";
 import { NodeToolbar, ToolbarRow } from "./NodeToolbar";
 import type { BranchFlowNode, ProjectFlowNode, SessionFlowNode } from "./nodes";
 import { ProjectNode } from "./ProjectNode";
+import { ContextEdge, CooperateEdge } from "./Canvas";
+import type { LinkFlowEdge } from "./edges";
+import type { EdgeProps } from "@xyflow/react";
 
 function project(id: string): Project {
   return { id, path: `/p/${id}`, label: id, position: { x: 0, y: 0 }, expanded: true, color: null, launchDefaults: null, showBranches: true };
@@ -278,6 +281,30 @@ describe("the node toolbar (Story 11.2)", () => {
       expect(selected).not.toContain("project.newSession");
       expect(render(<SessionNode {...nodeProps<SessionFlowNode>({ data: childData(SESSION, false), dragging: false })} />)).not.toContain("node-toolbar");
       expect(render(<SessionNode {...nodeProps<SessionFlowNode>({ data: childData(SESSION, true), dragging: true })} />)).not.toContain("node-toolbar");
+    });
+
+    it("Story 11.5: a glowing, collapsed project card says what its glow, live badge and count mean", () => {
+      const data = { ...projectData(false), project: { ...project("a"), expanded: false }, attention: true, attentionText: "fix login is waiting", liveCount: 3, childCount: 5 };
+      const html = render(<ProjectNode {...nodeProps<ProjectFlowNode>({ data, dragging: false })} />);
+      expect(html).toContain('aria-label="Project a, 3 sessions running, fix login is waiting" title="fix login is waiting"');
+      expect(html).toContain('<span class="project-node-live" title="3 sessions running">3 live</span>');
+      expect(html).toContain('<span class="project-node-badge" title="5 children, collapsed">5</span>');
+      expect(html).toContain('aria-label="Expand, 5 children, collapsed"');
+    });
+
+    it("Story 11.5: a session asking for review shows the flag's meaning", () => {
+      const child = { ...SESSION, label: "fix login", session: { startedAt: "", lastActive: "", branch: null, messages: 1 } };
+      const data = { ...childData(child, false), review: true, state: { kind: "waiting" as const }, attention: true };
+      const html = render(<SessionNode {...nodeProps<SessionFlowNode>({ data, dragging: false })} />);
+      expect(html).toContain('title="asks for review · click to open" aria-label="fix login asks for review · click to open"');
+      expect(html).toContain('title="waiting — Claude needs an answer; enter opens its terminal');
+    });
+
+    it("Story 11.5: an edge line carries its hover text as an SVG title", () => {
+      const edgeProps = (hover: string) =>
+        ({ sourceX: 0, sourceY: 0, targetX: 100, targetY: 0, sourcePosition: "right", targetPosition: "left", data: { edgeId: "e1", label: null, selected: false, live: null, hover } }) as unknown as EdgeProps<LinkFlowEdge>;
+      expect(render(<svg><ContextEdge {...edgeProps("context edge · pending (waiting for idle)")} /></svg>)).toContain("<title>context edge · pending (waiting for idle)</title>");
+      expect(render(<svg><CooperateEdge {...edgeProps("cooperate edge")} /></svg>)).toContain("<title>cooperate edge</title>");
     });
 
     it("a branch card shows the branch's commands when selected", () => {

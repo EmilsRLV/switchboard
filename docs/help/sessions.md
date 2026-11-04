@@ -39,12 +39,5 @@ While it is waiting or finished, its state word and border take the attention co
 glows.
 ```
 
-The first line is the session's title, then `N new` for unread peer messages and **review** when Claude asks
-for one. The second line: its state, then branch, message count and age:
-
-- `starting`, `busy`, `idle`, `stopping`, `exited`;
-- `finished` (it went from busy to idle) or `waiting` (Claude needs an answer). Selecting the session marks
-  it seen.
-
-`ctrl+j` (**Go to session that needs you**) selects the session that has waited longest. Live sessions in
-folders not on the canvas wait in the Elsewhere tray.
+The first line is the session's title, then `N new` and **review** when they apply; the second, its state,
+branch, message count and age. What each means is on [What you see](legend.md#session-states).

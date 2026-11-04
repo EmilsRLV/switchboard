@@ -460,3 +460,34 @@
     animation: none;
   }
 }
+
+/* --- the What you see tables (Story 11.5; DESIGN.md "The What you see page") ----------------
+   Rows drawn from code: the term in its own canvas look (the state word with its dot, or a short
+   edge line in the edge's classes) in mono --text-sm, then its meaning in --fg, wrapping. */
+
+.help-legend .help-legend-word {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.help-legend td:last-child {
+  color: var(--fg);
+  white-space: normal;
+}
+
+.help-legend-edge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.help-legend-line {
+  flex: none;
+  overflow: visible;
+}
+
+/* The cooperate edge's middle pixel is drawn in the pane's surface. */
+.help-legend .react-flow__edge .link-cooperate-gap {
+  stroke: var(--bg-raised);
+}

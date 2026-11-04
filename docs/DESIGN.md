@@ -469,7 +469,10 @@ chrome follows every rule here.
 - **The What you see page** (Story 11.5) is a guide page after Canvas in Contents: the state words, the
   attention colour, the glow and the badges, then the edge looks, each a row of the term (the state word in its
   own look: the busy dot, the accent on `waiting` / `finished`) and its meaning in `--fg`, with the session-states
-  and edge-kinds figures above their rows. Keys in the rows are mono `--text-sm` like every page.
+  and edge-kinds figures above their rows. Keys in the rows are mono `--text-sm` like every page. The rows are
+  drawn from code (`table <name>` blocks: the meanings live once, in `stateMeaning` and `edgeLooks`) in the
+  Keyboard page's table look (`help-table`): the term in mono `--text-sm` (an edge's term after a 40-px sample
+  line in that edge's own classes), the meaning wrapping in `--fg`. No accent beyond the allow-listed classes.
 - **The tour** (Story 11.6) is the one dimmed, guided surface. A layer at the palette backdrop's colour
   (`--bg` at 55%) over the shell, panes and toasts, under the palette and the menu, made of four rectangles
   around the stop's target so the target shows through a **cut-out** with a 1-px `--focus` outline at 2-px

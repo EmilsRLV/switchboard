@@ -17,13 +17,22 @@ project node becomes a dashed context edge; onto a session node, a cooperate edg
 - Drag from a node's **handle** onto another node. A branch node can be a target but has no handle.
 - Or press `e` (**Link to…**) on a selected node and pick the target.
 - **Select edge…** lists the selected node's edges; clicking a line selects it too.
-- `delete` (**Delete edge**) removes the selected edge at once; a running session keeps
+- `delete` (**Delete edge**) removes the selected edge; a running session keeps
   the folder.
 
 ## The edge inspector
 
 Selecting an edge opens the edge inspector (or press `enter`, or run **Inspect edge**). It shows the kind,
-the two ends, a **Label** field and what the edge is doing **Now:**. Its buttons:
+the two ends, a **Label** field and what the edge is doing **Now:**:
+
+- `pending`: waiting for the session to go idle, or held back while you type (Retry when done).
+- `applied`: Claude has the folder. For a session running here, Switchboard types `/add-dir` once it is
+  idle and you are not typing.
+- `notified`: a cooperate side took the peer line.
+- `failed`: not confirmed, or the folder is missing.
+
+A stopped session gets its context edges at the next **Resume**, and its peers at the next start. An
+edge with a hidden end is not drawn but stays. Its buttons:
 
 - **Retry** (**Retry edge**) sends the folder, or the peer line, again after a failure.
 - **Restart with flags** stops the session and resumes it with its context edges' folders.
@@ -37,13 +46,4 @@ the two ends, a **Label** field and what the edge is doing **Now:**. Its buttons
 Five edges: context (dashed), cooperate (double), pending (muted), failed (attention colour), selected.
 ```
 
-A context edge from a session running here is applied live: once it is idle and you are not typing in it,
-Switchboard types `/add-dir` with the folder.
-
-- `pending`: waiting for the session to go idle, or held back while you type (Retry when done).
-- `applied`: Claude has the folder.
-- `notified`: a cooperate side took the peer line.
-- `failed`: not confirmed, or the folder is missing.
-
-A session that is not running gets its context edges at the next **Resume**, and its peers at the next start.
-An edge with a hidden end is not drawn but stays.
+What each look means is on [What you see](legend.md#edges); hover a line for its state.

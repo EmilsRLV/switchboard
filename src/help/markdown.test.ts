@@ -101,6 +101,17 @@ describe("renderMarkdown", () => {
     expect(render("```figure <b>x</b>\nalt <i>text</i>\n```")).toEqual([{ type: "figure", name: "<b>x</b>", alt: "alt <i>text</i>" }]);
   });
 
+  it("Story 11.5: a fenced block with the info `table <name>` names a generated table; `table` alone stays code", () => {
+    expect(render("```table session-states\nThe session states\n  and what each means.\n```")).toEqual([
+      { type: "table", name: "session-states", text: "The session states and what each means." },
+    ]);
+    expect(render("```table nope\nx\n```")).toEqual([{ type: "table", name: "nope", text: "x" }]);
+    expect(render("```table session-states \nx\n```")).toEqual([{ type: "table", name: "session-states", text: "x" }]);
+    expect(render("```table <b>x</b>\n<i>y</i>\n```")).toEqual([{ type: "table", name: "<b>x</b>", text: "<i>y</i>" }]);
+    expect(render("```table\nx\n```")).toEqual([{ type: "codeBlock", text: "x" }]);
+    expect(render("```tables edge-looks\nx\n```")).toEqual([{ type: "codeBlock", text: "x" }]);
+  });
+
   it("shows raw HTML, inline and as a block, as literal text", () => {
     expect(render("<script>alert(1)</script>")).toEqual([{ type: "paragraph", children: [text("<script>alert(1)</script>")] }]);
     expect(inline('a <img src=x onerror="alert(1)"> b <b>c</b>')).toEqual([text('a <img src=x onerror="alert(1)"> b <b>c</b>')]);

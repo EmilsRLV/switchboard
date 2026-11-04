@@ -6,7 +6,17 @@ import { useUiStore } from "../state/ui";
 import { LinkHandles } from "./LinkHandles";
 import { NodeHint } from "./NodeHint";
 import { NodeToolbar, useHover } from "./NodeToolbar";
-import { aheadBehind, BRANCHES_UNAVAILABLE, branchesChipShown, chevronCommandId, shortenPath, statusLine, type ProjectFlowNode } from "./nodes";
+import {
+  aheadBehind,
+  BRANCHES_UNAVAILABLE,
+  branchesChipShown,
+  chevronCommandId,
+  collapsedCountText,
+  liveBadgeText,
+  shortenPath,
+  statusLine,
+  type ProjectFlowNode,
+} from "./nodes";
 
 /**
  * A project node: a compact card with the folder name, a shortened path (full path on
@@ -21,14 +31,17 @@ import { aheadBehind, BRANCHES_UNAVAILABLE, branchesChipShown, chevronCommandId,
  * `project.expand` / `project.collapse`. Dragging, selection and the right-click menu are
  * the canvas's; the selected card shows an outline in `--fg`. While any of its sessions is
  * `finished` or `waiting` the card glows: a pulsing accent outline outside the selection's
- * (`project-glow`, Story 3.3). The card's edge handle (Story 6.1) sits on its right edge. While
+ * (`project-glow`, Story 3.3), whose tooltip names the session (`fix login is waiting`, Story 11.5;
+ * the badges say what they count the same way). The card's edge handle (Story 6.1) sits on its right edge. While
  * the card is hovered or selected (and not dragged), its node toolbar (Story 11.2) hangs to the
  * right of it. The first project carries the inline hints (Story 11.3): under the card, or beside
  * its handle while the handle shows.
  */
 export const ProjectNode = memo(function ProjectNode({ data, dragging }: NodeProps<ProjectFlowNode>) {
   const [hovered, hover] = useHover();
-  const { project, status, flashed, selected, childCount, liveCount, attention, branchesError } = data;
+  const { project, status, flashed, selected, childCount, liveCount, attention, attentionText, branchesError } = data;
+  // Story 11.5: the glow names the session that needs you (`fix login is waiting`).
+  const glow = attention ? (attentionText ?? "a session needs you") : null;
   const line = statusLine(status);
   const divergence = aheadBehind(status);
   const isRepo = status?.kind === "repo";
@@ -53,8 +66,8 @@ export const ProjectNode = memo(function ProjectNode({ data, dragging }: NodePro
           "project-node" + (flashed ? " is-flash" : "") + (selected ? " is-selected" : "") + (attention ? " project-glow" : "")
         }
         role="group"
-        aria-label={`Project ${project.label}${attention ? ", needs you" : ""}`}
-        title={attention ? `${project.label}: a session needs you` : undefined}
+        aria-label={`Project ${project.label}${liveCount > 0 ? `, ${liveBadgeText(liveCount)}` : ""}${glow === null ? "" : `, ${glow}`}`}
+        title={glow ?? undefined}
       >
         <div className="project-node-head">
           {childCount > 0 && (
@@ -63,21 +76,26 @@ export const ProjectNode = memo(function ProjectNode({ data, dragging }: NodePro
               type="button"
               className="project-node-toggle nodrag"
               aria-expanded={project.expanded}
-              aria-label={project.expanded ? "Collapse children" : `Expand ${childCount} children`}
+              aria-label={project.expanded ? "Collapse children" : `Expand, ${collapsedCountText(childCount)}`}
               title={commandHint(chevronCommandId(project))}
               onClick={toggle}
             >
               <span className="project-node-chevron" aria-hidden="true">
                 {project.expanded ? "▾" : "▸"}
               </span>
-              {!project.expanded && <span className="project-node-badge">{childCount}</span>}
+              {!project.expanded && (
+                // Story 11.5: the count says what it counts; the chevron keeps its command hint.
+                <span className="project-node-badge" title={collapsedCountText(childCount)}>
+                  {childCount}
+                </span>
+              )}
             </button>
           )}
           <span className="project-node-label" title={branchesError === null ? undefined : project.path}>
             {project.label}
           </span>
           {liveCount > 0 && (
-            <span className="project-node-live" title="live sessions">
+            <span className="project-node-live" title={liveBadgeText(liveCount)}>
               {liveCount} live
             </span>
           )}

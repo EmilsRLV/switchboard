@@ -36,9 +36,6 @@ A project node: on top, the chevron with the child count (while collapsed), the 
 then the path; then the git line and the branches chip. The handle is on the right edge.
 ```
 
-- `N live` counts running sessions; hover the shortened path for all of it.
-- The git line: `main · 3 changed`, `↑1 ↓2` against the upstream, or `not a git repo`, `folder missing`,
-  `git unavailable` or `git error`.
-- A glow in the attention colour while one of its sessions is `finished` or `waiting`.
-
-The Elsewhere tray (`elsewhere N`) lists live sessions in folders not on the canvas; **Add folder** adds one.
+Hover the shortened path for all of it. The git line reads `main · 3 changed`, `↑1 ↓2` against the
+upstream, or `not a git repo`, `folder missing`, `git unavailable` or `git error`; the glow and the badges
+are on [What you see](legend.md#colour-glow-and-badges).

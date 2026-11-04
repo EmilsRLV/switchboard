@@ -19,8 +19,9 @@ import type {
   Viewport,
 } from "../ipc";
 import type { DragOverrides } from "../state/canvas";
+import { commandKey } from "../commands/keybindings";
 import { unreadIn } from "../state/inbox";
-import { isLiveState, needsAttention, sameState, stateWord } from "../state/live";
+import { attentionOrder, isAcknowledging, isLiveState, needsAttention, sameState, stateWord } from "../state/live";
 
 /** What a `ProjectNode` renders from. */
 export type ProjectNodeData = {
@@ -43,6 +44,11 @@ export type ProjectNodeData = {
    * or `waiting`: the card glows (Story 3.3).
    */
   attention: boolean;
+  /**
+   * Story 11.5: the glow's tooltip, `<session label> is <state>`, naming the first of its sessions
+   * that needs attention (the one `ctrl+j` would pick there); `null` while it does not glow.
+   */
+  attentionText: string | null;
   /**
    * Why the last branch read failed (Story 5.1), while branches are on: the path row reads
    * `branches unavailable` (muted) with this on hover. `null` otherwise.
@@ -485,6 +491,15 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
   for (const child of children) if (child.kind === "session") titles.set(child.id, child.label);
   const forkedFromTitleOf = (child: ChildNode): string | null =>
     child.forkedFrom === null || child.forkedFrom === undefined ? null : (titles.get(child.forkedFrom) ?? null);
+  // Story 11.5: the glow's tooltip names the session `ctrl+j` would pick in this project (one being
+  // acknowledged is skipped, as there); while every one is, the longest waiting of them.
+  const glowTextOf = (kids: readonly ChildNode[]): string | null => {
+    const first = attentionOrder(kids, live, (id) => !isAcknowledging(id))[0] ?? attentionOrder(kids, live)[0];
+    if (first === undefined) return null;
+    const child = kids.find((c) => c.kind === "session" && c.id === first.sessionId);
+    const state = child === undefined ? null : stateOf(child);
+    return child === undefined || state === null ? null : glowText(child.label, state);
+  };
   const before = new Map<string, CanvasFlowNode>();
   for (const node of previous) before.set(node.id, node);
 
@@ -516,6 +531,7 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
           return state !== null && isLiveState(state);
         }).length,
         attention: kids.some((child) => needsAttention(stateOf(child))),
+        attentionText: glowTextOf(kids),
         branchesError: project.showBranches && Object.hasOwn(branchErrors, project.id) ? (branchErrors[project.id] ?? null) : null,
       },
       zIndex: layer(projectSelected, projectDrag),
@@ -602,6 +618,7 @@ function sameNode(a: CanvasFlowNode, b: CanvasFlowNode): boolean {
       a.data.childCount === b.data.childCount &&
       a.data.liveCount === b.data.liveCount &&
       a.data.attention === b.data.attention &&
+      a.data.attentionText === b.data.attentionText &&
       a.data.branchesError === b.data.branchesError &&
       sameProject(a.data.project, b.data.project) &&
       sameStatus(a.data.status, b.data.status)
@@ -891,15 +908,18 @@ export function sessionStateTone(state: SessionState | null): SessionStateTone |
 export function childAriaLabel(
   kind: ChildKind,
   data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine"> &
-    Partial<Pick<ChildNodeData, "stopping" | "forkedFromTitle" | "statusText" | "unread" | "review">>,
+    Partial<Pick<ChildNodeData, "state" | "stopping" | "forkedFromTitle" | "statusText" | "unread" | "review">>,
 ): string {
   if (kind === "branch") return branchAriaLabel(data.child.label, data.child.branch ?? null);
   const parts = [`Session ${data.child.label}`];
+  // Story 11.5: the state and its meaning, as the tooltip's first line says them.
+  const state = stateLine(data.state ?? null, data.stopping === true);
+  if (state !== null) parts.push(state);
   if (data.review === true) parts.push(REVIEW_TEXT);
   const unread = unreadText(data.unread ?? 0);
   if (unread !== null) parts.push(unread);
   if (data.forkedFromTitle !== null && data.forkedFromTitle !== undefined) parts.push(forkedFromText(data.forkedFromTitle));
-  if (data.stopping === true) parts.push(STOPPING_WORD);
+  if (state === null && data.stopping === true) parts.push(STOPPING_WORD);
   if (data.statusText !== null && data.statusText !== undefined && data.statusText !== "") parts.push(`status: ${data.statusText}`);
   if (data.detail !== null && data.detail !== "") parts.push(`waiting: ${data.detail}`);
   if (data.lastLine !== null && data.lastLine !== "") parts.push(`last line: ${data.lastLine}`);
@@ -908,16 +928,20 @@ export function childAriaLabel(
 }
 
 /**
- * A session card's `title` attribute: a `waiting` session's reason (`detail`, Story 4.3)
- * first, then its `set_status` text (Story 7.2), then the hover text, then a `finished` session's last line (as Rust cut it: at most
+ * A session card's `title` attribute: the state and its meaning first while the poll has seen
+ * the session (`waiting — Claude needs an answer; enter opens its terminal`, Story 11.5;
+ * `stopping — being stopped` while its terminal is being stopped), then a `waiting` session's
+ * reason (`detail`, Story 4.3), then its `set_status` text (Story 7.2), then the hover text, then a `finished` session's last line (as Rust cut it: at most
  * 200 characters, `…` when cut), then `needs you` while it needs attention.
  */
 export function sessionCardTitle(
   data: Pick<ChildNodeData, "child" | "attention" | "detail" | "lastLine"> &
-    Partial<Pick<ChildNodeData, "forkedFromTitle" | "statusText" | "unread" | "review">>,
+    Partial<Pick<ChildNodeData, "state" | "stopping" | "forkedFromTitle" | "statusText" | "unread" | "review">>,
   meta: SessionMeta,
 ): string {
   const lines: string[] = [];
+  const state = stateLine(data.state ?? null, data.stopping === true);
+  if (state !== null) lines.push(state);
   if (data.review === true) lines.push(REVIEW_TEXT);
   const unread = unreadText(data.unread ?? 0);
   if (unread !== null) lines.push(unread);
@@ -932,6 +956,79 @@ export function sessionCardTitle(
 
 /** A flagged session in words (Story 7.4), for its accessible name and tooltip. */
 export const REVIEW_TEXT = "asks for review";
+
+/** The `review` flag's tooltip and accessible name (Story 11.5): what it is, and what a click does. */
+export const REVIEW_FLAG_TEXT = `${REVIEW_TEXT} · click to open`;
+
+// --- meanings (Story 11.5) -------------------------------------------------------------------
+
+/** A state a card can show: the session's kind, or `stopping` while its terminal is being stopped. */
+export type StateMeaningKind = SessionState["kind"] | "stopping";
+
+/** The command whose key the `waiting` meaning names (Enter on the selected card). */
+export const ACTIVATE_COMMAND = "selection.activate";
+
+/**
+ * The one table of what each state means (Story 11.5): the card's tooltip and accessible name,
+ * and the What you see page's rows. The key in `waiting` is `selection.activate`'s effective key,
+ * so a rebind shows; with no key the clause is left out.
+ */
+export function stateMeaning(kind: StateMeaningKind): string {
+  switch (kind) {
+    case "busy":
+      return "Claude is working";
+    case "waiting": {
+      const key = commandKey(ACTIVATE_COMMAND);
+      return key === null ? "Claude needs an answer" : `Claude needs an answer; ${key} opens its terminal`;
+    }
+    case "finished":
+      return "the turn ended; look at what it did";
+    case "idle":
+      return "waiting for you";
+    case "starting":
+      return "launched, no output yet";
+    case "stopping":
+      return "being stopped";
+    case "exited":
+      return "the process ended";
+    case "other":
+      return "as the session reports it";
+  }
+}
+
+/** The What you see page's order of the states: exhaustive, so a new kind fails the typecheck. */
+const STATE_ORDER = { starting: 0, busy: 1, waiting: 2, finished: 3, idle: 4, stopping: 5, exited: 6, other: 7 } satisfies Record<StateMeaningKind, number>;
+
+/** Every state {@link stateMeaning} knows, in the order the What you see page lists them. */
+export const STATE_MEANING_KINDS: readonly StateMeaningKind[] = (Object.keys(STATE_ORDER) as StateMeaningKind[]).sort(
+  (a, b) => STATE_ORDER[a] - STATE_ORDER[b],
+);
+
+/**
+ * A card's state line: `<word> — <meaning>` (`thinking — as the session reports it` for an
+ * unrecognised state), `stopping — being stopped` while a live session's terminal is being
+ * stopped, `null` for a session the poll has not seen this run (historic).
+ */
+export function stateLine(state: SessionState | null, stopping = false): string | null {
+  if (state === null) return null;
+  if (stopping && isLiveState(state)) return `${STOPPING_WORD} — ${stateMeaning("stopping")}`;
+  return `${stateWord(state)} — ${stateMeaning(state.kind)}`;
+}
+
+/** The project glow's tooltip (Story 11.5): `<session label> is <state>`. */
+export function glowText(sessionLabel: string, state: SessionState): string {
+  return `${sessionLabel} is ${stateWord(state)}`;
+}
+
+/** The `N live` badge's tooltip (Story 11.5): `1 session running`, `N sessions running`. */
+export function liveBadgeText(count: number): string {
+  return count === 1 ? "1 session running" : `${count} sessions running`;
+}
+
+/** The collapsed count's tooltip (Story 11.5): `N children, collapsed` (`1 child, collapsed`). */
+export function collapsedCountText(count: number): string {
+  return count === 1 ? "1 child, collapsed" : `${count} children, collapsed`;
+}
 
 /**
  * A session's unread peer messages in words (Story 7.3), for its accessible name and tooltip:

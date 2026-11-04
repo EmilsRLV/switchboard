@@ -131,6 +131,31 @@ describe("HelpPane", () => {
     expect(known.startsWith('<div class="help-figure help-figure-edge-kinds" role="img" aria-label="Five edges">')).toBe(true);
   });
 
+  it("Story 11.5: a table with an unknown or odd name shows its text as a code block, never markup", () => {
+    expect(renderToStaticMarkup(<Block node={{ type: "table", name: "nope", text: "The rows" }} />)).toBe('<pre class="help-pre">The rows</pre>');
+    expect(renderToStaticMarkup(<Block node={{ type: "table", name: "<b>x</b>", text: "<i>y</i>" }} />)).toBe(
+      '<pre class="help-pre">&lt;i&gt;y&lt;/i&gt;</pre>',
+    );
+    expect(renderToStaticMarkup(<Block node={{ type: "table", name: "constructor", text: "x" }} />)).toBe('<pre class="help-pre">x</pre>');
+  });
+
+  it("Story 11.5: What you see is second in Contents and draws each figure above its table", () => {
+    const rows = [...show(null).matchAll(/class="help-contents-row">([^<]*)</g)].map((m) => m[1]);
+    expect(rows.slice(0, 2)).toEqual(["Canvas &amp; navigation", "What you see"]);
+    const html = show("legend");
+    const order = [
+      html.indexOf('class="help-figure help-figure-session-states"'),
+      html.indexOf('aria-label="The session states and what each means."'),
+      html.indexOf('id="help-colour-glow-and-badges"'),
+      html.indexOf('class="help-figure help-figure-edge-kinds"'),
+      html.indexOf('aria-label="The edge looks and what each means."'),
+    ];
+    for (const at of order) expect(at).toBeGreaterThan(-1);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(html).toContain("Claude needs an answer; enter opens its terminal");
+    expect(html).not.toContain("table session-states");
+  });
+
   it("Story 10.4: Contents lists Getting started, Changelog and Roadmap last", () => {
     const html = show(null);
     const rows = [...html.matchAll(/class="help-contents-row">([^<]*)</g)].map((m) => m[1]);

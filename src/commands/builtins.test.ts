@@ -85,6 +85,7 @@ describe("built-in commands", () => {
       "help.changelog",
       "help.contents",
       "help.gettingStarted",
+      "help.legend",
       "help.open",
       "help.page",
       "help.roadmap",
@@ -267,6 +268,7 @@ describe("built-in commands", () => {
       "help.changelog",
       "help.contents",
       "help.gettingStarted",
+      "help.legend",
       "help.open",
       "help.page",
       "help.roadmap",
@@ -371,7 +373,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(105);
+    expect(listCommands()).toHaveLength(106);
   });
 
   const PROJECT_ACTIONS = [
@@ -410,6 +412,7 @@ describe("built-in commands", () => {
       "Help: getting started",
       "Help: open page…",
       "Help: roadmap",
+      "Help: what you see",
       "Link to…",
       "New session…",
       "Open in external editor",
@@ -970,7 +973,7 @@ describe("built-in commands", () => {
   it("the palette lists only enabled, visible commands, sorted by title", () => {
     usePaletteStore.getState().open();
     const titles = listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title);
-    expect(titles).toEqual(["Help", "Help: changelog", "Help: getting started", "Help: open page…", "Help: roadmap", "Open settings", "Quit", "Re-detect binaries", "Toggle command palette", "What's new"]);
+    expect(titles).toEqual(["Help", "Help: changelog", "Help: getting started", "Help: open page…", "Help: roadmap", "Help: what you see", "Open settings", "Quit", "Re-detect binaries", "Toggle command palette", "What's new"]);
 
     useCanvasStore.getState().setInstance(fakeCanvas());
     expect(listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title)).toEqual([
@@ -981,6 +984,7 @@ describe("built-in commands", () => {
       "Help: getting started",
       "Help: open page…",
       "Help: roadmap",
+      "Help: what you see",
       "Import from Claude…",
       "Open settings",
       "Quit",

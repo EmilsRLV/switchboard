@@ -108,15 +108,24 @@ function LinkLabel({ x, y, data }: { x: number; y: number; data: LinkEdgeData | 
 }
 
 /**
+ * A stored edge's tooltip (Story 11.5): an SVG `<title>` in the edge's own `<g>` (xyflow's edge
+ * wrapper), so it shows on hover anywhere over the line, its hit width included.
+ */
+function EdgeTitle({ data }: { data: LinkEdgeData | undefined }) {
+  return data === undefined ? null : <title>{data.hover}</title>;
+}
+
+/**
  * A context edge (Story 6.1): a dashed 1-px `--border-strong` curve; `--focus` while selected.
  * Story 6.3: muted while it is being applied to a running session (`is-pending` on the edge),
  * in the attention accent once that failed (the line carries `.attention`).
  */
-function ContextEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps<LinkFlowEdge>) {
+export function ContextEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps<LinkFlowEdge>) {
   const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
   const failed = data?.live === "failed";
   return (
     <>
+      <EdgeTitle data={data} />
       <BaseEdge path={path} className={failed ? "attention link-line link-context" : "link-line link-context"} interactionWidth={LINK_HIT_WIDTH} />
       <LinkLabel x={labelX} y={labelY} data={data} />
     </>
@@ -128,11 +137,12 @@ function ContextEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targe
  * its middle pixel drawn over in the canvas colour; `--focus` while selected. Story 6.4: muted
  * while a side's peer line is pending, in the attention accent once a side failed.
  */
-function CooperateEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps<LinkFlowEdge>) {
+export function CooperateEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps<LinkFlowEdge>) {
   const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
   const failed = data?.live === "failed";
   return (
     <>
+      <EdgeTitle data={data} />
       <BaseEdge path={path} className={failed ? "attention link-line link-cooperate" : "link-line link-cooperate"} interactionWidth={LINK_HIT_WIDTH} />
       <path d={path} className="link-cooperate-gap" fill="none" />
       <LinkLabel x={labelX} y={labelY} data={data} />

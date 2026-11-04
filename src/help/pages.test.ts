@@ -8,9 +8,10 @@ function all(nodes: readonly HelpNode[]): HelpNode[] {
 }
 
 describe("the guide pages", () => {
-  it("are the eleven pages of Story 10.2, Getting started (10.3), then Changelog and Roadmap (10.4), in Contents order, each opening with its title as the heading", () => {
+  it("are the eleven pages of Story 10.2 with What you see (11.5) second, Getting started (10.3), then Changelog and Roadmap (10.4), in Contents order, each opening with its title as the heading", () => {
     expect(HELP_PAGES.map((p) => [p.id, p.title, p.file])).toEqual([
       ["canvas", "Canvas & navigation", "canvas.md"],
+      ["legend", "What you see", "legend.md"],
       ["projects", "Projects", "projects.md"],
       ["sessions", "Sessions & launch sheet", "sessions.md"],
       ["terminals", "Terminals, tabs & pop-outs", "terminals.md"],

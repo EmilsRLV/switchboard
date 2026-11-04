@@ -8,6 +8,7 @@ import { ChecklistRows, useStepCommandsRefresh } from "./ChecklistCard";
 import { HELP_PAGES, helpPage, renderHelpPage } from "../help/pages";
 import type { HelpNode } from "../help/markdown";
 import { figureFor } from "../help/figures";
+import { tableFor } from "../help/tables";
 import { appInfo } from "../ipc";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
@@ -197,6 +198,12 @@ export function Block({ node }: { node: HelpNode }): ReactNode {
       const Figure = figureFor(node.name);
       return Figure === null ? <pre className="help-pre">{node.alt}</pre> : <Figure alt={node.alt} />;
     }
+    case "table": {
+      // Story 11.5: a known table is drawn from code (the meanings' one table); an unknown name
+      // shows the block's text as a code block, never markup.
+      const Table = tableFor(node.name);
+      return Table === null ? <pre className="help-pre">{node.text}</pre> : <Table label={node.text === "" ? node.name : node.text} />;
+    }
     case "item":
       return <Blocks nodes={node.children} />;
     default:
@@ -240,6 +247,7 @@ function Inline({ node }: { node: HelpNode }): ReactNode {
     case "list":
     case "codeBlock":
     case "figure":
+    case "table":
       // A block node inline (never produced by the renderer): shown as a block.
       return <Block node={node} />;
   }

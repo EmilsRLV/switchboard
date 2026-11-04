@@ -41,6 +41,5 @@ folder; a **cooperate edge** (a double line) lets two sessions message each othe
 
 ## What you can see
 
-A session node starts its second line with its state: `busy` with a pulsing dot, `idle`, `exited`. A session
-that is `finished` or `waiting` needs you: its border and state word take the attention colour, and its project
-node glows. `ctrl+j` goes to the session that has needed you longest.
+What a node's state words, the attention colour, the glow, the badges and the edge lines mean is on
+[What you see](legend.md); hover a node, a badge or an edge line for its state and what it means.

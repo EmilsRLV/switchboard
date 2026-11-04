@@ -88,6 +88,7 @@ import {
   showChangelog,
   showGettingStarted,
   showHelpPage,
+  showLegend,
   showRoadmap,
   startHelpPagePick,
   toggleHelp,
@@ -317,6 +318,12 @@ export function builtinCommands(): Command[] {
       id: "help.roadmap",
       title: "Help: roadmap",
       run: showRoadmap,
+    },
+    // -- Story 11.5: the What you see page ----------------------------------------------------------
+    {
+      id: "help.legend",
+      title: "Help: what you see",
+      run: showLegend,
     },
     {
       // The Help page's Show on canvas: the card back (not dismissed), progress kept.

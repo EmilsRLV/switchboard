@@ -46,6 +46,14 @@ export function whatsNewTitle(): string {
   return version ? `What's new in ${version}` : "What's new";
 }
 
+/** The What you see page's id (Story 11.5). */
+export const LEGEND_PAGE = "legend";
+
+/** `help.legend` ("Help: what you see"): the Help pane on the What you see page. */
+export function showLegend(): void {
+  showHelpPage(LEGEND_PAGE);
+}
+
 /** `help.roadmap` ("Help: roadmap"): the Help pane on the Roadmap page. */
 export function showRoadmap(): void {
   showHelpPage(ROADMAP_PAGE);
