@@ -4,6 +4,13 @@ What changed in Switchboard, newest first. Each release lists what you can see a
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.2.0 — 2026-11-04
+
+Learn by looking: keys beside every action, a toolbar on each node, hints on the canvas, moving figures and a
+What you see page in Help, hover meanings for states and edges, and a short first-run tour.
+
 ### Canvas
 
 - Right-click the empty canvas, without moving, for the canvas menu: add a project folder, import from

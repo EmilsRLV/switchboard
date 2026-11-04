@@ -1,6 +1,6 @@
 [package]
 name = "switchboard"
-version = "0.1.0"
+version = "0.2.0"
 description = "A graph of projects, Claude Code sessions and branches"
 edition = "2024"
 
