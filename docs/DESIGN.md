@@ -375,7 +375,17 @@ chrome follows every rule here.
   workspace allows all, `Allow all: …`, each naming the palette command that switches it.
 - **The context menu** is the palette's row look at the pointer: `--bg-raised`, 1-px border,
   `--radius-md`, items in `--text-md`, groups split by a 1-px `--border` line. Project, session and branch cards
-  have one; it lists only enabled entries and does not open when there are none.
+  have one; it lists only enabled entries and does not open when there are none. Story 11.1: each row ends
+  with its effective key in the palette's key look (mono `--text-sm` `--fg-muted`, `formatKeybinding`), nothing
+  when it has none; a rebind in `keybindings.json` shows there. The `⋯` button of a node toolbar (Story 11.2)
+  opens the same menu under itself.
+- **The canvas menu** (Story 11.1) is the context menu opened by a right-click on the canvas background that did
+  not move (the node menu's rule): the commands tagged for it (add a project folder, import from Claude, fit
+  view, help, settings) in the same look, with their keys. A right-drag still pans.
+- **Tooltips** (Story 11.1) are the native `title`: for every button that runs a command, the command's title,
+  then ` · ` and its effective key when it has one (`Close · esc`, `New session… · n`), made by one helper from
+  the registry, so they follow `keybindings.json`. Item-level buttons (a toast's Allow, a tab's ×) keep their own
+  words. No custom tooltip surface: nothing to style, nothing to animate.
 - **The Elsewhere tray** (live sessions in folders not on the canvas) sits at the canvas's bottom-left, over
   it and below the notice, panes, palette and menu. A chip `elsewhere N` (mono `--text-xs`, `--fg-muted`,
   `--bg-raised`, 1-px `--border`, `--radius-sm`; `--fg` text and a `--fg-muted` border on hover or while
@@ -399,8 +409,53 @@ chrome follows every rule here.
   a `✓` in `currentColor`. After the sixth step the rows give way to a muted `All done`. It shows on a fresh profile
   only; the Help pane's Getting started page (after the guide pages in Contents) ends with the same rows under
   a `Your progress` section heading and an ordinary **Show on canvas** button. Tokens only, no accent.
-- **The canvas** is `--bg` with a dot grid in `--fg-faint`; empty, it shows a centred mono hint in
-  `--fg-muted`. Nothing on the canvas uses the accent except the attention states (a `finished` / `waiting` session card and its project's glow; see [States](#states)).
+- **The canvas** is `--bg` with a dot grid in `--fg-faint`; empty, it shows the ghost card (Story 11.3; until
+  then, a centred mono hint in `--fg-muted`). Nothing on the canvas uses the accent except the attention states (a `finished` / `waiting` session card and its project's glow; see [States](#states)).
+- **The node toolbar** (Story 11.2) is a row attached under a project, session or branch card, outside the
+  card's fixed box (so `nodes.ts` geometry and the arrow keys are untouched), shown only while the card is
+  hovered or selected and absent from the DOM otherwise. It is `--bg-raised` with a 1-px `--border` and
+  `--radius-sm`, holding at most four short mono `--text-xs` text buttons (`new`, `term`, `link`, `review`;
+  `--fg-muted`, `--fg` on hover, the 1-px `--focus` outline on keyboard focus, no border of their own) and
+  last `⋯`, which opens the node's context menu under itself. Each button's tooltip is its command's title
+  and key. The buttons are the enabled commands of that card tagged for the toolbar, in a fixed order; a
+  disabled one is left out, never greyed. It appears and goes without animation. No accent; it is never the
+  place a state is shown.
+- **The ghost card** (Story 11.3) is the empty canvas's state: a box of the project card's size and
+  `--radius-md` at the view's centre with a dashed 1-px `--fg-faint` border and no surface, `Drop a folder
+  here` in `--text-md` `--fg-muted`, and under it, in the empty-canvas hint's mono muted style, `ctrl+o pick a
+  folder · ctrl+k palette · f1 help`. A click on it runs **Add project folder…**; the canvas around it still
+  pans. It goes with the first project and comes back with the last one removed, without animation.
+- **Inline hints** (Story 11.3) are one-line mono `--text-xs` `--fg-muted` captions placed by the thing they
+  name, outside the card's box: under the first project card (`n new session · hover for more`), beside its
+  handle (`drag to link · e`, while the handle shows), under the first running session card (`r review
+  changes`). At most one per card and three on the canvas; never a box, a border, a pointer or the accent;
+  they let clicks through. A hint fades out over 300 ms (instant under reduced motion) once its Getting started
+  step is done or hints are hidden. They are not drawn while a pane covers their card.
+- **Help figures** (Story 11.4) are diagrams inside a help page, as wide as the page's text and at most 160 px
+  tall, drawn with the app's own card, handle, edge and state classes on the pane's surface (`--bg-raised`)
+  inside a 1-px `--border` box with `--radius-sm`. They move by CSS alone: opacity, transform and
+  `stroke-dashoffset`, looping every 4–8 s with a pause at the end of each loop; under
+  `prefers-reduced-motion: reduce` the end frame is shown still. A figure has `role="img"` and its alt text (the
+  fenced block's text) as its accessible name; a caption, when wanted, is the Markdown paragraph after it.
+  Labels inside a figure are mono `--text-xs` `--fg-muted`. The attention states appear only through the
+  allow-listed classes (`.session-attention`, `.session-attention-word`, `.project-glow`, `.attention`), as on
+  the canvas.
+- **The What you see page** (Story 11.5) is a guide page after Canvas in Contents: the state words, the
+  attention colour, the glow and the badges, then the edge looks, each a row of the term (the state word in its
+  own look: the busy dot, the accent on `waiting` / `finished`) and its meaning in `--fg`, with the session-states
+  and edge-kinds figures above their rows. Keys in the rows are mono `--text-sm` like every page.
+- **The tour** (Story 11.6) is the one dimmed, guided surface. A layer at the palette backdrop's colour
+  (`--bg` at 55%) over the shell, panes and toasts, under the palette and the menu, made of four rectangles
+  around the stop's target so the target shows through a **cut-out** with a 1-px `--focus` outline at 2-px
+  offset (the selected node's outline); a stop without a target dims everything and shows a figure instead.
+  Beside the cut-out (or centred), the **tour card**: `--bg-raised`, 1-px `--border`, `--radius-md`,
+  `min(360px, 90vw)` wide; the stop's title (`--text-md` / 500) and one or two sentences (`--text-md`, line
+  height 1.5), a figure when the stop has one, then a row with `2 / 6` in mono `--text-xs` `--fg-muted` at the
+  left and the ordinary buttons **Back**, **Next** (**Finish** on the last stop) and **Skip** at the right.
+  Keys are named inline as `kbd`. The cut-out moves to the next target over 150 ms (the reveal pan's duration;
+  instant under reduced motion); the card appears without animation. No accent, no shadow, no gradient: the
+  layers are told apart by surface, as everywhere. The layer takes pointer events (the tour is read-only);
+  `esc` skips, `ctrl+k` still opens the palette over it.
 
 ## Node anatomy
 
@@ -424,7 +479,8 @@ chrome follows every rule here.
    `--fg-muted`; border `--fg-muted` on hover; on, `--fg` text and an `--fg` border, so on never looks like
    hover; the 1-px `--focus` outline on keyboard focus). No accent.
 
-The card size is fixed: `nodes.ts` and the arrow-key geometry depend on 240 × 80.
+The card size is fixed: `nodes.ts` and the arrow-key geometry depend on 240 × 80. Everything Epic 11 adds
+to a card (the node toolbar, an inline hint) sits outside this box and never changes it.
 
 ### Child card (208 × 40)
 
@@ -515,7 +571,9 @@ and they never use the accent except for a failed live application (below).
 
 **The handle.** Session and project cards carry one handle on the right edge, centred vertically. It is a
 7-px circle with a 1-px `--border-strong` border on `--bg-raised` (a `--focus` border on hover). It is
-invisible until the card is hovered or selected, and the cursor over it is a crosshair. While a link is
+invisible until the card is hovered or selected, and the cursor over it is a crosshair. Story 11.5: hovering
+a stored edge's line shows its kind and live state in words (`context edge · pending (waiting for idle)`, an
+SVG `<title>`), and the handle's tooltip reads `Drag to link · e`. While a link is
 dragged, the line that follows the pointer has the context edge's dashed look. Every project, branch and session
 card is a drop target over its whole area. Over a card the pair is refused for, the cursor is
 `not-allowed`. Nothing else changes colour.
@@ -567,7 +625,7 @@ Historic sessions show no state word.
 
 ## Motion
 
-Only six motions exist; every one is instant (or static) under `prefers-reduced-motion: reduce`.
+Only nine motions exist (six until Epic 11); every one is instant (or static) under `prefers-reduced-motion: reduce`.
 
 | Motion | Duration |
 |---|---|
@@ -577,8 +635,11 @@ Only six motions exist; every one is instant (or static) under `prefers-reduced-
 | Busy pulse (the dot before `busy`: opacity 1 → 0.35, ease-in-out, alternating, looping; opacity only) | 1.2 s |
 | Attention pulse (the accent dot before `finished` / `waiting`: the busy pulse) | 1.2 s |
 | Project glow (the accent outline around a project needing you: opacity 1 → 0.4, ease-in-out, alternating, looping; opacity only) | 1.2 s |
+| Hint fade-out (an inline hint whose step is done, or hints hidden: opacity 1 → 0, then removed; Story 11.3) | 300 ms |
+| Help figures (inside the Help pane and the tour card only: opacity, transform and `stroke-dashoffset`, looping with a pause at the end of each loop; the end frame still under reduced motion; Story 11.4) | 4–8 s per loop |
+| Tour cut-out move (the spotlight slides to the next stop's target; Story 11.6) | 150 ms |
 
-Panes (the terminal pane, the launch, worktree and remove-worktree sheets, the edge inspector and the Review pane too), terminal tabs and pop-out windows, banners, the notice, the menu, the Elsewhere tray, the what's-new chip, the agent approval toasts and the review toasts appear without animation. Edges appear and go without animation.
+Panes (the terminal pane, the launch, worktree and remove-worktree sheets, the edge inspector, the Review pane and the Help pane too), terminal tabs and pop-out windows, banners, the notice, the menu and the canvas menu, the node toolbar, the ghost card, the Elsewhere tray, the what's-new chip, the agent approval toasts, the review toasts and the tour card appear without animation. Edges appear and go without animation.
 
 ## Icons
 

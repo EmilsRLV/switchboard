@@ -2,9 +2,11 @@
 title: 'Switchboard — Product Requirements'
 status: 'draft'
 created: '2026-10-16'
+updated: '2026-11-04'
 inputDocuments:
   - _bmad-output/planning-artifacts/product-brief.md
   - docs/research/claude-code-integration.md
+  - _bmad-output/planning-artifacts/sprint-change-proposal-2026-11-04.md
 ---
 
 # Switchboard — PRD
@@ -129,7 +131,7 @@ Requirements are numbered `FR-<area>-<n>` so epics and specs can cite them. "Mus
 
 | ID | Req | Level |
 |---|---|---|
-| FR-HELP-1 | A Help pane, opened by F1 and by "Help" in the palette: a right-side pane like the others, Esc closes, low chrome. It opens on a Contents list of short guide pages. No welcome page, no overlay tour, no coach marks, no modal. | Must |
+| FR-HELP-1 | A Help pane, opened by F1 and by "Help" in the palette: a right-side pane like the others, Esc closes, low chrome. It opens on a Contents list of short guide pages. No welcome page and no modal that blocks the app. *(The "no overlay tour, no coach marks" part of this requirement, as first written for Epic 10, was reversed on 2026-11-04 for Epic 11: see FR-HELP-16 and UX principle 6; the sprint change proposal of that date records why.)* | Must |
 | FR-HELP-2 | Guide pages, one per area: canvas & navigation; projects; sessions & launch sheet; terminals, tabs & pop-outs; edges (context, cooperate); branches & worktrees; review; the app as a tool for Claude (MCP server, approvals, peer messages, review requests); settings & diagnostics; keyboard & palette; terms. Hand-written Markdown under `docs/help/`, bundled at build time, so it is edited in the repo. Pages use the app's own terminology (project node, session node, branch node, worktree, context edge, cooperate edge, handle, terminal pane, tabs, pop-out, plain terminal, launch sheet, edge inspector, review pane, import pane, settings pane, Diagnostics, command palette, toast, attention colour). | Must |
 | FR-HELP-3 | Safe rendering: a small renderer for a Markdown subset (headings, paragraphs, lists, emphasis, inline and fenced code, links). Raw HTML is shown as text, never as markup; `http(s)` links open in the system browser only when clicked and no other scheme is opened; page links navigate inside the pane. No network access for help content (NFR-8); no new runtime dependency. | Must |
 | FR-HELP-4 | The keyboard page lists the registered commands with their effective bindings (`keybindings.json` applied), generated from the command registry. | Should |
@@ -140,6 +142,11 @@ Requirements are numbered `FR-<area>-<n>` so epics and specs can cite them. "Mus
 | FR-HELP-9 | Every Help action is a palette command and bindable (NFR-7). First-run, checklist and seen-version state live in an app-written `state.json` beside `settings.json` (never in `~/.claude`, NFR-5; never in the hand-edited `settings.json`). | Must |
 | FR-HELP-10 | Search across guide pages (titles and headings) from the palette. | Later |
 | FR-HELP-11 | The guide over MCP (`switchboard://help/<page>` resource), so a session reads the same text the operator does (UX principle 5). | Later |
+| FR-HELP-12 | **Visible controls** (Epic 11). Every project, session and branch node shows a small toolbar of its most used actions while it is hovered or selected (never permanently), ending in `⋯` which opens its context menu. Context-menu rows show their effective key, as the palette's rows do. A right-click on the canvas background opens a canvas menu (add a project, import, fit view, help, settings). Every button that runs a command carries a tooltip of the command's title and effective key, derived from the registry so a rebind in `keybindings.json` shows there. Visible controls are added beside keybindings, never in place of them (NFR-7). | Must |
+| FR-HELP-13 | **Inline hints** (Epic 11). An empty canvas shows a ghost project card where a project would land ("Drop a folder here", with the keys), in place of the mono hint line. On a fresh profile, faint hints sit by the thing they explain (the first project card: start a session; its handle: drag to link; the first running session: review) and fade out once the matching Getting started step is done (FR-HELP-5's latched detection), or when the operator hides them (`hints.hide` / `hints.show`, palette and bindable). At most three hints at a time; never a modal, never the accent. Whether hints are hidden persists in `state.json` (FR-HELP-9). | Must |
+| FR-HELP-14 | **Figures in help** (Epic 11). A guide page may hold a figure: a short looping diagram built from the app's own components and CSS (cards, handles, edges, state words), animated with CSS only, static under `prefers-reduced-motion`, with alt text. Named in the Markdown as a fenced block (`figure <name>`) whose text is the alt text, mapped to a component by a typed table; an unknown name renders as the block's text. No video, no images, no new dependency, nothing fetched (NFR-8). | Must |
+| FR-HELP-15 | **Status at a glance** (Epic 11). Every state word, the attention colour on a card and the project glow, the `N live`, count, `N new` and `review` badges, and an edge's kind and live state say what they mean and what to do on hover, from one table of meanings. A **What you see** help page lists them with the states and the edge kinds as figures (`help.legend`); F1 on a session or an edge keeps opening their pages, which link to it. | Must |
+| FR-HELP-16 | **First-run tour** (Epic 11; reverses the Epic 10 decision recorded in FR-HELP-1). On a fresh profile, once, a short tour of about six stops: a dim layer over the shell with a cut-out around the stop's target (the ghost card, a card's toolbar, a handle) or a figure where there is no target yet, and a small card with two sentences, a step counter and Back / Next / Skip. `→` / `enter` next, `←` back, `esc` skips; the palette still opens over it. Finishing or skipping records `tour.done` in `state.json`; it never starts on its own again, and never on a profile that existed before this version. **Take the tour** (`tour.start`) is in the palette and on the Getting started page. The tour runs no action itself; it points at where the action is. No accent, no shadow, no welcome page; the canvas stays underneath. | Must |
 
 ## 3. Non-functional requirements
 
@@ -158,9 +165,10 @@ Requirements are numbered `FR-<area>-<n>` so epics and specs can cite them. "Mus
 
 1. **The canvas is the home screen.** No welcome page, no sidebar tree, no tabs row above it. Panes slide in from the right (terminal/review) and go away with Esc.
 2. **Status is ambient.** Colour and a subtle pulse on the node, never a modal. The one exception is permission requests from agents to the app (FR-MCP-5), which are toasts with inline buttons.
-3. **Low chrome.** 1-px borders, monochrome icons, one accent colour that is the "attention" colour. No gradients, no cards-within-cards. Typography: a UI sans + a monospace, both system-available or bundled once.
+3. **Low chrome.** 1-px borders, monochrome icons, one accent colour that is the "attention" colour. No gradients, no cards-within-cards. Typography: a UI sans + a monospace, both system-available or bundled once. Visible controls (Epic 11) appear on hover or selection, never as permanent chrome.
 4. **Terminal is the chat.** We style around it, never over it.
 5. **Agent-legible.** Everything shown to the human has a JSON twin available through MCP; node labels and statuses are plain text.
+6. **Show before telling** (added 2026-11-04, Epic 11). Controls are visible where the thing is and carry their key; a state says what it means where it is shown; help prefers a short moving picture made from the app's own parts to a paragraph. The one guided surface is the first-run tour (FR-HELP-16): a handful of stops, once, skippable with one key, the canvas underneath. *This reverses Epic 10's "no overlay tour, no coach marks" decision; "no welcome page" and "the canvas is the home screen" stand.*
 
 ## 5. Out of scope (recorded)
 
@@ -178,3 +186,10 @@ File editing; LSP; debugging; other agents; macOS testing; cloud/remote sessions
 | Q6 | Should the app ever auto-start sessions (e.g. on review request → open a reviewer session)? | Not in v1; agent-initiated starts go through FR-MCP-5 approval. | — |
 | Q7 | Where does the Getting started checklist live while the operator works: a card on the canvas, or only a Help page? (Panes are mutually exclusive, so a Help page closes as soon as the launch sheet or the terminal pane opens.) | A small dismissible card at the canvas's top-right, under the banner strip and under panes, plus the same list as a Help page. Not a welcome page: the canvas stays the home screen. **Decided (Emils, 2026-10-30): canvas card + Help page.** | Epic 10 |
 | Q8 | Should guide pages be exposed to sessions over MCP so Claude reads the same text as the operator? | Later (FR-HELP-11); the bundled Markdown makes it cheap once wanted. | — |
+| Q9 | Does the first-run tour (FR-HELP-16) start on its own on a fresh profile, and how does it share the first run with the Getting started card? | Starts on its own, once, after the canvas's first frame; Skip is one `esc` away; the Getting started card appears when the tour ends or is skipped. Existing profiles never auto-start it (**Take the tour** in the palette and on the Getting started page). **Decided (Emils, 2026-11-04): as recommended.** | Epic 11 |
+| Q10 | Node toolbar buttons: short words or glyphs? | Short words in mono `--text-xs` (`new`, `term`, `link`, `review`), at most four, then `⋯`; the app has no icon set (DESIGN.md rule 5). **Decided (Emils, 2026-11-04): as recommended.** | Epic 11 |
+| Q11 | When does the node toolbar show? | On hover and while the card is selected (the handle's rule from Story 6.1), never permanently. **Decided (Emils, 2026-11-04): as recommended.** | Epic 11 |
+| Q12 | What makes an inline hint go: its Getting started step, or a counter of its own? | Its step (FR-HELP-5's latched detection and `state.json`), plus one global `hints.hide` / `hints.show`. Hints show while the Getting started card shows, or after `hints.show`. **Decided (Emils, 2026-11-04): as recommended.** | Epic 11 |
+| Q13 | How many figures in the first figures story, and where? | Five: draw an edge and the edge kinds (Edges), node anatomy (Projects), session states (Sessions), panes (Canvas); the states and kinds reused on What you see and in the tour. More page by page after. **Decided (Emils, 2026-11-04): as recommended.** | Epic 11 |
+| Q14 | Where does the status legend live? | Its own short page, **What you see**, after Canvas in Contents (`help.legend`); Sessions and Edges link to it rather than repeating it. **Decided (Emils, 2026-11-04): as recommended.** | Epic 11 |
+| Q15 | May the tour's dim layer be clicked through to its target, so a stop can be done during the tour? | No: read-only until Finish or Skip; each stop names the key. Revisit after real use. **Decided (Emils, 2026-11-04): as recommended.** | Epic 11 |
