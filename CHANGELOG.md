@@ -53,6 +53,11 @@ What changed in Switchboard, newest first. Each release lists what you can see a
 - A **What you see** page, second in Contents (also **Help: what you see**), lists every session state and
   edge look with its meaning, under their pictures, plus the attention colour, the glow and the badges. The
   "What you can see" details of the Canvas, Projects, Sessions and Edges pages moved there.
+- A short first-run tour: on a fresh profile, six stops point out the canvas, adding a project, starting a
+  session, linking nodes, reading the canvas and the palette, dimming everything else. `right` or `enter`
+  goes on, `left` back and `esc` skips; `ctrl+k` still opens the palette over it. It runs once; **Take the
+  tour** in the palette and on the Getting started page runs it again, and the Getting started card links to
+  it until it is taken. This replaces the earlier stance of having no overlay tour.
 
 ## 0.1.0 — 2026-10-31
 

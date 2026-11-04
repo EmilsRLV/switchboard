@@ -45,6 +45,7 @@ import { stoppingSessionIds, useTerminalStore } from "../state/terminals";
 import { useUiStore } from "../state/ui";
 import { persistViewport, useWorkspaceStore } from "../state/workspace";
 import { reportFirstFrame } from "../perf";
+import { isTourOn, tourFirstFrame } from "../state/tour";
 import { BranchNode, MoreNode, SessionNode } from "./ChildNode";
 import { FORK_HANDLE, checkFlowLink, linkFlowEdges, nodeRefOfFlowId, type LinkEdgeData, type LinkFlowEdge } from "./edges";
 import { GhostCard } from "./GhostCard";
@@ -188,6 +189,7 @@ export function Canvas() {
     // the webview's native menu never shows.
     <div
       className="canvas"
+      data-tour="canvas"
       ref={setCanvasElement}
       onPointerDownCapture={onPointerDownCapture}
       onPointerUpCapture={onPointerUpCapture}
@@ -429,8 +431,11 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
 
   // Story 9.3: the flow mounts only once the workspace snapshot is in, so its first painted frame
   // is the end of startup (Rust holds the clock; only the first report counts).
+  // Story 11.6: the first-run tour starts after that frame too (when due; also without Tauri,
+  // from the loaded flags).
   useEffect(() => {
     if (hasTauriRuntime()) reportFirstFrame();
+    tourFirstFrame();
   }, []);
 
   // Folders dropped from the OS (Tauri's native drag-drop; HTML5 DnD is off in the webview):
@@ -439,6 +444,8 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
     let cancelled = false;
     let stop: (() => void) | null = null;
     onFileDrop((drop) => {
+      // Story 11.6: nothing changes under the tour's dim.
+      if (isTourOn()) return;
       const client = physicalToClient(drop.position, window.devicePixelRatio);
       if (!dropHitsCanvas(client, useCanvasStore.getState().element)) return;
       const position = clientToFlow(client);

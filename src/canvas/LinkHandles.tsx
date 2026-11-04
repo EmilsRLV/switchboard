@@ -8,9 +8,10 @@ import { FORK_HANDLE, LINK_SOURCE_HANDLE, LINK_SOURCE_LEFT_HANDLE, LINK_TARGET_H
  * card is selected. Every project, branch and session card is a drop target: an invisible
  * handle over the whole card that takes the pointer only while a link is being dragged, so a
  * drop anywhere on the card links to it; over a card the pair is refused for, it shows the
- * not-allowed cursor.
+ * not-allowed cursor. `tour` marks the first project's handle as the first-run tour's target
+ * (Story 11.6).
  */
-export function LinkHandles({ source, shown }: { source: boolean; shown: boolean }) {
+export function LinkHandles({ source, shown, tour = false }: { source: boolean; shown: boolean; tour?: boolean }) {
   // Re-renders only when a drag starts or ends.
   const linking = useConnection((connection) => connection.inProgress);
   return (
@@ -21,6 +22,7 @@ export function LinkHandles({ source, shown }: { source: boolean; shown: boolean
           id={LINK_SOURCE_HANDLE}
           position={Position.Right}
           className={"link-handle" + (shown ? " is-shown" : "")}
+          data-tour={tour ? "handle" : undefined}
           isConnectableEnd={false}
           title={commandHint("edge.link", "Drag to link")}
           aria-label="Link to…"

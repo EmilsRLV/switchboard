@@ -11,7 +11,8 @@
 //   `review` is done.
 //
 // They show while hints are on (`hintsOn`: `state.json`'s `hints.hidden`, and the checklist card)
-// and never while a pane is open. The keys come from the registry, so a rebind shows.
+// and never while a pane is open or the first-run tour is on (Story 11.6: the card is held back
+// then, and the hints follow it). The keys come from the registry, so a rebind shows.
 
 import { useMemo, useSyncExternalStore } from "react";
 import type { ChildNode, LiveSession, NodeTarget, Project } from "../ipc";
@@ -19,6 +20,7 @@ import { commandKey } from "../commands/keybindings";
 import { subscribeBindings } from "../commands/registry";
 import { cardVisible, useChecklistStore } from "../state/checklist";
 import { hintsOn, useHintsStore } from "../state/hints";
+import { isTourOn, useTourStore } from "../state/tour";
 import { isLiveState, useLiveStore } from "../state/live";
 import { useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
@@ -156,7 +158,8 @@ export function currentHints(handleShown: boolean): Hint[] {
   const checklist = useChecklistStore.getState();
   const hidden = useHintsStore.getState().hidden;
   // Off, or nothing left to hint: no work at all (every card runs this on every store change).
-  if (!hintsOn(hidden, cardVisible(checklist)) || !anyHintStepUndone(checklist.done)) return NO_HINTS;
+  // Story 11.6: none while the tour is on (it holds the Getting started card back too).
+  if (isTourOn() || !hintsOn(hidden, cardVisible(checklist)) || !anyHintStepUndone(checklist.done)) return NO_HINTS;
   const workspace = useWorkspaceStore.getState().snapshot;
   const ui = useUiStore.getState();
   return hintsFor(
@@ -183,6 +186,7 @@ export function subscribeHintSources(listener: () => void): () => void {
     useLiveStore.subscribe(listener),
     useChecklistStore.subscribe(listener),
     useHintsStore.subscribe(listener),
+    useTourStore.subscribe(listener),
     useUiStore.subscribe(listener),
     subscribeBindings(listener),
   ];

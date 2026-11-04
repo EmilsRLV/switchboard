@@ -182,7 +182,7 @@ describe("workspace command wrappers", () => {
   });
 
   it("the 10.3 state wrappers invoke state_get with {} and checklist_set with { checklist }", async () => {
-    const snapshot = { firstRun: true, checklist: { shown: true, dismissed: false, done: ["palette"] }, version: "0.1.0", lastSeenVersion: "0.1.0", hints: { hidden: null } };
+    const snapshot = { firstRun: true, checklist: { shown: true, dismissed: false, done: ["palette"] }, version: "0.1.0", lastSeenVersion: "0.1.0", hints: { hidden: null }, tour: { done: false } };
     const invoke = vi.fn().mockResolvedValue(snapshot);
     vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
     await expect(stateGet()).resolves.toEqual(snapshot);

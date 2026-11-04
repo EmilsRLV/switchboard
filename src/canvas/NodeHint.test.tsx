@@ -9,6 +9,7 @@ import { resetChecklist, useChecklistStore } from "../state/checklist";
 import { resetHints, useHintsStore } from "../state/hints";
 import { EMPTY_LIVE, useLiveStore } from "../state/live";
 import { useStatusStore } from "../state/status";
+import { resetTour, useTourStore } from "../state/tour";
 import { useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 import { SessionNode } from "./ChildNode";
@@ -44,7 +45,7 @@ function workspace(): WorkspaceSnapshot {
 }
 
 function state(over: Partial<AppStateSnapshot["checklist"]> = {}, hidden: boolean | null = null): AppStateSnapshot {
-  return { firstRun: true, checklist: { shown: true, dismissed: false, done: ["palette", "project"], ...over }, version: "0.1.0", lastSeenVersion: "0.1.0", hints: { hidden } };
+  return { firstRun: true, checklist: { shown: true, dismissed: false, done: ["palette", "project"], ...over }, version: "0.1.0", lastSeenVersion: "0.1.0", hints: { hidden }, tour: { done: false } };
 }
 
 function nodeProps<N extends Node>(props: { data: unknown; dragging: boolean }): NodeProps<N> {
@@ -112,6 +113,35 @@ describe("inline hints on the cards (Story 11.3)", () => {
     expect(sessionCard("s2")).toContain('<span class="node-hint node-hint-review" aria-hidden="true">r review changes</span>');
     expect(sessionCard("s2", true)).not.toContain("node-hint");
     expect(sessionCard("s1")).not.toContain("node-hint");
+  });
+
+  it("Story 11.6: none while the tour is on; back when it ends", () => {
+    useTourStore.setState({ on: true, stop: 0 });
+    expect(projectCard("a")).not.toContain("node-hint");
+    expect(sessionCard("s2")).not.toContain("node-hint");
+    resetTour();
+    expect(projectCard("a")).toContain("node-hint-project");
+  });
+
+  it("Story 11.6: the first project carries the tour's marks; stop 3 forces its toolbar, stop 4 its handle; the second none", () => {
+    resetTour();
+    expect(projectCard("a")).toContain('data-tour="project"');
+    expect(projectCard("a")).not.toContain("toolbar-new");
+    useTourStore.setState({ on: true, stop: 2 });
+    const stop3 = projectCard("a");
+    expect(stop3).toContain('data-tour="toolbar-new"');
+    expect(stop3).toContain('class="node-toolbar nodrag nopan"');
+    useTourStore.setState({ on: true, stop: 3 });
+    const stop4 = projectCard("a");
+    expect(stop4).toMatch(/class="[^"]*link-handle is-shown[^"]*"[^>]*data-tour="handle"|data-tour="handle"[^>]*class="[^"]*link-handle is-shown/);
+    expect(stop4).not.toContain("node-toolbar");
+    for (const stop of [2, 3]) {
+      useTourStore.setState({ on: true, stop });
+      const second = projectCard("b");
+      expect(second).not.toContain("data-tour");
+      expect(second).not.toContain("node-toolbar");
+    }
+    resetTour();
   });
 
   it("none while a pane is open", () => {

@@ -5,7 +5,9 @@ import { clearCommands } from "../commands/registry";
 import { usePaletteStore } from "../state/palette";
 import { useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
-import { ChecklistCardView, ChecklistRows } from "./ChecklistCard";
+import { resetChecklist, useChecklistStore } from "../state/checklist";
+import { resetTour, useTourStore } from "../state/tour";
+import { cardOnCanvas, ChecklistCard, ChecklistCardView, ChecklistRows } from "./ChecklistCard";
 
 describe("the Getting started card (Story 10.3)", () => {
   beforeEach(() => {
@@ -44,5 +46,29 @@ describe("the Getting started card (Story 10.3)", () => {
     const html = renderToStaticMarkup(<ChecklistRows done={[]} />);
     // Story 11.1: its tooltip is the step and the command's key (none here).
     expect(html).toContain('<button type="button" class="checklist-step" title="Open a plain terminal">Open a plain terminal</button>');
+  });
+
+  it("Story 11.6: a tour link in the header while the tour was never taken; held back while the tour is on", () => {
+    const withLink = renderToStaticMarkup(<ChecklistCardView done={[]} tourDone={false} />);
+    expect(withLink).toContain('<h2 class="checklist-title">Getting started</h2><button type="button" class="checklist-tour" title="Take the tour">tour</button>');
+    expect(renderToStaticMarkup(<ChecklistCardView done={[]} tourDone />)).not.toContain("checklist-tour");
+
+    // The card itself: shown with the link, nothing while the tour is on, no link once taken.
+    resetChecklist();
+    resetTour();
+    useChecklistStore.setState({ loaded: true, shown: true, dismissed: false, allDoneAtLoad: false });
+    expect(renderToStaticMarkup(<ChecklistCard />)).toContain("checklist-tour");
+    useTourStore.setState({ on: true });
+    expect(renderToStaticMarkup(<ChecklistCard />)).toBe("");
+    useTourStore.setState({ on: false, done: true });
+    const after = renderToStaticMarkup(<ChecklistCard />);
+    expect(after).toContain('aria-label="Getting started"');
+    expect(after).not.toContain("checklist-tour");
+    resetChecklist();
+    resetTour();
+    // Held back while the tour is on; back (as Story 10.3 says) when it ends.
+    expect(cardOnCanvas(true, false)).toBe(true);
+    expect(cardOnCanvas(true, true)).toBe(false);
+    expect(cardOnCanvas(false, false)).toBe(false);
   });
 });

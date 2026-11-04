@@ -137,6 +137,13 @@ describe("the node toolbar (Story 11.2)", () => {
     expect(html.match(/tabindex="-1"/g)).toHaveLength(5);
   });
 
+  it("Story 11.6: on the first project (tour) its new button is the tour's target; on others nothing is marked", () => {
+    const html = renderToStaticMarkup(<NodeToolbar target={{ kind: "project", id: "a" }} shown tour />);
+    expect(html).toContain('data-command="project.newSession" data-tour="toolbar-new" tabindex="-1"');
+    expect(html.match(/data-tour=/g)).toHaveLength(1);
+    expect(renderToStaticMarkup(<NodeToolbar target={{ kind: "project", id: "a" }} shown />)).not.toContain("data-tour");
+  });
+
   it("renders nothing when the card is neither hovered nor selected", () => {
     expect(renderToStaticMarkup(<NodeToolbar target={{ kind: "project", id: "a" }} shown={false} />)).toBe("");
   });

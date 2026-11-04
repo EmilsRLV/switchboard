@@ -17,7 +17,7 @@ describe("the ghost card (Story 11.3)", () => {
 
   it("reads Drop a folder here with the registry's keys, titled Add project folder…", () => {
     expect(renderToStaticMarkup(<GhostCard />)).toBe(
-      '<div class="ghost-layer"><button type="button" class="ghost-card" tabindex="-1" aria-label="Add project folder" title="Add project folder… · ctrl+o">' +
+      '<div class="ghost-layer"><button type="button" class="ghost-card" data-tour="ghost" tabindex="-1" aria-label="Add project folder" title="Add project folder… · ctrl+o">' +
         '<span class="ghost-card-box">Drop a folder here</span>' +
         '<span class="ghost-card-keys">ctrl+o pick a folder · ctrl+k palette · f1 help</span></button></div>',
     );

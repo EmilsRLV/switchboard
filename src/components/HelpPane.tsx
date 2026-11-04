@@ -272,7 +272,8 @@ function HelpLink({ node }: { node: Extract<HelpNode, { type: "link" }> }): Reac
 
 /**
  * The Getting started page's live checklist (Story 10.3): the card's rows, ticked as the operator
- * goes, and **Show on canvas** (`checklist.show`), which brings the card back.
+ * goes, and **Show on canvas** (`checklist.show`), which brings the card back, and **Take the
+ * tour** (`tour.start`, Story 11.6).
  */
 function GettingStartedProgress() {
   const done = useChecklistStore((s) => s.done);
@@ -286,6 +287,9 @@ function GettingStartedProgress() {
       <div className="actions">
         <button type="button" className="btn" disabled={!isCommandEnabled("checklist.show")} title={commandHint("checklist.show")} onClick={() => runCommand("checklist.show")}>
           Show on canvas
+        </button>
+        <button type="button" className="btn" title={commandHint("tour.start")} onClick={() => runCommand("tour.start")}>
+          Take the tour
         </button>
       </div>
     </section>

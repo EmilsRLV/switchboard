@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useTourStore } from "../state/tour";
 import type { SessionState, WorkspaceSnapshot } from "../ipc";
 import { resetChecklist, useChecklistStore } from "../state/checklist";
 import { resetHints, useHintsStore } from "../state/hints";
@@ -151,7 +152,7 @@ describe("hint keys from the registry", () => {
 
 describe("subscribeHintSources", () => {
   const workspace = { workspace: { projects: [] }, children: [] } as unknown as WorkspaceSnapshot;
-  const state = { firstRun: false, checklist: { shown: true, dismissed: false, done: [] }, version: "0.1.0", lastSeenVersion: "0.1.0", hints: { hidden: null } };
+  const state = { firstRun: false, checklist: { shown: true, dismissed: false, done: [] }, version: "0.1.0", lastSeenVersion: "0.1.0", hints: { hidden: null }, tour: { done: false } };
 
   beforeEach(() => {
     clearCommands();
@@ -183,6 +184,9 @@ describe("subscribeHintSources", () => {
     expect(fired(() => useWorkspaceStore.setState({ snapshot: workspace }))).toBe(true);
     expect(fired(() => useLiveStore.setState({ snapshot: { ...EMPTY_LIVE } }))).toBe(true);
     expect(fired(() => applyBindingOverrides({ "edge.link": "ctrl+e" }))).toBe(true);
+    // Story 11.6: the tour holds hints back.
+    expect(fired(() => useTourStore.setState({ on: true }))).toBe(true);
+    useTourStore.setState({ on: false });
     stop();
     expect(fired(() => useUiStore.setState({ pane: null }))).toBe(false);
     expect(fired(() => applyBindingOverrides({}))).toBe(false);

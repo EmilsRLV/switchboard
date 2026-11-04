@@ -26,7 +26,8 @@ import { useUiStore } from "../state/ui";
 import { useSettingsStore } from "../state/settings";
 import type { SettingsSnapshot } from "../ipc";
 import { registerBuiltins } from "../commands/builtins";
-import { applyBindingOverrides, clearCommands } from "../commands/registry";
+import { applyBindingOverrides, clearCommands, runCommand } from "../commands/registry";
+import { resetTour, useTourStore } from "../state/tour";
 import HelpPane, { Block, configFolder, loadAppVersion, resetKnownVersion, VersionFooter } from "./HelpPane";
 
 function show(page: string | null): string {
@@ -78,12 +79,22 @@ describe("HelpPane", () => {
     expect(html).not.toContain(">f1</kbd>");
   });
 
-  it("the Getting started page (Story 10.3) ends with the live checklist and Show on canvas", () => {
+  it("the Getting started page (Story 10.3) ends with the live checklist and Show on canvas", async () => {
     const html = show("getting-started");
     expect(html).toContain('aria-label="Your progress"');
     expect(html.match(/<li class="checklist-row/g)).toHaveLength(6);
     expect(html).toContain('<button type="button" class="checklist-step" title="Open the command palette · ctrl+k">Open the command palette</button>');
     expect(html).toContain(">Show on canvas</button>");
+    // Story 11.6: Take the tour beside it.
+    expect(html).toContain('>Show on canvas</button><button type="button" class="btn" title="Take the tour">Take the tour</button>');
+    // Its click runs `tour.start` (the handler as written), which starts the tour.
+    const fs = (await import(/* @vite-ignore */ "node:fs" as string)) as { readFileSync(path: URL, encoding: "utf8"): string };
+    const source = fs.readFileSync(new URL("./HelpPane.tsx", import.meta.url), "utf8");
+    expect(source).toMatch(/onClick=\{\(\) => runCommand\("tour\.start"\)\}>\s*Take the tour\s*<\/button>/);
+    resetTour();
+    expect(runCommand("tour.start")).toBe(true);
+    expect(useTourStore.getState().on).toBe(true);
+    resetTour();
     expect(show("canvas")).not.toContain("Show on canvas");
   });
 

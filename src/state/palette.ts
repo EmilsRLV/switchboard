@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { Keybinding } from "../commands/keybindings";
 import { runCommand, type Command } from "../commands/registry";
+import { isTourOn, useTourStore } from "./tour";
 
 /** One row of a pick list (see {@link PalettePick}). */
 export type PickItem = { id: string; title: string };
@@ -90,6 +91,9 @@ export function paletteRows(
  */
 export function runPaletteRow(rowId: string): void {
   const pick = usePaletteStore.getState().pick;
+  // Story 11.6: a command picked over the tour would change the app under the dim, so the tour
+  // ends first, exactly as Skip does (recorded done); the tour's own commands leave it on.
+  if (pick === null && isTourOn() && !rowId.startsWith("tour.")) useTourStore.getState().end();
   if (pick !== null) {
     usePaletteStore.getState().close();
     pick.onPick(rowId);

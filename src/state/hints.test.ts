@@ -18,7 +18,7 @@ import { areHintsOn, hintsOn, isHintsLoaded, resetHints, useHintsStore } from ".
 import { resetWhatsNew } from "./whatsNew";
 
 function snapshot(dismissed: boolean, hidden: boolean | null, shown = true): AppStateSnapshot {
-  return { firstRun: false, checklist: { shown, dismissed, done: [] }, version: "0.1.0", lastSeenVersion: "0.1.0", hints: { hidden } };
+  return { firstRun: false, checklist: { shown, dismissed, done: [] }, version: "0.1.0", lastSeenVersion: "0.1.0", hints: { hidden }, tour: { done: false } };
 }
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));

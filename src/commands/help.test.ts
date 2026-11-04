@@ -141,7 +141,7 @@ describe("help commands (Story 10.1)", () => {
     // Before state.json answers neither works (show would write the defaults over the file).
     expect(runCommand("checklist.show")).toBe(false);
     expect(runCommand("checklist.dismiss")).toBe(false);
-    useChecklistStore.getState().load({ firstRun: false, checklist: { shown: false, dismissed: false, done: [] }, version: "0.1.0", lastSeenVersion: "0.1.0", hints: { hidden: null } });
+    useChecklistStore.getState().load({ firstRun: false, checklist: { shown: false, dismissed: false, done: [] }, version: "0.1.0", lastSeenVersion: "0.1.0", hints: { hidden: null }, tour: { done: false } });
     expect(getCommand("checklist.show")?.title).toBe("Show getting started");
     expect(getCommand("checklist.dismiss")?.title).toBe("Dismiss getting started");
     expect(runCommand("checklist.dismiss")).toBe(false);

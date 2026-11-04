@@ -200,3 +200,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-11-3-ghost-card-and-inline-hints.md`
   summary: Test NodeHint's fade timer and unmount after 300 ms, and that `Canvas` shows the ghost card only when empty, in a DOM test environment.
   evidence: Review found these run in no test; the repo's vitest is node-only. Unverified medium.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-6-first-run-tour.md`
+  summary: Test that mounting the canvas flow calls `tourFirstFrame` (fresh-profile auto-start wiring), and the tour's focus moves and per-frame re-measure, in a DOM test environment.
+  evidence: Review found deleting the `tourFirstFrame()` call fails no test; store tests call it by hand. Unverified medium.

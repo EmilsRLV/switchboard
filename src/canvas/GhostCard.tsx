@@ -32,6 +32,7 @@ export function GhostCardView({ keys }: { keys: string }) {
       <button
         type="button"
         className="ghost-card"
+        data-tour="ghost"
         tabIndex={-1}
         aria-label="Add project folder"
         title={commandHint("project.add")}

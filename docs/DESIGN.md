@@ -405,13 +405,15 @@ chrome follows every rule here.
 - **The Getting started card** (Story 10.3) sits at the canvas's top-right under the banner strip, offset below the
   notice line: over the canvas (the Elsewhere tray's layer) and below the notice, panes, toasts, the palette and the
   menu. It is information, not a wizard: no overlay, modal or motion. A compact `--bg-raised` box with a 1-px
-  `--border` and `--radius-md`: the title `Getting started` (`--text-md` / 500) and a small **Dismiss** button on one
-  row, then the six steps, one row each (`--text-md`): a step whose command is enabled now is its title as a button
+  `--border` and `--radius-md`: the title `Getting started` (`--text-md` / 500), while the tour was never taken a
+  **tour** link (Story 11.6: underlined `--text-xs` text in `--fg`, `--fg-muted` on hover, no box) and a
+  small **Dismiss** button on one row, then the six steps, one row each (`--text-md`): a step whose command is enabled now is its title as a button
   (underlined text in the row's colour, `--fg-muted` on hover, the 1-px `--focus` outline), otherwise plain text;
   its keys follow at the right in mono `--text-xs` `--fg-muted`. A ticked step's row is `--fg-muted` and starts with
   a `✓` in `currentColor`. After the sixth step the rows give way to a muted `All done`. It shows on a fresh profile
   only; the Help pane's Getting started page (after the guide pages in Contents) ends with the same rows under
-  a `Your progress` section heading and an ordinary **Show on canvas** button. Tokens only, no accent.
+  a `Your progress` section heading and the ordinary buttons **Show on canvas** and **Take the tour** (Story 11.6).
+  While the first-run tour is on, the card is held back; it shows again when the tour ends. Tokens only, no accent.
 - **The canvas** is `--bg` with a dot grid in `--fg-faint`; empty, it shows the ghost card (Story 11.3). Nothing on the canvas uses the accent except the attention states (a `finished` / `waiting` session card and its project's glow; see [States](#states)).
 - **The node toolbar** (Story 11.2) is a row to the right of a project, session or branch card, outside the
   card's fixed box (so `nodes.ts` geometry and the arrow keys are untouched), top-aligned with the card's top
@@ -484,7 +486,12 @@ chrome follows every rule here.
   Keys are named inline as `kbd`. The cut-out moves to the next target over 150 ms (the reveal pan's duration;
   instant under reduced motion); the card appears without animation. No accent, no shadow, no gradient: the
   layers are told apart by surface, as everywhere. The layer takes pointer events (the tour is read-only);
-  `esc` skips, `ctrl+k` still opens the palette over it.
+  `→` / `enter` go on, `←` goes back, `esc` skips, `ctrl+k` still opens the palette over it, and every other key
+  is ignored. The card sits right of the cut-out, else left of it, else below it, kept in the window; a window
+  resize or a moving target re-measures on the next frame, and a target missing from the DOM (or off screen)
+  is drawn as a stop without one. Focus moves to **Next** on each stop and goes back where it was when the
+  tour ends. With projects, stop 3 shows the first project's toolbar and stop 4 its link handle as if
+  hovered; on an empty canvas those stops show the `node-anatomy` and `draw-edge` figures.
 
 ## Node anatomy
 

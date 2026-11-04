@@ -17,6 +17,7 @@ const SNAPSHOT: AppStateSnapshot = {
   version: "0.2.0",
   lastSeenVersion: "0.1.0",
   hints: { hidden: null },
+  tour: { done: false },
 };
 
 describe("state_get's reply feeds both stores (Stories 10.3, 10.5)", () => {

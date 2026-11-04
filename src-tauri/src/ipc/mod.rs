@@ -119,6 +119,14 @@ pub async fn hints_set<R: Runtime>(
     app.state::<AppState>().write_state_file().set_hints(hidden)
 }
 
+/// Story 11.6: record whether the first-run tour was taken (finished or skipped) and write
+/// `state.json` atomically, on the `hints_set` pattern (kept in memory only when the file is from a
+/// newer build, or unreadable).
+#[tauri::command]
+pub async fn tour_set<R: Runtime>(app: AppHandle<R>, done: bool) -> Result<crate::appstate::StateSnapshot, String> {
+    app.state::<AppState>().write_state_file().set_tour(done)
+}
+
 /// Story 10.5: the Changelog was opened -- record the running version as seen in `state.json`
 /// (written only when it changed, and not when the file is read-only). Async so the fsync runs
 /// off the main thread.

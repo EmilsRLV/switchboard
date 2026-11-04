@@ -1,8 +1,11 @@
-import { memo, type MouseEvent as ReactMouseEvent } from "react";
+import { memo, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { commandHint } from "../commands/keybindings";
 import { runCommand } from "../commands/registry";
+import { forcedOn } from "../help/tour";
+import { useTourStore } from "../state/tour";
 import { useUiStore } from "../state/ui";
+import { useWorkspaceStore } from "../state/workspace";
 import { LinkHandles } from "./LinkHandles";
 import { NodeHint } from "./NodeHint";
 import { NodeToolbar, useHover } from "./NodeToolbar";
@@ -35,10 +38,40 @@ import {
  * the badges say what they count the same way). The card's edge handle (Story 6.1) sits on its right edge. While
  * the card is hovered or selected (and not dragged), its node toolbar (Story 11.2) hangs to the
  * right of it. The first project carries the inline hints (Story 11.3): under the card, or beside
- * its handle while the handle shows.
+ * its handle while the handle shows. It is also the first-run tour's target (Story 11.6,
+ * `data-tour`: the card, its toolbar's `new`, its handle), and the tour forces its toolbar or its
+ * handle shown, as if hovered, while a stop points there.
  */
+/**
+ * Story 11.6: what the tour marks on project `id` now: `""` (not the first project), `"first"`, or
+ * what the current stop forces shown on it (`"toolbar"`, `"handle"`).
+ */
+export function tourMarkOf(id: string): "" | "first" | "toolbar" | "handle" {
+  if (useWorkspaceStore.getState().snapshot?.workspace.projects[0]?.id !== id) return "";
+  const tour = useTourStore.getState();
+  return (tour.on ? forcedOn(tour.stop, true) : null) ?? "first";
+}
+
+function subscribeTourMark(listener: () => void): () => void {
+  const stopWorkspace = useWorkspaceStore.subscribe(listener);
+  const stopTour = useTourStore.subscribe(listener);
+  return () => {
+    stopWorkspace();
+    stopTour();
+  };
+}
+
+function useTourMark(id: string): "" | "first" | "toolbar" | "handle" {
+  const snapshot = () => tourMarkOf(id);
+  return useSyncExternalStore(subscribeTourMark, snapshot, snapshot);
+}
+
 export const ProjectNode = memo(function ProjectNode({ data, dragging }: NodeProps<ProjectFlowNode>) {
   const [hovered, hover] = useHover();
+  // Story 11.6: a string snapshot, so only the first card follows the tour.
+  const mark = useTourMark(data.project.id);
+  const first = mark !== "";
+  const forced = mark === "toolbar" || mark === "handle" ? mark : null;
   const { project, status, flashed, selected, childCount, liveCount, attention, attentionText, branchesError } = data;
   // Story 11.5: the glow names the session that needs you (`fix login is waiting`).
   const glow = attention ? (attentionText ?? "a session needs you") : null;
@@ -65,6 +98,7 @@ export const ProjectNode = memo(function ProjectNode({ data, dragging }: NodePro
         className={
           "project-node" + (flashed ? " is-flash" : "") + (selected ? " is-selected" : "") + (attention ? " project-glow" : "")
         }
+        data-tour={first ? "project" : undefined}
         role="group"
         aria-label={`Project ${project.label}${liveCount > 0 ? `, ${liveBadgeText(liveCount)}` : ""}${glow === null ? "" : `, ${glow}`}`}
         title={glow ?? undefined}
@@ -128,8 +162,8 @@ export const ProjectNode = memo(function ProjectNode({ data, dragging }: NodePro
           )}
         </div>
       </div>
-      <LinkHandles source shown={selected} />
-      <NodeToolbar target={{ kind: "project", id: project.id }} shown={(hovered || selected) && dragging !== true} />
+      <LinkHandles source shown={selected || forced === "handle"} tour={first} />
+      <NodeToolbar target={{ kind: "project", id: project.id }} shown={(hovered || selected || forced === "toolbar") && dragging !== true} tour={first} />
       <NodeHint target={{ kind: "project", id: project.id }} handleShown={(hovered || selected) && dragging !== true} />
     </div>
   );

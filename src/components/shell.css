@@ -1,6 +1,11 @@
 /* Shell layout: banner strip on top, the canvas (canvas/canvas.css) filling the rest, panes
    on the right over it. Colours, type sizes and radii come from theme/tokens.css only; the
-   accent is reserved for attention states (docs/DESIGN.md, enforced by theme/design.test.ts). */
+   accent is reserved for attention states (docs/DESIGN.md, enforced by theme/design.test.ts).
+
+   The stack, bottom to top: the canvas; the Getting started card and the corner row (4); the
+   notice (5); panes (10); the approval and review toasts (12); the first-run tour's dim layer
+   and card (14, components/tour.css: over the shell, panes and toasts); the palette (15); the
+   context menu (20). */
 
 .shell {
   height: 100%;
@@ -1018,6 +1023,29 @@
   margin: 0;
   font-size: var(--text-md);
   font-weight: 500;
+}
+
+/* Story 11.6: the header's **tour** link (while the tour was never taken), beside Dismiss: the
+   step buttons' look, underlined text in the row's colour. */
+.checklist-tour {
+  margin-left: auto;
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--fg);
+  background: none;
+  border: none;
+  padding: 0;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.checklist-tour:hover {
+  color: var(--fg-muted);
+}
+
+.checklist-tour:focus-visible {
+  outline: var(--line) solid var(--focus);
+  outline-offset: 1px;
 }
 
 .checklist-dismiss {

@@ -11,10 +11,15 @@
 // `terminal.toggle`, `palette.toggleFromTerminal`, `terminal.prevTab` and `terminal.nextTab`, by
 // default ctrl+`, ctrl+shift+k, ctrl+pageup and ctrl+pagedown; Story 9.4's `keybindings.json` may
 // move them), so Esc, ctrl+c, ctrl+o and ctrl+k reach the program running there.
+// While the first-run tour is on (Story 11.6) only the tour's own commands and the palette's
+// toggle are dispatched (and, with the palette open over the tour, the palette's own commands):
+// every other binding is ignored, so the tour's keys always win.
 
 import { useEffect } from "react";
 import { isInsideTerminal, layoutKey, terminalKeyAllowed } from "../terminal/keys";
 import { isContextMenuOpen } from "../state/ui";
+import { usePaletteStore } from "../state/palette";
+import { isTourOn } from "../state/tour";
 import { getCommand, listCommands, runCommand, type Command } from "./registry";
 
 export type Keybinding = {
@@ -165,6 +170,20 @@ export function commandHint(id: string, label?: string): string {
   return binding === null ? text : `${text} · ${formatKeybinding(binding)}`;
 }
 
+/** The palette's toggles: dispatched while the tour is on, so `ctrl+k` opens the palette over it. */
+const TOUR_PALETTE_COMMANDS = new Set(["palette.toggle", "palette.toggleFromTerminal"]);
+/** The palette's own commands, dispatched too while the palette is open over the tour. */
+const PALETTE_OWN_COMMANDS = new Set(["palette.toggle", "palette.toggleFromTerminal", "palette.close"]);
+
+/**
+ * Story 11.6: whether command `id` may be dispatched while the tour is on: the tour's own commands
+ * (`tour.*`), the palette's toggle, and with the palette open its own commands.
+ */
+export function tourModeAllows(id: string, paletteOpen: boolean): boolean {
+  if (id.startsWith("tour.")) return true;
+  return paletteOpen ? PALETTE_OWN_COMMANDS.has(id) : TOUR_PALETTE_COMMANDS.has(id);
+}
+
 /**
  * The dispatcher: resolve the event to the first enabled command whose binding matches, run it
  * and swallow the event. Auto-repeat is ignored (a held `ctrl+k` toggles once). Returns true
@@ -180,9 +199,12 @@ export function handleKeydown(event: KeyEventLike): boolean {
   const editable = isEditableTarget(event.target) || isContextMenuOpen();
   // A pass-through binding matches on its physical key too (`layoutKey`), on any keyboard layout.
   const probe: KeyEventLike = { ...pick(event), key: layoutKey(event) };
+  const touring = isTourOn();
+  const paletteOpen = touring && usePaletteStore.getState().isOpen;
   for (const command of listCommands({ enabledOnly: true })) {
     const binding = command.binding;
     if (binding === null) continue;
+    if (touring && !tourModeAllows(command.id, paletteOpen)) continue;
     const bare = !binding.ctrl && !binding.shift && !binding.alt;
     if (editable && bare && !EDITABLE_PASS_KEYS.has(binding.key)) continue;
     if (matchesEvent(binding, probe)) {

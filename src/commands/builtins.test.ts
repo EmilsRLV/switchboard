@@ -55,7 +55,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the one hundred and five commands with the spec's keybindings", () => {
+  it("register the one hundred and ten commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -157,6 +157,11 @@ describe("built-in commands", () => {
       "terminal.restart",
       "terminal.returnToPane",
       "terminal.toggle",
+      "tour.back",
+      "tour.next",
+      "tour.next.enter",
+      "tour.skip",
+      "tour.start",
       "worktree.create",
       "worktree.discardAndRemove",
       "worktree.forceRemove",
@@ -240,7 +245,7 @@ describe("built-in commands", () => {
     expect(getCommand("review.layoutUnified")?.hidden).toBe(true);
   });
 
-  it("the key-only carriers are hidden from the palette, the eighty-five actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the eighty-six actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -327,6 +332,7 @@ describe("built-in commands", () => {
       "terminal.restart",
       "terminal.returnToPane",
       "terminal.toggle",
+      "tour.start",
       "worktree.create",
       "worktree.discardAndRemove",
       "worktree.forceRemove",
@@ -373,7 +379,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(106);
+    expect(listCommands()).toHaveLength(111);
   });
 
   const PROJECT_ACTIONS = [
@@ -425,6 +431,7 @@ describe("built-in commands", () => {
       "Remove from canvas",
       "Reveal Claude project dir",
       "Review changes",
+      "Take the tour",
       "Toggle command palette",
       "What's new",
     ]);
@@ -973,7 +980,7 @@ describe("built-in commands", () => {
   it("the palette lists only enabled, visible commands, sorted by title", () => {
     usePaletteStore.getState().open();
     const titles = listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title);
-    expect(titles).toEqual(["Help", "Help: changelog", "Help: getting started", "Help: open page…", "Help: roadmap", "Help: what you see", "Open settings", "Quit", "Re-detect binaries", "Toggle command palette", "What's new"]);
+    expect(titles).toEqual(["Help", "Help: changelog", "Help: getting started", "Help: open page…", "Help: roadmap", "Help: what you see", "Open settings", "Quit", "Re-detect binaries", "Take the tour", "Toggle command palette", "What's new"]);
 
     useCanvasStore.getState().setInstance(fakeCanvas());
     expect(listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title)).toEqual([
@@ -989,6 +996,7 @@ describe("built-in commands", () => {
       "Open settings",
       "Quit",
       "Re-detect binaries",
+      "Take the tour",
       "Toggle command palette",
       "What's new",
     ]);
@@ -1555,6 +1563,7 @@ describe("the inline hints commands (Story 11.3)", () => {
     version: "0.1.0",
     lastSeenVersion: "0.1.0",
     hints: { hidden },
+    tour: { done: false },
   });
 
   beforeEach(() => {

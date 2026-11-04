@@ -31,10 +31,11 @@ export function useHover(): [boolean, { onMouseEnter: () => void; onMouseLeave: 
  * Story 11.2: the node toolbar of a project, session or branch card, to the right of the card
  * and outside its fixed box: up to four short buttons for the card's main enabled commands
  * (`toolbarCommands`), then `⋯` for the node menu. `shown` is the card's hovered-or-selected
- * (and not dragged) state; otherwise nothing is in the DOM, and nothing subscribes.
+ * (and not dragged) state; otherwise nothing is in the DOM, and nothing subscribes. `tour` marks
+ * the first project's `new` button as the first-run tour's target (Story 11.6).
  */
-export function NodeToolbar({ target, shown }: { target: NodeTarget; shown: boolean }) {
-  return shown ? <ShownToolbar target={target} /> : null;
+export function NodeToolbar({ target, shown, tour = false }: { target: NodeTarget; shown: boolean; tour?: boolean }) {
+  return shown ? <ShownToolbar target={target} tour={tour} /> : null;
 }
 
 /**
@@ -45,7 +46,7 @@ export function NodeToolbar({ target, shown }: { target: NodeTarget; shown: bool
  * snapshot (children, branches, worktrees, edges) and the status poll (git repos). The
  * selection is overridden to this card.
  */
-function ShownToolbar({ target }: { target: NodeTarget }) {
+function ShownToolbar({ target, tour }: { target: NodeTarget; tour: boolean }) {
   useUiStore((s) => s.pane);
   useUiStore((s) => s.contextMenu);
   useUiStore((s) => s.elsewhereOpen);
@@ -57,7 +58,7 @@ function ShownToolbar({ target }: { target: NodeTarget }) {
   const commands = toolbarCommands(target);
   const menu = hasNodeMenu(target);
   if (commands.length === 0 && !menu) return null;
-  return <ToolbarRow target={target} commands={commands} menu={menu} />;
+  return <ToolbarRow target={target} commands={commands} menu={menu} tour={tour} />;
 }
 
 /**
@@ -91,7 +92,17 @@ export function alreadyOpenHere(id: string, target: NodeTarget): boolean {
  * opens the node menu under itself. The buttons are not in the Tab order
  * (`tabIndex -1`); a press on them never drags the card or pans the canvas (`nodrag nopan`).
  */
-export function ToolbarRow({ target, commands, menu }: { target: NodeTarget; commands: readonly RegisteredCommand[]; menu: boolean }) {
+export function ToolbarRow({
+  target,
+  commands,
+  menu,
+  tour = false,
+}: {
+  target: NodeTarget;
+  commands: readonly RegisteredCommand[];
+  menu: boolean;
+  tour?: boolean;
+}) {
   const run = (event: ReactMouseEvent<HTMLButtonElement>) => {
     // The card's own click (xyflow → `onNodeClick`) would select too; one is enough.
     event.stopPropagation();
@@ -120,6 +131,7 @@ export function ToolbarRow({ target, commands, menu }: { target: NodeTarget; com
             type="button"
             className="node-toolbar-button"
             data-command={command.id}
+            data-tour={tour && command.id === "project.newSession" ? "toolbar-new" : undefined}
             tabIndex={-1}
             aria-label={command.title}
             title={commandHint(command.id)}

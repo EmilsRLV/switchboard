@@ -37,6 +37,7 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::state_get,
             ipc::checklist_set,
             ipc::hints_set,
+            ipc::tour_set,
             ipc::whats_new_seen,
             ipc::binaries_redetect,
             ipc::workspace_get,
@@ -399,7 +400,8 @@ mod tests {
                 "checklist": { "shown": true, "dismissed": false, "done": [] },
                 "version": version,
                 "lastSeenVersion": version,
-                "hints": { "hidden": null }
+                "hints": { "hidden": null },
+                "tour": { "done": false }
             })
         );
 
@@ -432,6 +434,17 @@ mod tests {
         assert_eq!(value["hints"]["hidden"], serde_json::Value::Null);
         let value: serde_json::Value = invoke(&webview, "state_get").unwrap().deserialize().unwrap();
         assert_eq!(value["hints"]["hidden"], serde_json::Value::Null);
+
+        // Story 11.6: `tour_set` writes the tour's state beside the hints; `state_get` carries it.
+        let args = serde_json::json!({ "done": true });
+        let value: serde_json::Value =
+            invoke_with(&webview, "tour_set", InvokeBody::Json(args)).expect("tour_set").deserialize().unwrap();
+        assert_eq!(value["tour"], serde_json::json!({ "done": true }));
+        let file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+        assert_eq!(file["tour"], serde_json::json!({ "done": true }));
+        assert_eq!(file["hints"], serde_json::json!({ "hidden": null }), "the hints are kept");
+        let value: serde_json::Value = invoke(&webview, "state_get").unwrap().deserialize().unwrap();
+        assert_eq!(value["tour"]["done"], true);
     }
 
     /// Story 10.5: an existing profile with an older version recorded sees it in `state_get`;

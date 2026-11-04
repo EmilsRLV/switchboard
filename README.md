@@ -62,9 +62,10 @@ build over the old one.
 
 **Where things live.** Settings and the canvas are two JSON files, both written on first launch, beside
 `state.json`, the app's own small state (the Getting started checklist's progress and whether its card was
-dismissed, the last version whose changes you have seen, and whether the canvas hints are hidden or shown
-(`hints.hidden`); never hand-edited, and deleting it resets only the checklist, the seen version and the hints
-setting; on an existing profile that brings the `new in <version>` chip back once):
+dismissed, the last version whose changes you have seen, whether the canvas hints are hidden or shown
+(`hints.hidden`), and whether the first-run tour was taken (`tour.done`); never hand-edited, and deleting it
+resets only the checklist, the seen version, the hints setting and the tour (which starts on its own only on
+a fresh profile); on an existing profile that brings the `new in <version>` chip back once):
 
 | OS | Folder |
 |---|---|

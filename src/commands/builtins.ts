@@ -97,6 +97,7 @@ import {
 import { isChecklistCardShown, isChecklistLoaded, useChecklistStore } from "../state/checklist";
 import { areHintsOn, isHintsLoaded, useHintsStore } from "../state/hints";
 import { anyHintStepUndone } from "../help/hints";
+import { isTourOn, useTourStore } from "../state/tour";
 import {
   canClearReview,
   canOpenReview,
@@ -201,6 +202,14 @@ function arrowCommand(direction: Direction, title: string): Command {
       moveSelection(direction);
     },
   };
+}
+
+/**
+ * Story 11.6: the `when` of the tour's keys: the tour is on and the palette is not open over it
+ * (then the palette has the arrows, Enter and Esc).
+ */
+function tourKeys(): boolean {
+  return isTourOn() && !isPaletteOpen();
 }
 
 /** Story 11.3: a step some hint names (`session`, `edge`, `review`) is still undone, so the hints commands mean something. */
@@ -353,6 +362,55 @@ export function builtinCommands(): Command[] {
       title: "Show canvas hints",
       when: () => isHintsLoaded() && hintStepsLeft() && !areHintsOn(),
       run: () => useHintsStore.getState().setHidden(false),
+    },
+    // -- Story 11.6: the first-run tour ------------------------------------------------------------
+    {
+      // Always in the palette, bindable, no default key. From stop 1, also while on. An open context
+      // menu (z 20, over the tour) and the open pane (which would cover targets; Help hands back to
+      // the pane it covered, so repeat) go first; nothing on the canvas changes.
+      id: "tour.start",
+      title: "Take the tour",
+      run: () => {
+        useUiStore.getState().closeContextMenu();
+        for (let i = 0; i < 3 && isPaneOpen(); i++) closeOpenPane();
+        useTourStore.getState().start();
+      },
+    },
+    {
+      // The card's Next (Finish on the last stop). Before `selection.activate`: while the tour is
+      // on, the dispatcher runs only the tour's keys and the palette's.
+      id: "tour.next",
+      title: "Tour: next",
+      keybinding: "arrowright",
+      hidden: true,
+      when: tourKeys,
+      run: () => useTourStore.getState().next(),
+    },
+    {
+      // Next's second key, a key-only carrier like `palette.toggleFromTerminal`.
+      id: "tour.next.enter",
+      title: "Tour: next (enter)",
+      keybinding: "enter",
+      hidden: true,
+      when: tourKeys,
+      run: () => useTourStore.getState().next(),
+    },
+    {
+      id: "tour.back",
+      title: "Tour: back",
+      keybinding: "arrowleft",
+      hidden: true,
+      when: tourKeys,
+      run: () => useTourStore.getState().back(),
+    },
+    {
+      // First in the Esc order while the tour is on (the other Esc carriers are not dispatched then).
+      id: "tour.skip",
+      title: "Skip the tour",
+      keybinding: "escape",
+      hidden: true,
+      when: tourKeys,
+      run: () => useTourStore.getState().end(),
     },
     {
       id: "pane.close",
