@@ -453,8 +453,13 @@ chrome follows every rule here.
   open. Captions are hidden from screen readers. The hints commands are offered only while a hinted step
   (session, edge, review) is undone.
 - **Help figures** (Story 11.4) are diagrams inside a help page, as wide as the page's text and at most 160 px
-  tall, drawn with the app's own card, handle, edge and state classes on the pane's surface (`--bg-raised`)
-  inside a 1-px `--border` box with `--radius-sm`. They move by CSS alone: opacity, transform and
+  tall, drawn with the app's own card, handle, edge, state, pane and palette classes on the pane's surface
+  (`--bg-raised`) inside a 1-px `--border` box with `--radius-sm`; each stage is drawn at a fixed scale
+  (`transform: scale(…)` where the cards would not fit, never resized boxes) sized for the pane at its
+  usual width, and clips on a narrower pane. A page names one as a fenced block with the info string
+  `figure <name>`, its text the alt text; an unknown name shows that text as a code block. Five ship:
+  `draw-edge` and `edge-kinds` (Edges), `node-anatomy` (Projects), `session-states` (Sessions) and `panes`
+  (Canvas); `edge-kinds` and `node-anatomy` are still. The others move by CSS alone: opacity, transform and
   `stroke-dashoffset`, looping every 4–8 s with a pause at the end of each loop; under
   `prefers-reduced-motion: reduce` the end frame is shown still. A figure has `role="img"` and its alt text (the
   fenced block's text) as its accessible name; a caption, when wanted, is the Markdown paragraph after it.

@@ -41,6 +41,10 @@ What changed in Switchboard, newest first. Each release lists what you can see a
   the running version and the config folder.
 - After an update, a quiet `new in <version>` chip at the bottom left of the canvas points to this changelog
   until you open it. **What's new** in the command palette opens it too. A fresh profile never shows it.
+- Pictures in Help, drawn with the app's own cards and lines. Three move: drawing an edge (Edges), a session
+  stepping through its states (Sessions), and a pane and the palette opening (Canvas); with reduced motion
+  on, each holds still on its last frame. Two are still: context, cooperate, pending, failed and selected
+  edges (Edges), and the parts of a project node (Projects).
 
 ## 0.1.0 — 2026-10-31
 

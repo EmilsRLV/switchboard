@@ -7,6 +7,7 @@ import { useChecklistStore } from "../state/checklist";
 import { ChecklistRows, useStepCommandsRefresh } from "./ChecklistCard";
 import { HELP_PAGES, helpPage, renderHelpPage } from "../help/pages";
 import type { HelpNode } from "../help/markdown";
+import { figureFor } from "../help/figures";
 import { appInfo } from "../ipc";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
@@ -165,7 +166,8 @@ function headingTag(level: number): "h3" | "h4" | "h5" | "h6" {
   return level <= 1 ? "h3" : level === 2 ? "h4" : level === 3 ? "h5" : "h6";
 }
 
-function Block({ node }: { node: HelpNode }): ReactNode {
+/** One block of a rendered page (exported for tests). */
+export function Block({ node }: { node: HelpNode }): ReactNode {
   switch (node.type) {
     case "heading": {
       const Tag = headingTag(node.level);
@@ -189,6 +191,12 @@ function Block({ node }: { node: HelpNode }): ReactNode {
     }
     case "codeBlock":
       return <pre className="help-pre">{node.text}</pre>;
+    case "figure": {
+      // Story 11.4: a known figure is drawn; an unknown name shows its alt text as a code block,
+      // so a typo shows and is never markup.
+      const Figure = figureFor(node.name);
+      return Figure === null ? <pre className="help-pre">{node.alt}</pre> : <Figure alt={node.alt} />;
+    }
     case "item":
       return <Blocks nodes={node.children} />;
     default:
@@ -231,6 +239,7 @@ function Inline({ node }: { node: HelpNode }): ReactNode {
     case "paragraph":
     case "list":
     case "codeBlock":
+    case "figure":
       // A block node inline (never produced by the renderer): shown as a block.
       return <Block node={node} />;
   }

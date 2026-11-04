@@ -26,6 +26,8 @@ export type HelpNode =
   | { type: "strong"; children: HelpNode[] }
   | { type: "code"; text: string }
   | { type: "codeBlock"; text: string }
+  /** Story 11.4: a fenced block with the info string `figure <name>`; `alt` is its text on one line. */
+  | { type: "figure"; name: string; alt: string }
   | { type: "link"; target: HelpLinkTarget; children: HelpNode[] }
   | { type: "text"; text: string };
 
@@ -70,6 +72,9 @@ export function linkTarget(url: string, options: RenderOptions = {}): HelpLinkTa
 }
 
 const ENTITIES: Record<string, string> = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'", "&nbsp;": " " };
+
+/** A figure's info string (Story 11.4): `figure`, whitespace, then the name, taken verbatim. */
+const FIGURE_INFO = /^figure\s+(\S.*)$/;
 
 /** Mark nodes carry syntax only: never shown. */
 const MARKS = new Set(["HeaderMark", "EmphasisMark", "CodeMark", "LinkMark", "ListMark", "QuoteMark", "CodeInfo"]);
@@ -128,15 +133,18 @@ class Walker {
             .map((item) => ({ type: "item", children: this.blocks(item) })),
         };
       case "FencedCode":
-      case "CodeBlock":
-        return {
-          type: "codeBlock",
-          text: children(node)
-            .filter((c) => c.name === "CodeText")
-            .map((c) => this.text(c.from, c.to))
-            .join("")
-            .replace(/\n$/, ""),
-        };
+      case "CodeBlock": {
+        const text = children(node)
+          .filter((c) => c.name === "CodeText")
+          .map((c) => this.text(c.from, c.to))
+          .join("")
+          .replace(/\n$/, "");
+        // Story 11.4: `figure <name>` makes the block a figure, its text the alt text on one line.
+        const info = node.getChild("CodeInfo");
+        const figure = info === null ? null : FIGURE_INFO.exec(this.text(info.from, info.to));
+        if (figure !== null) return { type: "figure", name: figure[1]!, alt: text.replace(/\s+/g, " ").trim() };
+        return { type: "codeBlock", text };
+      }
       default:
         if (MARKS.has(name)) return null;
         // HTMLBlock, CommentBlock, Blockquote, HorizontalRule, LinkReference, …: the source, as text.
@@ -251,6 +259,6 @@ function trimInline(nodes: HelpNode[]): HelpNode[] {
 /** The text of an inline run, without its markup (a heading's slug is made from it). */
 export function plainText(nodes: readonly HelpNode[]): string {
   return nodes
-    .map((node) => ("children" in node ? plainText(node.children) : node.text))
+    .map((node) => ("children" in node ? plainText(node.children) : node.type === "figure" ? node.alt : node.text))
     .join("");
 }

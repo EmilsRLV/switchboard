@@ -10,6 +10,7 @@ import { parseKeybinding, type Keybinding } from "../commands/keybindings";
 import { clearCommands, listCommands } from "../commands/registry";
 import { HELP_PAGES, pageIdOfFile, renderHelpPage } from "./pages";
 import { isWebUrl, type HelpNode } from "./markdown";
+import { FIGURES } from "./figures";
 
 /** The slice of `node:fs` the test reads with (the project has no Node typings), as the audit does. */
 type Fs = { readdirSync(path: URL): string[]; readFileSync(path: URL, encoding: "utf8"): string };
@@ -134,6 +135,17 @@ describe("the help content", () => {
       }
     }
     expect(keys).toBeGreaterThan(0);
+  });
+
+  it("Story 11.4: every figure a page names exists in FIGURES, and every FIGURES entry is used", () => {
+    const named = HELP_PAGES.flatMap((page) =>
+      all(renderHelpPage(page)).flatMap((n) => (n.type === "figure" ? [{ page: page.file, name: n.name, alt: n.alt }] : [])),
+    );
+    for (const { page, name, alt } of named) {
+      expect(Object.keys(FIGURES), `${page}: figure ${name}`).toContain(name);
+      expect(alt, `${page}: figure ${name} has alt text`).not.toBe("");
+    }
+    expect(new Set(named.map((n) => n.name))).toEqual(new Set(Object.keys(FIGURES)));
   });
 
   it("the no-HTML rule catches raw HTML and an image, as in a root file", () => {

@@ -27,7 +27,7 @@ import { useSettingsStore } from "../state/settings";
 import type { SettingsSnapshot } from "../ipc";
 import { registerBuiltins } from "../commands/builtins";
 import { applyBindingOverrides, clearCommands } from "../commands/registry";
-import HelpPane, { configFolder, loadAppVersion, resetKnownVersion, VersionFooter } from "./HelpPane";
+import HelpPane, { Block, configFolder, loadAppVersion, resetKnownVersion, VersionFooter } from "./HelpPane";
 
 function show(page: string | null): string {
   useUiStore.setState({ pane: "help", helpPage: page, helpAnchor: null });
@@ -96,6 +96,39 @@ describe("HelpPane", () => {
     const html = show("canvas");
     expect(html).toContain("Canvas &amp; navigation");
     expect(html).not.toContain("help-table");
+  });
+
+  it("Story 11.4: the Edges page draws the draw-edge and edge-kinds figures under their section headings", () => {
+    const html = show("edges");
+    const drawing = html.indexOf('id="help-drawing-and-finding-edges"');
+    const drawEdge = html.indexOf('class="help-figure help-figure-draw-edge" role="img" aria-label="A hovered session node shows its handle');
+    const seeing = html.indexOf('id="help-what-you-can-see"');
+    const kinds = html.indexOf('class="help-figure help-figure-edge-kinds" role="img" aria-label="Five edges');
+    expect(drawing).toBeGreaterThan(-1);
+    expect(drawEdge).toBeGreaterThan(drawing);
+    expect(seeing).toBeGreaterThan(drawEdge);
+    expect(kinds).toBeGreaterThan(seeing);
+    for (const label of ["context", "cooperate", "pending", "failed", "selected"]) {
+      expect(html).toContain(`<span class="help-figure-label">${label}</span>`);
+    }
+    expect(html).not.toContain("figure draw-edge");
+  });
+
+  it("Story 11.4: each figure page draws its figure", () => {
+    expect(show("projects")).toContain('class="help-figure help-figure-node-anatomy"');
+    expect(show("sessions")).toContain('class="help-figure help-figure-session-states"');
+    expect(show("canvas")).toContain('class="help-figure help-figure-panes"');
+  });
+
+  it("Story 11.4: a figure with an unknown or odd name shows its alt text as a code block, never markup", () => {
+    const unknown = renderToStaticMarkup(<Block node={{ type: "figure", name: "nope", alt: "Drag the handle" }} />);
+    expect(unknown).toBe('<pre class="help-pre">Drag the handle</pre>');
+    const odd = renderToStaticMarkup(<Block node={{ type: "figure", name: "<b>x</b>", alt: "<i>alt</i>" }} />);
+    expect(odd).toBe('<pre class="help-pre">&lt;i&gt;alt&lt;/i&gt;</pre>');
+    const proto = renderToStaticMarkup(<Block node={{ type: "figure", name: "constructor", alt: "x" }} />);
+    expect(proto).toBe('<pre class="help-pre">x</pre>');
+    const known = renderToStaticMarkup(<Block node={{ type: "figure", name: "edge-kinds", alt: "Five edges" }} />);
+    expect(known.startsWith('<div class="help-figure help-figure-edge-kinds" role="img" aria-label="Five edges">')).toBe(true);
   });
 
   it("Story 10.4: Contents lists Getting started, Changelog and Roadmap last", () => {
