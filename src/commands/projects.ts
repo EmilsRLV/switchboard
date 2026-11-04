@@ -54,7 +54,7 @@ function centredCardPosition(): Position {
 
 /**
  * Add `paths` as project nodes at `position`; apply the snapshot that comes back and flash
- * the nodes that were already there. Resolves with Rust's result, or `null` when the call
+ * the nodes that were already there. Adding exactly one folder that is new selects its card. Resolves with Rust's result, or `null` when the call
  * failed (reported through `onError`, never thrown). Paths that are not folders come back in
  * `skipped` and add nothing: a dropped file is a silent no-op.
  */
@@ -75,6 +75,10 @@ export async function addProjectsAt(
   store.applySnapshot(result.snapshot);
   store.setLoadError(null); // the round trip works again
   flashProjects(result.existing);
+  // Story 11.3: one new project is selected, so its hint's `n` works at once. A duplicate (flashed)
+  // or a several-folder add leaves the selection as it is.
+  const added = result.added[0];
+  if (paths.length === 1 && result.added.length === 1 && added !== undefined) useUiStore.getState().select({ kind: "project", id: added });
   return result;
 }
 

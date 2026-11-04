@@ -190,9 +190,13 @@
   evidence: appstate.rs keeps mark_version_seen / set_checklist in memory when read_only is set, and StateSnapshot carries no readOnly; a fix exposes it and lets the chip and checklist say why (or stay hidden). Found in the 10.5 review (EC3/BH2).
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-11-1-keys-where-the-action-is.md`
-  summary: Test `isBackground` in `src/canvas/Canvas.tsx` (pane / canvas-hint vs node, edge, handle, edge label), e.g. by extracting it and testing with fake `closest` objects.
+  summary: Test `isBackground` in `src/canvas/Canvas.tsx` (pane / ghost-card vs node, edge, handle, edge label), e.g. by extracting it and testing with fake `closest` objects.
   evidence: Review found no test covers it; dropping `.react-flow__edge` from its exclusion would open the canvas menu over edges unnoticed. Settled by a test once extracted.
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-11-2-the-node-toolbar.md`
   summary: Test that a mounted node toolbar re-renders when the stores its commands' `when`s read change (pane, palette, menu, terminals, live, Elsewhere).
   evidence: Review found deleting a `ShownToolbar` subscription fails no test; needs a DOM test environment (none in the repo). Unverified medium.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-3-ghost-card-and-inline-hints.md`
+  summary: Test NodeHint's fade timer and unmount after 300 ms, and that `Canvas` shows the ghost card only when empty, in a DOM test environment.
+  evidence: Review found these run in no test; the repo's vitest is node-only. Unverified medium.

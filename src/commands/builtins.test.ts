@@ -8,6 +8,8 @@ import { EMPTY_LIVE, unmarkAcknowledging, useLiveStore } from "../state/live";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
 import { useUiStore } from "../state/ui";
+import { resetChecklist, useChecklistStore } from "../state/checklist";
+import { resetHints, useHintsStore } from "../state/hints";
 import { useWorkspaceStore } from "../state/workspace";
 import { chevronCommandId } from "../canvas/nodes";
 import { builtinCommands, registerBuiltins } from "./builtins";
@@ -53,7 +55,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the one hundred commands with the spec's keybindings", () => {
+  it("register the one hundred and five commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -88,6 +90,8 @@ describe("built-in commands", () => {
       "help.roadmap",
       "help.toggle",
       "help.whatsNew",
+      "hints.hide",
+      "hints.show",
       "import.addSelected",
       "launch.addFolder",
       "launch.start",
@@ -267,6 +271,8 @@ describe("built-in commands", () => {
       "help.page",
       "help.roadmap",
       "help.whatsNew",
+      "hints.hide",
+      "hints.show",
       "import.addSelected",
       "launch.addFolder",
       "launch.start",
@@ -365,7 +371,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(103);
+    expect(listCommands()).toHaveLength(105);
   });
 
   const PROJECT_ACTIONS = [
@@ -1537,3 +1543,67 @@ function fixtureSnapshot(): SettingsSnapshot {
     banners: [],
   };
 }
+
+describe("the inline hints commands (Story 11.3)", () => {
+  const snapshot = (dismissed: boolean, hidden: boolean | null) => ({
+    firstRun: false,
+    checklist: { shown: true, dismissed, done: [] },
+    version: "0.1.0",
+    lastSeenVersion: "0.1.0",
+    hints: { hidden },
+  });
+
+  beforeEach(() => {
+    clearCommands();
+    resetChecklist();
+    resetHints();
+    useUiStore.setState({ pane: null });
+    registerBuiltins();
+  });
+  afterEach(() => clearCommands());
+
+  it("are palette commands with no default key", () => {
+    for (const [id, title] of [["hints.hide", "Hide canvas hints"], ["hints.show", "Show canvas hints"]] as const) {
+      const command = getCommand(id);
+      expect(command?.title).toBe(title);
+      expect(command?.keybinding, id).toBeUndefined();
+      expect(command?.hidden, id).toBeUndefined();
+    }
+  });
+
+  it("neither runs before state.json loaded", () => {
+    expect(runCommand("hints.hide")).toBe(false);
+    expect(runCommand("hints.show")).toBe(false);
+  });
+
+  it("hide while hints follow the shown card; show once they are hidden", () => {
+    useChecklistStore.getState().load(snapshot(false, null));
+    useHintsStore.getState().load(snapshot(false, null));
+    expect(runCommand("hints.show")).toBe(false);
+    expect(runCommand("hints.hide")).toBe(true);
+    expect(useHintsStore.getState().hidden).toBe(true);
+    expect(runCommand("hints.hide")).toBe(false);
+    expect(runCommand("hints.show")).toBe(true);
+    expect(useHintsStore.getState().hidden).toBe(false);
+  });
+
+  it("show after the card was dismissed (hints followed it away)", () => {
+    useChecklistStore.getState().load(snapshot(true, null));
+    useHintsStore.getState().load(snapshot(true, null));
+    expect(runCommand("hints.hide")).toBe(false);
+    expect(runCommand("hints.show")).toBe(true);
+    expect(useHintsStore.getState().hidden).toBe(false);
+    // Shown even with the card gone: hide is the way back.
+    expect(runCommand("hints.show")).toBe(false);
+    expect(runCommand("hints.hide")).toBe(true);
+  });
+
+  it("neither is offered once session, edge and review are all done", () => {
+    useChecklistStore.getState().load({ ...snapshot(false, null), checklist: { shown: true, dismissed: false, done: ["session", "edge"] } });
+    useHintsStore.getState().load(snapshot(false, null));
+    expect(runCommand("hints.hide")).toBe(true);
+    useChecklistStore.getState().latch(["review"]);
+    expect(runCommand("hints.show")).toBe(false);
+    expect(runCommand("hints.hide")).toBe(false);
+  });
+});

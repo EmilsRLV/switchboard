@@ -108,6 +108,17 @@ pub async fn checklist_set<R: Runtime>(
     app.state::<AppState>().write_state_file().set_checklist(checklist)
 }
 
+/// Story 11.3: store the inline hints setting (`None` follows the Getting started card, `Some(true)`
+/// hides them, `Some(false)` shows them anyway) and write `state.json` atomically, on the
+/// `checklist_set` pattern (kept in memory only when the file is from a newer build, or unreadable).
+#[tauri::command]
+pub async fn hints_set<R: Runtime>(
+    app: AppHandle<R>,
+    hidden: Option<bool>,
+) -> Result<crate::appstate::StateSnapshot, String> {
+    app.state::<AppState>().write_state_file().set_hints(hidden)
+}
+
 /// Story 10.5: the Changelog was opened -- record the running version as seen in `state.json`
 /// (written only when it changed, and not when the file is read-only). Async so the fsync runs
 /// off the main thread.

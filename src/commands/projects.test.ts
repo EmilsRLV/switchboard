@@ -75,7 +75,7 @@ describe("project actions", () => {
     vi.useFakeTimers();
     revision = 0;
     useWorkspaceStore.setState({ snapshot: null, loadError: null });
-    useUiStore.setState({ pane: null, flashed: [] });
+    useUiStore.setState({ pane: null, flashed: [], selection: null });
     useImportStore.getState().reset();
     useCanvasStore.setState({ instance: canvas, element: { getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 200 }) } });
   });
@@ -123,6 +123,23 @@ describe("project actions", () => {
     expect(useUiStore.getState().flashed).toEqual(["p1"]);
     vi.advanceTimersByTime(FLASH_MS);
     expect(useUiStore.getState().flashed).toEqual([]);
+  });
+
+  it("adding one new folder selects its card; a duplicate or several folders leave the selection (Story 11.3)", async () => {
+    const p = project("p1", "B:\a");
+    const q = project("p2", "B:\b");
+    workspaceAddProjects.mockResolvedValueOnce(result([p], ["p1"]));
+    await addProjectsAt(["B:\a"], { x: 0, y: 0 });
+    expect(useUiStore.getState().selection).toEqual({ kind: "project", id: "p1" });
+
+    useUiStore.setState({ selection: null });
+    workspaceAddProjects.mockResolvedValueOnce(result([p], [], ["p1"]));
+    await addProjectsAt(["B:\a"], { x: 0, y: 0 });
+    expect(useUiStore.getState().selection).toBeNull();
+
+    workspaceAddProjects.mockResolvedValueOnce(result([p, q], ["p2"], ["p1"]));
+    await dropProjects(["B:\a", "B:\b"], { x: 0, y: 0 });
+    expect(useUiStore.getState().selection).toBeNull();
   });
 
   it("addProjectsAt with no paths calls nothing", async () => {

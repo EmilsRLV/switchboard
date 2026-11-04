@@ -47,6 +47,7 @@ import { persistViewport, useWorkspaceStore } from "../state/workspace";
 import { reportFirstFrame } from "../perf";
 import { BranchNode, MoreNode, SessionNode } from "./ChildNode";
 import { FORK_HANDLE, checkFlowLink, linkFlowEdges, nodeRefOfFlowId, type LinkEdgeData, type LinkFlowEdge } from "./edges";
+import { GhostCard } from "./GhostCard";
 import { MAX_ZOOM, MIN_ZOOM } from "./limits";
 import {
   DRAG_THRESHOLD,
@@ -185,12 +186,8 @@ export function Canvas() {
       <ReactFlowProvider>
         <Flow initialViewport={workspace?.viewport ?? HOME_VIEWPORT} />
       </ReactFlowProvider>
-      {empty && (
-        <p className="canvas-hint">
-          {/* One inline run: as flex items, the text pieces would lose their edge spaces. */}
-          <span>Add a project — <kbd>ctrl+o</kbd>, drop a folder, or <kbd>ctrl+k</kbd> · <kbd>F1</kbd> help</span>
-        </p>
-      )}
+      {/* Story 11.3: the ghost card, centred in the canvas element while there is no project. */}
+      {empty && <GhostCard />}
     </div>
   );
 }
@@ -210,7 +207,7 @@ function suppress(event: { preventDefault(): void }): void {
  * or session card, opens its menu. Deciding at release also works where
  * the webview fires `contextmenu` on press (webkit2gtk), which a `contextmenu`-driven menu
  * would open at the start of every right-drag pan. Story 11.1: the same rule on the canvas
- * background (`rightClickBackground`: the pane or the empty-canvas hint, never a node, an edge
+ * background (`rightClickBackground`: the pane or the ghost card, never a node, an edge
  * or a handle) opens the canvas menu instead, leaving the selection as it is.
  */
 let rightPress: RightPress | null = null;
@@ -243,12 +240,12 @@ function onPointerUpCapture(event: ReactPointerEvent): void {
 
 /**
  * Whether `target` is the canvas background: inside xyflow's pane (and not in a node, an edge
- * or a handle drawn over it) or the empty-canvas hint.
+ * or a handle drawn over it) or the ghost card (Story 11.3).
  */
 function isBackground(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
   if (target.closest(".react-flow__node, .react-flow__edge, .react-flow__handle, .react-flow__edgelabel-renderer") !== null) return false;
-  return target.closest(".react-flow__pane, .canvas-hint") !== null;
+  return target.closest(".react-flow__pane, .ghost-card") !== null;
 }
 
 /** The flow id of the node wrapper containing `target`, if any (xyflow's `data-id`). */

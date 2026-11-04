@@ -11,7 +11,7 @@ import { ElsewhereTrayView } from "./ElsewhereTray";
 import { chipVersion, WhatsNewChipView } from "./WhatsNewChip";
 
 function snapshot(lastSeenVersion: string | null, version = "0.2.0", firstRun = false): AppStateSnapshot {
-  return { firstRun, checklist: { shown: false, dismissed: false, done: [] }, version, lastSeenVersion };
+  return { firstRun, checklist: { shown: false, dismissed: false, done: [] }, version, lastSeenVersion, hints: { hidden: null } };
 }
 
 const ROW = { session_id: "s1", name: "x", cwd: "/w/other", state: { kind: "idle" } } as unknown as ElsewhereRow;

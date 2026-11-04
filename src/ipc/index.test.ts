@@ -61,6 +61,7 @@ import {
   stateGet,
   checklistSet,
   whatsNewSeen,
+  hintsSet,
   KEYBINDINGS_CHANGED_EVENT,
   onKeybindingsChanged,
   onInboxUnread,
@@ -181,7 +182,7 @@ describe("workspace command wrappers", () => {
   });
 
   it("the 10.3 state wrappers invoke state_get with {} and checklist_set with { checklist }", async () => {
-    const snapshot = { firstRun: true, checklist: { shown: true, dismissed: false, done: ["palette"] }, version: "0.1.0", lastSeenVersion: "0.1.0" };
+    const snapshot = { firstRun: true, checklist: { shown: true, dismissed: false, done: ["palette"] }, version: "0.1.0", lastSeenVersion: "0.1.0", hints: { hidden: null } };
     const invoke = vi.fn().mockResolvedValue(snapshot);
     vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
     await expect(stateGet()).resolves.toEqual(snapshot);
@@ -190,6 +191,11 @@ describe("workspace command wrappers", () => {
     expect(invoke).toHaveBeenCalledWith("checklist_set", { checklist: snapshot.checklist }, undefined);
     await expect(whatsNewSeen()).resolves.toEqual(snapshot);
     expect(invoke).toHaveBeenCalledWith("whats_new_seen", {}, undefined);
+    // Story 11.3: `hints_set` takes { hidden }, `null` included.
+    await expect(hintsSet(true)).resolves.toEqual(snapshot);
+    expect(invoke).toHaveBeenCalledWith("hints_set", { hidden: true }, undefined);
+    await hintsSet(null);
+    expect(invoke).toHaveBeenCalledWith("hints_set", { hidden: null }, undefined);
   });
 
   it("the 10.1 open_url wrapper invokes its wire name with { url } and rejects with Rust's refusal", async () => {

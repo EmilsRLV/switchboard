@@ -5,6 +5,7 @@ import { commandHint } from "../commands/keybindings";
 import { openReview } from "../commands/review";
 import { unreadBadge } from "../state/inbox";
 import { ForkHandles, LinkHandles } from "./LinkHandles";
+import { NodeHint } from "./NodeHint";
 import { NodeToolbar, useHover } from "./NodeToolbar";
 import {
   branchCardParts,
@@ -178,15 +179,21 @@ function BranchCard({ className, ariaLabel, data }: { className: string; ariaLab
   );
 }
 
-/** A session card, with its node toolbar (Story 11.2) while hovered or selected and not dragged. */
+/**
+ * A session card, with its node toolbar (Story 11.2) while hovered or selected and not dragged.
+ * The first live session carries the `review` hint (Story 11.3) to its right, except while the
+ * toolbar shows (it offers `review` itself).
+ */
 export const SessionNode = memo(function SessionNode({ data, dragging }: NodeProps<SessionFlowNode>) {
   const [hovered, hover] = useHover();
+  const toolbarShown = (hovered || data.selected) && dragging !== true;
   return (
     <div className="node-hover" {...hover}>
       <ChildCard data={data} kind="session" />
       <ForkHandles />
       <LinkHandles source shown={data.selected} />
-      <NodeToolbar target={{ kind: "session", id: data.child.id }} shown={(hovered || data.selected) && dragging !== true} />
+      <NodeToolbar target={{ kind: "session", id: data.child.id }} shown={toolbarShown} />
+      <NodeHint target={{ kind: "session", id: data.child.id }} handleShown={false} drawn={!toolbarShown} />
     </div>
   );
 });

@@ -349,7 +349,7 @@ export function chevronCommandId(project: Pick<Project, "expanded">): "project.e
 
 /**
  * A right-button press as the canvas recorded it: where, on which node wrapper (if any), and
- * whether it was on the canvas background (the pane or the empty-canvas hint, Story 11.1).
+ * whether it was on the canvas background (the pane or the ghost card; Stories 11.1, 11.3).
  */
 export type RightPress = { x: number; y: number; flowId: string | null; onBackground: boolean };
 

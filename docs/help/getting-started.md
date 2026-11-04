@@ -27,6 +27,8 @@ any notice. A step you can do right now is a button that does it; the others are
 shows a muted ✓. When all six are done the card reads `All done` and is gone at the next launch.
 **Dismiss** (or **Dismiss getting started** in the palette) keeps it away, across restarts, until you show
 it again.
+While the card shows, hints by the first project and live session name the next key until its step is
+done. The palette's **Hide canvas hints** and **Show canvas hints** turn them off and on, card or not.
 
 ## Here in Help
 

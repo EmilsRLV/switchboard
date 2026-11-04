@@ -36,6 +36,7 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::keybindings_get,
             ipc::state_get,
             ipc::checklist_set,
+            ipc::hints_set,
             ipc::whats_new_seen,
             ipc::binaries_redetect,
             ipc::workspace_get,
@@ -397,7 +398,8 @@ mod tests {
                 "firstRun": true,
                 "checklist": { "shown": true, "dismissed": false, "done": [] },
                 "version": version,
-                "lastSeenVersion": version
+                "lastSeenVersion": version,
+                "hints": { "hidden": null }
             })
         );
 
@@ -406,7 +408,7 @@ mod tests {
             invoke_with(&webview, "checklist_set", InvokeBody::Json(args)).expect("checklist_set").deserialize().unwrap();
         assert_eq!(value["checklist"]["done"], serde_json::json!(["palette", "edge"]));
         let file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
-        assert_eq!(file["version"], 2);
+        assert_eq!(file["version"], 3);
         assert_eq!(file["checklist"], serde_json::json!({ "shown": true, "dismissed": true, "done": ["palette", "edge"] }));
         assert_eq!(file["lastSeenVersion"], version);
 
@@ -415,6 +417,21 @@ mod tests {
         assert_eq!(err, serde_json::json!("unknown checklist step: wizard"));
         let value: serde_json::Value = invoke(&webview, "state_get").unwrap().deserialize().unwrap();
         assert_eq!(value["checklist"]["dismissed"], true, "a refused set changes nothing");
+
+        // Story 11.3: `hints_set` writes the hints setting beside the checklist.
+        let args = serde_json::json!({ "hidden": false });
+        let value: serde_json::Value =
+            invoke_with(&webview, "hints_set", InvokeBody::Json(args)).expect("hints_set").deserialize().unwrap();
+        assert_eq!(value["hints"], serde_json::json!({ "hidden": false }));
+        let file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+        assert_eq!(file["hints"], serde_json::json!({ "hidden": false }));
+        assert_eq!(file["checklist"]["dismissed"], true, "the checklist is kept");
+        let args = serde_json::json!({ "hidden": null });
+        let value: serde_json::Value =
+            invoke_with(&webview, "hints_set", InvokeBody::Json(args)).expect("hints_set null").deserialize().unwrap();
+        assert_eq!(value["hints"]["hidden"], serde_json::Value::Null);
+        let value: serde_json::Value = invoke(&webview, "state_get").unwrap().deserialize().unwrap();
+        assert_eq!(value["hints"]["hidden"], serde_json::Value::Null);
     }
 
     /// Story 10.5: an existing profile with an older version recorded sees it in `state_get`;

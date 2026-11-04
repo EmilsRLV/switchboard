@@ -4,6 +4,7 @@ import { commandHint } from "../commands/keybindings";
 import { runCommand } from "../commands/registry";
 import { useUiStore } from "../state/ui";
 import { LinkHandles } from "./LinkHandles";
+import { NodeHint } from "./NodeHint";
 import { NodeToolbar, useHover } from "./NodeToolbar";
 import { aheadBehind, BRANCHES_UNAVAILABLE, branchesChipShown, chevronCommandId, shortenPath, statusLine, type ProjectFlowNode } from "./nodes";
 
@@ -22,7 +23,8 @@ import { aheadBehind, BRANCHES_UNAVAILABLE, branchesChipShown, chevronCommandId,
  * `finished` or `waiting` the card glows: a pulsing accent outline outside the selection's
  * (`project-glow`, Story 3.3). The card's edge handle (Story 6.1) sits on its right edge. While
  * the card is hovered or selected (and not dragged), its node toolbar (Story 11.2) hangs to the
- * right of it.
+ * right of it. The first project carries the inline hints (Story 11.3): under the card, or beside
+ * its handle while the handle shows.
  */
 export const ProjectNode = memo(function ProjectNode({ data, dragging }: NodeProps<ProjectFlowNode>) {
   const [hovered, hover] = useHover();
@@ -110,6 +112,7 @@ export const ProjectNode = memo(function ProjectNode({ data, dragging }: NodePro
       </div>
       <LinkHandles source shown={selected} />
       <NodeToolbar target={{ kind: "project", id: project.id }} shown={(hovered || selected) && dragging !== true} />
+      <NodeHint target={{ kind: "project", id: project.id }} handleShown={(hovered || selected) && dragging !== true} />
     </div>
   );
 });

@@ -142,6 +142,16 @@ export function displayBinding(command: Pick<Command, "keyFrom"> & { readonly bi
 }
 
 /**
+ * Story 11.3: command `id`'s effective key as the app writes it (`ctrl+o`), read from the
+ * registry now (a rebind in `keybindings.json` shows); `null` when unbound or not registered.
+ */
+export function commandKey(id: string): string | null {
+  const command = getCommand(id);
+  const binding = command === undefined ? null : displayBinding(command);
+  return binding === null ? null : formatKeybinding(binding);
+}
+
+/**
  * Story 11.1: the tooltip of a button that runs command `id`: `label` (or the command's title, its
  * `dynamicTitle` now when it has one),
  * then ` · ` and its effective key when it has one (`Close · esc`). An id not registered gives

@@ -11,7 +11,7 @@ import type { AppStateSnapshot } from "../ipc";
 import { resetWhatsNew, useWhatsNewStore } from "./whatsNew";
 
 function snapshot(lastSeenVersion: string | null, version = "0.2.0", firstRun = false): AppStateSnapshot {
-  return { firstRun, checklist: { shown: firstRun, dismissed: false, done: [] }, version, lastSeenVersion };
+  return { firstRun, checklist: { shown: firstRun, dismissed: false, done: [] }, version, lastSeenVersion, hints: { hidden: null } };
 }
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));

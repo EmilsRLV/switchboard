@@ -10,6 +10,12 @@ What changed in Switchboard, newest first. Each release lists what you can see a
   Claude, fit view, Help and settings. A right-drag still pans.
 - Hover or select a project, session or branch node for its toolbar beside it: up to four buttons for what
   it can do now, such as **new**, **term**, **link** and **review**, then **⋯** for its menu.
+- The empty canvas shows a dashed card, `Drop a folder here`, with the keys to add a project, open the palette
+  and open Help under it. Click it to pick a folder.
+- While the Getting started card shows, short hints beside the first project and the first running session
+  name the next key, such as `n new session`, `drag to link · e` beside a hovered project's handle, and `r
+  review changes`. Each fades once its step is done. A newly added project is selected, so `n` works at once.
+  **Hide canvas hints** and **Show canvas hints** in the palette turn them off, or back on without the card.
 
 ### Keyboard
 

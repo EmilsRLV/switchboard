@@ -12,7 +12,7 @@ import { useWorkspaceStore } from "./workspace";
 import { cardVisible, isChecklistCardShown, resetChecklist, startChecklist, useChecklistStore } from "./checklist";
 
 function snapshot(checklist: Partial<ChecklistFile> = {}, firstRun = false): AppStateSnapshot {
-  return { firstRun, checklist: { shown: false, dismissed: false, done: [], ...checklist }, version: "0.1.0", lastSeenVersion: "0.1.0" };
+  return { firstRun, checklist: { shown: false, dismissed: false, done: [], ...checklist }, version: "0.1.0", lastSeenVersion: "0.1.0", hints: { hidden: null } };
 }
 
 function workspaceWith(projects: number, edges: number): WorkspaceSnapshot {
@@ -41,7 +41,7 @@ describe("the checklist store (Story 10.3)", () => {
   let stop: (() => void) | null = null;
   beforeEach(() => {
     checklistSet.mockReset();
-    checklistSet.mockImplementation(async (checklist: ChecklistFile) => ({ firstRun: false, checklist, version: "0.1.0", lastSeenVersion: "0.1.0" }));
+    checklistSet.mockImplementation(async (checklist: ChecklistFile) => ({ firstRun: false, checklist, version: "0.1.0", lastSeenVersion: "0.1.0", hints: { hidden: null } }));
     resetChecklist();
     usePaletteStore.setState({ isOpen: false, pick: null, query: "", selected: 0 });
     useWorkspaceStore.setState({ snapshot: null, loadError: null });

@@ -412,8 +412,7 @@ chrome follows every rule here.
   a `✓` in `currentColor`. After the sixth step the rows give way to a muted `All done`. It shows on a fresh profile
   only; the Help pane's Getting started page (after the guide pages in Contents) ends with the same rows under
   a `Your progress` section heading and an ordinary **Show on canvas** button. Tokens only, no accent.
-- **The canvas** is `--bg` with a dot grid in `--fg-faint`; empty, it shows the ghost card (Story 11.3; until
-  then, a centred mono hint in `--fg-muted`). Nothing on the canvas uses the accent except the attention states (a `finished` / `waiting` session card and its project's glow; see [States](#states)).
+- **The canvas** is `--bg` with a dot grid in `--fg-faint`; empty, it shows the ghost card (Story 11.3). Nothing on the canvas uses the accent except the attention states (a `finished` / `waiting` session card and its project's glow; see [States](#states)).
 - **The node toolbar** (Story 11.2) is a row to the right of a project, session or branch card, outside the
   card's fixed box (so `nodes.ts` geometry and the arrow keys are untouched), top-aligned with the card's top
   edge and clear of its link handle: under the card it would cover the next card of the column (8 px apart). A
@@ -428,17 +427,31 @@ chrome follows every rule here.
   is never one of them. They never depend on the open pane: a click selects the card, closes the open pane when
   that pane is what disables the command (Review with the terminal pane open), then runs it. It appears and goes
   without animation. No accent; it is never the place a state is shown.
-- **The ghost card** (Story 11.3) is the empty canvas's state: a box of the project card's size and
-  `--radius-md` at the view's centre with a dashed 1-px `--fg-faint` border and no surface, `Drop a folder
-  here` in `--text-md` `--fg-muted`, and under it, in the empty-canvas hint's mono muted style, `ctrl+o pick a
-  folder · ctrl+k palette · f1 help`. A click on it runs **Add project folder…**; the canvas around it still
-  pans. It goes with the first project and comes back with the last one removed, without animation.
+- **The ghost card** (Story 11.3) is the empty canvas's state: a box of the project card's size (240 × 80) and
+  `--radius-md` at the canvas element's centre with a dashed 1-px `--fg-faint` border and no surface, `Drop a
+  folder here` in `--text-md` `--fg-muted`, and under the box (too wide for it), in mono `--text-md`
+  `--fg-muted`, `ctrl+o pick a folder · ctrl+k palette · f1 help`, the keys read from the registry so a rebind
+  shows. On hover the box's words turn `--fg`; the card is never focused (out of the Tab order, a click does not
+  focus it) and is named "Add project folder". A click on it runs **Add project folder…** (its tooltip that
+  command's title and key); adding a project (picked, dropped or imported, one new folder) selects its card,
+  so its hint's `n` works at once; a duplicate or several folders leave the selection as it is. The canvas
+  around it still pans and takes drops, and a right-click on it opens the canvas menu. It goes with the first
+  project and comes back with the last one removed, without animation.
 - **Inline hints** (Story 11.3) are one-line mono `--text-xs` `--fg-muted` captions placed by the thing they
-  name, outside the card's box: under the first project card (`n new session · hover for more`), beside its
-  handle (`drag to link · e`, while the handle shows), under the first running session card (`r review
-  changes`). At most one per card and three on the canvas; never a box, a border, a pointer or the accent;
-  they let clicks through. A hint fades out over 300 ms (instant under reduced motion) once its Getting started
-  step is done or hints are hidden. They are not drawn while a pane covers their card.
+  name, outside the card's box and clear of the node toolbar (to the card's right, top-aligned): under the
+  first project card, in the 12 px above its column (`n new session · hover for more`); right of its handle at
+  the handle's height, below the toolbar row (`drag to link · e`, while the handle shows, in place of the
+  first); right of the first live session card that is drawn (its project expanded, not cut by `show all`),
+  vertically centred, since the 8-px child gap has no room
+  (`r review changes`; not while that card's toolbar shows, which offers `review` itself). The keys are read
+  from the registry. At most one per card and three on the canvas; never a box, a border, a surface or the
+  accent; they let clicks through. They show while the Getting started card shows, or always after **Show
+  canvas hints** (`state.json`'s `hints.hidden: false`) and never after **Hide canvas hints** (`true`). A hint
+  fades out over 300 ms (instant under reduced motion) once its step is done, hints are hidden, a pane opens
+  or its card is no longer first, and never comes back for a done step; it goes at once when the toolbar
+  shows or the handle hides, and the project and handle hints swap at once. None is drawn while any pane is
+  open. Captions are hidden from screen readers. The hints commands are offered only while a hinted step
+  (session, edge, review) is undone.
 - **Help figures** (Story 11.4) are diagrams inside a help page, as wide as the page's text and at most 160 px
   tall, drawn with the app's own card, handle, edge and state classes on the pane's surface (`--bg-raised`)
   inside a 1-px `--border` box with `--radius-sm`. They move by CSS alone: opacity, transform and
@@ -644,7 +657,7 @@ Only nine motions exist (six until Epic 11); every one is instant (or static) un
 | Busy pulse (the dot before `busy`: opacity 1 → 0.35, ease-in-out, alternating, looping; opacity only) | 1.2 s |
 | Attention pulse (the accent dot before `finished` / `waiting`: the busy pulse) | 1.2 s |
 | Project glow (the accent outline around a project needing you: opacity 1 → 0.4, ease-in-out, alternating, looping; opacity only) | 1.2 s |
-| Hint fade-out (an inline hint whose step is done, or hints hidden: opacity 1 → 0, then removed; Story 11.3) | 300 ms |
+| Hint fade-out (an inline hint whose step is done, hints hidden, a pane opening, or its card no longer first: opacity 1 → 0, then removed; any other drop is instant; Story 11.3) | 300 ms |
 | Help figures (inside the Help pane and the tour card only: opacity, transform and `stroke-dashoffset`, looping with a pause at the end of each loop; the end frame still under reduced motion; Story 11.4) | 4–8 s per loop |
 | Tour cut-out move (the spotlight slides to the next stop's target; Story 11.6) | 150 ms |
 

@@ -94,6 +94,8 @@ import {
   whatsNewTitle,
 } from "./help";
 import { isChecklistCardShown, isChecklistLoaded, useChecklistStore } from "../state/checklist";
+import { areHintsOn, isHintsLoaded, useHintsStore } from "../state/hints";
+import { anyHintStepUndone } from "../help/hints";
 import {
   canClearReview,
   canOpenReview,
@@ -198,6 +200,11 @@ function arrowCommand(direction: Direction, title: string): Command {
       moveSelection(direction);
     },
   };
+}
+
+/** Story 11.3: a step some hint names (`session`, `edge`, `review`) is still undone, so the hints commands mean something. */
+function hintStepsLeft(): boolean {
+  return anyHintStepUndone(useChecklistStore.getState().done);
 }
 
 export function builtinCommands(): Command[] {
@@ -325,6 +332,20 @@ export function builtinCommands(): Command[] {
       // `isChecklistCardShown` holds only once loaded.
       when: isChecklistCardShown,
       run: () => useChecklistStore.getState().dismiss(),
+    },
+    // -- Story 11.3: the canvas's inline hints (no default key) ------------------------------------
+    {
+      id: "hints.hide",
+      title: "Hide canvas hints",
+      when: () => isHintsLoaded() && hintStepsLeft() && areHintsOn(),
+      run: () => useHintsStore.getState().setHidden(true),
+    },
+    {
+      // Shown for the undone steps even with the Getting started card dismissed or never shown.
+      id: "hints.show",
+      title: "Show canvas hints",
+      when: () => isHintsLoaded() && hintStepsLeft() && !areHintsOn(),
+      run: () => useHintsStore.getState().setHidden(false),
     },
     {
       id: "pane.close",

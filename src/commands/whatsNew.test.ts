@@ -16,7 +16,7 @@ import { handleKeydown, type KeyEventLike } from "./keybindings";
 import { clearCommands, getCommand, listCommands, runCommand } from "./registry";
 
 function snapshot(lastSeenVersion: string | null, version = "0.2.0", firstRun = false): AppStateSnapshot {
-  return { firstRun, checklist: { shown: false, dismissed: false, done: [] }, version, lastSeenVersion };
+  return { firstRun, checklist: { shown: false, dismissed: false, done: [] }, version, lastSeenVersion, hints: { hidden: null } };
 }
 
 function key(k: string): KeyEventLike {
