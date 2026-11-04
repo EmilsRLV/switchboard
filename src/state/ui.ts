@@ -494,14 +494,60 @@ function copyTarget(target: CanvasTarget): CanvasTarget {
   return { kind: target.kind, id: target.id } as CanvasTarget;
 }
 
+// -- Story 11.2: evaluating commands for a card that is not (yet) selected ----------------------
+//
+// A node toolbar lists the commands that are enabled for its own card, hovered while another
+// one may be selected, and as if no pane were open (its buttons never depend on the open pane).
+// The `when`s read the selection and the pane, so they read them through `currentSelection()`
+// and `currentPane()`, and the toolbar evaluates them inside `withSelection` / `withPane`: a
+// synchronous, module-level override that nests and is restored after `fn` (a throw included).
+// Nothing is written to the store and no subscriber is notified.
+
+/** The selection override, boxed so that `null` (nothing selected) can be an override too. */
+let selectionOverride: { target: CanvasTarget | null } | null = null;
+/** The pane override, boxed like the selection's. */
+let paneOverride: { pane: Pane | null } | null = null;
+
+/** The selection the `when`s see: the override while {@link withSelection} runs, else the store's. */
+export function currentSelection(): CanvasTarget | null {
+  return selectionOverride !== null ? selectionOverride.target : useUiStore.getState().selection;
+}
+
+/** The open pane the `when`s see: the override while {@link withPane} runs, else the store's. */
+export function currentPane(): Pane | null {
+  return paneOverride !== null ? paneOverride.pane : useUiStore.getState().pane;
+}
+
+/** Run `fn` with {@link currentSelection} answering `target`; restored after, even on a throw. */
+export function withSelection<T>(target: CanvasTarget | null, fn: () => T): T {
+  const previous = selectionOverride;
+  selectionOverride = { target };
+  try {
+    return fn();
+  } finally {
+    selectionOverride = previous;
+  }
+}
+
+/** Run `fn` with {@link currentPane} answering `pane`; restored after, even on a throw. */
+export function withPane<T>(pane: Pane | null, fn: () => T): T {
+  const previous = paneOverride;
+  paneOverride = { pane };
+  try {
+    return fn();
+  } finally {
+    paneOverride = previous;
+  }
+}
+
 /** True when a pane is open: with the palette and menu closed, that is the `when` of `pane.close`. */
 export function isPaneOpen(): boolean {
-  return useUiStore.getState().pane !== null;
+  return currentPane() !== null;
 }
 
 /** True when a node is selected: the `when` of `selection.clear` once everything else is closed. */
 export function hasSelection(): boolean {
-  return useUiStore.getState().selection !== null;
+  return currentSelection() !== null;
 }
 
 /** True while the context menu shows: the `when` of `contextMenu.close`, first in the Esc order. */
@@ -523,7 +569,7 @@ export function isElsewhereOpen(): boolean {
  * `project.relayout`.
  */
 export function selectedProject(): Project | null {
-  const selection = useUiStore.getState().selection;
+  const selection = currentSelection();
   if (selection === null || selection.kind !== "project") return null;
   const projects = useWorkspaceStore.getState().snapshot?.workspace.projects;
   return projects?.find((p) => p.id === selection.id) ?? null;

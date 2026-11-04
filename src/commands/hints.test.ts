@@ -19,6 +19,11 @@ type TitleExemption = {
   title: string;
   /** Why it keeps its own words. */
   reason: string;
+  /**
+   * The element's `onClick` runs no command (the stale check then looks at every clicked
+   * element's title, not only the command buttons'): the node toolbar's `⋯`, Story 11.2.
+   */
+  anyClick?: boolean;
 };
 
 const DESCRIBES = "describes what this one button does to this edge, in more words than the command's title";
@@ -28,6 +33,7 @@ const ALLOW_LIST: readonly TitleExemption[] = [
   { file: "/src/components/EdgePane.tsx", title: '"The next agent action across this edge asks again"', reason: `${DESCRIBES} (Revoke)` },
   { file: "/src/components/EdgePane.tsx", title: '"Inject /add-dir again"', reason: `${DESCRIBES} (Retry)` },
   { file: "/src/components/EdgePane.tsx", title: '"Stop the session and resume it with --add-dir"', reason: `${DESCRIBES} (Restart with flags)` },
+  { file: "/src/canvas/NodeToolbar.tsx", title: '"Menu · right-click"', reason: "opens a menu at its own position, not a command (the node toolbar's ⋯)", anyClick: true },
 ];
 
 /** What {@link commandTitlesIn} reports for a command-running element without a `title`. */
@@ -108,15 +114,18 @@ function inner(value: string): string {
   return collapse(value.startsWith("{") ? value.slice(1, -1) : value);
 }
 
-/** Every `title` of an element whose `onClick` runs a command, in `source`. */
-export function commandTitlesIn(file: string, source: string): Title[] {
+/**
+ * Every `title` of an element whose `onClick` runs a command, in `source`; with `anyClick`, of
+ * every element with an `onClick`.
+ */
+export function commandTitlesIn(file: string, source: string, { anyClick = false }: { anyClick?: boolean } = {}): Title[] {
   const out: Title[] = [];
   for (const match of source.matchAll(TAG_START)) {
     const attributes = attributesAt(source, (match.index ?? 0) + match[0].length);
     const onClick = attributes.get("onClick");
     const title = attributes.get("title");
     if (typeof onClick !== "string" || title === true) continue;
-    if (!runsCommand(inner(onClick), source)) continue;
+    if (!anyClick && !runsCommand(inner(onClick), source)) continue;
     out.push({ file, line: source.slice(0, match.index).split("\n").length, title: title ?? NO_TITLE });
   }
   return out;
@@ -180,7 +189,7 @@ describe("command tooltips (Story 11.1)", () => {
   it("every allow-list entry still matches a command button's title and gives a reason", () => {
     const stale = ALLOW_LIST.filter((e) => {
       const source = sources[e.file];
-      return source === undefined || !commandTitlesIn(e.file, source).some((t) => t.title === e.title);
+      return source === undefined || !commandTitlesIn(e.file, source, { anyClick: e.anyClick === true }).some((t) => t.title === e.title);
     });
     expect(stale.map((e) => `${e.file} ${e.title}`)).toEqual([]);
     for (const e of ALLOW_LIST) expect(e.reason.trim(), e.title).not.toBe("");

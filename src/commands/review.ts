@@ -35,7 +35,7 @@ import { useLiveStore } from "../state/live";
 import { isFlagged, requestIn, requestList, toastRequests, useReviewStore } from "../state/review";
 import { useSettingsStore } from "../state/settings";
 import { useStatusStore } from "../state/status";
-import { isContextMenuOpen, useUiStore } from "../state/ui";
+import { currentSelection, isContextMenuOpen, useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 import { MODES, modesFor, otherLayout, stepPath, type DiffLayout, type ReviewMode } from "../review/model";
 import { currentLine } from "../review/place";
@@ -48,7 +48,7 @@ function describe(err: unknown): string {
 
 /** The selected session's id, when a session is selected. */
 function selectedSessionId(): string | null {
-  const selection = useUiStore.getState().selection;
+  const selection = currentSelection();
   return selection !== null && selection.kind === "session" ? selection.id : null;
 }
 
@@ -56,7 +56,7 @@ function selectedSessionId(): string | null {
 
 /** What "Review changes" reviews for the selection: the selected project, branch or session; else `null`. */
 export function reviewTargetOfSelection(): ReviewTarget | null {
-  const selection = useUiStore.getState().selection;
+  const selection = currentSelection();
   if (selection === null) return null;
   if (selection.kind === "project") {
     const known = useWorkspaceStore.getState().snapshot?.workspace.projects.some((p) => p.id === selection.id) ?? false;

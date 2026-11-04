@@ -12,7 +12,7 @@ import { useWorkspaceStore } from "../state/workspace";
 import { chevronCommandId } from "../canvas/nodes";
 import { builtinCommands, registerBuiltins } from "./builtins";
 import { commandHint, displayBinding, formatKeybinding, handleKeydown, type KeyEventLike } from "./keybindings";
-import { canvasMenuCommands, menuGroup, nodeMenuCommands } from "./nodes";
+import { canvasMenuCommands, hasNodeMenu, menuGroup, nodeMenuCommands, TOOLBAR_KINDS, toolbarCommands } from "./nodes";
 import { copySelectedBranchName } from "./navigation";
 import { useStatusStore } from "../state/status";
 import { clearCommands, getCommand, listCommands, runCommand } from "./registry";
@@ -1290,6 +1290,174 @@ describe("built-in commands", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("the node toolbar's commands (Story 11.2)", () => {
+  const words = (target: Parameters<typeof toolbarCommands>[0]) => toolbarCommands(target).map((c) => c.short);
+  const session = (id: string, hasTranscript: boolean): ChildNode => ({
+    id,
+    projectId: "ide",
+    kind: "session",
+    label: id,
+    detail: null,
+    position: null,
+    session: null,
+    branchId: null,
+    forkedFrom: null,
+    hasTranscript,
+    branch: null,
+  });
+  const branch = (id: string, worktree: { path: string; missing: boolean } | null): ChildNode => ({
+    id,
+    projectId: "ide",
+    kind: "branch",
+    label: id.slice("ide:".length),
+    detail: null,
+    position: null,
+    session: null,
+    branchId: null,
+    forkedFrom: null,
+    hasTranscript: false,
+    branch: { head: false, upstream: null, ahead: 0, behind: 0, upstreamGone: false, worktree },
+  });
+  const terminal = (sessionId: string, exited: number | null) =>
+    useTerminalStore.getState().upsert({
+      id: `session:${sessionId}`,
+      kind: "session",
+      project_id: "ide",
+      title: sessionId,
+      cwd: "/p/ide",
+      exited,
+      error: null,
+      cols: 80,
+      rows: 24,
+      stopping: false,
+    });
+  const live = (states: Record<string, SessionState>): LiveSnapshot => {
+    const sessions: Record<string, LiveSession> = {};
+    for (const [id, state] of Object.entries(states)) {
+      sessions[id] = { state, source: "poll", pid: 1, kind: "interactive", name: id, project_id: "ide", cwd: "/p/ide", started_at: 1, attention_since: null, last_line: null, detail: null };
+    }
+    return { sessions, elsewhere: [], banner: null };
+  };
+
+  beforeEach(() => {
+    clearCommands();
+    usePaletteStore.setState({ isOpen: false, query: "", selected: 0 });
+    useUiStore.setState({ pane: null, selection: null, contextMenu: null, elsewhereOpen: false, openTerminals: [], activeTerminal: null });
+    useLiveStore.setState({ snapshot: EMPTY_LIVE, received: false, loadError: null });
+    useTerminalStore.setState({ infos: {}, pendingExits: {} });
+    useStatusStore.setState({ statuses: { ide: { kind: "repo" } } } as never);
+    useWorkspaceStore.setState({
+      snapshot: workspaceWith(
+        [{ ...ideProject(true), showBranches: true }],
+        [session("live", true), session("gone", true), session("old", true), branch("ide:plain", null), branch("ide:wt", { path: "/w/wt", missing: false })],
+      ),
+      loadError: null,
+    });
+    registerBuiltins();
+  });
+  afterEach(() => {
+    clearCommands();
+    useStatusStore.setState({ statuses: {} } as never);
+  });
+
+  it("every toolbar command is a node-menu command with a word, and every kind's list is tagged", () => {
+    const tagged = listCommands().filter((c) => c.toolbar !== undefined);
+    expect(tagged.map((c) => c.id).sort()).toEqual(
+      [
+        "branch.newSession",
+        "branch.newWorktree",
+        "branch.removeWorktree",
+        "edge.link",
+        "project.newSession",
+        "project.terminal",
+        "review.changes",
+        "session.fork",
+        "session.resume",
+        "session.showTerminal",
+      ].sort(),
+    );
+    for (const command of tagged) {
+      expect(command.menu, command.id).toBe("node");
+      expect(command.short, command.id).toMatch(/^[a-z]+$/);
+    }
+    for (const ids of Object.values(TOOLBAR_KINDS)) {
+      for (const id of ids) expect(getCommand(id)?.toolbar, id).toBeDefined();
+      expect(ids, "Stop stays in the menu").not.toContain("session.stop");
+    }
+  });
+
+  it("an idle git project: new term link review, and the node menu has rows", () => {
+    expect(words({ kind: "project", id: "ide" })).toEqual(["new", "term", "link", "review"]);
+    expect(hasNodeMenu({ kind: "project", id: "ide" })).toBe(true);
+  });
+
+  it("a live session in a terminal: term fork link review", () => {
+    useLiveStore.getState().applySnapshot(live({ live: { kind: "busy" } }));
+    terminal("live", null);
+    expect(words({ kind: "session", id: "live" })).toEqual(["term", "fork", "link", "review"]);
+  });
+
+  it("an exited session without a terminal: resume fork link review", () => {
+    useLiveStore.getState().applySnapshot(live({ old: { kind: "exited" } }));
+    expect(words({ kind: "session", id: "old" })).toEqual(["resume", "fork", "link", "review"]);
+  });
+
+  it("an exited session whose terminal tab is still open: resume wins its slot over term", () => {
+    useLiveStore.getState().applySnapshot(live({ old: { kind: "exited" } }));
+    terminal("old", 0);
+    expect(withSelectionOf({ kind: "session", id: "old" }, () => [isEnabledNow("session.resume"), isEnabledNow("session.showTerminal")])).toEqual([true, true]);
+    expect(words({ kind: "session", id: "old" })).toEqual(["resume", "fork", "link", "review"]);
+  });
+
+  it("a branch without a worktree: new worktree review; with one: new remove review", () => {
+    expect(words({ kind: "branch", id: "ide:plain" })).toEqual(["new", "worktree", "review"]);
+    expect(words({ kind: "branch", id: "ide:wt" })).toEqual(["new", "remove", "review"]);
+  });
+
+  it("nothing enabled: a branch gone from the snapshot has no buttons and no menu", () => {
+    expect(words({ kind: "branch", id: "ide:vanished" })).toEqual([]);
+    expect(hasNodeMenu({ kind: "branch", id: "ide:vanished" })).toBe(false);
+  });
+
+  it("a hovered card reflects itself while another is selected, and the selection stays", () => {
+    useUiStore.getState().select({ kind: "branch", id: "ide:wt" });
+    const notify = vi.fn();
+    const unsubscribe = useUiStore.subscribe(notify);
+    expect(words({ kind: "project", id: "ide" })).toEqual(["new", "term", "link", "review"]);
+    expect(useUiStore.getState().selection).toEqual({ kind: "branch", id: "ide:wt" });
+    expect(notify).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it("the buttons do not depend on the open pane", () => {
+    useUiStore.setState({ pane: "terminal" });
+    expect(words({ kind: "project", id: "ide" })).toEqual(["new", "term", "link", "review"]);
+    useUiStore.setState({ pane: "launch" });
+    expect(words({ kind: "project", id: "ide" })).toEqual(["new", "term", "link", "review"]);
+    expect(words({ kind: "branch", id: "ide:plain" })).toEqual(["new", "worktree", "review"]);
+    // The store's pane is what keys and the palette still see.
+    useUiStore.getState().select({ kind: "project", id: "ide" });
+    expect(isEnabledNow("project.newSession")).toBe(false);
+  });
+});
+
+/** Run `fn` with `target` selected in the store (then the selection as it was). */
+function withSelectionOf<T>(target: { kind: "project" | "session" | "branch"; id: string }, fn: () => T): T {
+  const before = useUiStore.getState().selection;
+  useUiStore.setState({ selection: target });
+  try {
+    return fn();
+  } finally {
+    useUiStore.setState({ selection: before });
+  }
+}
+
+/** Whether command `id` is enabled as the store stands (pane included). */
+function isEnabledNow(id: string): boolean {
+  const command = getCommand(id);
+  return command !== undefined && (command.when?.() ?? true);
+}
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 8; i += 1) await Promise.resolve();

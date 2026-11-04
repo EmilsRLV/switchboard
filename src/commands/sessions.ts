@@ -11,7 +11,7 @@ import { isSheetOpen, sheetToken, useLaunchStore } from "../state/launch";
 import { sessionState } from "../state/live";
 import { isTerminalRunning, sessionTerminal, sessionTerminalId, terminalInfo, useTerminalStore } from "../state/terminals";
 import { disposeView, restore } from "../terminal/registry";
-import { isPoppedOut, useUiStore } from "../state/ui";
+import { currentPane, currentSelection, isPoppedOut, useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 import { canStart, formFromPrefill, launchRequest, missingAddDirs, skippedNote, startBlockedReason, withAddDir, withoutAddDir } from "./launch";
 import { notify, selectedBranch } from "./navigation";
@@ -60,7 +60,7 @@ export async function openLaunchSheet(projectId: string, branch?: string): Promi
  */
 export function canNewSessionOnBranch(): boolean {
   const branch = selectedBranch();
-  return branch !== null && branch.branch !== null && branch.branch.worktree?.missing !== true && useUiStore.getState().pane !== "launch";
+  return branch !== null && branch.branch !== null && branch.branch.worktree?.missing !== true && currentPane() !== "launch";
 }
 
 /** `branch.newSession` ("New session…", `n` on a branch card): the launch sheet aimed at that branch. */
@@ -157,7 +157,7 @@ export function removeAddDir(index: number): void {
 
 /** The id of the selected session's terminal when Switchboard runs it in one; else `null`. */
 export function selectedSessionTerminal(): string | null {
-  const selection = useUiStore.getState().selection;
+  const selection = currentSelection();
   if (selection === null || selection.kind !== "session") return null;
   return sessionTerminal(selection.id)?.id ?? null;
 }
@@ -177,7 +177,7 @@ export async function showSelectedSessionTerminal(): Promise<boolean> {
 
 /** The selected session child (a session card), or `null`. */
 function selectedSessionChild(): ChildNode | null {
-  const selection = useUiStore.getState().selection;
+  const selection = currentSelection();
   if (selection === null || selection.kind !== "session") return null;
   return useWorkspaceStore.getState().snapshot?.children.find((c) => c.kind === "session" && c.id === selection.id) ?? null;
 }

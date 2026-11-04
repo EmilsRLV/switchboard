@@ -54,6 +54,15 @@ export type Command = {
    * `when` (Fit view runs on an empty canvas, going home, but the canvas menu leaves it out then).
    */
   menuWhen?: () => boolean;
+  /**
+   * Story 11.2: the command's slot on a card's node toolbar (only `menu: "node"` commands carry
+   * one): 1 new / term / resume, 2 term / fork / worktree / remove, 3 link, 4 review. Commands of
+   * one card kind that share a slot are either/or: the first enabled one (`toolbarCommands`'s
+   * per-kind order) takes it.
+   */
+  toolbar?: number;
+  /** Story 11.2: the toolbar button's word (`new`, `term`, `review`); required with `toolbar`. */
+  short?: string;
   /** The action. A returned promise is awaited only to log a rejection. */
   run: () => void | Promise<void>;
 };

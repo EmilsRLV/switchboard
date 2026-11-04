@@ -8,6 +8,8 @@ What changed in Switchboard, newest first. Each release lists what you can see a
 
 - Right-click the empty canvas, without moving, for the canvas menu: add a project folder, import from
   Claude, fit view, Help and settings. A right-drag still pans.
+- Hover or select a project, session or branch node for its toolbar beside it: up to four buttons for what
+  it can do now, such as **new**, **term**, **link** and **review**, then **⋯** for its menu.
 
 ### Keyboard
 

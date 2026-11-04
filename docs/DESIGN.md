@@ -414,15 +414,20 @@ chrome follows every rule here.
   a `Your progress` section heading and an ordinary **Show on canvas** button. Tokens only, no accent.
 - **The canvas** is `--bg` with a dot grid in `--fg-faint`; empty, it shows the ghost card (Story 11.3; until
   then, a centred mono hint in `--fg-muted`). Nothing on the canvas uses the accent except the attention states (a `finished` / `waiting` session card and its project's glow; see [States](#states)).
-- **The node toolbar** (Story 11.2) is a row attached under a project, session or branch card, outside the
-  card's fixed box (so `nodes.ts` geometry and the arrow keys are untouched), shown only while the card is
-  hovered or selected and absent from the DOM otherwise. It is `--bg-raised` with a 1-px `--border` and
-  `--radius-sm`, holding at most four short mono `--text-xs` text buttons (`new`, `term`, `link`, `review`;
-  `--fg-muted`, `--fg` on hover, the 1-px `--focus` outline on keyboard focus, no border of their own) and
-  last `⋯`, which opens the node's context menu under itself. Each button's tooltip is its command's title
-  and key. The buttons are the enabled commands of that card tagged for the toolbar, in a fixed order; a
-  disabled one is left out, never greyed. It appears and goes without animation. No accent; it is never the
-  place a state is shown.
+- **The node toolbar** (Story 11.2) is a row to the right of a project, session or branch card, outside the
+  card's fixed box (so `nodes.ts` geometry and the arrow keys are untouched), top-aligned with the card's top
+  edge and clear of its link handle: under the card it would cover the next card of the column (8 px apart). A
+  transparent bridge between card and row keeps the hover while the pointer crosses it; the link handle stays
+  visible, on top and draggable. It shows only while the card is hovered or selected (not while it is dragged)
+  and is absent from the DOM otherwise; a card showing it draws above its neighbours. It is `--bg-raised` with a
+  1-px `--border` and `--radius-sm`, holding at most four short mono `--text-xs` text buttons (`new`, `term`,
+  `link`, `review`; `--fg-muted`, `--fg` on hover, no border of their own, never focusable: not in the Tab order)
+  and last `⋯`, which opens the node's context menu under itself (`Menu · right-click`). Each button's tooltip is
+  its command's title and key, and its accessible name the title. The buttons are the enabled commands of that
+  card tagged for the toolbar, one per slot in a fixed order; a disabled one is left out, never greyed, and Stop
+  is never one of them. They never depend on the open pane: a click selects the card, closes the open pane when
+  that pane is what disables the command (Review with the terminal pane open), then runs it. It appears and goes
+  without animation. No accent; it is never the place a state is shown.
 - **The ghost card** (Story 11.3) is the empty canvas's state: a box of the project card's size and
   `--radius-md` at the view's centre with a dashed 1-px `--fg-faint` border and no surface, `Drop a folder
   here` in `--text-md` `--fg-muted`, and under it, in the empty-canvas hint's mono muted style, `ctrl+o pick a
@@ -483,7 +488,8 @@ chrome follows every rule here.
    hover; the 1-px `--focus` outline on keyboard focus). No accent.
 
 The card size is fixed: `nodes.ts` and the arrow-key geometry depend on 240 × 80. Everything Epic 11 adds
-to a card (the node toolbar, an inline hint) sits outside this box and never changes it.
+to a card sits outside this box and never changes it: the node toolbar to the right of the card, top-aligned and
+clear of the handle, and an inline hint.
 
 ### Child card (208 × 40)
 

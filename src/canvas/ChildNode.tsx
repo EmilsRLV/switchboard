@@ -5,6 +5,7 @@ import { commandHint } from "../commands/keybindings";
 import { openReview } from "../commands/review";
 import { unreadBadge } from "../state/inbox";
 import { ForkHandles, LinkHandles } from "./LinkHandles";
+import { NodeToolbar, useHover } from "./NodeToolbar";
 import {
   branchCardParts,
   branchCardTitle,
@@ -177,23 +178,28 @@ function BranchCard({ className, ariaLabel, data }: { className: string; ariaLab
   );
 }
 
-export const SessionNode = memo(function SessionNode({ data }: NodeProps<SessionFlowNode>) {
+/** A session card, with its node toolbar (Story 11.2) while hovered or selected and not dragged. */
+export const SessionNode = memo(function SessionNode({ data, dragging }: NodeProps<SessionFlowNode>) {
+  const [hovered, hover] = useHover();
   return (
-    <>
+    <div className="node-hover" {...hover}>
       <ChildCard data={data} kind="session" />
       <ForkHandles />
       <LinkHandles source shown={data.selected} />
-    </>
+      <NodeToolbar target={{ kind: "session", id: data.child.id }} shown={(hovered || data.selected) && dragging !== true} />
+    </div>
   );
 });
 
-/** A branch card: an edge may end on it (Story 6.1) but never start from it. */
-export const BranchNode = memo(function BranchNode({ data }: NodeProps<BranchFlowNode>) {
+/** A branch card: an edge may end on it (Story 6.1) but never start from it. Its node toolbar as a session's. */
+export const BranchNode = memo(function BranchNode({ data, dragging }: NodeProps<BranchFlowNode>) {
+  const [hovered, hover] = useHover();
   return (
-    <>
+    <div className="node-hover" {...hover}>
       <ChildCard data={data} kind="branch" />
       <LinkHandles source={false} shown={false} />
-    </>
+      <NodeToolbar target={{ kind: "branch", id: data.child.id }} shown={(hovered || data.selected) && dragging !== true} />
+    </div>
   );
 });
 

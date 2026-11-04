@@ -635,3 +635,63 @@
   stroke-width: var(--line);
   stroke-dasharray: 4 3;
 }
+
+/* Story 11.2: the node toolbar. To the right of a project, session or branch card, outside its
+   fixed box (so nodes.ts geometry is untouched) and top-aligned with it, only while the card is
+   hovered or selected (absent from the DOM otherwise). The container's transparent left padding
+   bridges card and row, so moving onto the row keeps the hover; the link handle draws above it
+   and stays draggable. The row: --bg-raised, a 1-px --border, --radius-sm, short mono --text-xs
+   words in --fg-muted (--fg on hover), no border of their own. Never focusable, no accent, no
+   animation. A card showing its toolbar draws above its neighbours (needs :has(); WebKitGTK 2.42+). */
+.node-hover {
+  display: contents;
+}
+
+.node-toolbar {
+  position: absolute;
+  top: 0;
+  left: 100%;
+  z-index: 1;
+  padding-left: 8px;
+  cursor: default;
+}
+
+.react-flow__handle.link-handle {
+  z-index: 2;
+}
+
+.react-flow__node:has(.node-toolbar) {
+  z-index: 1002 !important;
+}
+
+/* A dragged card stays above a card showing its toolbar. */
+.react-flow__node.dragging {
+  z-index: 1003 !important;
+}
+
+.node-toolbar-row {
+  display: flex;
+  align-items: center;
+  background: var(--bg-raised);
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 0.15rem;
+  white-space: nowrap;
+}
+
+.node-toolbar-button {
+  margin: 0;
+  padding: 0.1rem 0.35rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.3;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.node-toolbar-button:hover {
+  color: var(--fg);
+}

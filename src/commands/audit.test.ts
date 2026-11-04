@@ -97,6 +97,8 @@ const ALLOW_LIST: readonly Exemption[] = [
     handler: "(event) => { event.stopPropagation(); void openReview(child.id); }",
     reason: `${ITEM} (this card's review flag); palette: review.open (selected, else newest)`,
   },
+  // -- node toolbar (Story 11.2) -------------------------------------------------------------------
+  { file: "/src/canvas/NodeToolbar.tsx", handler: "openMenu", reason: "opens a menu at its own position, not a command (the toolbar's ⋯; a right-click on the card opens the same menu)" },
   // -- terminal ------------------------------------------------------------------------------------
   { file: "/src/terminal/TerminalPane.tsx", handler: "() => activateTab(id)", reason: `${ITEM} (a tab); palette: terminal.nextTab / terminal.prevTab` },
   { file: "/src/terminal/TerminalPane.tsx", handler: "() => void closeTerminalTab(id)", reason: `${ITEM} (a tab's x)` },

@@ -11,7 +11,7 @@ import { terminalInfo, useTerminalStore } from "../state/terminals";
 import { disposeView, restore } from "../terminal/registry";
 import { skippedNote } from "./launch";
 import { usePaletteStore } from "../state/palette";
-import { useUiStore } from "../state/ui";
+import { currentSelection, useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
 import { notify } from "./navigation";
 import { mutate } from "./nodes";
@@ -53,7 +53,7 @@ export function refuseDrop(sourceFlowId: string, targetFlowId: string | null): v
 
 /** The node "Link to…" starts from: the selected session or project card, else `null`. */
 export function linkSource(): NodeRef | null {
-  const ref = nodeRefOf(useUiStore.getState().selection);
+  const ref = nodeRefOf(currentSelection());
   return ref !== null && (ref.type === "session" || ref.type === "project") ? ref : null;
 }
 
@@ -90,7 +90,7 @@ export function startLink(): boolean {
 
 /** The selected edge, while an edge is selected and still stored; else `null`. */
 export function selectedEdge(): Edge | null {
-  const selection = useUiStore.getState().selection;
+  const selection = currentSelection();
   if (selection === null || selection.kind !== "edge") return null;
   return workspaceEdges().find((edge) => edge.id === selection.id) ?? null;
 }
@@ -181,7 +181,7 @@ function drawnNow(): Set<string> {
 
 /** The "Select edge…" rows of the selected node: its drawn edges. */
 function selectableEdges() {
-  const node = nodeRefOf(useUiStore.getState().selection);
+  const node = nodeRefOf(currentSelection());
   const snapshot = useWorkspaceStore.getState().snapshot;
   if (node === null || snapshot === null) return [];
   return edgeChoices(node, snapshot.workspace.edges, drawnNow(), snapshot.workspace.projects, snapshot.children);

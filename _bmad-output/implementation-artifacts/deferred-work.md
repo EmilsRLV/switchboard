@@ -192,3 +192,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-11-1-keys-where-the-action-is.md`
   summary: Test `isBackground` in `src/canvas/Canvas.tsx` (pane / canvas-hint vs node, edge, handle, edge label), e.g. by extracting it and testing with fake `closest` objects.
   evidence: Review found no test covers it; dropping `.react-flow__edge` from its exclusion would open the canvas menu over edges unnoticed. Settled by a test once extracted.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-11-2-the-node-toolbar.md`
+  summary: Test that a mounted node toolbar re-renders when the stores its commands' `when`s read change (pane, palette, menu, terminals, live, Elsewhere).
+  evidence: Review found deleting a `ShownToolbar` subscription fails no test; needs a DOM test environment (none in the repo). Unverified medium.

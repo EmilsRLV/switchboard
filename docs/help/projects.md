@@ -5,7 +5,7 @@ hang under it as a column. Removing a project node never touches the folder itse
 
 ## Adding a folder
 
-- `ctrl+o` (**Add project folder…**) opens the folder picker; the folder lands in the middle of the view.
+- `ctrl+o` (**Add project folder…**) opens the folder picker; the folder lands in the view's centre.
 - Drop folders from the file manager onto the canvas.
 - **Import from Claude…** in the command palette opens the import pane: every folder Claude Code has run in
   that still exists, newest first, with its session count. Tick folders with Space or a click, then press
@@ -15,8 +15,9 @@ Adding a folder that is already there adds nothing; the existing project node fl
 
 ## Working with a project node
 
-Select a project node and press `enter`, or click its chevron, to expand or collapse it. Right-click it for
-its menu, or use the same titles in the command palette:
+Select a project node and press `enter`, or click its chevron, to expand or collapse it. Hovered or selected, it
+shows a **toolbar** of what it can run. Right-click it for its menu, or use the same titles
+in the palette:
 
 - **New session…** (`n`) opens the [launch sheet](sessions.md#the-launch-sheet); **Plain terminal…** opens
   a [plain terminal](terminals.md) in the folder.
@@ -31,8 +32,7 @@ its menu, or use the same titles in the command palette:
 
 ## What you can see
 
-- The top line: the folder name, `N live` when sessions are running, and, while collapsed, how many children
-  it holds.
+- The top line: the folder name, `N live` when sessions are running, and, while collapsed, its child count.
 - The second line: the path, shortened; hover for all of it.
 - The third line: the git state, such as `main · 3 changed`, with `↑1 ↓2` against its upstream, or
   `not a git repo`, `folder missing`, `git unavailable` or `git error`.

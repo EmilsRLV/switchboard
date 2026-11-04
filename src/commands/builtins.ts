@@ -22,7 +22,7 @@ import { isCanvasReady, useCanvasStore } from "../state/canvas";
 import { usePaletteStore } from "../state/palette";
 import { useSettingsStore } from "../state/settings";
 import { elsewhereCount } from "../state/live";
-import { hasSelection, isContextMenuOpen, isElsewhereOpen, isPaneOpen, selectedProject, useUiStore } from "../state/ui";
+import { currentPane, hasSelection, isContextMenuOpen, isElsewhereOpen, isPaneOpen, selectedProject, useUiStore } from "../state/ui";
 import { hasProjects, projectHasChildren } from "../state/workspace";
 import {
   activateSelection,
@@ -420,6 +420,8 @@ export function builtinCommands(): Command[] {
       title: "Resume",
       menu: "node",
       menuOrder: 7,
+      toolbar: 1,
+      short: "resume",
       when: canResumeSession,
       run: async () => {
         await resumeSelectedSession();
@@ -431,6 +433,8 @@ export function builtinCommands(): Command[] {
       title: "Fork",
       menu: "node",
       menuOrder: 8,
+      toolbar: 2,
+      short: "fork",
       when: canForkSession,
       run: async () => {
         await forkSelectedSession();
@@ -441,6 +445,8 @@ export function builtinCommands(): Command[] {
       title: "Show terminal",
       menu: "node",
       menuOrder: 9,
+      toolbar: 1,
+      short: "term",
       when: canShowSessionTerminal,
       run: async () => {
         await showSelectedSessionTerminal();
@@ -475,7 +481,9 @@ export function builtinCommands(): Command[] {
       keybinding: "n",
       menu: "node",
       menuOrder: 10,
-      when: () => hasSelectedProject() && useUiStore.getState().pane !== "launch",
+      toolbar: 1,
+      short: "new",
+      when: () => hasSelectedProject() && currentPane() !== "launch",
       run: withSelectedProject(openLaunchSheet),
     },
     {
@@ -483,6 +491,8 @@ export function builtinCommands(): Command[] {
       title: "Plain terminal…",
       menu: "node",
       menuOrder: 11,
+      toolbar: 2,
+      short: "term",
       when: hasSelectedProject,
       run: withSelectedProject(openProjectTerminal),
     },
@@ -666,6 +676,8 @@ export function builtinCommands(): Command[] {
       title: "New worktree…",
       menu: "node",
       menuOrder: 51,
+      toolbar: 2,
+      short: "worktree",
       when: canNewWorktreeOnBranch,
       run: async () => {
         await openWorktreeSheetForBranch();
@@ -680,6 +692,8 @@ export function builtinCommands(): Command[] {
       keybinding: "n",
       menu: "node",
       menuOrder: 52,
+      toolbar: 1,
+      short: "new",
       when: canNewSessionOnBranch,
       run: async () => {
         await openLaunchSheetForBranch();
@@ -692,6 +706,8 @@ export function builtinCommands(): Command[] {
       title: "Remove worktree…",
       menu: "node",
       menuOrder: 53,
+      toolbar: 2,
+      short: "remove",
       when: canRemoveWorktree,
       run: async () => {
         await openRemoveWorktreeSheet();
@@ -705,6 +721,8 @@ export function builtinCommands(): Command[] {
       keybinding: "e",
       menu: "node",
       menuOrder: 13,
+      toolbar: 3,
+      short: "link",
       when: canLink,
       run: () => {
         startLink();
@@ -794,6 +812,8 @@ export function builtinCommands(): Command[] {
       keybinding: "r",
       menu: "node",
       menuOrder: 60,
+      toolbar: 4,
+      short: "review",
       when: () => canReviewSelection() && (noSurfaceOpen() || isPaletteOpen() || isContextMenuOpen()),
       run: () => {
         reviewSelection();

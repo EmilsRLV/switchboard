@@ -4,6 +4,7 @@ import { commandHint } from "../commands/keybindings";
 import { runCommand } from "../commands/registry";
 import { useUiStore } from "../state/ui";
 import { LinkHandles } from "./LinkHandles";
+import { NodeToolbar, useHover } from "./NodeToolbar";
 import { aheadBehind, BRANCHES_UNAVAILABLE, branchesChipShown, chevronCommandId, shortenPath, statusLine, type ProjectFlowNode } from "./nodes";
 
 /**
@@ -19,9 +20,12 @@ import { aheadBehind, BRANCHES_UNAVAILABLE, branchesChipShown, chevronCommandId,
  * `project.expand` / `project.collapse`. Dragging, selection and the right-click menu are
  * the canvas's; the selected card shows an outline in `--fg`. While any of its sessions is
  * `finished` or `waiting` the card glows: a pulsing accent outline outside the selection's
- * (`project-glow`, Story 3.3). The card's edge handle (Story 6.1) sits on its right edge.
+ * (`project-glow`, Story 3.3). The card's edge handle (Story 6.1) sits on its right edge. While
+ * the card is hovered or selected (and not dragged), its node toolbar (Story 11.2) hangs to the
+ * right of it.
  */
-export const ProjectNode = memo(function ProjectNode({ data }: NodeProps<ProjectFlowNode>) {
+export const ProjectNode = memo(function ProjectNode({ data, dragging }: NodeProps<ProjectFlowNode>) {
+  const [hovered, hover] = useHover();
   const { project, status, flashed, selected, childCount, liveCount, attention, branchesError } = data;
   const line = statusLine(status);
   const divergence = aheadBehind(status);
@@ -41,7 +45,7 @@ export const ProjectNode = memo(function ProjectNode({ data }: NodeProps<Project
   };
 
   return (
-    <>
+    <div className="node-hover" {...hover}>
       <div
         className={
           "project-node" + (flashed ? " is-flash" : "") + (selected ? " is-selected" : "") + (attention ? " project-glow" : "")
@@ -105,6 +109,7 @@ export const ProjectNode = memo(function ProjectNode({ data }: NodeProps<Project
         </div>
       </div>
       <LinkHandles source shown={selected} />
-    </>
+      <NodeToolbar target={{ kind: "project", id: project.id }} shown={(hovered || selected) && dragging !== true} />
+    </div>
   );
 });
