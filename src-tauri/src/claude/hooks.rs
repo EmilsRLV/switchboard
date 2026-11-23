@@ -183,6 +183,16 @@ pub fn map_event(event: &str, payload: &Value) -> Option<HookSignal> {
     }
 }
 
+/// The new session id a hook event announces after `/clear` (Story 12.1): a `SessionStart`
+/// whose body has `source: "clear"` and a non-blank `session_id`. Any other event or `source`
+/// (`startup`, `resume`, `compact`, none) is `None`.
+pub fn cleared_into<'a>(event: &str, payload: &'a Value) -> Option<&'a str> {
+    if event != "SessionStart" || text(payload, "source") != Some("clear") {
+        return None;
+    }
+    text(payload, "session_id").map(str::trim).filter(|id| !id.is_empty())
+}
+
 /// The per-session settings file's content while the endpoint is up on `port`: one `http`
 /// hook per wired event, POSTing to `http://127.0.0.1:<port>/hooks/<Event>` with the session's
 /// bearer token written literally (the file is per-user, 0600 on Unix) and a 5 s timeout; and
@@ -297,7 +307,13 @@ struct Inner {
     mismatches: AtomicU64,
     mcp_refused: AtomicU64,
     mcp_refusals: Mutex<VecDeque<McpRefusal>>,
+    /// Story 12.1: what a `/clear` on a session's token is reported to (the app records the new
+    /// id in the card's chain, `crate::graph::record_clear`); `None` until the app sets it.
+    on_clear: Mutex<Option<Clear>>,
 }
+
+/// Told `(node id, new session id)` when a session on a token was cleared (Story 12.1).
+pub type Clear = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
@@ -345,6 +361,11 @@ impl Hooks {
     pub fn drop_all(&self) {
         lock(&self.inner.tokens).clear();
         lock(&self.inner.aliases).clear();
+    }
+
+    /// Report every `/clear` from now on to `clear` (Story 12.1).
+    pub fn set_on_clear(&self, clear: Clear) {
+        *lock(&self.inner.on_clear) = Some(clear);
     }
 
     /// How many sessions hold a token.
@@ -656,6 +677,17 @@ async fn receive(State(ctx): State<Ctx>, Path(event): Path<String>, request: Req
     };
     Hooks::count(&ctx.hooks.inner.events);
     let payload: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    // Story 12.1: `/clear` gave the session a new id; the card keeps its node id and the new
+    // id joins its chain (a repeated event changes nothing). Reported before the alias check;
+    // the app records it off this thread.
+    if let Some(new_id) = cleared_into(&event, &payload)
+        && new_id != session
+    {
+        let clear = lock(&ctx.hooks.inner.on_clear).clone();
+        if let Some(clear) = clear {
+            clear(&session, new_id);
+        }
+    }
     if let Some(claimed) = text(&payload, "session_id")
         && ctx.hooks.check_session_id(&session, claimed, &event)
     {
@@ -830,6 +862,16 @@ pub fn start_on<R: Runtime>(app: &AppHandle<R>, bound: std::io::Result<TcpListen
     // A call that goes away while it waits for the operator withdraws its request (Story 7.2).
     let cancel_app = app.clone();
     let cancel: crate::mcp::Cancel = Arc::new(move |call| crate::approvals::cancel_call(&cancel_app, call));
+    // Story 12.1: a `/clear` on a launched session's token extends its card's chain. The record
+    // (workspace lock, file write, emit) runs off the async handler, so the hook's reply never
+    // waits on it.
+    let clear_app = app.clone();
+    state.hooks.set_on_clear(Arc::new(move |node, new_id| {
+        let (app, node, new_id) = (clear_app.clone(), node.to_string(), new_id.to_string());
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::graph::record_clear(&app, &node, &new_id);
+        });
+    }));
     let router = router_with(state.hooks.clone(), apply, tools, cancel);
     let handle = app.clone();
     Some(tauri::async_runtime::spawn(async move {
@@ -1092,6 +1134,39 @@ pub mod tests {
         assert!(hooks.check_session_id("s1", "other", "Stop"));
         hooks.drop_session("s1");
         assert!(hooks.check_session_id("s1", "cleared", "Stop"), "forgotten with the session");
+    }
+
+    #[test]
+    fn only_a_session_start_from_clear_announces_a_new_id() {
+        assert_eq!(cleared_into("SessionStart", &json!({ "session_id": "B", "source": "clear" })), Some("B"));
+        for source in ["startup", "resume", "compact"] {
+            assert_eq!(cleared_into("SessionStart", &json!({ "session_id": "B", "source": source })), None, "{source}");
+        }
+        assert_eq!(cleared_into("SessionStart", &json!({ "session_id": "B" })), None, "no source");
+        assert_eq!(cleared_into("SessionStart", &json!({ "session_id": " ", "source": "clear" })), None, "blank id");
+        assert_eq!(cleared_into("UserPromptSubmit", &json!({ "session_id": "B", "source": "clear" })), None);
+    }
+
+    #[test]
+    fn a_clear_on_a_token_is_reported_before_the_event_is_applied_and_nothing_else_is() {
+        let s = server();
+        let cleared: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+        let record = cleared.clone();
+        s.hooks.set_on_clear(Arc::new(move |node, new_id| record.lock().unwrap().push((node.into(), new_id.into()))));
+        let token = s.hooks.register("A");
+        let post = |body: &str| http(s.port, "POST", "/hooks/SessionStart", Some(&token), body.as_bytes());
+        for source in [r#","source":"startup""#, r#","source":"resume""#, r#","source":"compact""#, ""] {
+            assert_eq!(post(&format!(r#"{{"session_id":"X"{source}}}"#)).0, 200);
+        }
+        // The session's own id is no clear either.
+        assert_eq!(post(r#"{"session_id":"A","source":"clear"}"#).0, 200);
+        assert_eq!(post(r#"{"session_id":"B","source":"clear"}"#).0, 200);
+        // Reported synchronously, before the reply.
+        assert_eq!(*cleared.lock().unwrap(), vec![("A".to_string(), "B".to_string())]);
+        // The new id is an alias, not a mismatch, and the signal goes to the node id.
+        assert!(!s.hooks.check_session_id("A", "B", "Stop"));
+        eventually("six SessionStart signals", || s.seen.lock().unwrap().len() == 6);
+        assert!(s.seen.lock().unwrap().iter().all(|(id, signal)| id == "A" && *signal == HookSignal::Started));
     }
 
     #[test]

@@ -66,6 +66,7 @@ import {
   STOPPING_WORD,
   forkLinePath,
   forkLines,
+  clearedText,
   forkedFromText,
   collapsedCountText,
   glowText,
@@ -1167,6 +1168,22 @@ describe("fork lines and the stopping word (Story 4.4)", () => {
     expect(childAriaLabel("session", { ...base, forkedFromTitle: null, stopping: true })).toBe("Session title fork, stopping");
     expect(sessionCardTitle({ ...base, forkedFromTitle: "ide-59cd" }, meta).split("\n")).toContain("forked from ide-59cd");
     expect(sessionCardTitle({ ...base, forkedFromTitle: null }, meta)).not.toContain("forked from");
+  });
+
+  it("a cleared session's tooltip and accessible name say how often it was cleared, after forked from (Story 12.1)", () => {
+    const meta = fork.session;
+    if (meta === null) throw new Error("no meta");
+    expect(clearedText(0)).toBeNull();
+    expect(clearedText(1)).toBe("cleared 1 time");
+    expect(clearedText(2)).toBe("cleared 2 times");
+    const cleared = { child: { ...fork, clearedCount: 2 }, attention: false, detail: null, lastLine: null };
+    expect(childAriaLabel("session", { ...cleared, forkedFromTitle: "ide-59cd" })).toBe("Session title fork, forked from ide-59cd, cleared 2 times");
+    const lines = sessionCardTitle({ ...cleared, forkedFromTitle: "ide-59cd" }, meta).split("\n");
+    expect(lines.indexOf("cleared 2 times")).toBe(lines.indexOf("forked from ide-59cd") + 1);
+    // Never cleared (or the field absent): no line.
+    const base = { child: fork, attention: false, detail: null, lastLine: null, forkedFromTitle: null };
+    expect(sessionCardTitle(base, meta)).not.toContain("cleared");
+    expect(childAriaLabel("session", base)).not.toContain("cleared");
   });
 });
 

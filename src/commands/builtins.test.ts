@@ -55,7 +55,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the one hundred and ten commands with the spec's keybindings", () => {
+  it("register the one hundred and eleven commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -141,6 +141,7 @@ describe("built-in commands", () => {
       "selection.move.right",
       "selection.move.up",
       "session.attach",
+      "session.earlier",
       "session.fork",
       "session.resume",
       "session.showTerminal",
@@ -186,6 +187,7 @@ describe("built-in commands", () => {
       "session.showTerminal",
       "session.resume",
       "session.fork",
+      "session.earlier",
       "session.stop",
       "project.newWorktree",
       "branch.newWorktree",
@@ -245,7 +247,7 @@ describe("built-in commands", () => {
     expect(getCommand("review.layoutUnified")?.hidden).toBe(true);
   });
 
-  it("the key-only carriers are hidden from the palette, the eighty-six actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the eighty-seven actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
       "agentActions.allowAll",
       "agentActions.ask",
@@ -317,6 +319,7 @@ describe("built-in commands", () => {
       "review.refresh",
       "review.toggleLayout",
       "session.attach",
+      "session.earlier",
       "session.fork",
       "session.resume",
       "session.showTerminal",
@@ -342,7 +345,7 @@ describe("built-in commands", () => {
     ]);
   });
 
-  it("exactly the twelve project commands, the five session commands, the four branch commands, Link to…, Select edge… and Review changes are tagged for the node menu, and the menu lists none without a selection", () => {
+  it("exactly the twelve project commands, the six session commands, the four branch commands, Link to…, Select edge… and Review changes are tagged for the node menu, and the menu lists none without a selection", () => {
     expect(
       listCommands()
         .filter((c) => c.menu === "node")
@@ -369,6 +372,7 @@ describe("built-in commands", () => {
       "project.toggleShowAll",
       "review.changes",
       "session.attach",
+      "session.earlier",
       "session.fork",
       "session.resume",
       "session.showTerminal",
@@ -379,7 +383,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(111);
+    expect(listCommands()).toHaveLength(112);
   });
 
   const PROJECT_ACTIONS = [

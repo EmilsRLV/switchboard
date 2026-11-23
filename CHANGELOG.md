@@ -4,7 +4,11 @@ What changed in Switchboard, newest first. Each release lists what you can see a
 
 ## Unreleased
 
-Nothing yet.
+### Sessions
+
+- A session you `/clear` keeps its card: the same place, label, terminal and edges, and its state follows the
+  new conversation. Its tooltip says `cleared N times`, Resume and Fork use the conversation it runs now, and
+  **Earlier transcripts…** forks one of the conversations from before a clear.
 
 ## 0.2.0 — 2026-11-04
 

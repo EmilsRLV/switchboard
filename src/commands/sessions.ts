@@ -4,9 +4,23 @@
 // panes in step. A result that arrives after its sheet closed (or another opened) is not applied
 // to the sheet showing now; a failure is the sheet's error, or the notice when its sheet is
 // gone, never a throw. Story 4.4 adds `session.resume`, `session.fork` and `session.stop`
-// (no sheet; a refusal is the notice).
+// (no sheet; a refusal is the notice). Story 12.1 adds `session.earlier` (Earlier transcripts…):
+// a cleared session's earlier transcripts as a pick list; picking one forks it.
 
-import { launchDefaults, projectPickFolder, sessionFork, sessionLaunch, sessionResume, sessionStop, type ChildNode, type LaunchChoices, type LaunchResult, type SkippedEdge } from "../ipc";
+import {
+  launchDefaults,
+  projectPickFolder,
+  sessionFork,
+  sessionLaunch,
+  sessionResume,
+  sessionStop,
+  type ChildNode,
+  type EarlierTranscript,
+  type LaunchChoices,
+  type LaunchResult,
+  type SkippedEdge,
+} from "../ipc";
+import { usePaletteStore } from "../state/palette";
 import { isSheetOpen, sheetToken, useLaunchStore } from "../state/launch";
 import { sessionState } from "../state/live";
 import { isTerminalRunning, sessionTerminal, sessionTerminalId, terminalInfo, useTerminalStore } from "../state/terminals";
@@ -295,7 +309,79 @@ export async function forkSelectedSession(): Promise<boolean> {
   }
   forking.add(child.id);
   try {
-    const started = await sessionFork(child.projectId, child.id, null, null);
+    // Story 12.1: a cleared card forks the transcript it runs under now (its node id would name
+    // its first, earlier transcript).
+    const started = await sessionFork(child.projectId, child.currentId ?? child.id, null, null);
+    await showStarted(child.projectId, started);
+    notify(startedNotice("forked", started.choices, started.skipped));
+    return true;
+  } catch (err) {
+    notify(describe(err));
+    return false;
+  } finally {
+    forking.delete(child.id);
+  }
+}
+
+/** Story 12.1: the selected session's earlier transcripts (newest first), as Rust lists them. */
+function earlierOfSelected(): { child: ChildNode; earlier: EarlierTranscript[] } | null {
+  const child = selectedSessionChild();
+  if (child === null) return null;
+  return { child, earlier: child.earlier ?? [] };
+}
+
+/** The `when` of `session.earlier` (Story 12.1): the selected session was cleared and has an earlier transcript. */
+export function canPickEarlier(): boolean {
+  return (earlierOfSelected()?.earlier.length ?? 0) > 0;
+}
+
+/** Rust's title for a transcript with nothing to name it by (`claude::transcript::UNTITLED`). */
+const UNTITLED = "(untitled)";
+
+/**
+ * One Earlier transcripts… row's title: `<local start time> — <title>`; a blank or `(untitled)`
+ * title shows the transcript's short id (its first 8 characters) instead.
+ */
+export function earlierRowTitle(row: EarlierTranscript): string {
+  const ms = Date.parse(row.startedAt);
+  const time = Number.isNaN(ms) ? row.startedAt : new Date(ms).toLocaleString();
+  const title = row.title.trim();
+  return `${time} — ${title === "" || title === UNTITLED ? row.id.slice(0, 8) : title}`;
+}
+
+/**
+ * `session.earlier` ("Earlier transcripts…", Story 12.1): the palette as a pick list of the
+ * selected cleared session's earlier transcripts, newest first; picking one forks it into a new
+ * card (`forkedFrom` the card, which runs on untouched). A refusal is the notice. Returns whether
+ * the list opened.
+ */
+export function startPickEarlier(): boolean {
+  const found = earlierOfSelected();
+  if (found === null || found.earlier.length === 0) return false;
+  const { child, earlier } = found;
+  useUiStore.getState().closeContextMenu();
+  usePaletteStore.getState().openPick({
+    placeholder: "Earlier transcripts…",
+    items: earlier.map((row) => ({ id: row.id, title: earlierRowTitle(row) })),
+    onPick: (id) => {
+      void forkEarlier(child, id);
+    },
+  });
+  return true;
+}
+
+/**
+ * Fork earlier transcript `id` of card `child` (Story 12.1). The guard is the card's, as Fork's
+ * and Rust's are. Resolves whether it started.
+ */
+export async function forkEarlier(child: ChildNode, id: string): Promise<boolean> {
+  if (forking.has(child.id)) {
+    notify("a fork of that session is already starting");
+    return false;
+  }
+  forking.add(child.id);
+  try {
+    const started = await sessionFork(child.projectId, id, null, null);
     await showStarted(child.projectId, started);
     notify(startedNotice("forked", started.choices, started.skipped));
     return true;

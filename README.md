@@ -343,6 +343,7 @@ The command ids:
 | `selection.move.right` (key-only) | `arrowright` |
 | `selection.move.up` (key-only) | `arrowup` |
 | `session.attach` | — |
+| `session.earlier` | — |
 | `session.fork` | — |
 | `session.resume` | — |
 | `session.showTerminal` | — |
@@ -515,6 +516,22 @@ card; clicking it, Enter while it is selected, or **Show all sessions** in the p
 card's menu shows the rest and the row becomes **`show fewer`** (a per-project view choice, not saved). A
 session card can be dragged like any child and keeps its spot; a dragged child past the tenth is drawn even
 while the rest are hidden. Enter on a session does nothing (Resume and Fork are in its menu and the palette).
+
+**A cleared session keeps its card.** `/clear` gives a session a new id and a new transcript. The card keeps its
+first id as its **node id** for good: its place, label, terminal (`session:<node id>`), selection, edges and live
+state stay as they are, and its state follows the new turns. Each id the session moves to is added, once, to
+`clearedInto` on its `sessions[]` entry in `workspace.json` (left out while empty, so an older file is written
+unchanged). Switchboard notices a clear from the `SessionStart` hook with `source: "clear"` on the session's
+token (any other `source` changes nothing); for a session without hooks, from the live poll: a new row with the
+same `pid` and `cwd` as a session that has just dropped out of the poll (a row without a `pid`, or a pid seen
+again after its session exited, is never a clear). A transcript in the chain is never a card of its own: the
+card shows the **current** transcript's meta (the last id of the chain), keeps its own title, and its tooltip and
+accessible name add `cleared N times` after `forked from`. **Resume** runs `claude --resume <current id>` in the
+card's own terminal; **Fork** forks the current transcript. **Earlier transcripts…** (its menu and the palette,
+offered while the card has one) lists the earlier transcripts newest first as `<start time> — <title>`; picking
+one forks it into a new card whose `forkedFrom` is this card, even while this one runs. Cards split by clears
+before this version are not merged. The poll can only notice a clear while Switchboard runs and saw the old id
+live: an unhooked session cleared while Switchboard was closed shows as a separate card.
 
 Reading is **read-only**: nothing under `~/.claude` is written, renamed, locked or created. Transcripts are
 streamed line by line on a background thread, and unknown record types, broken lines and a half-written last
@@ -1254,7 +1271,8 @@ every session goes back to the poll's rules, and a banner reads `hooks endpoint 
 **Diagnostics.** Settings (`ctrl+,`) → **Diagnostics** shows the endpoint (`127.0.0.1:<port>` or the bind
 error), hook events received, refused requests, session-id mismatches (an event whose `session_id` is not the
 token's session, nor one a `SessionStart` on that token announced, as after `/clear`; it still applies to the
-token's session), poll overrides and **MCP refused requests** (below), refreshed every 2 s while open. Under
+token's session, and a `/clear` keeps the card, see [Sessions](#sessions)), poll overrides and **MCP refused
+requests** (below), refreshed every 2 s while open. Under
 the counters, **Recent MCP refusals** lists the last 20 refused `/mcp` requests newest first
 (`<time> /mcp — <reason>`: `missing token`, `unknown token`, `body too large` or `read timeout`; never any part
 of a token). A failed read shows next to the last counters read.

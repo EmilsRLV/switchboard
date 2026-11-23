@@ -1770,6 +1770,10 @@ struct Launch {
     worktree: Option<(String, String)>,
     /// `claude --worktree <name>` (the project's sheet only).
     worktree_flag: Option<String>,
+    /// Resume and Fork: the card (node id) whose transcript is resumed (Story 12.1: after a
+    /// `/clear` the transcript's id differs from it). Its context edges grant the add-dirs and
+    /// a fork records it as `forkedFrom`. `None` for New.
+    source_node: Option<String>,
 }
 
 /// The side-effect-free half of a sheet launch: the project, the name, where the session runs
@@ -1852,6 +1856,7 @@ fn new_launch(state: &AppState, request: LaunchRequest) -> Result<(Launch, Optio
         branch_id,
         worktree,
         worktree_flag,
+        source_node: None,
     };
     Ok((launch, create))
 }
@@ -1937,12 +1942,41 @@ struct Source {
     project: graph::Project,
     cwd: Option<String>,
     name: String,
+    /// The card: its node id (terminal, live entry, edges, `forkedFrom`).
+    node: String,
+    /// The transcript to `--resume` (Story 12.1: a cleared card's current or an earlier id).
+    transcript: String,
 }
+
+/// Why Resume or Fork of a cleared session (Story 12.1) has nothing to resume: the transcript
+/// its chain names is not discovered.
+pub const TRANSCRIPT_NOT_FOUND: &str = "transcript not found";
 
 /// The session `session_id` as discovered under project `project_id` (the card the operator
 /// chose): `unknown project` when the project is gone, [`NO_TRANSCRIPT`] when no transcript of
-/// that id is discovered under it.
+/// that id is discovered under it. Story 12.1: a cleared card resumes its current id (the last
+/// of its chain; [`TRANSCRIPT_NOT_FOUND`] when that one is not discovered); a chained id stands
+/// for its card.
 fn source_session(state: &AppState, project_id: &str, session_id: &str) -> Result<Source, String> {
+    let (node, transcript) = {
+        let ws = state.read_workspace();
+        let node = graph::node_id(&ws.workspace, session_id);
+        let current = graph::current_id(&ws.workspace, &node);
+        (node, current)
+    };
+    source_of(state, project_id, &node, &transcript)
+}
+
+/// What Fork of `from` resumes (Story 12.1): a chained id is that transcript (the current one,
+/// or an earlier one from **Earlier transcripts…**) of its card; the node id of a cleared card
+/// is the card's own, first transcript; any other id is itself. The fork records the card.
+fn fork_source(state: &AppState, project_id: &str, from: &str) -> Result<Source, String> {
+    let node = graph::node_id(&state.read_workspace().workspace, from);
+    source_of(state, project_id, &node, from)
+}
+
+/// [`source_session`] for card `node` resuming `transcript`.
+fn source_of(state: &AppState, project_id: &str, node: &str, transcript: &str) -> Result<Source, String> {
     let (project, summary) = {
         let ws = state.read_workspace();
         let project = ws
@@ -1955,15 +1989,15 @@ fn source_session(state: &AppState, project_id: &str, session_id: &str) -> Resul
         let summary = ws
             .discovered
             .get(project_id)
-            .and_then(|list| list.iter().find(|s| s.id == session_id))
+            .and_then(|list| list.iter().find(|s| s.id == transcript))
             .cloned()
-            .ok_or_else(|| NO_TRANSCRIPT.to_string())?;
+            .ok_or_else(|| if transcript == node { NO_TRANSCRIPT } else { TRANSCRIPT_NOT_FOUND }.to_string())?;
         (project, summary)
     };
     let live_name = state
         .read_sessions_live()
         .sessions
-        .get(session_id)
+        .get(node)
         .and_then(|s| s.name.clone())
         .filter(|n| !n.trim().is_empty());
     let title = Some(summary.title.clone()).filter(|t| !t.trim().is_empty() && t != claude::transcript::UNTITLED);
@@ -1972,6 +2006,8 @@ fn source_session(state: &AppState, project_id: &str, session_id: &str) -> Resul
         cwd: summary.cwd.clone(),
         name,
         project,
+        node: node.to_string(),
+        transcript: transcript.to_string(),
     })
 }
 
@@ -2007,13 +2043,18 @@ fn ref_branch(state: &AppState, project_id: &str, session_id: &str) -> Option<St
 }
 
 /// The work of [`session_resume`].
+///
+/// Story 12.1: a cleared card resumes its current transcript (`--resume <current id>`) in its
+/// own terminal (`session:<node id>`), under its node id.
 pub fn resume_session<R: Runtime>(app: &AppHandle<R>, project_id: &str, session_id: &str, size: (u16, u16)) -> Result<LaunchResult, String> {
     let state = app.state::<AppState>();
     let source = source_session(&state, project_id, session_id)?;
+    let session_id = source.node.as_str();
     let cwd = launch::resume_cwd(source.cwd.as_deref(), &source.project.path)?;
     let (add_dirs, skipped) = resume_add_dirs(&state, &source.project.id, session_id, &cwd);
     let launch = Launch {
-        kind: launch::LaunchKind::Resume { id: session_id.to_string() },
+        kind: launch::LaunchKind::Resume { id: source.transcript.clone() },
+        source_node: Some(session_id.to_string()),
         request: LaunchRequest {
             add_dirs,
             ..sheetless_request(&state, &source.project, session_id, &source.name)
@@ -2024,7 +2065,7 @@ pub fn resume_session<R: Runtime>(app: &AppHandle<R>, project_id: &str, session_
         label: source.project.label.clone(),
         cwd,
         session_id: session_id.to_string(),
-        name: source.name,
+        name: source.name.clone(),
         branch: ref_branch(&state, project_id, session_id),
         branch_id: None,
         worktree: None,
@@ -2037,16 +2078,22 @@ pub fn resume_session<R: Runtime>(app: &AppHandle<R>, project_id: &str, session_
 /// The work of [`session_fork`]: a fresh v4 id, named `<original name>-fork-<4 hex>`; the
 /// workspace records which session it was forked from before the spawn (see [`run_launch`]).
 /// A second fork of the same session is refused while this one starts.
+///
+/// Story 12.1: `from` is a card's node id or one of the ids in its clear chain; that transcript
+/// is resumed ([`fork_source`]) and the card is the fork's `forkedFrom`. Works while the card
+/// runs, and leaves it untouched.
 pub fn fork_session<R: Runtime>(app: &AppHandle<R>, project_id: &str, from: &str, size: (u16, u16)) -> Result<LaunchResult, String> {
     let state = app.state::<AppState>();
-    let source = source_session(&state, project_id, from)?;
+    let source = fork_source(&state, project_id, from)?;
+    let from = source.node.as_str();
     let cwd = launch::resume_cwd(source.cwd.as_deref(), &source.project.path)?;
     let (add_dirs, skipped) = resume_add_dirs(&state, &source.project.id, from, &cwd);
     let new_id = uuid::Uuid::new_v4().to_string();
     let _forking = state.launcher.begin_fork(from, &new_id)?;
     let name = launch::fork_name(&source.name, &new_id);
     let launch = Launch {
-        kind: launch::LaunchKind::Fork { from: from.to_string() },
+        kind: launch::LaunchKind::Fork { from: source.transcript.clone() },
+        source_node: Some(from.to_string()),
         request: LaunchRequest {
             add_dirs,
             ..sheetless_request(&state, &source.project, &new_id, &name)
@@ -2118,10 +2165,10 @@ fn launch_add_dirs(state: &AppState, launch: &Launch) -> Vec<graph::EdgeDir> {
     };
     let from = match &launch.kind {
         launch::LaunchKind::New => vec![project],
-        launch::LaunchKind::Resume { id: source } | launch::LaunchKind::Fork { from: source } => vec![
+        launch::LaunchKind::Resume { .. } | launch::LaunchKind::Fork { .. } => vec![
             graph::NodeRef {
                 kind: graph::NodeType::Session,
-                id: source.clone(),
+                id: launch.source_node.clone().unwrap_or_else(|| launch.session_id.clone()),
             },
             project,
         ],
@@ -2235,8 +2282,9 @@ fn run_launch<R: Runtime>(
     }
     // A fork's link to its original is saved before the spawn, so its node is emitted once,
     // already linked; a link that cannot be saved refuses the fork.
+    // Story 12.1: the card forked from, not the transcript id resumed.
     let fork_of = match &launch.kind {
-        launch::LaunchKind::Fork { from } => Some(from.clone()),
+        launch::LaunchKind::Fork { from } => Some(launch.source_node.clone().unwrap_or_else(|| from.clone())),
         _ => None,
     };
     if let Some(from) = &fork_of

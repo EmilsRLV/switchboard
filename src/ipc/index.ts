@@ -173,6 +173,11 @@ export type SessionRef = {
   position: Position | null;
   /** The session this one was forked from (Story 4.4); `null` for the rest. */
   forkedFrom: string | null;
+  /**
+   * Story 12.1: the ids the session moved to after each `/clear`, oldest first; the last is the
+   * id it runs under now. Absent (and never written) while empty.
+   */
+  clearedInto?: string[];
 };
 
 /** Mirrors `graph::NodeRef`; `folder` is an ad-hoc path target that is not a node. */
@@ -502,6 +507,20 @@ export type ChildNode = {
   hasTranscript: boolean;
   /** A discovered branch's facts (Story 5.1); `null` for sessions and stubs. */
   branch: BranchMeta | null;
+  /** Story 12.1: how many times the session was cleared; 0 (or absent) for the rest. */
+  clearedCount?: number;
+  /** Story 12.1: a cleared session's earlier transcripts, newest first (Earlier transcripts…). */
+  earlier?: EarlierTranscript[];
+  /** Story 12.1: the transcript a cleared session runs under now; `null` (or absent) when never cleared. */
+  currentId?: string | null;
+};
+
+/** Mirrors `graph::EarlierTranscript` (Story 12.1): one transcript in a card's clear chain. */
+export type EarlierTranscript = {
+  id: string;
+  title: string;
+  /** ISO 8601 UTC. */
+  startedAt: string;
 };
 
 /** Mirrors `git::WorktreeChip`: the linked worktree holding a branch. */

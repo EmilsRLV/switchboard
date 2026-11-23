@@ -190,6 +190,12 @@ pub struct SessionRef {
     /// The session this one was forked from (Story 4.4): the canvas draws a thin line between
     /// the two cards. Absent in older files.
     pub forked_from: Option<String>,
+    /// Story 12.1: the ids the session moved to after each `/clear`, oldest first. The card keeps
+    /// `session_id` (its node id) for good; the last entry is the id Claude runs under now
+    /// ([`current_id`]). Absent in older files and left out while empty, so a file without a
+    /// clear is written unchanged.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cleared_into: Vec<String>,
 }
 
 /// A relation drawn between two nodes (Epic 6).
@@ -288,6 +294,26 @@ pub struct ChildNode {
     pub has_transcript: bool,
     /// What a discovered branch card shows (Story 5.1); `None` for sessions and stubs.
     pub branch: Option<BranchMeta>,
+    /// Story 12.1: how many times the session was cleared (its ref's `clearedInto` length); 0
+    /// for the rest.
+    pub cleared_count: usize,
+    /// Story 12.1: a cleared session's earlier transcripts that are discovered (the node's own
+    /// and every chained one but the current), newest first; **Earlier transcripts…** forks one.
+    /// Empty for the rest.
+    pub earlier: Vec<EarlierTranscript>,
+    /// Story 12.1: the transcript a cleared session runs under now (the chain's last id); `None`
+    /// when it was never cleared. The card's Fork names it, so Rust can tell it from the node's
+    /// own (earlier) transcript.
+    pub current_id: Option<String>,
+}
+
+/// One row of **Earlier transcripts…** (Story 12.1): a transcript in a card's clear chain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EarlierTranscript {
+    pub id: String,
+    pub title: String,
+    pub started_at: String,
 }
 
 /// The facts of a discovered branch a card shows (Story 5.1).
@@ -463,7 +489,13 @@ pub fn children_with_worktrees(
     listed: &HashMap<String, Vec<BranchInfo>>,
     known: &KnownWorktrees,
 ) -> Vec<ChildNode> {
-    let discovered_ids: HashSet<&str> = discovered.values().flatten().map(|s| s.id.as_str()).collect();
+    let aliases = alias_table(workspace);
+    // A chained transcript counts as its card's (Story 12.1).
+    let discovered_ids: HashSet<&str> = discovered
+        .values()
+        .flatten()
+        .map(|s| aliases.get(&s.id).map_or(s.id.as_str(), String::as_str))
+        .collect();
     // Live by session id, under whichever project the row's cwd maps to: a transcript under
     // one project and a live row under another still sort that card first.
     let live_ids: HashSet<&str> = live.values().flatten().filter(|l| l.live).map(|l| l.id.as_str()).collect();
@@ -490,32 +522,62 @@ pub fn children_with_worktrees(
                 .then_with(|| b.messages.cmp(&a.messages))
         });
         real.dedup_by(|a, b| a.id == b.id);
+        // Story 12.1: a transcript in a card's clear chain is never a card of its own; the card
+        // (its node id) stands for the whole chain and shows its current transcript.
+        let by_id: HashMap<&str, &SessionSummary> = real.iter().map(|s| (s.id.as_str(), *s)).collect();
+        let mut nodes: Vec<&str> = real.iter().map(|s| aliases.get(&s.id).map_or(s.id.as_str(), String::as_str)).collect();
+        nodes.sort_unstable();
+        nodes.dedup();
 
-        let mut sessions: Vec<ChildNode> = real
+        let mut sessions: Vec<ChildNode> = nodes
             .into_iter()
-            .map(|summary| {
-                let session_ref = session_ref(&summary.id);
-                let worktree_branch = summary.cwd.as_deref().and_then(|cwd| branch_for_cwd(cwd, &mapping));
-                ChildNode {
-                    id: summary.id.clone(),
+            .filter_map(|node| {
+                let session_ref = session_ref(node);
+                let chain: &[String] = session_ref.map(|r| r.cleared_into.as_slice()).unwrap_or_default();
+                let own = by_id.get(node).copied();
+                // The current transcript, else the newest one of the chain that is listed.
+                let current = chain.iter().rev().find_map(|id| by_id.get(id.as_str()).copied()).or(own)?;
+                let worktree_branch = current.cwd.as_deref().and_then(|cwd| branch_for_cwd(cwd, &mapping));
+                let current_id = chain.last().cloned();
+                // Newest first: the chain backwards, past the current id, then the node's own.
+                let earlier = match chain.split_last() {
+                    Some((_, before)) => before
+                        .iter()
+                        .rev()
+                        .map(String::as_str)
+                        .chain(std::iter::once(node))
+                        .filter_map(|id| by_id.get(id))
+                        .map(|s| EarlierTranscript {
+                            id: s.id.clone(),
+                            title: s.title.clone(),
+                            started_at: s.started_at.clone(),
+                        })
+                        .collect(),
+                    None => Vec::new(),
+                };
+                Some(ChildNode {
+                    id: node.to_string(),
                     project_id: project.id.clone(),
                     kind: ChildKind::Session,
                     label: session_ref
                         .and_then(|r| r.label.clone())
-                        .unwrap_or_else(|| summary.title.clone()),
+                        .unwrap_or_else(|| own.unwrap_or(current).title.clone()),
                     detail: None,
                     position: session_ref.and_then(|r| r.position),
                     session: Some(SessionMeta {
-                        started_at: summary.started_at.clone(),
-                        last_active: summary.last_active.clone(),
-                        branch: summary.branch.clone(),
-                        messages: summary.messages,
+                        started_at: own.unwrap_or(current).started_at.clone(),
+                        last_active: current.last_active.clone(),
+                        branch: current.branch.clone(),
+                        messages: current.messages,
                     }),
                     branch_id: worktree_branch.or_else(|| session_ref.and_then(|r| r.branch_id.clone())),
                     forked_from: session_ref.and_then(|r| r.forked_from.clone()),
                     has_transcript: true,
                     branch: None,
-                }
+                    cleared_count: chain.len(),
+                    earlier,
+                    current_id,
+                })
             })
             .collect();
         let mut live_only: Vec<&LiveChild> = live_here.iter().filter(|l| !discovered_ids.contains(l.id.as_str())).collect();
@@ -545,6 +607,9 @@ pub fn children_with_worktrees(
                 forked_from: session_ref.and_then(|r| r.forked_from.clone()),
                 has_transcript: false,
                 branch: None,
+                cleared_count: 0,
+                earlier: Vec::new(),
+                current_id: None,
             });
         }
         // Live first; then pinned; then started-at, not last activity: two running sessions
@@ -574,6 +639,9 @@ pub fn children_with_worktrees(
                 forked_from: None,
                 has_transcript: false,
                 branch: None,
+                cleared_count: 0,
+                earlier: Vec::new(),
+                current_id: None,
             });
         }
         if !project.show_branches {
@@ -592,6 +660,9 @@ pub fn children_with_worktrees(
                 branch_id: None,
                 forked_from: None,
                 has_transcript: false,
+                cleared_count: 0,
+                earlier: Vec::new(),
+                current_id: None,
                 branch: Some(BranchMeta {
                     head: info.head,
                     upstream: info.upstream.clone(),
@@ -684,12 +755,109 @@ pub(crate) fn path_within(path: &str, root: &str) -> bool {
 }
 
 impl SessionRef {
-    /// True when the ref records nothing any more: no label, pin, branch, position or fork
-    /// origin. Such a ref is pruned by [`relayout_children`] (it only ever held a dragged
+    /// True when the ref records nothing any more: no label, pin, branch, position, fork
+    /// origin or clear chain. Such a ref is pruned by [`relayout_children`] (it only ever held a dragged
     /// position).
     pub fn is_bare(&self) -> bool {
-        self.label.is_none() && !self.pinned && self.branch_id.is_none() && self.position.is_none() && self.forked_from.is_none()
+        self.label.is_none()
+            && !self.pinned
+            && self.branch_id.is_none()
+            && self.position.is_none()
+            && self.forked_from.is_none()
+            && self.cleared_into.is_empty()
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// Clear chains (Story 12.1)
+// ---------------------------------------------------------------------------------------
+
+/// Every id a session moved to after `/clear` (each ref's `clearedInto`), mapped to its card's
+/// node id. Wherever Claude's real id shows up (a hook, the poll, discovery, the MCP listing),
+/// it goes through this table; everything keyed by the node id stays as it is.
+pub fn alias_table(workspace: &Workspace) -> HashMap<String, String> {
+    workspace
+        .sessions
+        .iter()
+        .flat_map(|r| r.cleared_into.iter().map(|id| (id.clone(), r.session_id.clone())))
+        .collect()
+}
+
+/// The id session `node` runs under now: the last entry of its chain, or `node` itself when it
+/// was never cleared.
+pub fn current_id(workspace: &Workspace, node: &str) -> String {
+    workspace
+        .sessions
+        .iter()
+        .filter(|r| r.session_id == node)
+        .find_map(|r| r.cleared_into.last().cloned())
+        .unwrap_or_else(|| node.to_string())
+}
+
+/// `id` as a card's node id: a chained id maps to its node, any other id is itself.
+pub fn node_id(workspace: &Workspace, id: &str) -> String {
+    workspace
+        .sessions
+        .iter()
+        .find(|r| r.cleared_into.iter().any(|c| c == id))
+        .map_or_else(|| id.to_string(), |r| r.session_id.clone())
+}
+
+/// Add `new_id` to session `node`'s chain in `workspace` (the pure half of [`record_clear`]). Its
+/// ref is created when it has none, under the project its ref, its discovered transcript
+/// (`discovered`) or the live map (`live_project`) names. False, with nothing changed, when the
+/// id is `node` itself or already in a chain, or no project on the canvas is known.
+pub fn record_clear_in(
+    workspace: &mut Workspace,
+    discovered: &HashMap<String, Vec<SessionSummary>>,
+    node: &str,
+    new_id: &str,
+    live_project: Option<&str>,
+) -> bool {
+    if new_id.trim().is_empty() || new_id == node || alias_table(workspace).contains_key(new_id) {
+        return false;
+    }
+    if let Some(existing) = workspace.sessions.iter_mut().find(|r| r.session_id == node) {
+        existing.cleared_into.push(new_id.to_string());
+        return true;
+    }
+    let project = discovered
+        .iter()
+        .find(|(_, list)| list.iter().any(|s| s.id == node))
+        .map(|(id, _)| id.as_str())
+        .or(live_project)
+        .filter(|id| workspace.projects.iter().any(|p| p.id == *id));
+    let Some(project) = project else {
+        return false;
+    };
+    workspace.sessions.push(SessionRef {
+        session_id: node.to_string(),
+        project_id: project.to_string(),
+        cleared_into: vec![new_id.to_string()],
+        ..SessionRef::default()
+    });
+    true
+}
+
+/// Session `node` was cleared and runs as `new_id` now (Story 12.1): `new_id` joins its chain
+/// ([`record_clear_in`]), the file is written once and `workspace://changed` emitted. A failed
+/// write raises the file banner and keeps the chain in memory; a read-only file changes memory
+/// only. False, with nothing changed, when the id is already known (a repeated event).
+pub fn record_clear<R: Runtime>(app: &AppHandle<R>, node: &str, new_id: &str) -> bool {
+    let state = app.state::<AppState>();
+    // Read before the workspace lock: the live map is never locked inside it.
+    let live_project = state.read_sessions_live().sessions.get(node).and_then(|s| s.project_id.clone());
+    let (target, workspace) = {
+        let mut guard = state.write_workspace();
+        let st = &mut *guard;
+        if !record_clear_in(&mut st.workspace, &st.discovered, node, new_id, live_project.as_deref()) {
+            return false;
+        }
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    persist_and_emit(app, target, &workspace);
+    true
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1621,12 +1789,14 @@ fn canonical_end(workspace: &Workspace, children: &[ChildNode], node: &NodeRef) 
 
 /// Session ids some edge ends on: their refs are kept even when bare, so
 /// [`remove_project`] can still find (and prune) the edge once the session is unlisted.
+/// A chained id (Story 12.1) is never a card, so it keeps no ref alive.
 fn edge_session_ids(workspace: &Workspace) -> HashSet<String> {
+    let aliases = alias_table(workspace);
     workspace
         .edges
         .iter()
         .flat_map(|e| [&e.from, &e.to])
-        .filter(|n| n.kind == NodeType::Session)
+        .filter(|n| n.kind == NodeType::Session && !aliases.contains_key(&n.id))
         .map(|n| n.id.clone())
         .collect()
 }
@@ -1986,15 +2156,22 @@ fn usable(text: &str) -> bool {
 /// session ref's, then the project whose discovered sessions list it), the branch it was started
 /// on with the project that branch is of (the ref's `branchId` without the project prefix) and
 /// its transcript title.
+///
+/// Story 12.1: a chained transcript is not a peer of its own; the card's node id finds its own
+/// transcript, else its current one.
 fn peer_facts(st: &WorkspaceState, session_id: &str) -> (Vec<String>, Option<(String, String)>, Option<String>) {
+    let aliases = alias_table(&st.workspace);
     let session_ref = st.workspace.sessions.iter().find(|s| s.session_id == session_id);
-    let mut projects: Vec<String> = session_ref.map(|s| s.project_id.clone()).into_iter().collect();
-    projects.extend(
+    let current = current_id(&st.workspace, session_id);
+    let listed = |s: &SessionSummary| !aliases.contains_key(&s.id) || s.id == current;
+    let find = |id: &str| {
         st.discovered
             .iter()
-            .find(|(_, list)| list.iter().any(|s| s.id == session_id))
-            .map(|(id, _)| id.clone()),
-    );
+            .find_map(|(project, list)| list.iter().find(|s| s.id == id && (id == session_id || listed(s))).map(|s| (project, s)))
+    };
+    let found = if aliases.contains_key(session_id) { None } else { find(session_id).or_else(|| find(&current)) };
+    let mut projects: Vec<String> = session_ref.map(|s| s.project_id.clone()).into_iter().collect();
+    projects.extend(found.map(|(id, _)| id.clone()));
     let branch = session_ref.and_then(|r| {
         r.branch_id
             .as_deref()
@@ -2002,12 +2179,8 @@ fn peer_facts(st: &WorkspaceState, session_id: &str) -> (Vec<String>, Option<(St
             .filter(|name| !name.is_empty())
             .map(|name| (r.project_id.clone(), name.to_string()))
     });
-    let title = st
-        .discovered
-        .values()
-        .flatten()
-        .find(|s| s.id == session_id)
-        .map(|s| s.title.clone())
+    let title = found
+        .map(|(_, s)| s.title.clone())
         .filter(|t| usable(t) && t != crate::claude::transcript::UNTITLED);
     (projects, branch, title)
 }
@@ -2494,6 +2667,7 @@ mod tests {
                 pinned: true,
                 position: Some(Position { x: 1.0, y: 2.0 }),
                 forked_from: Some("s0".into()),
+                cleared_into: Vec::new(),
             }],
             edges: vec![Edge {
                 id: "e1".into(),
@@ -3386,6 +3560,9 @@ mod tests {
             forked_from: None,
             has_transcript: false,
             branch: None,
+            cleared_count: 0,
+            earlier: Vec::new(),
+            current_id: None,
         };
         assert_eq!(
             serde_json::to_value(&child).unwrap(),
@@ -3393,7 +3570,7 @@ mod tests {
                 "id": "stub-1-p", "projectId": "p", "kind": "session",
                 "label": "session 1", "detail": "stub", "position": null,
                 "session": null, "branchId": null, "forkedFrom": null, "hasTranscript": false,
-                "branch": null
+                "branch": null, "clearedCount": 0, "earlier": [], "currentId": null
             })
         );
         let branch = ChildNode {
@@ -4033,6 +4210,221 @@ mod tests {
         // A relayout keeps the ref: it is not bare.
         let snapshot = relayout_children(app.handle(), "ide").unwrap();
         assert_eq!(snapshot.workspace.sessions.len(), 1);
+    }
+
+    // -- clear chains (Story 12.1) ------------------------------------------------------
+
+    fn cleared(node: &str, project: &str, chain: &[&str]) -> SessionRef {
+        SessionRef {
+            session_id: node.into(),
+            project_id: project.into(),
+            cleared_into: chain.iter().map(|id| id.to_string()).collect(),
+            ..SessionRef::default()
+        }
+    }
+
+    #[test]
+    fn cleared_into_is_left_out_while_empty_and_keeps_a_ref() {
+        let bare = SessionRef { session_id: "s".into(), project_id: "p".into(), ..SessionRef::default() };
+        let json = serde_json::to_value(&bare).unwrap();
+        assert!(json.get("clearedInto").is_none(), "an older file is written unchanged");
+        assert!(bare.is_bare());
+        let chained = cleared("s", "p", &["b"]);
+        assert_eq!(serde_json::to_value(&chained).unwrap()["clearedInto"], serde_json::json!(["b"]));
+        assert!(!chained.is_bare());
+        // Absent in an older file: empty.
+        let parsed: SessionRef = serde_json::from_str(r#"{"sessionId":"s","projectId":"p"}"#).unwrap();
+        assert!(parsed.cleared_into.is_empty());
+    }
+
+    #[test]
+    fn a_0_2_0_files_sessions_are_written_back_unchanged() {
+        let original = serde_json::to_string_pretty(&serde_json::json!({
+            "version": 1,
+            "viewport": { "x": 0.0, "y": 0.0, "zoom": 1.0 },
+            "projects": [],
+            "sessions": [{
+                "sessionId": "s1", "projectId": "p1", "branchId": null, "label": "x", "pinned": true,
+                "position": null, "forkedFrom": null
+            }],
+            "branches": [],
+            "edges": []
+        }))
+        .unwrap();
+        let ws = store::parse(&original).unwrap();
+        let written = serde_json::to_value(&ws).unwrap();
+        assert!(written["sessions"][0].get("clearedInto").is_none());
+        assert_eq!(written["sessions"], serde_json::from_str::<serde_json::Value>(&original).unwrap()["sessions"]);
+    }
+
+    #[test]
+    fn alias_table_current_id_and_node_id_follow_the_chain() {
+        let ws = Workspace {
+            sessions: vec![cleared("A", "p", &["B", "C"]), cleared("X", "p", &[])],
+            ..Workspace::default()
+        };
+        let table = alias_table(&ws);
+        assert_eq!(table.len(), 2);
+        assert_eq!(table["B"], "A");
+        assert_eq!(table["C"], "A");
+        assert_eq!(current_id(&ws, "A"), "C");
+        assert_eq!(current_id(&ws, "X"), "X");
+        assert_eq!(current_id(&ws, "unknown"), "unknown");
+        assert_eq!(node_id(&ws, "B"), "A");
+        assert_eq!(node_id(&ws, "A"), "A");
+        assert_eq!(node_id(&ws, "Z"), "Z");
+    }
+
+    #[test]
+    fn record_clear_in_upserts_the_ref_and_refuses_a_known_id() {
+        let mut ws = Workspace {
+            projects: vec![project_with("a")],
+            ..Workspace::default()
+        };
+        let found = discovered_of("a", vec![summary("A", "2026-10-01T01:00:00.000Z")]);
+        // No ref yet: created under the project its transcript is discovered in.
+        assert!(record_clear_in(&mut ws, &found, "A", "B", None));
+        assert_eq!(ws.sessions, vec![cleared("A", "a", &["B"])]);
+        // A second clear extends the chain; a repeat, the node itself or a blank id: nothing.
+        assert!(record_clear_in(&mut ws, &found, "A", "C", None));
+        assert!(!record_clear_in(&mut ws, &found, "A", "B", None));
+        assert!(!record_clear_in(&mut ws, &found, "A", "A", None));
+        assert!(!record_clear_in(&mut ws, &found, "A", " ", None));
+        assert_eq!(ws.sessions[0].cleared_into, ["B", "C"]);
+        // An existing ref keeps everything else it records.
+        ws.sessions[0].label = Some("mine".into());
+        assert!(record_clear_in(&mut ws, &found, "A", "D", None));
+        assert_eq!(ws.sessions[0].label.as_deref(), Some("mine"));
+        // Live only: the live map's project; no project on the canvas: nothing.
+        assert!(record_clear_in(&mut ws, &HashMap::new(), "L", "L2", Some("a")));
+        assert_eq!(ws.sessions[1], cleared("L", "a", &["L2"]));
+        assert!(!record_clear_in(&mut ws, &HashMap::new(), "E", "E2", Some("gone")));
+        assert!(!record_clear_in(&mut ws, &HashMap::new(), "E", "E2", None));
+        assert_eq!(ws.sessions.len(), 2);
+    }
+
+    #[test]
+    fn a_chain_is_one_card_with_the_current_transcripts_facts_and_its_earlier_ones() {
+        let ws = Workspace {
+            projects: vec![project_with("a")],
+            sessions: vec![SessionRef {
+                position: Some(Position { x: 1.0, y: 2.0 }),
+                forked_from: Some("o".into()),
+                ..cleared("A", "a", &["B", "C"])
+            }],
+            ..Workspace::default()
+        };
+        let at = |id: &str, started: &str, active: &str, messages: u32| SessionSummary {
+            started_at: started.into(),
+            messages,
+            ..summary(id, active)
+        };
+        let found = discovered_of(
+            "a",
+            vec![
+                at("A", "2026-10-01T00:00:00.000Z", "2026-10-01T01:00:00.000Z", 4),
+                at("B", "2026-10-01T02:00:00.000Z", "2026-10-01T03:00:00.000Z", 6),
+                at("C", "2026-10-01T04:00:00.000Z", "2026-10-01T05:00:00.000Z", 1),
+                at("other", "2026-09-01T00:00:00.000Z", "2026-09-01T00:00:00.000Z", 1),
+            ],
+        );
+        let kids = children(&ws, &found, &HashMap::new(), 0);
+        let ids: Vec<&str> = kids.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["A", "other"], "no card for B or C");
+        let card = &kids[0];
+        assert_eq!(card.label, "title A", "the card keeps its title");
+        assert_eq!(card.position, Some(Position { x: 1.0, y: 2.0 }));
+        assert_eq!(card.forked_from.as_deref(), Some("o"));
+        let meta = card.session.as_ref().unwrap();
+        assert_eq!(meta.last_active, "2026-10-01T05:00:00.000Z", "C's summary");
+        assert_eq!(meta.messages, 1);
+        assert_eq!(meta.started_at, "2026-10-01T00:00:00.000Z");
+        assert_eq!(card.cleared_count, 2);
+        assert_eq!(card.current_id.as_deref(), Some("C"));
+        let earlier: Vec<(&str, &str)> = card.earlier.iter().map(|e| (e.id.as_str(), e.title.as_str())).collect();
+        assert_eq!(earlier, [("B", "title B"), ("A", "title A")], "newest first, without the current one");
+        assert!(card.has_transcript);
+        let other = &kids[1];
+        assert_eq!((other.cleared_count, other.earlier.len(), other.current_id.as_deref()), (0, 0, None));
+    }
+
+    #[test]
+    fn a_chained_live_row_is_not_a_second_card_and_a_card_shows_without_its_own_transcript() {
+        let ws = Workspace {
+            projects: vec![project_with("a")],
+            sessions: vec![cleared("A", "a", &["B"])],
+            ..Workspace::default()
+        };
+        // Discovery found only B (A's transcript went): card A, from B.
+        let found = discovered_of("a", vec![summary("B", "2026-10-01T03:00:00.000Z")]);
+        let live = HashMap::from([(
+            "a".to_string(),
+            vec![LiveChild {
+                id: "A".into(),
+                name: None,
+                started_at_ms: None,
+                cwd: "/p/a".into(),
+                live: true,
+            }],
+        )]);
+        let kids = children(&ws, &found, &live, 0);
+        let ids: Vec<&str> = kids.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["A"]);
+        assert_eq!(kids[0].label, "title B");
+        assert!(kids[0].earlier.is_empty(), "A's own transcript is not discovered");
+    }
+
+    #[test]
+    fn chained_ids_keep_no_edge_ref_and_peers_resolve_to_the_card() {
+        let mut ws = Workspace {
+            projects: vec![project_with("a")],
+            sessions: vec![cleared("A", "a", &["B"])],
+            ..Workspace::default()
+        };
+        ws.edges.push(Edge {
+            id: "e".into(),
+            from: NodeRef { kind: NodeType::Session, id: "B".into() },
+            to: NodeRef { kind: NodeType::Session, id: "A".into() },
+            ..Edge::default()
+        });
+        assert_eq!(edge_session_ids(&ws), HashSet::from(["A".to_string()]));
+        let st = WorkspaceState {
+            workspace: ws,
+            discovered: discovered_of("a", vec![summary("B", "2026-10-01T03:00:00.000Z")]),
+            ..WorkspaceState::default()
+        };
+        // The card's facts come from its current transcript; the chained id is not a peer.
+        let (projects, _, title) = peer_facts(&st, "A");
+        assert_eq!(projects, ["a", "a"]);
+        assert_eq!(title.as_deref(), Some("title B"));
+        let (projects, _, title) = peer_facts(&st, "B");
+        assert!(projects.is_empty() && title.is_none());
+    }
+
+    #[test]
+    fn record_clear_writes_once_emits_and_ignores_a_repeat() {
+        let (app, _cfg, path) = app_with_ide(0);
+        set_discovered(app.handle(), discovered_of("ide", vec![summary("A", "2026-10-01T01:00:00.000Z")]));
+        let rx = listen(&app);
+        while rx.try_recv().is_ok() {}
+        assert!(record_clear(app.handle(), "A", "B"));
+        let snapshot = rx.try_recv().expect("workspace://changed");
+        assert_eq!(snapshot.workspace.sessions[0].cleared_into, ["B"]);
+        assert_eq!(on_disk(&path).sessions[0].cleared_into, ["B"]);
+        assert_eq!(snapshot.children.iter().filter(|c| c.kind == ChildKind::Session).count(), 1);
+        assert!(!record_clear(app.handle(), "A", "B"), "a repeated event");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn record_clear_on_a_read_only_file_changes_memory_only() {
+        let (app, _cfg, path) = app_with_ide(0);
+        set_discovered(app.handle(), discovered_of("ide", vec![summary("A", "2026-10-01T01:00:00.000Z")]));
+        let before = std::fs::read_to_string(&path).ok();
+        app.state::<AppState>().write_workspace().read_only = Some("newer schema version");
+        assert!(record_clear(app.handle(), "A", "B"));
+        assert_eq!(std::fs::read_to_string(&path).ok(), before);
+        assert_eq!(app.state::<AppState>().read_workspace().workspace.sessions[0].cleared_into, ["B"]);
     }
 
     // -- session on a branch (Story 5.3) ----------------------------------------------
