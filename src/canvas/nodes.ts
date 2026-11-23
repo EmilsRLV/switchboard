@@ -919,6 +919,8 @@ export function childAriaLabel(
   const unread = unreadText(data.unread ?? 0);
   if (unread !== null) parts.push(unread);
   if (data.forkedFromTitle !== null && data.forkedFromTitle !== undefined) parts.push(forkedFromText(data.forkedFromTitle));
+  const cleared = clearedText(data.child.clearedCount ?? 0);
+  if (cleared !== null) parts.push(cleared);
   if (state === null && data.stopping === true) parts.push(STOPPING_WORD);
   if (data.statusText !== null && data.statusText !== undefined && data.statusText !== "") parts.push(`status: ${data.statusText}`);
   if (data.detail !== null && data.detail !== "") parts.push(`waiting: ${data.detail}`);
@@ -949,6 +951,8 @@ export function sessionCardTitle(
   if (data.statusText !== null && data.statusText !== undefined && data.statusText !== "") lines.push(data.statusText);
   lines.push(sessionHoverText(data.child.label, meta));
   if (data.forkedFromTitle !== null && data.forkedFromTitle !== undefined) lines.push(forkedFromText(data.forkedFromTitle));
+  const cleared = clearedText(data.child.clearedCount ?? 0);
+  if (cleared !== null) lines.push(cleared);
   if (data.lastLine !== null && data.lastLine !== "") lines.push(data.lastLine);
   if (data.attention) lines.push("needs you");
   return lines.join("\n");
@@ -1042,6 +1046,12 @@ export function unreadText(count: number): string | null {
 /** A fork's tooltip and accessible-name part (Story 4.4): `forked from <original title>`. */
 export function forkedFromText(title: string): string {
   return `forked from ${title}`;
+}
+
+/** Story 12.1: a cleared session's line (`cleared 2 times`), after the "forked from" one; `null` when never cleared. */
+export function clearedText(count: number): string | null {
+  if (count <= 0) return null;
+  return `cleared ${count} ${count === 1 ? "time" : "times"}`;
 }
 
 /** One "forked from" line the canvas draws (Story 4.4): between two drawn session cards, by flow id. */

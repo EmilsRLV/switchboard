@@ -1171,3 +1171,34 @@ fn request_review_flags_the_node_lists_the_paths_and_refuses_outside_ones() {
     graph::remove_project(app.handle(), "web").unwrap();
     assert!(state.review.snapshot().is_empty());
 }
+
+/// Story 12.1: a cleared session is one entry under its node id, named by its own transcript,
+/// with the current transcript's activity and place.
+#[test]
+fn a_cleared_session_is_listed_once_under_its_node_id() {
+    let app = fixture();
+    let state = app.state::<AppState>();
+    {
+        let mut ws = state.write_workspace();
+        ws.workspace.sessions.push(graph::SessionRef {
+            session_id: "A".into(),
+            project_id: "api".into(),
+            cleared_into: vec!["B".into()],
+            ..graph::SessionRef::default()
+        });
+        let after_clear = crate::claude::SessionSummary {
+            cwd: Some("/w/api-feat".into()),
+            ..summary("B", "After the clear", "2026-10-22T09:00:00.000Z")
+        };
+        ws.discovered.get_mut("api").unwrap().extend([summary("A", "Before the clear", "2026-10-21T10:00:00.000Z"), after_clear]);
+    }
+    let listed = call(&state, "s1", "sessions", &json!({ "project": "api" })).unwrap();
+    let rows: Vec<&str> = listed["sessions"].as_array().unwrap().iter().map(|s| s["nodeId"].as_str().unwrap()).collect();
+    assert_eq!(rows, ["s1", "A", "old"], "no entry for B");
+    let a = &listed["sessions"][1];
+    assert_eq!(a["name"], "Before the clear");
+    assert_eq!(a["lastActive"], "2026-10-22T09:00:00.000Z");
+    let node = call(&state, "s1", "node", &json!({ "id": "A" })).unwrap();
+    assert_eq!(node["name"], "Before the clear");
+    assert_eq!(node["branch"], "feat", "B's folder: the feat worktree");
+}

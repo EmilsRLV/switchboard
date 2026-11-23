@@ -12,7 +12,6 @@ or a date.
 - **Pop-outs that remember where they were:** a pop-out window opening at its last size and place. Today it
   opens at the default size.
 - **Folders as edge targets:** a context edge to any folder, not only to a project node or a branch node.
-- **Following a cleared session:** after `/clear`, the session node follows the session to its new id.
 - **Attach in terminal:** show a session that was started elsewhere in the terminal pane.
 
 ## Later
@@ -37,7 +36,6 @@ or a date.
   is not yet confirmed. You see the peer line suggest it; Switchboard's own peer messages always work.
 - **A false finished:** when your own Claude Code stop hook keeps a turn going, the session can still show
   `finished` and send a notification while Claude carries on.
-- **After `/clear`:** the session node keeps the old session, so its state stops changing.
 - **Memory with full scrollback:** with many sessions each holding a full scrollback, Switchboard uses more
   memory than its target. Fewer open sessions, or a shorter scrollback, keep it under.
 - **Typing delay:** most keys reach the terminal within the target, but the slowest few take a little longer.

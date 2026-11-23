@@ -204,3 +204,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-11-6-first-run-tour.md`
   summary: Test that mounting the canvas flow calls `tourFirstFrame` (fresh-profile auto-start wiring), and the tour's focus moves and per-frame re-measure, in a DOM test environment.
   evidence: Review found deleting the `tourFirstFrame()` call fails no test; store tests call it by hand. Unverified medium.
+- source_spec: `_bmad-output/implementation-artifacts/spec-12-1-cleared-session-keeps-its-card.md`
+  summary: An unhooked session's in-process `/resume` may be recorded as a `/clear` by the poll's pid+cwd rule, chaining an unrelated conversation into the card.
+  evidence: Unverified (maybe-false, medium if true). Settle by running `claude agents --json --all` before and after an in-process `/resume` in a session started outside Switchboard: if the row keeps its pid and cwd under the resumed id, it is real; a guard would require the new id's transcript to be newly created.

@@ -5,9 +5,11 @@ import { useLaunchStore } from "../state/launch";
 import { useTerminalStore } from "../state/terminals";
 import { useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
+import { usePaletteStore } from "../state/palette";
 import { formFromPrefill } from "./launch";
 import {
   canForkSession,
+  canPickEarlier,
   canResumeSession,
   canShowSessionTerminal,
   canStopSession,
@@ -18,6 +20,8 @@ import {
   removeAddDir,
   resumeSelectedSession,
   startLaunch,
+  startPickEarlier,
+  earlierRowTitle,
   startedNotice,
   stopSelectedSession,
 } from "./sessions";
@@ -426,6 +430,49 @@ describe("resume, fork and stop (Story 4.4)", () => {
     expect([canResumeSession(), canForkSession()]).toEqual([false, false]);
     useUiStore.setState({ selection: { kind: "project", id: "ide" } });
     expect([canResumeSession(), canForkSession(), canStopSession()]).toEqual([false, false, false]);
+  });
+
+  it("Earlier transcripts… is offered only for a cleared session with an earlier transcript; picking one forks it (Story 12.1)", async () => {
+    const cleared: ChildNode = {
+      ...historic,
+      clearedCount: 2,
+      currentId: "c",
+      earlier: [
+        { id: "b", title: "second", startedAt: "2026-10-18T11:00:00.000Z" },
+        { id: "orig", title: "first", startedAt: "2026-10-18T10:00:00.000Z" },
+      ],
+    };
+    // Never cleared, or cleared with no earlier transcript discovered: not offered.
+    expect(canPickEarlier()).toBe(false);
+    expect(startPickEarlier()).toBe(false);
+    const snapshot = workspace(true);
+    useWorkspaceStore.setState({ snapshot: { ...snapshot, children: [{ ...cleared, earlier: [] }, liveOnly] }, loadError: null });
+    expect(canPickEarlier()).toBe(false);
+    useWorkspaceStore.setState({ snapshot: { ...snapshot, children: [cleared, liveOnly] }, loadError: null });
+    expect(canPickEarlier()).toBe(true);
+    useUiStore.setState({ selection: { kind: "project", id: "ide" } });
+    expect(canPickEarlier()).toBe(false);
+    useUiStore.setState({ selection: { kind: "session", id: "orig" } });
+
+    const at = new Date(Date.parse("2026-10-18T11:00:00.000Z")).toLocaleString();
+    expect(earlierRowTitle(cleared.earlier![0]!)).toBe(`${at} — second`);
+    // Nothing to name it by: its short id.
+    for (const title of ["", "  ", "(untitled)"]) {
+      expect(earlierRowTitle({ id: "0123456789abcdef", title, startedAt: "2026-10-18T11:00:00.000Z" }), title).toBe(`${at} — 01234567`);
+    }
+    expect(startPickEarlier()).toBe(true);
+    const pick = usePaletteStore.getState().pick;
+    expect(pick?.items.map((i) => i.id)).toEqual(["b", "orig"]);
+    const invoke = runtime({ session_fork: () => ({ session_id: "fork-1", term: sessionTerm("fork-1"), choices }) });
+    pick?.onPick("orig");
+    await flush();
+    expect(invoke).toHaveBeenCalledWith("session_fork", { projectId: "ide", sessionId: "orig", cols: null, rows: null }, undefined);
+    expect(useUiStore.getState().selection).toEqual({ kind: "session", id: "fork-1" });
+
+    // The card's own Fork forks the transcript it runs under now.
+    useUiStore.setState({ selection: { kind: "session", id: "orig" } });
+    await expect(forkSelectedSession()).resolves.toBe(true);
+    expect(invoke).toHaveBeenLastCalledWith("session_fork", { projectId: "ide", sessionId: "c", cols: null, rows: null }, undefined);
   });
 
   it("Resume starts at once: the old exited terminal is replaced, the node selected, the pane open on it", async () => {

@@ -263,6 +263,10 @@ pub struct LiveMap {
     pub answered: HashMap<String, i64>,
     /// Times the poll overrode a hooked session's state (Settings → Diagnostics).
     pub poll_overrides: u64,
+    /// Story 12.1: `(node id, new id)` for each `/clear` the poll saw ([`detect_clears`]) that
+    /// the workspace has not recorded yet; [`apply_and_emit`] takes them to
+    /// `graph::record_clear`. Memory only.
+    pub clears: Vec<(String, String)>,
 }
 
 /// One session's whole record in the map ([`LiveMap::save`] / [`LiveMap::restore`]).
@@ -379,6 +383,32 @@ impl LiveMap {
                 return Vec::new();
             }
         };
+        // Story 12.1: an id a session moved to after `/clear` is its card's node id here, and a
+        // clear the workspace has not recorded yet (an unhooked session) is found from the pids.
+        let aliases = graph::alias_table(workspace);
+        let mut rows: Vec<LiveRow> = rows
+            .into_iter()
+            .map(|mut row| {
+                if let Some(node) = aliases.get(&row.session_id) {
+                    row.session_id = node.clone();
+                }
+                row
+            })
+            .collect();
+        // A hooked session's clears come from its hooks; a new id the poll pairs with it (an
+        // in-process `/resume`, say) is never a clear.
+        let found: Vec<(String, String)> = detect_clears(&self.sessions, &rows)
+            .into_iter()
+            .filter(|(node, _)| !self.hooked.contains_key(node))
+            .collect();
+        for (node, new_id) in found {
+            for row in rows.iter_mut().filter(|r| r.session_id == new_id) {
+                row.session_id = node.clone();
+            }
+            if !self.clears.contains(&(node.clone(), new_id.clone())) {
+                self.clears.push((node, new_id));
+            }
+        }
         self.app_exited.retain(|_, at| now.saturating_sub(*at) <= APP_EXITED_TTL_MS);
         let mut transitions = Vec::new();
         let mut next: BTreeMap<String, LiveSession> = BTreeMap::new();
@@ -885,6 +915,33 @@ impl LiveMap {
     }
 }
 
+/// The `/clear`s one poll shows (Story 12.1), for sessions no hook reports them for: a row whose
+/// id the map does not know, with the same `pid` and `cwd` as a session the map holds live
+/// (`prev`, by node id) that is missing from this poll, is that session under a new id. Gives
+/// `(node id, new id)` pairs. A row without a `pid` is never a clear, nor is one matching an
+/// exited session (a reused pid) or more than one live session.
+pub fn detect_clears(prev: &BTreeMap<String, LiveSession>, rows: &[LiveRow]) -> Vec<(String, String)> {
+    let polled: HashSet<&str> = rows.iter().map(|r| r.session_id.as_str()).collect();
+    let mut out: Vec<(String, String)> = Vec::new();
+    for row in rows {
+        let Some(pid) = row.pid else {
+            continue;
+        };
+        if prev.contains_key(&row.session_id) || out.iter().any(|(_, new_id)| *new_id == row.session_id) {
+            continue;
+        }
+        let mut matches = prev.iter().filter(|(id, s)| {
+            s.state.is_live() && s.pid == Some(pid) && graph::same_path(&s.cwd, &row.cwd) && !polled.contains(id.as_str())
+        });
+        if let (Some((node, _)), None) = (matches.next(), matches.next())
+            && !out.iter().any(|(taken, _)| taken == node)
+        {
+            out.push((node.clone(), row.session_id.clone()));
+        }
+    }
+    out
+}
+
 /// The state a polled status leaves a session in, given what the map held for it before and
 /// whether it was polled `busy` since it was last `idle` (see [`LiveMap::apply_at`]):
 /// `(state, source, attention_since)`.
@@ -1004,7 +1061,7 @@ pub fn apply_and_emit<R: Runtime>(app: &AppHandle<R>, polled: Result<Vec<LiveRow
         let st = state.read_workspace();
         (st.workspace.clone(), st.worktrees.clone())
     };
-    let (after, mut transitions) = {
+    let (after, mut transitions, clears) = {
         let mut map = state.write_sessions_live();
         let before = map.snapshot();
         let transitions = map.apply_in(polled, &workspace, &known, now_ms());
@@ -1015,8 +1072,13 @@ pub fn apply_and_emit<R: Runtime>(app: &AppHandle<R>, polled: Result<Vec<LiveRow
             emit_live(app, &after);
         }
         graph::set_live_children(app, map.live_children());
-        (after, transitions)
+        (after, transitions, std::mem::take(&mut map.clears))
     };
+    // Story 12.1: the clears the poll found go into their cards' chains, outside the map lock
+    // (one write each; a clear already recorded changes nothing).
+    for (node, new_id) in clears {
+        graph::record_clear(app, &node, &new_id);
+    }
     notify_transitions(app, &mut transitions);
     after
 }
@@ -1065,12 +1127,12 @@ fn notify_transitions<R: Runtime>(app: &AppHandle<R>, transitions: &mut [Transit
                     .as_ref()
                     .and_then(|id| ws.workspace.projects.iter().find(|p| &p.id == id))
                     .map(|p| p.label.clone());
-                transition.title = ws
-                    .discovered
-                    .values()
-                    .flatten()
-                    .find(|s| s.id == transition.session_id)
-                    .map(|s| s.title.clone())
+                // Story 12.1: a cleared session keeps its card's title (its own transcript's),
+                // else its current transcript's.
+                let current = graph::current_id(&ws.workspace, &transition.session_id);
+                let title = |id: &str| ws.discovered.values().flatten().find(|s| s.id == id).map(|s| s.title.clone());
+                transition.title = title(&transition.session_id)
+                    .or_else(|| title(&current))
                     .filter(|t| t != super::transcript::UNTITLED);
             }
         }
@@ -1139,6 +1201,109 @@ mod tests {
             "pid": 40284, "cwd": cwd, "kind": "interactive", "startedAt": 1_791_553_254_656_i64,
             "sessionId": id, "name": format!("name-{id}"), "status": status
         })
+    }
+
+    fn live_row(id: &str, pid: Option<u64>, cwd: &str) -> LiveRow {
+        LiveRow {
+            session_id: id.into(),
+            cwd: cwd.into(),
+            pid,
+            kind: Some("interactive".into()),
+            started_at: None,
+            name: None,
+            status: Some("busy".into()),
+        }
+    }
+
+    #[test]
+    fn a_new_row_with_the_pid_and_cwd_of_a_session_that_dropped_out_is_a_clear() {
+        let ws = workspace_with_ide();
+        let mut map = LiveMap::default();
+        map.apply_at(Ok(vec![live_row("A", Some(7), ide_path())]), &ws, 1);
+        // Unhooked clear: A (pid 7) is gone, B has pid 7 and the same cwd.
+        map.apply_at(Ok(vec![live_row("B", Some(7), ide_path())]), &ws, 2);
+        assert_eq!(map.clears, vec![("A".to_string(), "B".to_string())]);
+        assert!(map.sessions.contains_key("A") && !map.sessions.contains_key("B"), "A's live state continues");
+        assert_eq!(map.sessions["A"].state, SessionState::Busy);
+        assert!(!map.exited.contains("A"));
+    }
+
+    #[test]
+    fn detect_clears_needs_a_live_session_with_the_same_pid_and_cwd_that_dropped_out() {
+        let live = |pid: Option<u64>, cwd: &str, state: SessionState| LiveSession {
+            state,
+            source: StateSource::Poll,
+            pid,
+            kind: None,
+            name: None,
+            project_id: None,
+            cwd: cwd.into(),
+            started_at: None,
+            attention_since: None,
+            last_line: None,
+            detail: None,
+            status_text: None,
+        };
+        let prev: BTreeMap<String, LiveSession> = [("A".to_string(), live(Some(7), ide_path(), SessionState::Idle))].into();
+        assert_eq!(detect_clears(&prev, &[live_row("B", Some(7), ide_path())]), vec![("A".to_string(), "B".to_string())]);
+        // No pid on the row: not a clear.
+        assert!(detect_clears(&prev, &[live_row("B", None, ide_path())]).is_empty());
+        // Another cwd, another pid: not a clear.
+        assert!(detect_clears(&prev, &[live_row("B", Some(7), other_path())]).is_empty());
+        assert!(detect_clears(&prev, &[live_row("B", Some(8), ide_path())]).is_empty());
+        // A still polled: B is a second session in the same process tree, not a clear.
+        assert!(detect_clears(&prev, &[live_row("A", Some(7), ide_path()), live_row("B", Some(7), ide_path())]).is_empty());
+        // Pid reused: A exited in an earlier poll.
+        let exited: BTreeMap<String, LiveSession> = [("A".to_string(), live(Some(7), ide_path(), SessionState::Exited))].into();
+        assert!(detect_clears(&exited, &[live_row("B", Some(7), ide_path())]).is_empty());
+        // Two live sessions with that pid and cwd: ambiguous, not a clear.
+        let two: BTreeMap<String, LiveSession> = [
+            ("A".to_string(), live(Some(7), ide_path(), SessionState::Idle)),
+            ("C".to_string(), live(Some(7), ide_path(), SessionState::Idle)),
+        ]
+        .into();
+        assert!(detect_clears(&two, &[live_row("B", Some(7), ide_path())]).is_empty());
+    }
+
+    #[test]
+    fn the_poll_never_pairs_a_new_id_with_a_hooked_session() {
+        let ws = workspace_with_ide();
+        let mut map = LiveMap::default();
+        map.apply_at(Ok(vec![live_row("A", Some(7), ide_path())]), &ws, 1);
+        map.hooked.insert("A".into(), 0);
+        // Same pid and cwd, A gone: for a hooked session that is its hooks' call (a `/resume`
+        // in the process is not a clear).
+        map.apply_at(Ok(vec![live_row("B", Some(7), ide_path())]), &ws, 2);
+        assert!(map.clears.is_empty());
+        assert!(map.sessions.contains_key("B"));
+    }
+
+    #[test]
+    fn a_pid_reused_after_an_exit_gets_its_own_session() {
+        let ws = workspace_with_ide();
+        let mut map = LiveMap::default();
+        map.apply_at(Ok(vec![live_row("A", Some(7), ide_path())]), &ws, 1);
+        map.apply_at(Ok(vec![]), &ws, 2);
+        map.apply_at(Ok(vec![live_row("B", Some(7), ide_path())]), &ws, 3);
+        assert!(map.clears.is_empty());
+        assert_eq!(map.sessions["A"].state, SessionState::Exited);
+        assert!(map.sessions.contains_key("B"));
+    }
+
+    #[test]
+    fn rows_of_a_chained_id_count_as_their_card() {
+        let mut ws = workspace_with_ide();
+        ws.sessions.push(graph::SessionRef {
+            session_id: "A".into(),
+            project_id: "ide".into(),
+            cleared_into: vec!["B".into(), "C".into()],
+            ..graph::SessionRef::default()
+        });
+        let mut map = LiveMap::default();
+        map.apply_at(Ok(vec![live_row("C", Some(7), ide_path())]), &ws, 1);
+        assert_eq!(map.sessions.keys().collect::<Vec<_>>(), vec!["A"]);
+        assert!(map.clears.is_empty(), "already recorded");
+        assert_eq!(map.live_children()["ide"][0].id, "A");
     }
 
     fn ide_path() -> &'static str {

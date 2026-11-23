@@ -599,12 +599,18 @@ fn mark_review(state: &AppState, id: &str, value: &mut Value) {
 /// The name follows the peers' rule: the live name, else the transcript title, else the
 /// project's label, else the id. The branch is the session ref's, else the branch of the live
 /// cwd (else of the transcript's), else the transcript's last `gitBranch`.
+///
+/// Story 12.1: a cleared session's transcript facts are its current transcript's (else its own),
+/// but its title is its own transcript's first (as its card's label).
 fn facts(ws: &WorkspaceState, heads: &HashMap<String, String>, id: &str, live: Option<&LiveSession>) -> Option<SessionFacts> {
     let session_ref = ws.workspace.sessions.iter().find(|s| s.session_id == id);
-    let discovered = ws
-        .discovered
-        .iter()
-        .find_map(|(pid, list)| list.iter().find(|s| s.id == id).map(|s| (pid.clone(), s)));
+    let current = graph::current_id(&ws.workspace, id);
+    let find = |wanted: &str| {
+        ws.discovered
+            .iter()
+            .find_map(|(pid, list)| list.iter().find(|s| s.id == wanted).map(|s| (pid.clone(), s)))
+    };
+    let discovered = find(&current).or_else(|| find(id));
     if live.is_none() && session_ref.is_none() && discovered.is_none() {
         return None;
     }
@@ -615,8 +621,9 @@ fn facts(ws: &WorkspaceState, heads: &HashMap<String, String>, id: &str, live: O
         .chain(discovered.as_ref().map(|(pid, _)| pid.clone()))
         .find_map(|pid| ws.workspace.projects.iter().find(|p| p.id == pid))
         .cloned();
-    let title = discovered
-        .as_ref()
+    // The card's title: its own transcript's, else the current one's (the card label's rule).
+    let title = find(id)
+        .or_else(|| discovered.clone())
         .map(|(_, s)| s.title.clone())
         .filter(|t| t != crate::claude::transcript::UNTITLED)
         .and_then(|t| usable(&t));
@@ -919,9 +926,12 @@ pub fn sessions(state: &AppState, wanted: &str) -> Result<Value, String> {
         .filter(|(_, s)| s.project_id.as_deref() == Some(project.id.as_str()))
         .map(|(id, _)| id.clone())
         .collect();
+    // Story 12.1: a transcript in a card's clear chain is listed as its card.
+    let aliases = graph::alias_table(&ws.workspace);
     for summary in ws.discovered.get(&project.id).into_iter().flatten() {
-        if !ids.contains(&summary.id) {
-            ids.push(summary.id.clone());
+        let id = aliases.get(&summary.id).unwrap_or(&summary.id);
+        if !ids.contains(id) {
+            ids.push(id.clone());
         }
     }
     let mut list: Vec<SessionFacts> = ids.iter().filter_map(|id| facts(&ws, &heads, id, live.get(id))).collect();

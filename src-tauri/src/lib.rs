@@ -2671,6 +2671,82 @@ mod tests {
         super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
     }
 
+    /// Story 12.1: a `SessionStart` with `source: "clear"` on a launched session's token, through
+    /// the real endpoint, adds the new id to the card's chain, in memory and on disk.
+    #[test]
+    fn a_clear_hook_on_a_launched_sessions_token_records_the_chain() {
+        use super::claude::hooks;
+        use serde_json::json;
+        let (app, webview, dir, folder, sessions) = launch_fixture();
+        let state = app.state::<super::AppState>();
+        let server = hooks::start_on(app.handle(), hooks::bind()).expect("up");
+        let port = state.hooks.port().unwrap();
+        *state.launcher.program.lock().unwrap() = Some(echo_program());
+        let orig = "c1ea7e3f-5b7d-4e8f-9a0b-1c2d3e4f5a6b";
+        let new_id = "c1ea7e40-5b7d-4e8f-9a0b-1c2d3e4f5a6b";
+        let ide = dunce::canonicalize(folder.path()).unwrap().display().to_string();
+        discover(&app, orig, "ide-c1ea", &ide);
+        invoke_with(&webview, "session_resume", InvokeBody::Json(json!({ "projectId": "ide", "sessionId": orig, "cols": 1000, "rows": 40 })))
+            .expect("session_resume");
+        let settings_file = sessions.join(format!("{orig}.settings.json"));
+        let settings: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&settings_file).unwrap()).unwrap();
+        let token = settings["hooks"]["Stop"][0]["hooks"][0]["headers"]["Authorization"].as_str().unwrap().strip_prefix("Bearer ").unwrap().to_string();
+        let body = json!({ "session_id": new_id, "source": "clear" }).to_string();
+        let (status, _) = hooks::tests::http(port, "POST", "/hooks/SessionStart", Some(&token), body.as_bytes());
+        assert_eq!(status, 200);
+        let chain = || {
+            state
+                .read_workspace()
+                .workspace
+                .sessions
+                .iter()
+                .find(|r| r.session_id == orig)
+                .map(|r| r.cleared_into.clone())
+                .unwrap_or_default()
+        };
+        // Recorded off the handler thread.
+        hooks::tests::eventually("the chain", || chain() == [new_id]);
+        // The file is written once the memory holds the chain.
+        let on_disk = || -> Option<serde_json::Value> {
+            let file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("workspace.json")).ok()?).ok()?;
+            file["sessions"].as_array()?.iter().find(|r| r["sessionId"] == orig).map(|r| r["clearedInto"].clone())
+        };
+        hooks::tests::eventually("the chain on disk", || on_disk() == Some(json!([new_id])));
+        let term_id = format!("session:{orig}");
+        state.terms.write(&term_id, b"go\r").unwrap();
+        wait_until(&app, &term_id, "the resume's exit", || {
+            super::pty::tests::strip_escapes(&state.terms.buffer(&term_id).unwrap().data).contains("got=go")
+        });
+        server.abort();
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
+    }
+
+    /// Story 12.1: an unhooked session's clear, seen by two polls (A with pid 7, then B with pid 7
+    /// in the same folder), is written to A's ref, and the map keeps no pending clear.
+    #[test]
+    fn two_polls_record_an_unhooked_clear_on_disk() {
+        let (app, _webview, dir) = app_with_ide();
+        let folder = tempfile::tempdir().unwrap();
+        let cwd = dunce::canonicalize(folder.path()).unwrap().display().to_string();
+        let state = app.state::<super::AppState>();
+        state.write_workspace().workspace.projects[0].path = cwd.clone();
+        let poll = |id: &str| {
+            let rows = serde_json::json!([{ "pid": 7, "cwd": cwd, "sessionId": id, "status": "busy" }]);
+            super::claude::live::apply_and_emit(app.handle(), super::claude::live::parse_rows(&rows.to_string()));
+        };
+        poll("A");
+        poll("B");
+        let refs = state.read_workspace().workspace.sessions.clone();
+        let entry = refs.iter().find(|r| r.session_id == "A").expect("A's ref");
+        assert_eq!(entry.cleared_into, ["B"]);
+        let on_disk: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("workspace.json")).unwrap()).unwrap();
+        let entry = on_disk["sessions"].as_array().unwrap().iter().find(|r| r["sessionId"] == "A").expect("A on disk");
+        assert_eq!(entry["clearedInto"], serde_json::json!(["B"]));
+        let map = state.read_sessions_live();
+        assert!(map.clears.is_empty());
+        assert!(map.sessions.contains_key("A") && !map.sessions.contains_key("B"));
+    }
+
     /// With the endpoint up, a launch that fails after its token was issued (the settings file
     /// cannot be written, or the program cannot start) leaves no token and no hooked mark.
     #[test]
@@ -3000,6 +3076,55 @@ mod tests {
         assert_eq!(state.terms.list().len(), terms_before);
         assert!(state.terms.get(&format!("session:{elsewhere}")).is_none());
         assert_eq!(state.read_sessions_live().sessions[elsewhere], live_before);
+
+        // Story 12.1: a cleared card (chain [B]) resumes B in its own terminal, under its node id;
+        // Fork of the card forks B, Fork of the node id forks the card's first transcript, and
+        // both record the card as `forkedFrom`.
+        let cleared = "b1eared0-5b7d-4e8f-9a0b-1c2d3e4f5a6b";
+        assert!(super::graph::record_clear(app.handle(), orig, cleared));
+        assert_eq!(
+            call("session_resume", json!({ "projectId": "ide", "sessionId": orig })),
+            Err(json!(super::ipc::TRANSCRIPT_NOT_FOUND)),
+            "B's transcript is not discovered"
+        );
+        let mut found = state.read_workspace().discovered.clone();
+        found.get_mut("ide").unwrap().push(super::claude::SessionSummary {
+            id: cleared.into(),
+            title: "after the clear".into(),
+            started_at: "2026-10-18T11:00:00.000Z".into(),
+            last_active: "2026-10-18T11:05:00.000Z".into(),
+            branch: None,
+            messages: 1,
+            cwd: Some(cwd.clone()),
+        });
+        super::graph::set_discovered(app.handle(), found);
+        let snapshot = state.read_workspace().snapshot();
+        assert!(snapshot.children.iter().all(|c| c.id != cleared), "B is not a card of its own");
+        let card = snapshot.children.iter().find(|c| c.id == orig).unwrap();
+        assert_eq!((card.cleared_count, card.current_id.as_deref()), (1, Some(cleared)));
+        let reply = call("session_resume", json!({ "projectId": "ide", "sessionId": orig })).expect("resume of a cleared card");
+        assert_eq!(reply["session_id"], orig);
+        assert_eq!(reply["term"]["id"], term_id.as_str());
+        state.terms.write(&term_id, b"go\r").unwrap();
+        wait_until(&app, &term_id, "the cleared resume's exit", || {
+            state.read_sessions_live().sessions[orig].state == SessionState::Exited
+        });
+        let flat = output(&term_id).replace(['\r', '\n'], "");
+        assert!(flat.contains(&format!("node={orig} got=go")), "{flat}");
+        assert!(flat.contains(&format!("--resume{}{cleared}", if cfg!(windows) { " " } else { "][" })), "resumes B: {flat}");
+        for (from, resumed) in [(cleared, cleared), (orig, orig)] {
+            let reply = call("session_fork", json!({ "projectId": "ide", "sessionId": from })).expect("fork of a cleared card");
+            let new_id = reply["session_id"].as_str().unwrap().to_string();
+            let new_term = format!("session:{new_id}");
+            assert!(state.read_workspace().workspace.sessions.iter().any(|s| s.session_id == new_id && s.forked_from.as_deref() == Some(orig)));
+            state.terms.write(&new_term, b"go\r").unwrap();
+            wait_until(&app, &new_term, "the cleared fork's exit", || {
+                state.read_sessions_live().sessions[&new_id].state == SessionState::Exited
+            });
+            let flat = output(&new_term).replace(['\r', '\n'], "");
+            let sep = if cfg!(windows) { " " } else { "][" };
+            assert!(flat.contains(&format!("--resume{sep}{resumed}{sep}--fork-session")), "forks {resumed}: {flat}");
+        }
 
         // Neither folder there: refused, nothing started.
         drop(recorded);

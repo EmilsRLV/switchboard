@@ -67,6 +67,8 @@ import { canToggleBranches, relayoutChildren, removeProject, setExpanded, toggle
 import {
   canForkSession,
   canNewSessionOnBranch,
+  canPickEarlier,
+  startPickEarlier,
   canPickAddDir,
   canStartLaunch,
   pickAddDir,
@@ -505,7 +507,7 @@ export function builtinCommands(): Command[] {
       id: "session.resume",
       title: "Resume",
       menu: "node",
-      menuOrder: 7,
+      menuOrder: 6,
       toolbar: 1,
       short: "resume",
       when: canResumeSession,
@@ -518,12 +520,23 @@ export function builtinCommands(): Command[] {
       id: "session.fork",
       title: "Fork",
       menu: "node",
-      menuOrder: 8,
+      menuOrder: 7,
       toolbar: 2,
       short: "fork",
       when: canForkSession,
       run: async () => {
         await forkSelectedSession();
+      },
+    },
+    {
+      // Story 12.1: a cleared session's earlier transcripts, newest first; picking one forks it.
+      id: "session.earlier",
+      title: "Earlier transcripts…",
+      menu: "node",
+      menuOrder: 8,
+      when: canPickEarlier,
+      run: () => {
+        startPickEarlier();
       },
     },
     {

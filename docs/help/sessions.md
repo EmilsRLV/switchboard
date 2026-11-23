@@ -23,8 +23,9 @@ selected and the terminal pane opens on it, unless started in the background.
 
 Right-click a session node, or use the palette:
 
-- **Resume** reopens a stopped session with the same id.
+- **Resume** reopens a stopped session in its current conversation.
 - **Fork** copies the conversation into a new session node, joined to the original by a thin line.
+- **Earlier transcripts…** lists the conversations from before each `/clear`; picking one forks it.
 - **Show terminal** opens the terminal pane on it; **Stop** ends a session running here (a second **Stop**
   ends it at once). Sessions started outside Switchboard are never stopped.
 - **Review changes** (`r`) opens the [Review pane](review.md) on its folder.
@@ -41,3 +42,6 @@ glows.
 
 The first line is the session's title, then `N new` and **review** when they apply; the second, its state,
 branch, message count and age. What each means is on [What you see](legend.md#session-states).
+
+After `/clear` a session **keeps its node**, terminal and edges, and its state follows the new conversation.
+Its tooltip says `cleared N times`; **Resume** and **Fork** use the current conversation.
