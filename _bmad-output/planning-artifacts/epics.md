@@ -10,14 +10,16 @@ inputDocuments:
 
 ## Overview
 
-Eleven epics, ordered so that every one ends with something usable on both platforms. Epics 1–4 give a
+Twelve epics, ordered so that every one ends with something usable on both platforms. Epics 1–4 give a
 working "start and watch Claude sessions on a canvas" tool; 5–7 add branches, edges and the
 agent-facing side; 8 adds review; 9 ships it; 10 puts help, the changelog and the roadmap inside the
 app; 11 (added 2026-11-04) makes the app show what it can do: visible controls, hints, figures and a
-first-run tour. Each story cites the PRD requirements it satisfies and becomes a spec in
-`implementation-artifacts/` when picked up.
+first-run tour; 12 (added 2026-11-23) fixes what got in the way in daily use: `/clear`, other coding
+agents, grouping projects and a record of what happened. Each story cites the PRD requirements it
+satisfies and becomes a spec in `implementation-artifacts/` when picked up.
 
-Left out on purpose (see PRD §5): editing, LSP, cloud sessions, macOS, other agents.
+Left out on purpose (see PRD §5): editing, LSP, cloud sessions, macOS, full support for other agents
+(Story 12.2 runs them as basic cards only).
 
 ## Epic List
 
@@ -32,6 +34,7 @@ Left out on purpose (see PRD §5): editing, LSP, cloud sessions, macOS, other ag
 9. Ship it
 10. Help in the app
 11. Learn by looking
+12. Daily use
 
 ---
 
@@ -1048,6 +1051,167 @@ So that I know where things are before I start. (FR-HELP-16, FR-HELP-9, UX princ
 **Given** Finish or Skip
 **When** the tour ends
 **Then** `state.json` records `tour: { done: true }` (schema 3 with Story 11.3's `hints`; a `tour_set` IPC on the `checklist_set` pattern; a version-2 file loads with `done: false`); it never starts on its own again; `tour.start` runs it any time, from the first stop, without writing until it ends; the README's "Where things live" sentence names it; `docs/help/getting-started.md` gains a **The tour** section, DESIGN.md gains the entry, and the changelog's Unreleased records the tour under Help, with one line saying it replaces the earlier "no tour" stance
+
+---
+
+## Epic 12: Daily use
+
+Added 2026-11-23 from the operator's notes after using 0.2.0 day to day. Four things got in the way:
+`/clear` leaves the old card behind and a new one appears, so a project's session list grows with every
+clear; the other coding agents the operator uses, Kimi Code (`kimi.exe`) and Qwen Code (`qwen.exe`), can only
+be run by opening a plain terminal and typing their command, and are invisible on the canvas; with many
+projects on the canvas, related ones cannot be kept together and found at a glance; and when something odd
+happens there is nothing to look back at afterwards. In that order, this epic makes a cleared session keep
+its card, adds basic agent cards for other coding agents, adds project groups, and adds an opt-in activity
+recorder.
+
+**Requirements.** Each story names a new PRD requirement, to be added to the PRD's lists when the story is
+picked up: FR-SESS-11 (following `/clear`), FR-SESS-12 (agent cards), FR-CANVAS-9 (project groups),
+FR-SYS-7 (activity recorder).
+
+**The reversal (Story 12.2).** "Agents other than Claude Code" was Not planned (PRD §5). Decided
+2026-11-23 with the operator: Switchboard starts other agents and shows them as cards with process state
+only. Full support (their history, live state, resume, hooks) stays out.
+
+**The rules that hold.** Every new action is a registry command (palette and bindable, NFR-7) and passes the
+Story 9.4 audit. No network (NFR-8). Switchboard still never writes under `~/.claude`. `workspace.json`
+gains fields only with serde defaults, so older files load and a file from this build loads in 0.2.0 with
+the new fields ignored (the `agentActions` pattern), with no schema bump. Every new look is in DESIGN.md
+and passes the design lint. Each story updates its help page(s), the README section it touches, and
+`CHANGELOG.md`'s Unreleased.
+
+### Story 12.1: A cleared session keeps its card
+
+As the operator,
+I want `/clear` to carry on in the same card,
+So that a project's session list grows only when I start a session, not every time I clear one. (FR-SESS-11; ROADMAP Next "Following a cleared session", Known limitations "After `/clear`")
+
+**Acceptance Criteria:**
+
+**Given** a session launched by Switchboard (it holds a hooks token, Story 4.3)
+**When** a `SessionStart` arrives on its token with a new `session_id` and `source: "clear"` (today `Hooks::check_session_id` in `src-tauri/src/claude/hooks.rs` only records the new id as an alias, and says "following the new id is out of scope")
+**Then** Rust **re-keys** the session from the old id to the new one in one step: the token, the live state, the terminal (its id stays `session:<old id>` internally but resolves from both ids), the session's `sessions[]` entry (label, pinned, position, branch, `forkedFrom`) and every edge end naming it in `workspace.json`, written once and broadcast as one snapshot; the card stays where it was, keeps its label and edges, and its state follows the new id from the next event; a `SessionStart` with any other `source` (`startup`, `resume`, `compact`) changes nothing; a pure `rekey(workspace, old, new)` in `src-tauri/src/graph/` has a test for each kind of field it touches and for an id that appears nowhere
+
+**Given** a session that was **not** launched by Switchboard (no token; seen only through the `claude agents --json --all` poll)
+**When** a poll shows a row with a new session id and the same `pid` (`live.rs` already reads it) and `cwd` as a session in the previous poll, and the old id is gone from the poll
+**Then** the same re-key is applied; with no `pid` in the row, nothing is re-keyed and the card behaves as today; the rule is a pure function over two polls with tests (same pid and cwd → re-key; same pid, different cwd → none; pid reused after exit, old row marked exited in between → none)
+
+**Given** the cleared transcript (the old id)
+**When** the project's children are listed
+**Then** it is not a card of its own: the card's tooltip and the session's row in **Select session** / `ctrl+j` say `cleared N times`, and a new **Earlier transcripts…** command (node menu and palette, `when` the session has any) lists them newest first with their first prompt and time, and Resume on one resumes that transcript as a new session (Story 4.4's Resume, unchanged); `workspace.json` records the chain as `previousIds: string[]` on the `sessions[]` entry, so discovery (Story 3.1) hides those transcripts from the project's list after a restart too; a transcript in `previousIds` that is resumed comes out of the chain and is a card again
+
+**Given** a session cleared before this build (two cards on the canvas today)
+**When** this build starts
+**Then** nothing is merged after the fact; the old cards stay as they are and can be removed as before
+
+**Given** `docs/help/sessions.md`, the README's Sessions and Status sections and `ROADMAP.md`
+**When** this story lands
+**Then** Sessions says a cleared session keeps its card and how to reach earlier transcripts; the README's `/clear` mismatch note in Diagnostics is updated (an announced clear is now followed, not just tolerated); ROADMAP drops the Next item and the Known limitation; the changelog's Unreleased gains it under Sessions
+
+### Story 12.2: Agent cards for other coding agents
+
+As the operator,
+I want to start Kimi Code (`kimi.exe`) and Qwen Code (`qwen.exe`) from a project like a Claude session and see them on the canvas,
+So that I stop opening a plain terminal and typing the command by hand, and can see at a glance which of them are still running. (FR-SESS-12; narrows "Agents other than Claude Code" from Not planned to basic support)
+
+**What "basic" means.** Switchboard starts the program in one of its own terminals and tracks the process,
+nothing more. It does not read the agent's own history, has no hooks or MCP server for it, shows no
+busy / idle / waiting, and offers no resume or fork. Each agent's own formats stay its own business; full
+support for any one of them would be a separate epic.
+
+**Acceptance Criteria:**
+
+**Given** `settings.json`
+**When** it holds `agents` (default `[]`), each `{ "name": string, "command": string, "args": string[], "env": { NAME: value } }` (for example `{ "name": "kimi", "command": "kimi", "args": [] }` and `{ "name": "qwen", "command": "qwen", "args": [] }`)
+**Then** Rust validates them on load (`src-tauri/src/settings/`): a blank name, a duplicate name, or the name `claude` drops that entry with a banner naming it and why; `command` is resolved like `claude.path` (absolute, `~/…`, or a bare name looked up on PATH with `PATHEXT` on Windows), and a `.cmd` / `.bat` is refused on Windows for the same reason as `claude.cmd` (Story 4.2), with the banner naming the file; an env name that is not `[A-Za-z_][A-Za-z0-9_]*`, or one in `PARENT_SESSION_VARS`, drops the entry; a value of the form `${env:NAME}` is read from Switchboard's own environment at start (so a token can stay out of the file), and a missing one refuses the start with `agent <name>: $NAME is not set`; nothing is run at load (no `--version` probe: an agent's flags are unknown); the read-only settings pane lists each agent's name, resolved path and env **names**, never values; tests cover each refusal, PATH and `PATHEXT` resolution, and the `${env:…}` lookup
+
+**Given** a selected project and at least one agent
+**When** I open **New session…** (`n`)
+**Then** the launch sheet (Story 4.2) gains an **Agent** field first: `claude` (today's sheet, unchanged) and each agent by name; picking another agent hides the Claude-only fields (model, effort, permission mode, add-dirs, first prompt) and keeps Name (default `<agent>-<4 hex>`) and Start in background; the project remembers its last agent in `launchDefaults`; with no agents the field is not shown; **New <agent> session** for each agent is also a palette command (`when` a project is selected), bindable
+
+**Given** Start with an agent chosen
+**When** Rust spawns it
+**Then** it runs `<command> <args…>` as separate arguments (never a shell string) in the project folder, in a Switchboard terminal of a new `TermKind::Agent` (`src-tauri/src/pty/mod.rs`), with the inherited environment minus `PARENT_SESSION_VARS`, plus the agent's env, then `TERM`, `COLORTERM` and `SWITCHBOARD_NODE=<node id>`; no settings file, MCP config or system prompt is passed; a start that fails (program gone, spawn error) leaves the sheet open with the reason under Start, as for Claude
+
+**Given** a running agent
+**When** the canvas draws its project
+**Then** it is a child card under the project in the session card's look with the agent's name as a mono chip (DESIGN.md gains the **agent chip**) and a state of `running` or `exited (<code>)` from the process alone; it counts toward the project's `N live`; when it exits while the window is unfocused or the card is not selected, it takes the attention colour and the project glows, as `finished` does (Story 3.3), cleared by selecting it; the card's menu and toolbar offer **term** (show its terminal), **Stop** (Ctrl+C, then Ctrl+C after 300 ms, killed 5 s later; no `/exit`, whose meaning is the agent's own), **Restart** (same command, same terminal tab) and **Remove** (exited cards only); **Link to…** is not offered and the card cannot be an edge's end (its folder is the project's, so a context edge would add nothing, and a cooperate edge needs a peer that reads Switchboard's inbox)
+
+**Given** Switchboard restarts
+**When** the workspace loads
+**Then** agent cards whose process ended while the app was closed are not brought back (there is no history to list); `workspace.json` stores nothing for them beyond a moved card's position, keyed by its node id, dropped when the card is removed
+
+**Given** the MCP server's session listing (Story 7.1)
+**When** a Claude session asks for the canvas
+**Then** agent cards are listed with `kind: "agent"`, the agent name, project and `running` / `exited`, and are refused as targets of `send` and the act tools with `not a Claude session`
+
+**Given** `docs/help/sessions.md` (Starting sessions), the README's Starting sessions and Settings sections, the Terms and What you see pages, and `ROADMAP.md`
+**When** this story lands
+**Then** they describe agents with a `kimi` / `qwen` example, say that literal env values are stored in plain text in `settings.json`, and list what an agent card does not do; ROADMAP's Not planned entry becomes "Full support for agents other than Claude Code (their history, state and resume); a basic card that runs them is in"; the PRD's §5 and the epic overview's "Left out on purpose" say the same; the changelog's Unreleased gains it under Sessions
+
+### Story 12.3: Project groups
+
+As the operator,
+I want to put related projects in a named group that I can move, collapse and spot,
+So that I find a set of projects at a glance on a busy canvas. (FR-CANVAS-9)
+
+**Acceptance Criteria:**
+
+**Given** `workspace.json`
+**When** it gains `groups: [{ id, label, color: string | null, collapsed: boolean, position: Position | null }]` and `Project.groupId: string | null` (both serde defaults, so older files load and a newer file is read by 0.2.0 without the groups)
+**Then** a project belongs to at most one group; removing a project drops it from its group; a group with no projects is deleted; Rust owns every change (`group_create`, `group_rename`, `group_set_color`, `group_collapse`, `group_add`, `group_remove`, each validating ids and writing the file once), with tests per IPC and per refusal
+
+**Given** a project card selected
+**When** I run **Add to group…** (`g`, node menu, toolbar `⋯`, palette)
+**Then** the palette becomes a pick list of the groups by label and `New group…`; a new group asks for a label in the palette (blank refused, control characters stripped, cut to 60 characters, like edge labels) and takes the project's position; **Remove from group** (`when` the project is in one) takes it out and leaves the card where it is
+
+**Given** a group with expanded members
+**When** the canvas draws
+**Then** a **group frame** sits behind its members: a 1-px `--border` rectangle with the bounds of its member cards and their expanded children plus a fixed padding, the label in mono `--text-xs` at its top-left, and the group's colour, when set, as a 2-px left rule only (the accent is never a group colour; the choices are a small fixed set of muted colours that DESIGN.md gains as **group colours**, each passing the lint); dragging the label moves every member together, by one `nodes_move` write; clicking the label selects the group; a member dragged out of the frame stays in the group (the frame grows), and only **Remove from group** takes it out, so a drag never changes membership
+
+**Given** a selected group
+**When** I press Enter (or **Collapse group** / **Expand group**)
+**Then** a collapsed group draws as one **group card** of the project card's size at the frame's top-left: the label, `N projects`, the sum of `N live`, and the attention glow when any member session needs me (Story 3.3's rule over the members); its members and their children are not drawn, and their edges follow the existing hidden-ends rule; `ctrl+j` to a session in a collapsed group expands the group first; the arrow keys visit a group card like a project card; a collapsed group stays collapsed after a restart
+
+**Given** the palette
+**When** I type a group's label
+**Then** **Go to group: <label>** selects and centres it (expanding it is a second Enter); **Rename group…**, **Set group colour…** and **Delete group** (members are kept, no confirmation) are listed while a group is selected
+
+**Given** `docs/help/canvas.md`, `projects.md`, the Terms page, the What you see page, DESIGN.md and the README's Workspace section
+**When** this story lands
+**Then** each names groups where it lists the canvas's pieces (the Terms page gains **Group**, What you see gains the frame and the group card, the `node-anatomy` figure is unchanged); the changelog's Unreleased gains it under Canvas
+
+### Story 12.4: The activity recorder
+
+As the operator,
+I want to turn on a local record of what Switchboard did and saw, and export a time window of it,
+So that when something goes wrong I can hand it to Claude, or read it myself, instead of describing it from memory. (FR-SYS-7)
+
+**Acceptance Criteria:**
+
+**Given** `settings.json`
+**When** it gains `recorder: { "enabled": false, "screenshots": "off" | "on-error" | "interval", "interval_s": 60, "keep_days": 7, "max_mb": 200 }` (defaults as written; `interval_s` at least 15, `keep_days` 1–90, `max_mb` 20–2000, out-of-range values clamped with a banner)
+**Then** nothing is recorded while `enabled` is `false`; **Start recording** / **Stop recording** in the palette toggle it and write `settings.json` (the one setting the app writes besides first-launch detection, said so in the README); while it is on, a small `rec` mark sits in the canvas's top-right corner with `Recording · <folder>` as its tooltip, so it is never on without the operator being able to see it
+
+**Given** the recorder on
+**When** something happens
+**Then** one JSON line is appended to `recordings/<YYYY-MM-DD>.jsonl` under the app's config folder (beside `state.json`): `{ "t": <RFC 3339 with ms>, "kind": …, … }` for app start and stop, session launch, resume, fork, stop, re-key (Story 12.1) and exit (id, project id, name, agent name, the flags passed **without** the prompt text or the system prompt), live-state changes (id, from, to, cause `hook` / `poll`), hook and MCP refusals (the Diagnostics reasons, never a token), edge and group changes (ids, kind, the injection result), banners shown and cleared (their text), notices, IPC errors and caught frontend errors (message and stack, file paths kept); the writer is one Rust task with a bounded channel, so a slow disk drops lines (counted, and the count recorded once it drains) and never blocks the UI or a launch; a test asserts that the event types cannot carry the prompt, the system prompt, env values, terminal output or file contents
+
+**Given** `screenshots` set to `on-error` or `interval`
+**When** an error banner appears (`on-error`) or every `interval_s` while the main window is visible and focused (`interval`)
+**Then** a PNG of the main window's webview (only Switchboard's own window, never the screen) is written to `recordings/<date>/<time>.png` and referenced from a `screenshot` line; terminal panes are drawn blanked in the capture (a mask over every `.terminal` element), because they can show secrets; how the capture is taken (a Tauri / WebView2 capture API or a DOM render) is decided in the spec, and a new dependency for it needs the spec's justification; a capture that fails is one recorded line, never a banner
+
+**Given** recordings older than `keep_days`, or a folder over `max_mb`
+**When** the recorder starts and once an hour
+**Then** the oldest days are deleted first, whole days at a time, only inside `recordings/`
+
+**Given** the palette
+**When** I run **Export recording…**
+**Then** a small sheet asks for a time window (presets: last 15 min, last hour, today, or from–to) and whether to include screenshots, then writes one `.zip` (the JSONL lines in the window, the screenshots they reference, and a `README.txt` naming the app version, the OS and the settings with every `agents` env value removed and every path under the home folder shown as `~`) where the save dialog says; **Open recordings folder** opens the folder; with the recorder never turned on, both say so in a notice
+
+**Given** `docs/help/` (a new **Recording** section on the Settings page), the README's Settings and "Where things live", and `ROADMAP.md`
+**When** this story lands
+**Then** they say what is recorded, what never is, where it is kept, for how long, and that nothing leaves the machine unless the operator sends the export themselves; the changelog's Unreleased gains it under Settings
 
 ---
 
