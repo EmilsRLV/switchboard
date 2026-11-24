@@ -38,6 +38,7 @@ import {
   toggleShowAllOfSelected,
 } from "./navigation";
 import { agentCommands } from "./agents";
+import { groupCommands, watchGroupCommands } from "./groups";
 import { canGoToAttention, goToNextAttention } from "./attention";
 import {
   answerOldest,
@@ -224,6 +225,7 @@ export function builtinCommands(): Command[] {
   return [
     // Story 12.2: the agent card commands.
     ...agentCommands(),
+    ...groupCommands(),
     {
       id: "palette.toggle",
       title: "Toggle command palette",
@@ -1177,5 +1179,11 @@ export function builtinCommands(): Command[] {
 
 /** Register the built-in commands; idempotent (re-registering replaces by id). */
 export function registerBuiltins(): () => void {
-  return registerCommands(builtinCommands());
+  const unregister = registerCommands(builtinCommands());
+  // Story 12.3: one "Go to group: <label>" per group, following the snapshot.
+  const stopGroups = watchGroupCommands();
+  return () => {
+    stopGroups();
+    unregister();
+  };
 }

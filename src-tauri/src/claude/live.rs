@@ -1325,6 +1325,7 @@ mod tests {
                 color: None,
                 launch_defaults: None,
                 show_branches: false,
+                group_id: None,
             }],
             ..Workspace::default()
         }

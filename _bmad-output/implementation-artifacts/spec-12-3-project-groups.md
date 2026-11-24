@@ -2,7 +2,8 @@
 title: 'Story 12.3: Project groups'
 type: 'feature'
 created: '2026-11-24'
-status: 'ready-for-dev'
+status: 'done'
+baseline_commit: 'a75b98843561ff73ca7fca899b1714619bc44dd7'
 route: 'dispatch'
 review_loop_iteration: 0
 context:
@@ -112,12 +113,12 @@ context:
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `src-tauri/src/graph/{mod,store}.rs` -- the data, validation, label and colour rules, the group setters, `move_nodes`, and remove-project pruning; unit tests for each rule.
-- [ ] `src-tauri/src/ipc/mod.rs`, `lib.rs` -- the eight IPCs; one fixture test per IPC and per refusal.
-- [ ] `src/state/palette.ts`, `src/components/Palette.tsx` -- prompt mode, with tests.
-- [ ] `src/ipc/index.ts`, `src/canvas/{nodes.ts,Canvas.tsx,GroupNode.tsx,nodes.css}`, `src/theme/tokens.css` -- the frame, the card and the drag; vitest tests for bounds, collapsed members left out, summed live and attention.
-- [ ] `src/commands/{groups,builtins,navigation,attention}.ts` -- the commands, the runtime Go-to commands, Enter, arrows and reveal; vitest tests including a `ctrl+j` into a collapsed group.
-- [ ] Docs as in the Code Map.
+- [x] `src-tauri/src/graph/{mod,store}.rs` -- the data, validation, label and colour rules, the group setters, `move_nodes`, and remove-project pruning; unit tests for each rule.
+- [x] `src-tauri/src/ipc/mod.rs`, `lib.rs` -- the eight IPCs; one fixture test per IPC and per refusal.
+- [x] `src/state/palette.ts`, `src/components/Palette.tsx` -- prompt mode, with tests.
+- [x] `src/ipc/index.ts`, `src/canvas/{nodes.ts,Canvas.tsx,GroupNode.tsx,nodes.css}`, `src/theme/tokens.css` -- the frame, the card and the drag; vitest tests for bounds, collapsed members left out, summed live and attention.
+- [x] `src/commands/{groups,builtins,navigation,attention}.ts` -- the commands, the runtime Go-to commands, Enter, arrows and reveal; vitest tests including a `ctrl+j` into a collapsed group.
+- [x] Docs as in the Code Map.
 
 **Acceptance Criteria:**
 - Given two groups `web` and `tools`, when the palette is opened and `go to` is typed, then **Go to group: web** and **Go to group: tools** are listed, and after renaming `web` to `site` only the new title is listed.

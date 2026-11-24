@@ -1,7 +1,7 @@
 // Going to the sessions that need the operator (Story 3.3). Two ways in: `attention.next`
 // (`ctrl+j`, the palette) visits the session that has waited longest, and a click on an OS
 // toast (Rust focuses the window and emits `notify://reveal`) reveals that toast's session.
-// Both end the same way: the session's project is expanded when collapsed (persisted, like
+// Both end the same way: the session's group (Story 12.3) and project are expanded when collapsed (persisted, like
 // the chevron), the session is drawn (its project shows all children when it sat past the
 // cut), selected (which acknowledges it: `state/ui`) and panned into view with the arrow
 // keys' reveal. An Elsewhere session's toast opens the Elsewhere tray instead.
@@ -11,6 +11,7 @@ import type { RevealRequest } from "../ipc";
 import { attentionQueue, markAcknowledging, needsAttention, sessionState, unmarkAcknowledging, useLiveStore } from "../state/live";
 import { sameTarget, sendAcknowledge, useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
+import { expandGroupOf } from "./groups";
 import { notify, revealTarget } from "./navigation";
 import { setExpanded } from "./nodes";
 import { openReview } from "./review";
@@ -55,6 +56,8 @@ export async function revealSession(sessionId: string): Promise<boolean> {
     if (acknowledge) unmarkAcknowledging(sessionId);
     return false;
   };
+  // Story 12.3: a member of a collapsed group: the group expands first.
+  if (!(await expandGroupOf(before.projectId))) return fail();
   if (!before.expanded && !(await setExpanded(before.projectId, true))) return fail();
   const after = placement(sessionId);
   if (after === null) return fail();
@@ -87,6 +90,7 @@ export async function revealAgent(id: string): Promise<boolean> {
   if (child === undefined || child.agent?.attention !== true) return false;
   const project = useWorkspaceStore.getState().snapshot?.workspace.projects.find((p) => p.id === child.projectId);
   if (project === undefined) return false;
+  if (!(await expandGroupOf(project.id))) return false;
   if (!project.expanded && !(await setExpanded(project.id, true))) return false;
   if (find() === undefined) return false;
   const ui = useUiStore.getState();

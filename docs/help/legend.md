@@ -1,7 +1,7 @@
 # What you see
 
-What the words, colours and lines on the canvas mean. Hover a session node, a badge or an edge line and
-its tooltip tells its state and what it means.
+What the words, colours and lines on the canvas mean. Hover a node, a badge or an edge line for what it
+means.
 
 ## Session states
 
@@ -15,15 +15,20 @@ glows.
 The session states and what each means.
 ```
 
-A session the poll has not seen this run shows no state: it is a past session, kept as a transcript.
+A session not seen this run shows no state: it is a past session.
 
 ## Agent nodes
 
 An **agent node** is another coding agent (Kimi Code, Qwen Code, …) started from the launch sheet. It reads
 `running`, then `exited (<code>)`, then its **agent chip**: the agent's name. A running agent counts in
 `N live`; one that exits while you are not looking takes the attention colour until you select it.
-**Show terminal**, **Stop**, and once exited **Restart** (same tab) and **Remove** are on its menu. Switchboard
-keeps no history for it, links no edges to it, and forgets it when it restarts.
+**Show terminal**, **Stop**, and once exited **Restart** (same tab) and **Remove** are on its menu. It has no
+history or edges and is forgotten on restart.
+
+## Groups
+
+A **group frame** is a thin line around a group's projects, label top-left; a colour shows as its left
+rule. A **group card** is a collapsed group: label, `N projects`, summed `N live`, and the glow.
 
 ## Colour, glow and badges
 
@@ -33,10 +38,9 @@ keeps no history for it, links no edges to it, and forgets it when it restarts.
   to session that needs you**) selects the session that has waited longest.
 - `N live` on a project node counts its running sessions and agents. While it is collapsed, the number by its
   chevron counts its children.
-- On a session node, `N new` counts unread peer messages and **review** means Claude asks you to look at
-  its work; click it to open the [Review pane](review.md).
-- `elsewhere N` at the bottom left is the Elsewhere tray: live sessions in folders not on the canvas;
-  **Add folder** adds one.
+- On a session node, `N new` counts unread peer messages and **review** means Claude asks for a look;
+  click it to open the [Review pane](review.md).
+- `elsewhere N` at the bottom left is the Elsewhere tray: live sessions in folders off the canvas.
 
 ## Edges
 

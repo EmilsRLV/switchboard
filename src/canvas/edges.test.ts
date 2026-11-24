@@ -243,6 +243,17 @@ describe("linkFlowEdges", () => {
     expect(isEdgeDrawn(edges[0] as Edge, drawnFlowIds([project("a", false), project("b")], children, [], []))).toBe(false);
   });
 
+  it("Story 12.3: a collapsed group's members and their children are not drawn, so edges to them are not", () => {
+    const edges = [edge("e1", ref("session", "s1"), ref("project", "b")), edge("e2", ref("project", "a"), ref("project", "b"))];
+    const grouped = projects.map((p) => (p.id === "a" ? { ...p, groupId: "g" } : p));
+    const expanded = drawnFlowIds(grouped, children, [], [], [{ id: "g", label: "web", color: null, collapsed: false }]);
+    expect(edges.map((e) => isEdgeDrawn(e, expanded))).toEqual([true, true]);
+    const collapsed = drawnFlowIds(grouped, children, [], [], [{ id: "g", label: "web", color: null, collapsed: true }]);
+    expect(collapsed.has("group:g")).toBe(true);
+    expect(collapsed.has("a")).toBe(false);
+    expect(edges.map((e) => isEdgeDrawn(e, collapsed))).toEqual([false, false]);
+  });
+
   it("leaves out an edge whose end is not drawn -- collapsed, cut by the limit, unlisted or a folder -- without touching the list", () => {
     const edges = [
       edge("collapsed", ref("session", "s1"), ref("project", "b")),

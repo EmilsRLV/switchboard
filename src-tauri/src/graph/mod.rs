@@ -66,6 +66,10 @@ pub struct Workspace {
     /// and are written unchanged.
     #[serde(skip_serializing_if = "AgentActions::is_ask")]
     pub agent_actions: AgentActions,
+    /// Story 12.3: the named project groups. Left out of the file while empty, so a file
+    /// without groups is written unchanged and 0.2.0 reads one with them (ignoring the key).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<Group>,
 }
 
 /// The workspace's policy for the agents' act tools (Story 7.2).
@@ -97,6 +101,7 @@ impl Default for Workspace {
             edges: Vec::new(),
             defaults: LaunchDefaults::default(),
             agent_actions: AgentActions::Ask,
+            groups: Vec::new(),
         }
     }
 }
@@ -162,6 +167,23 @@ pub struct Project {
     /// The "branches" toggle (Story 5.1): the project's local branches are listed as branch
     /// children. Off by default and in older files.
     pub show_branches: bool,
+    /// Story 12.3: the [`Group`] this project belongs to (at most one). Absent in older files
+    /// and left out while `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+}
+
+/// A named set of projects (Story 12.3). It has no position of its own: an expanded group's
+/// frame and a collapsed group's card are placed from its members. A group with no members is
+/// deleted.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Group {
+    pub id: String,
+    pub label: String,
+    /// One of [`GROUP_COLORS`], or `None` for no colour.
+    pub color: Option<String>,
+    pub collapsed: bool,
 }
 
 /// A branch node the operator placed under a project (Epic 5). Story 5.1 writes one only when
@@ -1157,6 +1179,7 @@ pub fn add_projects<R: Runtime>(
                 color: None,
                 launch_defaults: None,
                 show_branches: false,
+                group_id: None,
             };
             added.push(project.id.clone());
             st.workspace.projects.push(project);
@@ -1346,69 +1369,129 @@ pub fn move_node<R: Runtime>(app: &AppHandle<R>, target: &NodeTarget, position: 
     }
     let (write_target, workspace) = {
         let mut st = state.write_workspace();
-        match target.kind {
-            NodeKind::Project => {
-                let project = st
-                    .workspace
-                    .projects
-                    .iter_mut()
-                    .find(|p| p.id == target.id)
-                    .ok_or_else(|| "unknown project".to_string())?;
-                project.position = position;
-            }
-            NodeKind::Session => {
-                let project_id = st
-                    .children()
-                    .into_iter()
-                    .find(|c| c.kind == ChildKind::Session && c.id == target.id)
-                    .map(|c| c.project_id)
-                    .ok_or_else(|| "unknown session".to_string())?;
-                // Both fields, exactly as `children()` matches a ref to its child: a same-id ref
-                // under another project (hand-edited file) must not take the position.
-                match st
-                    .workspace
-                    .sessions
-                    .iter_mut()
-                    .find(|s| s.session_id == target.id && s.project_id == project_id)
-                {
-                    Some(existing) => existing.position = Some(position),
-                    None => st.workspace.sessions.push(SessionRef {
-                        session_id: target.id.clone(),
-                        project_id,
-                        position: Some(position),
-                        ..SessionRef::default()
-                    }),
-                }
-            }
-            NodeKind::Branch => {
-                let (project_id, name) = st
-                    .children()
-                    .into_iter()
-                    .find(|c| c.kind == ChildKind::Branch && c.id == target.id)
-                    .map(|c| (c.project_id, c.label))
-                    .ok_or_else(|| "unknown branch".to_string())?;
-                match st
-                    .workspace
-                    .branches
-                    .iter_mut()
-                    .find(|b| b.project_id == project_id && b.name == name)
-                {
-                    Some(existing) => existing.position = Some(position),
-                    None => st.workspace.branches.push(BranchNode {
-                        id: target.id.clone(),
-                        project_id,
-                        name,
-                        worktree_path: None,
-                        position: Some(position),
-                    }),
-                }
-            }
-            NodeKind::Agent => unreachable!("handled above"),
-        }
+        place_node(&mut st, target, position)?;
         st.revision += 1;
         (st.write_target(), st.workspace.clone())
     };
     Ok(persist_and_emit(app, write_target, &workspace))
+}
+
+/// Store one dropped position in the workspace (a project, session or branch; never an agent,
+/// whose positions are memory only). An unknown node is an `Err` and nothing changes.
+fn place_node(st: &mut WorkspaceState, target: &NodeTarget, position: Position) -> Result<(), String> {
+    match target.kind {
+        NodeKind::Project => {
+            let project = st
+                .workspace
+                .projects
+                .iter_mut()
+                .find(|p| p.id == target.id)
+                .ok_or_else(|| "unknown project".to_string())?;
+            project.position = position;
+        }
+        NodeKind::Session => {
+            let project_id = st
+                .children()
+                .into_iter()
+                .find(|c| c.kind == ChildKind::Session && c.id == target.id)
+                .map(|c| c.project_id)
+                .ok_or_else(|| "unknown session".to_string())?;
+            // Both fields, exactly as `children()` matches a ref to its child: a same-id ref
+            // under another project (hand-edited file) must not take the position.
+            match st
+                .workspace
+                .sessions
+                .iter_mut()
+                .find(|s| s.session_id == target.id && s.project_id == project_id)
+            {
+                Some(existing) => existing.position = Some(position),
+                None => st.workspace.sessions.push(SessionRef {
+                    session_id: target.id.clone(),
+                    project_id,
+                    position: Some(position),
+                    ..SessionRef::default()
+                }),
+            }
+        }
+        NodeKind::Branch => {
+            let (project_id, name) = st
+                .children()
+                .into_iter()
+                .find(|c| c.kind == ChildKind::Branch && c.id == target.id)
+                .map(|c| (c.project_id, c.label))
+                .ok_or_else(|| "unknown branch".to_string())?;
+            match st
+                .workspace
+                .branches
+                .iter_mut()
+                .find(|b| b.project_id == project_id && b.name == name)
+            {
+                Some(existing) => existing.position = Some(position),
+                None => st.workspace.branches.push(BranchNode {
+                    id: target.id.clone(),
+                    project_id,
+                    name,
+                    worktree_path: None,
+                    position: Some(position),
+                }),
+            }
+        }
+        NodeKind::Agent => return Err("unknown agent".to_string()),
+    }
+    Ok(())
+}
+
+/// One entry of [`move_nodes`]: a node and where it was dropped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeMove {
+    pub target: NodeTarget,
+    pub position: Position,
+}
+
+/// Store several dropped positions at once (`workspace_move_nodes`, Story 12.3: a group's
+/// members moved together), written once. Every position must be finite and every target a
+/// known node, or nothing moves. Agent cards (memory only) are moved after the workspace.
+pub fn move_nodes<R: Runtime>(app: &AppHandle<R>, moves: &[NodeMove]) -> Result<WorkspaceSnapshot, String> {
+    if moves.iter().any(|m| !(m.position.x.is_finite() && m.position.y.is_finite())) {
+        return Err("position is not finite".to_string());
+    }
+    let state = app.state::<AppState>();
+    let agents: Vec<(String, Position)> = moves
+        .iter()
+        .filter(|m| m.target.kind == NodeKind::Agent)
+        .map(|m| (m.target.id.clone(), m.position))
+        .collect();
+    let written = {
+        let mut st = state.write_workspace();
+        let backup = st.workspace.clone();
+        let mut placed = false;
+        for m in moves.iter().filter(|m| m.target.kind != NodeKind::Agent) {
+            if let Err(err) = place_node(&mut st, &m.target, m.position) {
+                st.workspace = backup;
+                return Err(err);
+            }
+            placed = true;
+        }
+        // The agent cards last, all or none, before anything is committed: a refusal here puts
+        // the workspace back, so nothing has moved.
+        if !agents.is_empty()
+            && let Err(err) = state.agents.set_positions(&agents)
+        {
+            st.workspace = backup;
+            return Err(err);
+        }
+        if placed {
+            st.revision += 1;
+            Some((st.write_target(), st.workspace.clone()))
+        } else {
+            None
+        }
+    };
+    let mut snapshot = written.map(|(target, workspace)| persist_and_emit(app, target, &workspace));
+    if !agents.is_empty() {
+        snapshot = Some(crate::agents::sync(app));
+    }
+    Ok(snapshot.unwrap_or_else(|| state.read_workspace().snapshot()))
 }
 
 /// Record a branch the operator just gave a worktree (Story 5.2, after `git worktree add`):
@@ -1767,6 +1850,8 @@ pub fn remove_project<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Resul
         st.workspace.projects.retain(|p| p.id != project_id);
         st.workspace.sessions.retain(|s| s.project_id != project_id);
         st.workspace.branches.retain(|b| b.project_id != project_id);
+        // Story 12.3: its group goes too if it was the last member.
+        prune_empty_groups(&mut st.workspace);
         st.branches.remove(project_id);
         st.branch_errors.remove(project_id);
         st.worktrees.remove(project_id);
@@ -1778,6 +1863,170 @@ pub fn remove_project<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Resul
     // Story 7.4: and their review requests.
     crate::review::forget_sessions(app, removed.iter().map(String::as_str));
     Ok(persist_and_emit(app, target, &workspace))
+}
+
+// ---------------------------------------------------------------------------------------
+// Groups (Story 12.3): named sets of projects, owned here like every other mutation
+// ---------------------------------------------------------------------------------------
+
+/// The longest group label stored, in characters.
+pub const MAX_GROUP_LABEL_CHARS: usize = 60;
+/// The group colours (tokens `--group-<name>`); the accent is never one.
+pub const GROUP_COLORS: [&str; 5] = ["slate", "sage", "sand", "rose", "sky"];
+/// Refusal: a group label that is blank once normalised.
+pub const REFUSE_GROUP_LABEL_BLANK: &str = "group label is blank";
+/// Refusal: a colour outside [`GROUP_COLORS`].
+pub const REFUSE_GROUP_COLOR: &str = "unknown group colour";
+/// Refusal: no group has this id.
+pub const REFUSE_UNKNOWN_GROUP: &str = "unknown group";
+
+/// A group label as stored ([`normalise_label`] cut to [`MAX_GROUP_LABEL_CHARS`]), or the
+/// blank-label refusal.
+pub fn normalise_group_label(label: &str) -> Result<String, String> {
+    normalise_label(label, MAX_GROUP_LABEL_CHARS).ok_or_else(|| REFUSE_GROUP_LABEL_BLANK.to_string())
+}
+
+/// Drop every group no project belongs to.
+fn prune_empty_groups(workspace: &mut Workspace) {
+    let used: HashSet<String> = workspace.projects.iter().filter_map(|p| p.group_id.clone()).collect();
+    workspace.groups.retain(|g| used.contains(&g.id));
+}
+
+/// The shared shape of the group setters: run `change` on the workspace under the lock; when it
+/// reports a change, bump the revision, write once and emit. `change` must validate before it
+/// mutates, so an `Err` leaves nothing changed.
+fn mutate_workspace<R: Runtime>(app: &AppHandle<R>, change: impl FnOnce(&mut Workspace) -> Result<bool, String>) -> Result<WorkspaceSnapshot, String> {
+    let state = app.state::<AppState>();
+    let (target, workspace) = {
+        let mut st = state.write_workspace();
+        if !change(&mut st.workspace)? {
+            return Ok(st.snapshot());
+        }
+        st.revision += 1;
+        (st.write_target(), st.workspace.clone())
+    };
+    Ok(persist_and_emit(app, target, &workspace))
+}
+
+fn project_index(workspace: &Workspace, project_id: &str) -> Result<usize, String> {
+    workspace
+        .projects
+        .iter()
+        .position(|p| p.id == project_id)
+        .ok_or_else(|| "unknown project".to_string())
+}
+
+fn group_index(workspace: &Workspace, group_id: &str) -> Result<usize, String> {
+    workspace
+        .groups
+        .iter()
+        .position(|g| g.id == group_id)
+        .ok_or_else(|| REFUSE_UNKNOWN_GROUP.to_string())
+}
+
+/// Make a group labelled `label` holding `project_id` (`group_create`), taking the project out
+/// of its old group (deleted if that leaves it empty). Replies with the snapshot; the new group
+/// is the project's `groupId`.
+pub fn create_group<R: Runtime>(app: &AppHandle<R>, label: &str, project_id: &str) -> Result<WorkspaceSnapshot, String> {
+    let label = normalise_group_label(label)?;
+    mutate_workspace(app, |ws| {
+        let index = project_index(ws, project_id)?;
+        let id = uuid::Uuid::new_v4().to_string();
+        ws.groups.push(Group {
+            id: id.clone(),
+            label,
+            color: None,
+            collapsed: false,
+        });
+        ws.projects[index].group_id = Some(id);
+        prune_empty_groups(ws);
+        Ok(true)
+    })
+}
+
+/// Move `project_id` into `group_id` (`group_add`); its old group is deleted if that leaves it
+/// empty. Already a member: nothing changes.
+pub fn add_to_group<R: Runtime>(app: &AppHandle<R>, group_id: &str, project_id: &str) -> Result<WorkspaceSnapshot, String> {
+    mutate_workspace(app, |ws| {
+        let index = project_index(ws, project_id)?;
+        group_index(ws, group_id)?;
+        if ws.projects[index].group_id.as_deref() == Some(group_id) {
+            return Ok(false);
+        }
+        ws.projects[index].group_id = Some(group_id.to_string());
+        prune_empty_groups(ws);
+        Ok(true)
+    })
+}
+
+/// Take `project_id` out of its group (`group_remove`); the group is deleted if it is now
+/// empty. The project's position is kept. Not in a group: nothing changes.
+pub fn remove_from_group<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Result<WorkspaceSnapshot, String> {
+    mutate_workspace(app, |ws| {
+        let index = project_index(ws, project_id)?;
+        if ws.projects[index].group_id.take().is_none() {
+            return Ok(false);
+        }
+        prune_empty_groups(ws);
+        Ok(true)
+    })
+}
+
+/// Rename a group (`group_rename`) under the label rules; the same label again changes nothing.
+pub fn rename_group<R: Runtime>(app: &AppHandle<R>, group_id: &str, label: &str) -> Result<WorkspaceSnapshot, String> {
+    let label = normalise_group_label(label)?;
+    mutate_workspace(app, |ws| {
+        let index = group_index(ws, group_id)?;
+        let group = &mut ws.groups[index];
+        if group.label == label {
+            return Ok(false);
+        }
+        group.label = label;
+        Ok(true)
+    })
+}
+
+/// Set or clear a group's colour (`group_set_color`); anything outside [`GROUP_COLORS`] is
+/// refused.
+pub fn set_group_color<R: Runtime>(app: &AppHandle<R>, group_id: &str, color: Option<&str>) -> Result<WorkspaceSnapshot, String> {
+    if color.is_some_and(|c| !GROUP_COLORS.contains(&c)) {
+        return Err(REFUSE_GROUP_COLOR.to_string());
+    }
+    let color = color.map(str::to_string);
+    mutate_workspace(app, |ws| {
+        let index = group_index(ws, group_id)?;
+        let group = &mut ws.groups[index];
+        if group.color == color {
+            return Ok(false);
+        }
+        group.color = color;
+        Ok(true)
+    })
+}
+
+/// Collapse or expand a group (`group_collapse`); kept across restarts.
+pub fn set_group_collapsed<R: Runtime>(app: &AppHandle<R>, group_id: &str, collapsed: bool) -> Result<WorkspaceSnapshot, String> {
+    mutate_workspace(app, |ws| {
+        let index = group_index(ws, group_id)?;
+        let group = &mut ws.groups[index];
+        if group.collapsed == collapsed {
+            return Ok(false);
+        }
+        group.collapsed = collapsed;
+        Ok(true)
+    })
+}
+
+/// Delete a group (`group_delete`); its members stay on the canvas as plain projects.
+pub fn delete_group<R: Runtime>(app: &AppHandle<R>, group_id: &str) -> Result<WorkspaceSnapshot, String> {
+    mutate_workspace(app, |ws| {
+        let index = group_index(ws, group_id)?;
+        ws.groups.remove(index);
+        for project in ws.projects.iter_mut().filter(|p| p.group_id.as_deref() == Some(group_id)) {
+            project.group_id = None;
+        }
+        Ok(true)
+    })
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2062,25 +2311,35 @@ pub fn remove_session_ref<R: Runtime>(app: &AppHandle<R>, session_id: &str, proj
 /// The longest label stored, in characters.
 pub const MAX_EDGE_LABEL_CHARS: usize = 200;
 
-/// A label as stored: every run of control characters (newlines, tabs, ...) becomes one space,
-/// then it is trimmed and cut to [`MAX_EDGE_LABEL_CHARS`] characters; `None` when that leaves
-/// nothing.
+/// An edge label as stored: [`normalise_label`] cut to [`MAX_EDGE_LABEL_CHARS`].
 pub fn normalise_edge_label(label: Option<&str>) -> Option<String> {
-    let raw = label?;
+    normalise_label(label?, MAX_EDGE_LABEL_CHARS)
+}
+
+/// A label as stored: every run of control characters (newlines, tabs, ...), together with the
+/// whitespace touching it, becomes one space (`web\u{7} apps` reads `web apps`), then it is
+/// trimmed and cut to `max` characters; `None` when that leaves nothing. Whitespace elsewhere
+/// is kept as typed.
+pub fn normalise_label(raw: &str, max: usize) -> Option<String> {
     let mut clean = String::with_capacity(raw.len());
     let mut in_control = false;
     for c in raw.chars() {
         if c.is_control() {
             if !in_control {
+                while clean.ends_with(char::is_whitespace) {
+                    clean.pop();
+                }
                 clean.push(' ');
             }
             in_control = true;
+        } else if in_control && c.is_whitespace() {
+            // Taken into the run's one space.
         } else {
             clean.push(c);
             in_control = false;
         }
     }
-    let cut: String = clean.trim().chars().take(MAX_EDGE_LABEL_CHARS).collect();
+    let cut: String = clean.trim().chars().take(max).collect();
     let cut = cut.trim_end();
     (!cut.is_empty()).then(|| cut.to_string())
 }
@@ -2754,6 +3013,7 @@ mod tests {
                     ..LaunchDefaults::default()
                 }),
                 show_branches: true,
+                group_id: None,
             }],
             branches: vec![BranchNode {
                 id: "b1".into(),
@@ -6008,5 +6268,171 @@ mod tests {
         let ids: Vec<String> = with_agents(&ws, children.clone(), &agents).into_iter().map(|c| c.id).collect();
         assert_eq!(ids, ["a1", "s1", "a2", "s2"]);
         assert_eq!(with_agents(&ws, children.clone(), &[]), children);
+    }
+
+    // -- groups (Story 12.3) ------------------------------------------------------------
+
+    /// `app_with_ide` plus a second project `web`.
+    fn app_with_two() -> (tauri::App<MockRuntime>, tempfile::TempDir, PathBuf) {
+        let (app, cfg, path) = app_with_ide(0);
+        app.state::<AppState>().write_workspace().workspace.projects.push(project_with("web"));
+        (app, cfg, path)
+    }
+
+    fn group_of(app: &tauri::App<MockRuntime>, project_id: &str) -> Option<String> {
+        let state = app.state::<AppState>();
+        let st = state.read_workspace();
+        st.workspace.projects.iter().find(|p| p.id == project_id).and_then(|p| p.group_id.clone())
+    }
+
+    #[test]
+    fn normalise_label_takes_a_max_and_group_labels_are_cut_to_sixty() {
+        assert_eq!(normalise_label("  web\u{7} apps ", 60), Some("web apps".to_string()));
+        assert_eq!(normalise_label("abcdef", 3), Some("abc".to_string()));
+        assert_eq!(normalise_group_label(&"x".repeat(80)).unwrap().chars().count(), MAX_GROUP_LABEL_CHARS);
+        assert_eq!(normalise_group_label(" \t\n "), Err(REFUSE_GROUP_LABEL_BLANK.to_string()));
+        assert_eq!(MAX_GROUP_LABEL_CHARS, 60);
+    }
+
+    #[test]
+    fn create_group_makes_a_group_holding_the_project_written_once() {
+        let (app, _cfg, path) = app_with_two();
+        let rx = listen(&app);
+        let snapshot = create_group(app.handle(), "  web\u{7} apps ", "ide").unwrap();
+        assert_eq!(snapshot.workspace.groups.len(), 1);
+        let group = &snapshot.workspace.groups[0];
+        assert_eq!((group.label.as_str(), group.color.as_deref(), group.collapsed), ("web apps", None, false));
+        assert_eq!(snapshot.workspace.projects[0].group_id.as_deref(), Some(group.id.as_str()));
+        assert_eq!(snapshot.revision, 1);
+        assert_eq!(on_disk(&path).groups, snapshot.workspace.groups);
+        assert_eq!(rx.try_recv().expect("one event"), snapshot);
+        assert!(rx.try_recv().is_err(), "exactly one");
+    }
+
+    #[test]
+    fn create_group_refuses_a_blank_label_or_unknown_project_without_writing() {
+        let (app, _cfg, path) = app_with_two();
+        let rx = listen(&app);
+        assert_eq!(create_group(app.handle(), "   ", "ide"), Err("group label is blank".to_string()));
+        assert_eq!(create_group(app.handle(), "web", "nope"), Err("unknown project".to_string()));
+        assert!(rx.try_recv().is_err());
+        assert!(on_disk(&path).groups.is_empty());
+        assert_eq!(app.state::<AppState>().read_workspace().revision, 0);
+    }
+
+    #[test]
+    fn add_to_group_moves_a_project_and_deletes_its_emptied_old_group() {
+        let (app, _cfg, _path) = app_with_two();
+        create_group(app.handle(), "one", "ide").unwrap();
+        let g1 = group_of(&app, "ide").unwrap();
+        create_group(app.handle(), "two", "web").unwrap();
+        let g2 = group_of(&app, "web").unwrap();
+        let snapshot = add_to_group(app.handle(), &g2, "ide").unwrap();
+        assert_eq!(group_of(&app, "ide"), Some(g2.clone()));
+        let ids: Vec<&str> = snapshot.workspace.groups.iter().map(|g| g.id.as_str()).collect();
+        assert_eq!(ids, [g2.as_str()], "{g1} deleted");
+        // Already a member: nothing changes.
+        let revision = snapshot.revision;
+        assert_eq!(add_to_group(app.handle(), &g2, "ide").unwrap().revision, revision);
+        assert_eq!(add_to_group(app.handle(), "ghost", "ide"), Err("unknown group".to_string()));
+        assert_eq!(add_to_group(app.handle(), &g2, "nope"), Err("unknown project".to_string()));
+    }
+
+    #[test]
+    fn remove_from_group_keeps_the_position_and_deletes_an_emptied_group() {
+        let (app, _cfg, path) = app_with_two();
+        create_group(app.handle(), "one", "ide").unwrap();
+        let g = group_of(&app, "ide").unwrap();
+        add_to_group(app.handle(), &g, "web").unwrap();
+        let snapshot = remove_from_group(app.handle(), "web").unwrap();
+        assert_eq!(snapshot.workspace.groups.len(), 1, "ide still in it");
+        let snapshot = remove_from_group(app.handle(), "ide").unwrap();
+        assert!(snapshot.workspace.groups.is_empty());
+        assert_eq!(snapshot.workspace.projects[0].position, Position::default());
+        assert!(on_disk(&path).groups.is_empty());
+        let revision = snapshot.revision;
+        assert_eq!(remove_from_group(app.handle(), "ide").unwrap().revision, revision, "not in a group: no change");
+        assert_eq!(remove_from_group(app.handle(), "nope"), Err("unknown project".to_string()));
+    }
+
+    #[test]
+    fn rename_colour_collapse_and_delete_validate_and_write() {
+        let (app, _cfg, path) = app_with_two();
+        create_group(app.handle(), "web", "ide").unwrap();
+        let g = group_of(&app, "ide").unwrap();
+
+        let snapshot = rename_group(app.handle(), &g, " site\n").unwrap();
+        assert_eq!(snapshot.workspace.groups[0].label, "site");
+        assert_eq!(rename_group(app.handle(), &g, " "), Err("group label is blank".to_string()));
+        assert_eq!(rename_group(app.handle(), "ghost", "x"), Err("unknown group".to_string()));
+
+        let snapshot = set_group_color(app.handle(), &g, Some("sage")).unwrap();
+        assert_eq!(snapshot.workspace.groups[0].color.as_deref(), Some("sage"));
+        assert_eq!(set_group_color(app.handle(), &g, Some("#ff0000")), Err("unknown group colour".to_string()));
+        assert_eq!(set_group_color(app.handle(), &g, Some("accent")), Err("unknown group colour".to_string()));
+        assert_eq!(set_group_color(app.handle(), "ghost", None), Err("unknown group".to_string()));
+        assert_eq!(on_disk(&path).groups[0].color.as_deref(), Some("sage"));
+        let snapshot = set_group_color(app.handle(), &g, None).unwrap();
+        assert_eq!(snapshot.workspace.groups[0].color, None);
+
+        let snapshot = set_group_collapsed(app.handle(), &g, true).unwrap();
+        assert!(snapshot.workspace.groups[0].collapsed);
+        assert!(on_disk(&path).groups[0].collapsed, "survives a restart");
+        assert_eq!(set_group_collapsed(app.handle(), "ghost", true), Err("unknown group".to_string()));
+
+        let snapshot = delete_group(app.handle(), &g).unwrap();
+        assert!(snapshot.workspace.groups.is_empty());
+        assert_eq!(snapshot.workspace.projects.len(), 2, "members kept");
+        assert!(snapshot.workspace.projects.iter().all(|p| p.group_id.is_none()));
+        assert_eq!(delete_group(app.handle(), &g), Err("unknown group".to_string()));
+    }
+
+    #[test]
+    fn move_nodes_moves_every_target_in_one_write_or_nothing() {
+        let (app, _cfg, path) = app_with_two();
+        let rx = listen(&app);
+        let at = |id: &str, x: f64, y: f64| NodeMove {
+            target: NodeTarget {
+                kind: NodeKind::Project,
+                id: id.into(),
+            },
+            position: Position { x, y },
+        };
+        let snapshot = move_nodes(app.handle(), &[at("ide", 50.0, 20.0), at("web", 150.0, 20.0)]).unwrap();
+        assert_eq!(snapshot.revision, 1);
+        let positions: Vec<Position> = on_disk(&path).projects.iter().map(|p| p.position).collect();
+        assert_eq!(positions, [Position { x: 50.0, y: 20.0 }, Position { x: 150.0, y: 20.0 }]);
+        assert_eq!(rx.try_recv().expect("one event"), snapshot);
+        assert!(rx.try_recv().is_err(), "exactly one");
+
+        assert_eq!(move_nodes(app.handle(), &[at("ide", 0.0, 0.0), at("web", f64::NAN, 0.0)]), Err("position is not finite".to_string()));
+        assert_eq!(move_nodes(app.handle(), &[at("ide", 0.0, 0.0), at("nope", 0.0, 0.0)]), Err("unknown project".to_string()));
+        let state = app.state::<AppState>();
+        // A project and an unknown agent card: refused before anything moves.
+        let agent = NodeMove {
+            target: NodeTarget {
+                kind: NodeKind::Agent,
+                id: "agent:ghost".into(),
+            },
+            position: Position { x: 1.0, y: 1.0 },
+        };
+        assert_eq!(move_nodes(app.handle(), &[at("ide", 7.0, 7.0), agent]), Err(crate::agents::UNKNOWN_AGENT_CARD.to_string()));
+        assert_eq!(on_disk(&path).projects[0].position, Position { x: 50.0, y: 20.0 });
+        assert_eq!(state.read_workspace().workspace.projects[0].position, Position { x: 50.0, y: 20.0 }, "rolled back");
+        assert_eq!(state.read_workspace().revision, 1);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn remove_project_deletes_a_group_it_was_the_last_member_of() {
+        let (app, _cfg, path) = app_with_two();
+        create_group(app.handle(), "web", "ide").unwrap();
+        let g = group_of(&app, "ide").unwrap();
+        add_to_group(app.handle(), &g, "web").unwrap();
+        let snapshot = remove_project(app.handle(), "web").unwrap();
+        assert_eq!(snapshot.workspace.groups.len(), 1, "ide is still a member");
+        let snapshot = remove_project(app.handle(), "ide").unwrap();
+        assert!(snapshot.workspace.groups.is_empty());
+        assert!(on_disk(&path).groups.is_empty());
     }
 }

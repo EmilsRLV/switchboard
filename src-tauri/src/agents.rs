@@ -160,6 +160,21 @@ impl AgentRuns {
         Ok(())
     }
 
+    /// Story 12.3: store several dragged positions under one lock: every id must be known, or
+    /// nothing is stored and the reply is `unknown agent card`.
+    pub fn set_positions(&self, moves: &[(String, Position)]) -> Result<(), String> {
+        let mut inner = self.lock();
+        if moves.iter().any(|(id, _)| !inner.runs.iter().any(|r| &r.id == id)) {
+            return Err(UNKNOWN_AGENT_CARD.to_string());
+        }
+        for (id, position) in moves {
+            if let Some(run) = inner.runs.iter_mut().find(|r| &r.id == id) {
+                run.position = Some(*position);
+            }
+        }
+        Ok(())
+    }
+
     /// Put every agent card of `project_id` back in its slot (`project.relayout`).
     pub fn clear_positions(&self, project_id: &str) {
         for run in self.lock().runs.iter_mut().filter(|r| r.project_id == project_id) {

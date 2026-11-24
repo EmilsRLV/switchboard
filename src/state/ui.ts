@@ -463,11 +463,42 @@ function dropHiddenEdge(): void {
   const snapshot = useWorkspaceStore.getState().snapshot;
   if (selection === null || selection.kind !== "edge" || snapshot === null) return;
   const edge = snapshot.workspace.edges.find((e) => e.id === selection.id);
-  const drawn = drawnFlowIds(snapshot.workspace.projects, snapshot.children, ui.showAll, ui.showAllBranches);
+  const drawn = drawnFlowIds(snapshot.workspace.projects, snapshot.children, ui.showAll, ui.showAllBranches, snapshot.workspace.groups);
   if (edge === undefined || !isEdgeDrawn(edge, drawn)) ui.clearSelection();
 }
 
 useWorkspaceStore.subscribe(dropHiddenEdge);
+
+/**
+ * Story 12.3: the group whose collapsed card now stands for `target` -- a project in a collapsed
+ * group, one of its children or its `more` row -- or `null` when the target is drawn as itself.
+ */
+export function collapsedGroupOf(target: CanvasTarget | null): string | null {
+  const snapshot = useWorkspaceStore.getState().snapshot;
+  if (target === null || snapshot === null) return null;
+  let projectId: string | null = null;
+  if (target.kind === "project" || target.kind === "more") projectId = target.id;
+  else if (target.kind === "session" || target.kind === "branch" || target.kind === "agent") {
+    projectId = snapshot.children.find((c) => c.kind === target.kind && c.id === target.id)?.projectId ?? null;
+  }
+  if (projectId === null) return null;
+  const groupId = snapshot.workspace.projects.find((p) => p.id === projectId)?.groupId ?? null;
+  if (groupId === null) return null;
+  const group = (snapshot.workspace.groups ?? []).find((g) => g.id === groupId);
+  return group?.collapsed === true ? group.id : null;
+}
+
+/**
+ * Story 12.3: a selection that a collapsed group now hides (a member project or anything under it)
+ * moves to the group's card, so the selection is always something drawn.
+ */
+function selectCollapsedGroup(): void {
+  const ui = useUiStore.getState();
+  const groupId = collapsedGroupOf(ui.selection);
+  if (groupId !== null) ui.select({ kind: "group", id: groupId });
+}
+
+useWorkspaceStore.subscribe(selectCollapsedGroup);
 
 /**
  * The terminal a selected node has, when it has one: a session's Switchboard terminal, or a

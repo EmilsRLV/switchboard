@@ -55,7 +55,7 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the one hundred and fifteen commands with the spec's keybindings", () => {
+  it("register the one hundred and twenty-two commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
       "agent.remove",
       "agent.restart",
@@ -86,6 +86,13 @@ describe("built-in commands", () => {
       "edge.select",
       "elsewhere.close",
       "elsewhere.toggle",
+      "group.add",
+      "group.collapse",
+      "group.delete",
+      "group.expand",
+      "group.remove",
+      "group.rename",
+      "group.setColor",
       "help.changelog",
       "help.contents",
       "help.gettingStarted",
@@ -280,6 +287,13 @@ describe("built-in commands", () => {
       "edge.revokeAgentPolicy",
       "edge.select",
       "elsewhere.toggle",
+      "group.add",
+      "group.collapse",
+      "group.delete",
+      "group.expand",
+      "group.remove",
+      "group.rename",
+      "group.setColor",
       "help.changelog",
       "help.contents",
       "help.gettingStarted",
@@ -353,7 +367,7 @@ describe("built-in commands", () => {
     ]);
   });
 
-  it("exactly the twelve project commands, the six session commands, the four branch commands, the four agent commands, Link to…, Select edge… and Review changes are tagged for the node menu, and the menu lists none without a selection", () => {
+  it("exactly the twelve project commands, the six session commands, the four branch commands, the four agent commands, Link to…, Select edge…, Review changes and the seven group commands are tagged for the node menu, and the menu lists none without a selection", () => {
     expect(
       listCommands()
         .filter((c) => c.menu === "node")
@@ -370,6 +384,13 @@ describe("built-in commands", () => {
       "branch.removeWorktree",
       "edge.link",
       "edge.select",
+      "group.add",
+      "group.collapse",
+      "group.delete",
+      "group.expand",
+      "group.remove",
+      "group.rename",
+      "group.setColor",
       "project.collapse",
       "project.expand",
       "project.newSession",
@@ -395,7 +416,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(116);
+    expect(listCommands()).toHaveLength(123);
   });
 
   const PROJECT_ACTIONS = [
@@ -427,6 +448,7 @@ describe("built-in commands", () => {
     useUiStore.getState().select({ kind: "project", id: "ide" });
     const titles = () => listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title);
     expect(titles()).toEqual([
+      "Add to group…",
       "Agent actions: allow all",
       "Expand project",
       "Help",
@@ -460,6 +482,7 @@ describe("built-in commands", () => {
       "Reveal Claude project dir",
       "Expand project",
       "Re-layout children",
+      "Add to group…",
       "Remove from canvas",
       "Review changes",
     ]);
@@ -476,6 +499,7 @@ describe("built-in commands", () => {
       "Reveal Claude project dir",
       "Collapse project",
       "Re-layout children",
+      "Add to group…",
       "Remove from canvas",
       "Review changes",
     ]);
@@ -542,12 +566,12 @@ describe("built-in commands", () => {
     useWorkspaceStore.setState({ snapshot: workspaceWith([ideProject(false)], stubs(3)) });
     useUiStore.getState().select({ kind: "project", id: "ide" });
     const items = nodeMenuCommands();
-    expect(items.map((c) => c.menuOrder)).toEqual([10, 11, 13, 20, 21, 22, 30, 31, 40, 60]);
+    expect(items.map((c) => c.menuOrder)).toEqual([10, 11, 13, 20, 21, 22, 30, 31, 34, 40, 60]);
     const separatorBefore = items.map((item, index) => {
       const previous = items[index - 1];
       return previous !== undefined && menuGroup(previous) !== menuGroup(item);
     });
-    expect(separatorBefore).toEqual([false, false, false, true, false, false, true, false, true, true]);
+    expect(separatorBefore).toEqual([false, false, false, true, false, false, true, false, false, true, true]);
     // The palette keeps its title order regardless.
     const titles = listCommands({ enabledOnly: true, visibleOnly: true }).map((c) => c.title);
     expect(titles).toEqual([...titles].sort((a, b) => a.localeCompare(b)));

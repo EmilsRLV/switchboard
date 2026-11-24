@@ -4,7 +4,7 @@
 // list use. No React, no DOM.
 
 import type { Edge as FlowEdge } from "@xyflow/react";
-import type { ChildNode, Edge, EdgeKind, EdgeLive, EdgeLiveState, EdgesLiveMap, NodeRef, Project } from "../ipc";
+import type { ChildNode, Edge, EdgeKind, EdgeLive, EdgeLiveState, EdgesLiveMap, Group, NodeRef, Project } from "../ipc";
 import { commandKey } from "../commands/keybindings";
 import { ACTIVATE_COMMAND, childFlowId, edgeFlowId, flowIdOf, nodeRects, parseFlowId, type CanvasFlowNode, type CanvasTarget } from "./nodes";
 
@@ -77,10 +77,10 @@ export function checkLink(edges: readonly Edge[], from: NodeRef, to: NodeRef): L
 
 /**
  * The edge end a canvas target names: a project, session or branch card; `null` for a `more` row,
- * an edge, or an agent card (Story 12.2: never an edge end).
+ * an edge, an agent card (Story 12.2) or a group (Story 12.3): never an edge end.
  */
 export function nodeRefOf(target: CanvasTarget | null): NodeRef | null {
-  if (target === null || target.kind === "more" || target.kind === "edge" || target.kind === "agent") return null;
+  if (target === null || target.kind === "more" || target.kind === "edge" || target.kind === "agent" || target.kind === "group") return null;
   return { type: target.kind, id: target.id };
 }
 
@@ -230,8 +230,9 @@ export function drawnFlowIds(
   children: readonly ChildNode[],
   showAll: readonly string[],
   showAllBranches: readonly string[],
+  groups: readonly Group[] = [],
 ): Set<string> {
-  return new Set(nodeRects(projects, children, showAll, showAllBranches).map((rect) => flowIdOf(rect.target)));
+  return new Set(nodeRects(projects, children, showAll, showAllBranches, groups).map((rect) => flowIdOf(rect.target)));
 }
 
 /** True when both end cards of `edge` are among `drawn` (flow ids): the edge is drawn. */

@@ -22,6 +22,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
 import { clickEdge, link, refuseDrop } from "../commands/edges";
+import { dragGroupTo, dropGroup, startGroupDrag } from "../commands/groups";
 import { clickNode } from "../commands/navigation";
 import { moveNode, rightClickCanvas, rightClickNode } from "../commands/nodes";
 import { dropProjects } from "../commands/projects";
@@ -31,6 +32,7 @@ import {
   workspaceSetViewport,
   type ChildNode,
   type Edge as StoredEdge,
+  type Group,
   type Position,
   type Project,
   type Viewport,
@@ -49,6 +51,7 @@ import { isTourOn, tourFirstFrame } from "../state/tour";
 import { AgentNode, BranchNode, MoreNode, SessionNode } from "./ChildNode";
 import { FORK_HANDLE, checkFlowLink, linkFlowEdges, nodeRefOfFlowId, type LinkEdgeData, type LinkFlowEdge } from "./edges";
 import { GhostCard } from "./GhostCard";
+import { GroupCardNode, GroupFrameNode } from "./GroupNode";
 import { MAX_ZOOM, MIN_ZOOM } from "./limits";
 import {
   DRAG_THRESHOLD,
@@ -73,7 +76,17 @@ const NO_CHILDREN: readonly ChildNode[] = [];
 const NO_BRANCH_ERRORS: Readonly<Record<string, string>> = Object.freeze({});
 const NO_STOPPING: readonly string[] = [];
 const NO_EDGES: readonly StoredEdge[] = [];
-const NODE_TYPES: NodeTypes = { project: ProjectNode, session: SessionNode, branch: BranchNode, agent: AgentNode, more: MoreNode };
+const NO_GROUPS: readonly Group[] = [];
+const NODE_TYPES: NodeTypes = {
+  project: ProjectNode,
+  session: SessionNode,
+  branch: BranchNode,
+  agent: AgentNode,
+  more: MoreNode,
+  // Story 12.3: an expanded group's frame (dragged by its label) and a collapsed group's card.
+  groupFrame: GroupFrameNode,
+  groupCard: GroupCardNode,
+};
 
 /**
  * The "forked from" line (Story 4.4): a thin, muted curve between the left edges of a fork's
@@ -298,6 +311,7 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
   const selection = useUiStore((s) => s.selection);
   const showAll = useUiStore((s) => s.showAll);
   const showAllBranches = useUiStore((s) => s.showAllBranches);
+  const groups = useWorkspaceStore((s) => s.snapshot?.workspace.groups ?? NO_GROUPS);
   const dragging = useCanvasStore((s) => s.dragging);
   const terminals = useTerminalStore((s) => s.infos);
   // Sessions whose Switchboard terminal is being stopped: their word reads `stopping`.
@@ -310,12 +324,12 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
   const previousRef = useRef<CanvasFlowNode[]>([]);
   const nodes = useMemo(() => {
     const next = toFlowNodes(
-      { projects, statuses, flashed, children, selection, dragging, showAll, showAllBranches, live, stopping, branchErrors, unread, review },
+      { projects, statuses, flashed, children, selection, dragging, showAll, showAllBranches, live, stopping, branchErrors, unread, review, groups },
       previousRef.current,
     );
     previousRef.current = next;
     return next;
-  }, [projects, statuses, flashed, children, selection, dragging, showAll, showAllBranches, live, stopping, branchErrors, unread, review]);
+  }, [projects, statuses, flashed, children, selection, dragging, showAll, showAllBranches, live, stopping, branchErrors, unread, review, groups]);
 
   // The "forked from" lines between drawn cards (Story 4.4), inert; then the stored edges whose
   // two ends are drawn (Story 6.1).
@@ -367,7 +381,10 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
     const canvas = useCanvasStore.getState();
     for (const change of changes) {
       if (change.type === "position" && change.position !== undefined) {
-        canvas.setDragPosition(change.id, change.position);
+        // Story 12.3: a dragged group frame or card moves its members (it is placed from them).
+        const target = parseFlowId(change.id);
+        if (target.kind === "group") dragGroupTo(target.id, change.position);
+        else canvas.setDragPosition(change.id, change.position);
       }
     }
   }, []);
@@ -377,13 +394,20 @@ function Flow({ initialViewport }: { initialViewport: Viewport }) {
   const onNodeDragStart = useCallback<OnNodeDrag<CanvasFlowNode>>((_event, node) => {
     const ui = useUiStore.getState();
     ui.closeContextMenu();
-    ui.select(parseFlowId(node.id));
+    const target = parseFlowId(node.id);
+    ui.select(target);
+    if (target.kind === "group") startGroupDrag(target.id, node.position);
   }, []);
 
   const onNodeDragStop = useCallback<OnNodeDrag<CanvasFlowNode>>((_event, node) => {
     const [target, position] = dropTarget(node.id, useCanvasStore.getState().dragging, node.position);
     // A `more` row is not draggable and has no position to store.
     if (target.kind === "more" || target.kind === "edge") return;
+    // Story 12.3: a group's members, in one write.
+    if (target.kind === "group") {
+      void dropGroup(target.id);
+      return;
+    }
     void moveNode(target, position);
   }, []);
 

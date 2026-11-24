@@ -759,3 +759,71 @@
     opacity: 0;
   }
 }
+
+/* Project groups (Story 12.3). An expanded group is a frame behind its members: a 1-px --border
+   rectangle (its size from nodes.ts's groupRect), the label top-left in mono --text-xs. Only the
+   label takes the pointer (a click selects the group, a drag moves its members); the rest lets
+   clicks through to the canvas and the cards. A set colour is only a 2-px left rule, from the
+   five muted --group-* tokens (never the accent). A collapsed group is a project card
+   (.project-node.group-card) with the same rule. */
+.group-frame {
+  box-sizing: border-box;
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-md);
+  pointer-events: none;
+}
+
+.group-frame.is-selected {
+  outline: var(--line) solid var(--focus);
+  outline-offset: 2px;
+}
+
+.group-frame-label {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0.15rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: all;
+  cursor: grab;
+  user-select: none;
+}
+
+.group-frame-label:hover,
+.group-frame.is-selected .group-frame-label {
+  color: var(--fg);
+}
+
+.react-flow__node.dragging .group-frame-label,
+.react-flow__node.dragging .group-card {
+  cursor: grabbing;
+}
+
+.group-card {
+  min-height: 80px;
+  box-sizing: border-box;
+}
+
+.group-color-slate {
+  border-left: 2px solid var(--group-slate);
+}
+
+.group-color-sage {
+  border-left: 2px solid var(--group-sage);
+}
+
+.group-color-sand {
+  border-left: 2px solid var(--group-sand);
+}
+
+.group-color-rose {
+  border-left: 2px solid var(--group-rose);
+}
+
+.group-color-sky {
+  border-left: 2px solid var(--group-sky);
+}

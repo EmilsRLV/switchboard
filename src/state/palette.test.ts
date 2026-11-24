@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { clampSelection, filterCommands, filterPickItems, paletteKeyAction, paletteRows, usePaletteStore } from "./palette";
+import { clampSelection, filterCommands, filterPickItems, paletteKeyAction, paletteRows, submitPalettePrompt, usePaletteStore } from "./palette";
 
 const commands = [
   { id: "settings.open", title: "Open settings" },
@@ -170,5 +170,43 @@ describe("palette store", () => {
     ]);
     const quit = { id: "app.quit", title: "Quit", binding: { ctrl: true, shift: false, alt: false, key: "q" } };
     expect(paletteRows(null, [quit], "app.")).toEqual([quit]);
+  });
+});
+
+describe("prompt mode (Story 12.3)", () => {
+  beforeEach(() => usePaletteStore.setState({ isOpen: false, pick: null, prompt: null, query: "", selected: 0 }));
+
+  it("opens holding its initial text, with no pick list", () => {
+    usePaletteStore.getState().openPick({ placeholder: "p", items: [], onPick: () => {} });
+    usePaletteStore.getState().openPrompt({ placeholder: "Group label", initial: "web", onSubmit: () => {} });
+    const s = usePaletteStore.getState();
+    expect(s.isOpen).toBe(true);
+    expect(s.pick).toBeNull();
+    expect(s.prompt?.placeholder).toBe("Group label");
+    expect(s.query).toBe("web");
+  });
+
+  it("Enter closes the palette and hands the typed text to onSubmit", () => {
+    const submitted: string[] = [];
+    usePaletteStore.getState().openPrompt({ placeholder: "New group label", initial: "", onSubmit: (text) => submitted.push(text) });
+    usePaletteStore.getState().setQuery("  web apps ");
+    expect(submitPalettePrompt()).toBe(true);
+    expect(submitted).toEqual(["  web apps "]);
+    expect(usePaletteStore.getState().isOpen).toBe(false);
+    expect(usePaletteStore.getState().prompt).toBeNull();
+    // No prompt: nothing to submit.
+    expect(submitPalettePrompt()).toBe(false);
+  });
+
+  it("close (Esc) and open drop the prompt with nothing submitted", () => {
+    const submitted: string[] = [];
+    usePaletteStore.getState().openPrompt({ placeholder: "x", initial: "a", onSubmit: (text) => submitted.push(text) });
+    usePaletteStore.getState().close();
+    expect(usePaletteStore.getState().prompt).toBeNull();
+    usePaletteStore.getState().openPrompt({ placeholder: "x", initial: "a", onSubmit: (text) => submitted.push(text) });
+    usePaletteStore.getState().open();
+    expect(usePaletteStore.getState().prompt).toBeNull();
+    expect(usePaletteStore.getState().query).toBe("");
+    expect(submitted).toEqual([]);
   });
 });

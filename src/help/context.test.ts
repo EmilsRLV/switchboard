@@ -39,6 +39,8 @@ describe("helpPageFor (F1 from where you are)", () => {
     expect(helpPageFor({ pane: null, selection: null, lastRead: "keyboard" })).toBe("keyboard");
     expect(helpPageFor({ pane: null, selection: { kind: "more", id: "p" }, lastRead: null })).toBeNull();
     expect(helpPageFor({ pane: null, selection: { kind: "more", id: "p", group: "branches" }, lastRead: "edges" })).toBe("edges");
+    // Story 12.3: a selected group opens Projects, where groups are explained.
+    expect(helpPageFor({ pane: null, selection: { kind: "group", id: "g" }, lastRead: null })).toBe("projects");
     expect(helpPageFor({ pane: "help", selection: { kind: "project", id: "p" }, lastRead: "review" })).toBe("review");
   });
 
