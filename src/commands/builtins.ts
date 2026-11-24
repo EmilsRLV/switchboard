@@ -37,6 +37,7 @@ import {
   selectedLiveSessionId,
   toggleShowAllOfSelected,
 } from "./navigation";
+import { agentCommands } from "./agents";
 import { canGoToAttention, goToNextAttention } from "./attention";
 import {
   answerOldest,
@@ -221,6 +222,8 @@ function hintStepsLeft(): boolean {
 
 export function builtinCommands(): Command[] {
   return [
+    // Story 12.2: the agent card commands.
+    ...agentCommands(),
     {
       id: "palette.toggle",
       title: "Toggle command palette",

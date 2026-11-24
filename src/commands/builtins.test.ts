@@ -55,8 +55,12 @@ describe("built-in commands", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("register the one hundred and eleven commands with the spec's keybindings", () => {
+  it("register the one hundred and fifteen commands with the spec's keybindings", () => {
     expect(listCommands().map((c) => c.id).sort()).toEqual([
+      "agent.remove",
+      "agent.restart",
+      "agent.showTerminal",
+      "agent.stop",
       "agentActions.allowAll",
       "agentActions.ask",
       "app.quit",
@@ -247,8 +251,12 @@ describe("built-in commands", () => {
     expect(getCommand("review.layoutUnified")?.hidden).toBe(true);
   });
 
-  it("the key-only carriers are hidden from the palette, the eighty-seven actions are not", () => {
+  it("the key-only carriers are hidden from the palette, the ninety-one actions are not", () => {
     expect(listCommands({ visibleOnly: true }).map((c) => c.id).sort()).toEqual([
+      "agent.remove",
+      "agent.restart",
+      "agent.showTerminal",
+      "agent.stop",
       "agentActions.allowAll",
       "agentActions.ask",
       "app.quit",
@@ -345,13 +353,17 @@ describe("built-in commands", () => {
     ]);
   });
 
-  it("exactly the twelve project commands, the six session commands, the four branch commands, Link to…, Select edge… and Review changes are tagged for the node menu, and the menu lists none without a selection", () => {
+  it("exactly the twelve project commands, the six session commands, the four branch commands, the four agent commands, Link to…, Select edge… and Review changes are tagged for the node menu, and the menu lists none without a selection", () => {
     expect(
       listCommands()
         .filter((c) => c.menu === "node")
         .map((c) => c.id)
         .sort(),
     ).toEqual([
+      "agent.remove",
+      "agent.restart",
+      "agent.showTerminal",
+      "agent.stop",
       "branch.copyName",
       "branch.newSession",
       "branch.newWorktree",
@@ -383,7 +395,7 @@ describe("built-in commands", () => {
 
   it("registering twice replaces rather than duplicates", () => {
     registerBuiltins();
-    expect(listCommands()).toHaveLength(112);
+    expect(listCommands()).toHaveLength(116);
   });
 
   const PROJECT_ACTIONS = [
@@ -1387,6 +1399,10 @@ describe("the node toolbar's commands (Story 11.2)", () => {
     const tagged = listCommands().filter((c) => c.toolbar !== undefined);
     expect(tagged.map((c) => c.id).sort()).toEqual(
       [
+        "agent.remove",
+        "agent.restart",
+        "agent.showTerminal",
+        "agent.stop",
         "branch.newSession",
         "branch.newWorktree",
         "branch.removeWorktree",

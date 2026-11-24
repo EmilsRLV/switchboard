@@ -1,6 +1,7 @@
 //! Switchboard core. Rust is the source of truth; the webview talks to it only
 //! through the thin commands in [`ipc`].
 
+pub mod agents;
 pub mod appstate;
 pub mod approvals;
 pub mod claude;
@@ -98,6 +99,10 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::session_resume,
             ipc::session_fork,
             ipc::session_stop,
+            ipc::agent_stop,
+            ipc::agent_restart,
+            ipc::agent_remove,
+            ipc::agent_acknowledge,
             ipc::diagnostics_get,
             ipc::approvals_get,
             ipc::approval_answer,
@@ -2896,6 +2901,7 @@ mod tests {
             model: Some("opus".into()),
             effort: Some("default".into()),
             permission_mode: Some("plan".into()),
+            agent: None,
         });
         let orig = "59cd1e3f-5b7d-4e8f-9a0b-1c2d3e4f5a6b";
         let recorded = tempfile::tempdir().unwrap();
@@ -5130,5 +5136,203 @@ exec '{real_git}' \"$@\"
             assert_eq!(snapshot.branch_errors.get(&id).map(String::as_str), Some(super::git::poll::NOT_A_REPO));
             assert_eq!(snapshot.children.len(), 1, "last list kept");
         }
+    }
+
+    /// Story 12.2: an agent card from the launch sheet to its removal: the refusals that leave
+    /// nothing behind (not found, an unset `${env:}`, a batch file on Windows), the start (a tab
+    /// `agent:<id>` in the project folder, a `running` card, the choice remembered), the edge and
+    /// MCP listing that ignore it, the unseen exit (attention and a toast), the acknowledgement,
+    /// Restart in the same tab, Stop, the in-memory position, and Remove.
+    #[test]
+    fn an_agent_card_starts_exits_with_attention_restarts_stops_and_is_removed() {
+        use serde_json::json;
+        let (app, webview, dir) = app_with_ide();
+        let state = app.state::<super::AppState>();
+        state.write_workspace().stub_children = 0;
+        let folder = tempfile::tempdir().unwrap();
+        let canonical = dunce::canonicalize(folder.path()).unwrap().display().to_string();
+        state.write_workspace().workspace.projects[0].path = canonical.clone();
+        let recorder = std::sync::Arc::new(super::notify::fixtures::Recorder::default());
+        *state.notifier.lock().unwrap() = Some(recorder.clone());
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+
+        // The fixture agent: waits for a line, then prints its node and key, and exits 0.
+        #[cfg(windows)]
+        let (program, args) = (
+            std::env::var("ComSpec").unwrap_or_else(|_| "C:\\Windows\\System32\\cmd.exe".to_string()),
+            ["/d", "/c", "set", "/p", "x=", "&", "echo", "node=%SWITCHBOARD_NODE%", "key=%KIMI_KEY%"].map(String::from).to_vec(),
+        );
+        #[cfg(not(windows))]
+        let (program, args) = (
+            "/bin/sh".to_string(),
+            ["-c", "read x; printf 'node=%s key=%s\\n' \"$SWITCHBOARD_NODE\" \"$KIMI_KEY\""].map(String::from).to_vec(),
+        );
+        let shim = folder.path().join("kimi.cmd");
+        std::fs::write(&shim, b"@echo off\r\n").unwrap();
+        let agent = |name: &str, command: &str, args: Vec<String>, env: &[(&str, &str)]| super::settings::AgentSetting {
+            name: name.into(),
+            command: command.into(),
+            args,
+            env: env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        };
+        state.write().settings.agents = vec![
+            agent("kimi", &program, args.clone(), &[("KIMI_KEY", "sk-literal")]),
+            agent("nope", "nope-agent-12-2", Vec::new(), &[]),
+            agent("unset", &program, args.clone(), &[("K", "${env:SWITCHBOARD_UNSET_12_2}")]),
+            agent("shim", &shim.display().to_string(), Vec::new(), &[]),
+        ];
+
+        let prefill = call("launch_defaults", json!({ "projectId": "ide" })).expect("launch_defaults");
+        assert_eq!(prefill["agent"], "claude");
+        assert_eq!(prefill["agents"], json!(["kimi", "nope", "unset", "shim"]));
+        let id = prefill["sessionId"].as_str().unwrap().to_string();
+        let name = format!("kimi-{}", &id[..4]);
+        let request = |agent: &str| json!({ "projectId": "ide", "sessionId": id, "name": name, "agent": agent });
+
+        // Refusals: the sheet shows the reason, nothing is spawned or drawn.
+        assert_eq!(
+            call("session_launch", json!({ "request": request("nope") })),
+            Err(json!("could not start nope-agent-12-2: not found on PATH"))
+        );
+        assert_eq!(
+            call("session_launch", json!({ "request": request("unset") })),
+            Err(json!("agent unset: $SWITCHBOARD_UNSET_12_2 is not set"))
+        );
+        if cfg!(windows) {
+            assert_eq!(
+                call("session_launch", json!({ "request": request("shim") })),
+                Err(json!(format!("agent shim: {} is a batch file; point command at the .exe", shim.display())))
+            );
+        }
+        assert_eq!(call("session_launch", json!({ "request": request("ghost") })), Err(json!("unknown agent ghost")));
+        assert!(state.terms.list().is_empty(), "nothing spawned");
+        assert!(state.agents.list().is_empty());
+
+        // Start: a tab `agent:<id>` in the project folder and a `running` card.
+        let reply = call("session_launch", json!({ "request": request("kimi"), "cols": 100, "rows": 30 })).expect("start kimi");
+        assert_eq!(reply["session_id"], id.as_str());
+        let term_id = format!("agent:{id}");
+        assert_eq!(reply["term"]["id"], term_id.as_str());
+        assert_eq!(reply["term"]["kind"], "agent");
+        assert_eq!(reply["term"]["title"], name.as_str());
+        assert_eq!(reply["term"]["cwd"], canonical.as_str());
+        let card = |state: &super::AppState| state.read_workspace().snapshot().children.into_iter().find(|c| c.id == id);
+        let child = card(&state).expect("the agent card");
+        assert_eq!(child.kind, super::graph::ChildKind::Agent);
+        assert_eq!(child.label, name);
+        let meta = child.agent.clone().unwrap();
+        assert_eq!((meta.agent.as_str(), meta.exited, meta.attention), ("kimi", None, false));
+        // Remembered for the project (and written), offered first next time.
+        assert_eq!(call("launch_defaults", json!({ "projectId": "ide" })).unwrap()["agent"], "kimi");
+        let on_disk = std::fs::read_to_string(dir.path().join("workspace.json")).unwrap();
+        assert!(on_disk.contains("\"agent\": \"kimi\""), "{on_disk}");
+        // A second start with the same id is refused.
+        // A second start from the same sheet is refused (its id was claimed).
+        assert_eq!(call("session_launch", json!({ "request": request("kimi") })), Err(json!(super::claude::launch::STALE_SHEET)));
+
+        // Not an edge end, not in the MCP listing.
+        let link = call("edge_add", json!({ "from": { "type": "session", "id": id }, "to": { "type": "project", "id": "ide" } }));
+        let link = link.unwrap_err();
+        assert_eq!(link, json!("unknown session"));
+        let listed = super::mcp::sessions(&state, "ide").unwrap();
+        assert!(listed["sessions"].as_array().unwrap().iter().all(|s| s["nodeId"] != id.as_str()));
+
+        // While it runs: no Restart, no Remove, no plain restart of its terminal.
+        assert_eq!(call("agent_restart", json!({ "id": id })), Err(json!(super::agents::STILL_RUNNING)));
+        assert_eq!(call("agent_remove", json!({ "id": id })), Err(json!(super::agents::STILL_RUNNING)));
+        assert_eq!(call("term_restart", json!({ "id": term_id })), Err(json!("an agent terminal is restarted from its card")));
+
+        // It exits unseen (the mock window is unfocused): exited (0), attention, one toast.
+        let started = std::time::Instant::now();
+        wait_until(&app, &term_id, "start-up", || started.elapsed() > std::time::Duration::from_millis(300));
+        state.terms.write(&term_id, b"go\r").unwrap();
+        let output = || super::pty::tests::strip_escapes(&state.terms.buffer(&term_id).unwrap().data);
+        wait_until(&app, &term_id, "the agent's output", || output().contains(&format!("node={id}")));
+        assert!(output().contains("key=sk-literal"), "{}", output());
+        wait_until(&app, &term_id, "the exit", || card(&state).and_then(|c| c.agent).is_some_and(|m| m.exited == Some(0)));
+        assert!(card(&state).unwrap().agent.unwrap().attention, "an unseen exit");
+        assert_eq!(*recorder.sent.lock().unwrap(), [("ide — finished".to_string(), name.clone())]);
+        assert_eq!(call("agent_stop", json!({ "id": id })), Err(json!(super::agents::NOT_RUNNING)));
+
+        // Selecting it acknowledges it.
+        assert_eq!(call("agent_acknowledge", json!({ "id": id })), Ok(json!(true)));
+        assert!(!card(&state).unwrap().agent.unwrap().attention);
+        assert_eq!(call("agent_acknowledge", json!({ "id": null })), Ok(json!(false)));
+
+        // Restart: the same id and tab, running again.
+        let restarted = call("agent_restart", json!({ "id": id })).expect("agent_restart");
+        assert_eq!(restarted["id"], term_id.as_str());
+        assert_eq!(restarted["exited"], serde_json::Value::Null);
+        assert_eq!(state.terms.list().iter().filter(|t| t.id == term_id).count(), 1);
+        assert_eq!(card(&state).unwrap().agent.unwrap().exited, None);
+
+        // A dragged card keeps its position in memory only.
+        call("workspace_move_node", json!({ "target": { "kind": "agent", "id": id }, "position": { "x": 30.0, "y": 300.0 } })).expect("move");
+        assert_eq!(card(&state).unwrap().position, Some(super::graph::Position { x: 30.0, y: 300.0 }));
+        assert!(!std::fs::read_to_string(dir.path().join("workspace.json")).unwrap().contains(&id));
+        // Re-layout puts it back in its slot.
+        let relaid = call("workspace_relayout_children", json!({ "projectId": "ide" })).expect("relayout");
+        let child = relaid["children"].as_array().unwrap().iter().find(|c| c["id"] == id.as_str()).cloned().unwrap();
+        assert_eq!(child["position"], serde_json::Value::Null);
+
+        // Stop: Ctrl+C, Ctrl+C, then the kill; it turns exited.
+        let stopping = call("agent_stop", json!({ "id": id })).expect("agent_stop");
+        assert_eq!(stopping["stopping"], true);
+        wait_until(&app, &term_id, "the stop", || card(&state).and_then(|c| c.agent).is_some_and(|m| m.exited.is_some()));
+
+        // Remove: the card and the tab go.
+        let snapshot = call("agent_remove", json!({ "id": id })).expect("agent_remove");
+        assert!(snapshot["children"].as_array().unwrap().iter().all(|c| c["id"] != id.as_str()));
+        assert!(state.terms.get(&term_id).is_none());
+        assert!(state.agents.list().is_empty());
+        assert_eq!(call("agent_remove", json!({ "id": id })), Err(json!(super::agents::UNKNOWN_AGENT_CARD)));
+
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
+    }
+
+    /// Story 12.2: a project leaving the canvas takes its running agent with it: the run and its
+    /// terminal go, and the kill is no "finished" exit (no toast).
+    #[test]
+    fn removing_a_project_drops_its_running_agent_without_a_toast() {
+        use serde_json::json;
+        let (app, webview, _dir) = app_with_ide();
+        let state = app.state::<super::AppState>();
+        state.write_workspace().stub_children = 0;
+        let folder = tempfile::tempdir().unwrap();
+        state.write_workspace().workspace.projects[0].path = dunce::canonicalize(folder.path()).unwrap().display().to_string();
+        let recorder = std::sync::Arc::new(super::notify::fixtures::Recorder::default());
+        *state.notifier.lock().unwrap() = Some(recorder.clone());
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        #[cfg(windows)]
+        let (program, args) = (
+            std::env::var("ComSpec").unwrap_or_else(|_| "C:\\Windows\\System32\\cmd.exe".to_string()),
+            ["/d", "/c", "set", "/p", "x="].map(String::from).to_vec(),
+        );
+        #[cfg(not(windows))]
+        let (program, args) = ("/bin/sh".to_string(), ["-c", "read x"].map(String::from).to_vec());
+        state.write().settings.agents = vec![super::settings::AgentSetting {
+            name: "kimi".into(),
+            command: program,
+            args,
+            env: Default::default(),
+        }];
+        let prefill = call("launch_defaults", json!({ "projectId": "ide" })).unwrap();
+        let id = prefill["sessionId"].as_str().unwrap().to_string();
+        call("session_launch", json!({ "request": { "projectId": "ide", "sessionId": id, "name": "kimi-x", "agent": "kimi" } })).expect("start");
+        let term_id = format!("agent:{id}");
+        assert!(state.terms.get(&term_id).is_some_and(|t| t.is_running()));
+
+        call("workspace_remove_project", json!({ "projectId": "ide" })).expect("remove project");
+        assert!(state.agents.list().is_empty());
+        assert!(state.terms.get(&term_id).is_none());
+        assert!(state.read_workspace().snapshot().children.iter().all(|c| c.id != id));
+        // Give the killed child's exit time to arrive: it finds no run, so no toast.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert!(recorder.sent.lock().unwrap().is_empty());
+        super::on_run_event(app.handle(), &tauri::RunEvent::Exit);
     }
 }

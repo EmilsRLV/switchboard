@@ -39,6 +39,20 @@ export type Settings = {
    * closing always quits. `notifications.tray`: the one toast of the first such close per run.
    */
   close_to_tray: boolean;
+  /**
+   * Story 12.2: other coding agents the launch sheet can start (Kimi Code, Qwen Code, …). `args`
+   * are separate arguments; an `env` value written `${env:NAME}` is read from Switchboard's own
+   * environment at start. Absent in a file from before this story.
+   */
+  agents?: AgentSetting[];
+};
+
+/** Mirrors `settings::AgentSetting` (Story 12.2): one entry of `settings.agents`. */
+export type AgentSetting = {
+  name: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
 };
 
 /** Mirrors `settings::BinaryStatus`. */
@@ -136,6 +150,8 @@ export type LaunchDefaults = {
   model: string | null;
   effort: string | null;
   permissionMode: string | null;
+  /** Story 12.2: the sheet's last Agent choice; absent for `claude`. */
+  agent?: string;
 };
 
 /** Mirrors `graph::Project` (Story 2.2 fills these in). */
@@ -469,8 +485,22 @@ export type Workspace = {
 /** Mirrors `graph::AgentActions` (Story 7.2). */
 export type AgentActions = "ask" | "allowAll";
 
-/** Mirrors `graph::ChildKind`. */
-export type ChildKind = "session" | "branch";
+/** Mirrors `graph::ChildKind`; `agent` is a run of another coding agent (Story 12.2). */
+export type ChildKind = "session" | "branch" | "agent";
+
+/**
+ * Mirrors `graph::AgentMeta` (Story 12.2): what an agent card shows. Its state comes from its
+ * process only: `running` while `exited` is `null`, else `exited (<code>)`.
+ */
+export type AgentMeta = {
+  /** The `settings.agents` name it runs. */
+  agent: string;
+  /** ISO 8601 UTC, of the latest start. */
+  startedAt: string;
+  exited: number | null;
+  /** An exit nobody saw: the attention colour and the project's glow until the card is selected. */
+  attention: boolean;
+};
 
 /**
  * Mirrors `graph::SessionMeta`: what a discovered session's card shows besides its title.
@@ -513,6 +543,8 @@ export type ChildNode = {
   earlier?: EarlierTranscript[];
   /** Story 12.1: the transcript a cleared session runs under now; `null` (or absent) when never cleared. */
   currentId?: string | null;
+  /** Story 12.2: an agent card's facts; `null` (or absent) for the rest. */
+  agent?: AgentMeta | null;
 };
 
 /** Mirrors `graph::EarlierTranscript` (Story 12.1): one transcript in a card's clear chain. */
@@ -546,7 +578,7 @@ export type BranchMeta = {
 };
 
 /** Mirrors `graph::NodeKind`: the node types a position can be written for. */
-export type NodeKind = "project" | "session" | "branch";
+export type NodeKind = "project" | "session" | "branch" | "agent";
 
 /** Mirrors `graph::NodeTarget`: a node named by kind and id. */
 export type NodeTarget = { kind: NodeKind; id: string };
@@ -747,8 +779,11 @@ export const NOTIFY_REVEAL_EVENT = "notify://reveal";
 
 // --- terminals (`src-tauri/src/pty/mod.rs`, Story 4.1) --------------------------------------
 
-/** Mirrors `pty::TermKind`: a plain shell, or a Claude session the app launched (never restarted). */
-export type TermKind = "plain" | "session";
+/**
+ * Mirrors `pty::TermKind`: a plain shell, a Claude session the app launched (never restarted), or
+ * another coding agent (Story 12.2; restarted from its card only).
+ */
+export type TermKind = "plain" | "session" | "agent";
 
 /** Mirrors `pty::TermInfo`: one terminal and whether its child still runs. */
 export type TermInfo = {
@@ -827,6 +862,8 @@ export type LaunchRequest = {
   createWorktree: boolean;
   /** The project's sheet only: `claude --worktree <name>` from the repo's top level; `null` for none. */
   worktreeName: string | null;
+  /** Story 12.2: a `settings.agents` name to start that agent instead; `null` (or `claude`) starts Claude. */
+  agent: string | null;
 };
 
 /** Mirrors `launch::WorktreePlanPreview`: the `git worktree add` a branch sheet's Start runs first, or why it would not. */
@@ -854,6 +891,10 @@ export type LaunchPrefill = {
   addDirs?: EdgeDir[];
   /** The project's context edges whose target gives no folder (the sheet's `not added:` line). */
   skipped?: SkippedEdge[];
+  /** Story 12.2: the Agent the sheet opens with: the project's last choice while still configured, else `claude`. */
+  agent?: string;
+  /** Story 12.2: the configured agents the Agent select offers after `claude`; empty (no field) when none, and on a branch's sheet. */
+  agents?: string[];
 };
 
 /** Mirrors `graph::EdgeDir`: a folder a context edge grants, and the label of the edge's target (`via edge → <via>`). */
@@ -1036,6 +1077,10 @@ type Commands = {
   session_resume: LaunchResult;
   session_fork: LaunchResult;
   session_stop: TermInfo;
+  agent_stop: TermInfo;
+  agent_restart: TermInfo;
+  agent_remove: WorkspaceSnapshot;
+  agent_acknowledge: boolean;
   term_close: void;
   term_pop_out: string;
   term_return: void;
@@ -1604,6 +1649,29 @@ export function sessionFork(projectId: string, sessionId: string, cols: number |
  */
 export function sessionStop(sessionId: string): Promise<TermInfo> {
   return call("session_stop", { sessionId });
+}
+
+/** `ipc::agent_stop` (Story 12.2) -- Ctrl+C, a second Ctrl+C 300 ms later, a kill 5 s later; a second Stop kills at once. */
+export function agentStop(id: string): Promise<TermInfo> {
+  return call("agent_stop", { id });
+}
+
+/** `ipc::agent_restart` (Story 12.2) -- re-run an exited agent card in the same tab, under the same id. */
+export function agentRestart(id: string): Promise<TermInfo> {
+  return call("agent_restart", { id, cols: null, rows: null });
+}
+
+/** `ipc::agent_remove` (Story 12.2) -- drop an exited agent card and close its terminal. */
+export function agentRemove(id: string): Promise<WorkspaceSnapshot> {
+  return call("agent_remove", { id });
+}
+
+/**
+ * `ipc::agent_acknowledge` (Story 12.2) -- the selection is agent card `id` now (`null`: anything
+ * else): its attention is acknowledged, and an exit while it stays selected is seen.
+ */
+export function agentAcknowledge(id: string | null): Promise<boolean> {
+  return call("agent_acknowledge", { id });
 }
 
 /** `ipc::approvals_get` (Story 7.2) -- the agents' requests waiting on the operator, oldest first. */

@@ -448,6 +448,7 @@ describe("session launch wrappers", () => {
       permissionMode: "plan",
       addDirs: ["/work/a"],
       prompt: "hi",
+      agent: null,
       background: false,
       branch: "feat",
       createWorktree: true,

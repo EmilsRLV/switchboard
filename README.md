@@ -1184,6 +1184,37 @@ Sessions run in a worktree (the app's, Claude's `--worktree` ones, or one made i
 after a restart: discovery and the live poll accept every known worktree of the project (see
 [Sessions](#sessions)).
 
+### Other coding agents
+
+Basic support only (Story 12.2): Switchboard starts another coding agent -- Kimi Code (`kimi.exe`), Qwen Code
+(`qwen.exe`), anything listed in `settings.agents` (see [Settings](#settings)) -- in its own terminal and
+tracks its process. With agents configured, the project's launch sheet (not a branch's) leads with an
+**Agent** select: `claude` first, then the agents in settings order. Picking an agent hides model, effort,
+permission mode, worktree, add-dirs and the prompt; **Name** (`<agent>-<4 hex>`, following the choice until
+you edit it) and **Start in background** stay. The project remembers its last choice in
+`launchDefaults.agent` (left out of `workspace.json` for `claude`). Without agents the sheet is unchanged.
+
+Start resolves `command` like `claude.path` (a path, `~/…`, or a bare name on PATH with `PATHEXT`) and reads
+every `${env:NAME}` env value from Switchboard's own environment. Refusals stay on the sheet under Start, with
+nothing spawned: `could not start <command>: not found on PATH`, on Windows `agent <name>: <path> is a batch
+file; point command at the .exe` (a `.cmd` / `.bat` is never run), `agent <name>: $NAME is not set`. The
+agent runs as `<command> <args…>` -- separate arguments, never a shell string -- in the project folder, in a
+terminal `agent:<node id>`. Its environment, in order: the inherited one minus the parent-session variables,
+`TERM` and `COLORTERM`, the agent's `env`, then `SWITCHBOARD_NODE=<node id>` (last, so it cannot be
+overridden). No settings file, MCP config or system prompt is passed; its history is never read, no hooks
+are wired and `--version` is never run on it.
+
+The **agent card** looks like a session card, with the mono **agent chip** (the agent's name). Its state comes
+from its process only: `running` (`stopping` during a Stop), then `exited (<code>)`; a running agent counts in
+the project's `N live`. An exit while the window is unfocused or the card is not selected gives the card the
+attention colour and the project the glow, and sends a toast under the `notifications.finished` rule;
+selecting the card acknowledges it. Its menu and toolbar: **Show terminal**, **Stop** (Ctrl+C, a second Ctrl+C
+300 ms later, a kill after 5 s; a second Stop kills at once), **Restart** (exited only: the same agent, args
+and env, in the same tab, under the same node) and **Remove** (exited only: the card and its terminal go). An
+agent card is never an edge end, a peer, an inbox or review target, and has no Resume or Fork; the MCP
+`sessions` tool does not list it. Runs live in memory: a dragged card's position too, and after an app
+restart there are no agent cards.
+
 ## Resume, fork, stop
 
 Three commands on a selected session card (its menu, in this order, and the palette; no keys):
@@ -1729,6 +1760,7 @@ The location is `dirs::config_dir()/switchboard`, so it also resolves on macOS
 | `close_to_tray` | `false` | `true`: closing the main window hides it to the tray (minimizes it on Linux) and sessions keep running; `false`: closing quits (see [Tray and closing the window](#tray-and-closing-the-window)). Read at close time, so a saved edit applies at once. Without a tray, closing always quits. |
 | `notifications.tray` | `true` | Send the one OS toast `Switchboard is still running in the tray` the first time in a run the window is closed to the tray. |
 | `peers.nudge` | `true` | Nudge a session that has new peer messages with one injected line once it is idle (see [Peer messages](#peer-messages-send-and-inbox)); `false` shows the `N new` badge only. Review line comments (see [Line comments](#line-comments)) are typed either way. |
+| `agents` | `[]` | Other coding agents the launch sheet can start (see [Other coding agents](#other-coding-agents)): `[{ "name": "kimi", "command": "kimi", "args": [], "env": { "KIMI_API_KEY": "${env:KIMI_API_KEY}" } }]`. `command` is resolved at start like `claude.path`; `args` are separate arguments. An `env` value written `${env:NAME}` is read from Switchboard's environment at start; **any other value is stored in plain text** in this file. An entry with a blank, duplicate or `claude` name, or an env name that is not `[A-Za-z_][A-Za-z0-9_]*` or is a parent-session variable, is dropped with a `settings.agents` banner naming it and why. Nothing is run at load. The settings pane shows env names, never their values. |
 
 Binary detection: `claude` is searched on PATH, then `~/.local/bin`; `git` on PATH. Each one found is run
 with `--version` (5 s timeout) and its version recorded. A configured `*.path` may be absolute, start with

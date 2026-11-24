@@ -117,6 +117,9 @@ pub struct LaunchRequest {
     /// Story 5.3, the project's sheet only: `claude --worktree <name>` from the repo's top
     /// level (Claude makes the branch `worktree-<name>` and its folder itself).
     pub worktree_name: Option<String>,
+    /// Story 12.2: a `settings.agents` name to start that agent instead of Claude Code; `None`
+    /// (or `claude`) starts Claude. An agent start uses only the project, the name and the id.
+    pub agent: Option<String>,
 }
 
 /// What `launch_defaults` returns: the sheet's prefill for a project.
@@ -147,6 +150,12 @@ pub struct LaunchPrefill {
     pub add_dirs: Vec<graph::EdgeDir>,
     /// The project's context edges whose target gives no folder (the sheet's `not added:` line).
     pub skipped: Vec<graph::SkippedEdge>,
+    /// Story 12.2: the Agent the sheet starts with: the project's last choice while that agent is
+    /// still configured, else `claude`.
+    pub agent: String,
+    /// Story 12.2: the `settings.agents` names the Agent select offers after `claude`; empty (no
+    /// Agent field) when none is configured, and on a branch's sheet.
+    pub agents: Vec<String>,
 }
 
 /// The "Worktree" section of a branch sheet whose branch has no worktree: the command and
@@ -638,7 +647,19 @@ pub fn prefill(project: Option<&graph::LaunchDefaults>, settings: &settings::Lau
         repo_top: None,
         add_dirs: Vec::new(),
         skipped: Vec::new(),
+        agent: settings::store::CLAUDE_AGENT.to_string(),
+        agents: Vec::new(),
     }
+}
+
+/// Story 12.2: the Agent choice a project's sheet opens with: its remembered agent while it is
+/// still one of `configured`, else `claude`.
+pub fn prefill_agent(project: Option<&graph::LaunchDefaults>, configured: &[String]) -> String {
+    project
+        .and_then(|p| p.agent.as_deref())
+        .filter(|agent| configured.iter().any(|c| c == agent))
+        .unwrap_or(settings::store::CLAUDE_AGENT)
+        .to_string()
 }
 
 /// What a start remembers for the project (`Project.launchDefaults`): the three choices as
@@ -649,6 +670,7 @@ pub fn remembered(req: &LaunchRequest) -> graph::LaunchDefaults {
         model: choice(req.model.as_deref()),
         effort: choice(req.effort.as_deref()),
         permission_mode: choice(req.permission_mode.as_deref()),
+        agent: None,
     }
 }
 
@@ -1397,12 +1419,15 @@ mod tests {
                 repo_top: None,
                 add_dirs: Vec::new(),
                 skipped: Vec::new(),
+                agent: "claude".into(),
+                agents: Vec::new(),
             }
         );
         let project = graph::LaunchDefaults {
             model: Some("opus".into()),
             effort: Some("high".into()),
             permission_mode: None,
+            agent: None,
         };
         let filled = prefill(Some(&project), &settings, ID.into(), "n".into());
         assert_eq!((filled.model.as_str(), filled.effort.as_str(), filled.permission_mode.as_str()), ("opus", "high", "default"));
@@ -1411,6 +1436,7 @@ mod tests {
             model: Some("my-model".into()),
             effort: Some("ultra".into()),
             permission_mode: Some("bypassPermissions".into()),
+            agent: None,
         };
         let filled = prefill(Some(&odd), &settings, ID.into(), "n".into());
         assert_eq!((filled.model.as_str(), filled.effort.as_str(), filled.permission_mode.as_str()), ("my-model", "default", "default"));
@@ -1435,8 +1461,31 @@ mod tests {
                 model: Some("opus".into()),
                 effort: Some("default".into()),
                 permission_mode: Some("plan".into()),
+                agent: None,
             }
         );
+    }
+
+    #[test]
+    fn the_agent_prefill_is_the_remembered_one_while_it_is_configured() {
+        let configured = vec!["kimi".to_string(), "qwen".to_string()];
+        let with = |agent: Option<&str>| graph::LaunchDefaults {
+            agent: agent.map(str::to_string),
+            ..graph::LaunchDefaults::default()
+        };
+        assert_eq!(prefill_agent(None, &configured), "claude");
+        assert_eq!(prefill_agent(Some(&with(None)), &configured), "claude");
+        assert_eq!(prefill_agent(Some(&with(Some("qwen"))), &configured), "qwen");
+        // No longer configured: Claude.
+        assert_eq!(prefill_agent(Some(&with(Some("gone"))), &configured), "claude");
+        assert_eq!(prefill_agent(Some(&with(Some("kimi"))), &[]), "claude");
+        // `launchDefaults.agent` is left out for Claude, and read back from a file without it.
+        let wire = serde_json::to_value(with(Some("claude"))).unwrap();
+        assert!(wire.get("agent").is_none(), "{wire}");
+        assert!(serde_json::to_value(with(None)).unwrap().get("agent").is_none());
+        assert_eq!(serde_json::to_value(with(Some("kimi"))).unwrap()["agent"], "kimi");
+        let old: graph::LaunchDefaults = serde_json::from_value(serde_json::json!({ "model": "opus" })).unwrap();
+        assert_eq!(old.agent, None);
     }
 
     #[test]

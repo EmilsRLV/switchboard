@@ -16,8 +16,11 @@ Select a project or branch node and press `n` (**New session…**) to open the l
 - **First prompt (optional)** and **Start in background**.
 
 Enter in a field, or **Start** (also **New session: start**), starts the session; ctrl+Enter starts from the
-prompt box. A blocked Start shows its reason beside it. Once started, the node is
-selected and the terminal pane opens on it, unless started in the background.
+prompt box. A blocked Start says why. Once started, the node is selected and its terminal opens, unless
+started in the background.
+
+With `agents` in [settings](settings.md), the sheet starts with an **Agent** choice. Another agent keeps
+only **Name** and **Start in background**, and runs as an [agent node](legend.md#agent-nodes).
 
 ## Commands on a session node
 
@@ -40,8 +43,8 @@ While it is waiting or finished, its state word and border take the attention co
 glows.
 ```
 
-The first line is the session's title, then `N new` and **review** when they apply; the second, its state,
-branch, message count and age. What each means is on [What you see](legend.md#session-states).
+Line one is the title, `N new` and **review**; line two the state, branch, message count and age (see
+[What you see](legend.md#session-states)).
 
 After `/clear` a session **keeps its node**, terminal and edges, and its state follows the new conversation.
 Its tooltip says `cleared N times`; **Resume** and **Fork** use the current conversation.

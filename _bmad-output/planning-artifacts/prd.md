@@ -57,6 +57,7 @@ Requirements are numbered `FR-<area>-<n>` so epics and specs can cite them. "Mus
 | FR-SESS-8 | Every app-launched session gets: a stable session id chosen by the app (`--session-id`), a display name (`--name`), the Switchboard MCP server (`--mcp-config`), status hooks (`--settings`), and a short appended system prompt describing its node, peers and the MCP tools. | Must |
 | FR-SESS-9 | Pin/unpin a historic session so it is always shown. Rename (local label; does not rename Claude's title). | Should |
 | FR-SESS-10 | Cost/token summary per session from transcript usage records. | Later |
+| FR-SESS-12 | **Agent cards** (Story 12.2): other coding agents listed in `settings.agents` (`{name, command, args, env}`) are offered by the project's launch sheet. One runs in a Switchboard terminal in the project folder, with separate arguments and no settings file, MCP config or system prompt, and shows as an agent card whose state comes from its process only (`running` / `exited (<code>)`); it counts toward `N live`, an unseen exit takes the attention colour and glow, and it has Show terminal, Stop, Restart and Remove. No history, hooks, resume, fork or edges; runs are memory only. | Should |
 
 ### 2.4 Terminal (`FR-TERM`)
 
@@ -172,7 +173,7 @@ Requirements are numbered `FR-<area>-<n>` so epics and specs can cite them. "Mus
 
 ## 5. Out of scope (recorded)
 
-File editing; LSP; debugging; other agents; macOS testing; cloud/remote sessions; multi-user; marketplace/plugins for the app itself; re-implementing Claude Code's chat rendering.
+File editing; LSP; debugging; full support for other agents (their history, state and resume; Story 12.2 runs them as basic cards only, FR-SESS-12); macOS testing; cloud/remote sessions; multi-user; marketplace/plugins for the app itself; re-implementing Claude Code's chat rendering.
 
 ## 6. Open questions
 

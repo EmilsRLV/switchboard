@@ -5,6 +5,7 @@
 
 import type { Node } from "@xyflow/react";
 import type {
+  AgentMeta,
   BranchMeta,
   ChildKind,
   ChildNode,
@@ -95,8 +96,10 @@ export type MoreNodeData = {
 export type ProjectFlowNode = Node<ProjectNodeData, "project">;
 export type SessionFlowNode = Node<ChildNodeData, "session">;
 export type BranchFlowNode = Node<ChildNodeData, "branch">;
+/** Story 12.2: an agent card (`child.agent` set); `attention` is its unseen exit, `stopping` a Stop under way. */
+export type AgentFlowNode = Node<ChildNodeData, "agent">;
 export type MoreFlowNode = Node<MoreNodeData, "more">;
-export type CanvasFlowNode = ProjectFlowNode | SessionFlowNode | BranchFlowNode | MoreFlowNode;
+export type CanvasFlowNode = ProjectFlowNode | SessionFlowNode | BranchFlowNode | AgentFlowNode | MoreFlowNode;
 
 /**
  * The synthetic `more` row of one group of a project's column: `id` is the project's id and
@@ -201,6 +204,7 @@ export function flowIdOf(target: CanvasTarget): string {
 export function parseFlowId(flowId: string): CanvasTarget {
   if (flowId.startsWith("session:")) return { kind: "session", id: flowId.slice("session:".length) };
   if (flowId.startsWith("branch:")) return { kind: "branch", id: flowId.slice("branch:".length) };
+  if (flowId.startsWith("agent:")) return { kind: "agent", id: flowId.slice("agent:".length) };
   if (flowId.startsWith("more-branches:")) return moreTarget(flowId.slice("more-branches:".length), "branches");
   if (flowId.startsWith("more:")) return { kind: "more", id: flowId.slice("more:".length) };
   if (flowId.startsWith("edge:")) return { kind: "edge", id: flowId.slice("edge:".length) };
@@ -483,9 +487,12 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
   const reviewOf = (child: ChildNode): boolean => child.kind === "session" && Object.hasOwn(review, child.id) && review[child.id] === true;
   const branchErrors = inputs.branchErrors ?? NO_ERRORS;
   const stoppingOf = (child: ChildNode): boolean => {
+    if (child.kind === "agent") return isAgentRunning(child) && stopping.includes(child.id);
     const state = stateOf(child);
     return state !== null && isLiveState(state) && stopping.includes(child.id);
   };
+  // Story 12.2: an agent card's attention is its unseen exit; a session's, its live state.
+  const attentionOf = (child: ChildNode): boolean => (child.kind === "agent" ? agentNeedsAttention(child) : needsAttention(stateOf(child)));
   // Every session's title by id, for a fork's "forked from" (Story 4.4).
   const titles = new Map<string, string>();
   for (const child of children) if (child.kind === "session") titles.set(child.id, child.label);
@@ -495,7 +502,11 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
   // acknowledged is skipped, as there); while every one is, the longest waiting of them.
   const glowTextOf = (kids: readonly ChildNode[]): string | null => {
     const first = attentionOrder(kids, live, (id) => !isAcknowledging(id))[0] ?? attentionOrder(kids, live)[0];
-    if (first === undefined) return null;
+    if (first === undefined) {
+      // Story 12.2: else the first agent card whose exit went unseen.
+      const agent = kids.find(agentNeedsAttention);
+      return agent?.agent === undefined || agent.agent === null ? null : agentGlowText(agent.label, agent.agent);
+    }
     const child = kids.find((c) => c.kind === "session" && c.id === first.sessionId);
     const state = child === undefined ? null : stateOf(child);
     return child === undefined || state === null ? null : glowText(child.label, state);
@@ -525,12 +536,14 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
         flashed: flashed.includes(project.id),
         selected: projectSelected,
         childCount: kids.length,
-        // The badge counts the project's own session children in a live state.
+        // The badge counts the project's own session children in a live state, and (Story 12.2)
+        // its running agent cards.
         liveCount: kids.filter((child) => {
+          if (child.kind === "agent") return isAgentRunning(child);
           const state = stateOf(child);
           return state !== null && isLiveState(state);
         }).length,
-        attention: kids.some((child) => needsAttention(stateOf(child))),
+        attention: kids.some(attentionOf),
         attentionText: glowTextOf(kids),
         branchesError: project.showBranches && Object.hasOwn(branchErrors, project.id) ? (branchErrors[project.id] ?? null) : null,
       },
@@ -546,7 +559,7 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
       const id = childFlowId(child);
       const childDrag = override(dragging, id);
       const childSelected = selection !== null && selection.kind === child.kind && selection.id === child.id;
-      const next: SessionFlowNode | BranchFlowNode = {
+      const next: SessionFlowNode | BranchFlowNode | AgentFlowNode = {
         id,
         type: child.kind,
         parentId: project.id,
@@ -555,7 +568,7 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
           child,
           selected: childSelected,
           state: stateOf(child),
-          attention: needsAttention(stateOf(child)),
+          attention: attentionOf(child),
           lastLine: lastLineOf(child),
           detail: detailOf(child),
           statusText: statusTextOf(child),
@@ -633,7 +646,7 @@ function sameNode(a: CanvasFlowNode, b: CanvasFlowNode): boolean {
       a.data.selected === b.data.selected
     );
   }
-  if ((a.type === "session" || a.type === "branch") && (b.type === "session" || b.type === "branch")) {
+  if ((a.type === "session" || a.type === "branch" || a.type === "agent") && (b.type === "session" || b.type === "branch" || b.type === "agent")) {
     return (
       a.data.selected === b.data.selected &&
       a.data.attention === b.data.attention &&
@@ -684,8 +697,59 @@ function sameChild(a: ChildNode, b: ChildNode): boolean {
       a.forkedFrom === b.forkedFrom &&
       sameSession(a.session, b.session) &&
       sameBranch(a.branch ?? null, b.branch ?? null) &&
+      sameAgent(a.agent ?? null, b.agent ?? null) &&
       (a.position === b.position || (a.position !== null && b.position !== null && samePosition(a.position, b.position))))
   );
+}
+
+function sameAgent(a: AgentMeta | null, b: AgentMeta | null): boolean {
+  return (
+    a === b ||
+    (a !== null && b !== null && a.agent === b.agent && a.startedAt === b.startedAt && a.exited === b.exited && a.attention === b.attention)
+  );
+}
+
+// --- agent cards (Story 12.2) ------------------------------------------------------------------
+
+/** True for an agent card whose process runs (it counts toward the project's `N live`). */
+export function isAgentRunning(child: Pick<ChildNode, "kind" | "agent">): boolean {
+  return child.kind === "agent" && child.agent !== undefined && child.agent !== null && child.agent.exited === null;
+}
+
+/** True for an agent card whose exit nobody saw: the attention colour and the project's glow. */
+export function agentNeedsAttention(child: Pick<ChildNode, "kind" | "agent">): boolean {
+  return child.kind === "agent" && child.agent !== undefined && child.agent !== null && child.agent.attention;
+}
+
+/** An agent card's state word, from its process only: `running` (`stopping` during a Stop), else `exited (<code>)`. */
+export function agentStateWord(meta: AgentMeta, stopping = false): string {
+  if (meta.exited !== null) return `exited (${meta.exited})`;
+  return stopping ? STOPPING_WORD : "running";
+}
+
+/** The project glow's tooltip for an agent card that exited unseen: `<label> exited (<code>)`. */
+export function agentGlowText(label: string, meta: AgentMeta): string {
+  return `${label} ${agentStateWord(meta)}`;
+}
+
+/** An agent card's accessible name: `Agent <label> (<agent>), <state>`, then `needs you` while its exit is unseen. */
+export function agentAriaLabel(data: Pick<ChildNodeData, "child" | "attention" | "stopping">): string {
+  const meta = data.child.agent;
+  if (meta === undefined || meta === null) return `Agent ${data.child.label}`;
+  const parts = [`Agent ${data.child.label} (${meta.agent})`, agentStateWord(meta, data.stopping)];
+  if (data.attention) parts.push("needs you");
+  return parts.join(", ");
+}
+
+/** An agent card's `title`: its state, the agent it runs and when it started, then `needs you` while its exit is unseen. */
+export function agentCardTitle(data: Pick<ChildNodeData, "child" | "attention" | "stopping">): string {
+  const meta = data.child.agent;
+  if (meta === undefined || meta === null) return data.child.label;
+  const lines = [agentStateWord(meta, data.stopping), `${data.child.label} · ${meta.agent}`];
+  const started = Date.parse(meta.startedAt);
+  if (Number.isFinite(started)) lines.push(`started ${new Date(started).toLocaleString()}`);
+  if (data.attention) lines.push("needs you");
+  return lines.join("\n");
 }
 
 function sameSession(a: SessionMeta | null, b: SessionMeta | null): boolean {

@@ -847,3 +847,68 @@ fn stop_writes_its_input_in_order_then_kills_only_a_child_still_running() {
     assert!(started.elapsed() >= Duration::from_millis(400));
     wait_dead(pid);
 }
+
+/// Story 12.2: an agent's environment, in order: the inherited one minus the parent-session
+/// markers, `TERM` / `COLORTERM`, the agent's `env` (which may override `TERM`), then
+/// `SWITCHBOARD_NODE`, which the agent's `env` cannot override.
+#[test]
+fn the_agent_env_order_leaves_switchboard_node_unoverridable() {
+    let env = vec![
+        ("TERM".to_string(), "dumb".to_string()),
+        ("SWITCHBOARD_NODE".to_string(), "spoofed".to_string()),
+        ("KIMI_KEY".to_string(), "sk-1".to_string()),
+    ];
+    let spec = crate::agents::spawn_spec(std::path::Path::new("kimi"), &["--yolo".to_string()], "/p", env, "node-1");
+    let cmd = spec.command();
+    let get = |name: &str| cmd.get_env(name).map(|v| v.to_string_lossy().into_owned());
+    assert_eq!(get("SWITCHBOARD_NODE").as_deref(), Some("node-1"));
+    assert_eq!(get("TERM").as_deref(), Some("dumb"), "the agent's env comes after TERM");
+    assert_eq!(get("COLORTERM").as_deref(), Some("truecolor"));
+    assert_eq!(get("KIMI_KEY").as_deref(), Some("sk-1"));
+    for name in PARENT_SESSION_VARS {
+        assert!(cmd.get_env(name).is_none(), "{name} is removed");
+    }
+    assert_eq!(cmd.get_argv().iter().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>(), ["kimi", "--yolo"]);
+}
+
+/// Story 12.2: an agent terminal is restarted only by opening it again (its card's Restart, which
+/// keeps its place in the list), and closed (its card's Remove) only once exited.
+#[test]
+fn an_agent_terminal_reopens_in_place_and_closes_once_exited() {
+    let f = Fixture::new();
+    let cwd = f.dir.path().display().to_string();
+    f.open("plain-p", 80, 24);
+    let info = f
+        .manager
+        .open_kind(TermKind::Agent, "agent:a", "p", "kimi-1a2b", &cwd, (80, 24), line_echo_fixture(f.dir.path()), f.sink.clone(), no_hooks())
+        .unwrap();
+    assert_eq!((info.kind, info.title.as_str()), (TermKind::Agent, "kimi-1a2b"));
+    assert_eq!(serde_json::to_value(info.kind).unwrap(), "agent");
+    assert_eq!(
+        f.manager.restart("agent:a", || Ok(fixture(f.dir.path())), f.sink.clone()).unwrap_err(),
+        "an agent terminal is restarted from its card"
+    );
+    assert_eq!(f.manager.close("agent:a"), Err("terminal is still running".to_string()));
+    // A second open while it runs is refused.
+    assert!(
+        f.manager
+            .open_kind(TermKind::Agent, "agent:a", "p", "kimi-1a2b", &cwd, (80, 24), line_echo_fixture(f.dir.path()), f.sink.clone(), no_hooks())
+            .is_err()
+    );
+    f.manager.write("agent:a", b"one\r").unwrap();
+    f.wait_for("agent:a", "got=one", |t| t.contains("got=one"));
+    assert_eq!(f.wait_exit("agent:a"), Some(0));
+    // Restart: the same id, in the same place in the list, running again.
+    let again = f
+        .manager
+        .open_kind(TermKind::Agent, "agent:a", "p", "kimi-1a2b", &cwd, (80, 24), line_echo_fixture(f.dir.path()), f.sink.clone(), no_hooks())
+        .unwrap();
+    assert_eq!(again.exited, None);
+    let order: Vec<String> = f.manager.list().into_iter().map(|t| t.id).collect();
+    assert_eq!(order, ["plain-p", "agent:a"]);
+    f.manager.write("agent:a", b"two\r").unwrap();
+    assert_eq!(f.wait_exit("agent:a"), Some(0));
+    f.manager.close("agent:a").unwrap();
+    assert!(f.manager.get("agent:a").is_none());
+    f.manager.kill("plain-p").unwrap();
+}

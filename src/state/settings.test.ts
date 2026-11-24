@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { SettingsSnapshot } from "../ipc";
-import { selectBanners, useSettingsStore } from "./settings";
+import { displayedSettings, selectBanners, useSettingsStore } from "./settings";
 
 const snapshot: SettingsSnapshot = {
   path: "C:\\Users\\me\\AppData\\Roaming\\switchboard\\settings.json",
@@ -115,5 +115,19 @@ describe("selectBanners", () => {
     useSettingsStore.getState().applySnapshot(snapshot);
     useSettingsStore.getState().applySnapshot({ ...snapshot, banners: [] });
     expect(selectBanners(useSettingsStore.getState())).toEqual([]);
+  });
+});
+
+describe("the Effective settings (Story 12.2)", () => {
+  it("show each agent's env names, never their values", () => {
+    const settings = {
+      ...snapshot.settings,
+      agents: [{ name: "kimi", command: "kimi", args: ["--yolo"], env: { KIMI_API_KEY: "sk-secret", MODE: "${env:MODE}" } }],
+    };
+    const shown = displayedSettings(settings);
+    expect(shown.agents).toEqual([{ name: "kimi", command: "kimi", args: ["--yolo"], env: { KIMI_API_KEY: "…", MODE: "…" } }]);
+    expect(JSON.stringify(shown)).not.toContain("sk-secret");
+    expect(settings.agents[0]?.env.KIMI_API_KEY).toBe("sk-secret");
+    expect(displayedSettings(snapshot.settings)).toBe(snapshot.settings);
   });
 });

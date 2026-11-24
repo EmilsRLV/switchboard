@@ -75,9 +75,12 @@ export function checkLink(edges: readonly Edge[], from: NodeRef, to: NodeRef): L
   return check;
 }
 
-/** The edge end a canvas target names: a project, session or branch card; `null` for a `more` row or an edge. */
+/**
+ * The edge end a canvas target names: a project, session or branch card; `null` for a `more` row,
+ * an edge, or an agent card (Story 12.2: never an edge end).
+ */
 export function nodeRefOf(target: CanvasTarget | null): NodeRef | null {
-  if (target === null || target.kind === "more" || target.kind === "edge") return null;
+  if (target === null || target.kind === "more" || target.kind === "edge" || target.kind === "agent") return null;
   return { type: target.kind, id: target.id };
 }
 

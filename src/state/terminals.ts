@@ -82,20 +82,22 @@ export function isTerminalExited(id: string | null): boolean {
 
 /**
  * True when terminal `id` has exited and can be restarted: a plain terminal. A session
- * terminal is never restarted; its session is resumed instead (`session.resume`, Story 4.4).
+ * terminal is never restarted; its session is resumed instead (`session.resume`, Story 4.4). An
+ * agent terminal is restarted from its card (`agent.restart`, Story 12.2).
  */
 export function isTerminalRestartable(id: string | null): boolean {
   const info = terminalInfo(id);
-  return info !== null && info.exited !== null && info.kind !== "session";
+  return info !== null && info.exited !== null && info.kind === "plain";
 }
 
 /**
  * The header's state word: `running` (`stopping` while a Stop is under way, Story 4.4),
- * `exited N`, or the reason the shell could not start.
+ * `exited N` (an agent's, Story 12.2: `exited (N)`, as its card reads), or the reason the shell
+ * could not start.
  */
 export function terminalStateText(info: TermInfo): string {
   if (info.error !== null) return info.error;
-  if (info.exited !== null) return `exited ${info.exited}`;
+  if (info.exited !== null) return info.kind === "agent" ? `exited (${info.exited})` : `exited ${info.exited}`;
   return info.stopping ? "stopping" : "running";
 }
 
@@ -109,6 +111,17 @@ export function sessionTerminalId(sessionId: string): string {
   return `session:${sessionId}`;
 }
 
+/** Mirrors `pty::agent_id` (Story 12.2): the id of the terminal an agent card's run lives in. */
+export function agentTerminalId(nodeId: string): string {
+  return `agent:${nodeId}`;
+}
+
+/** The inverse of {@link agentTerminalId}: the agent card an agent terminal id names, else `null`. */
+export function agentIdOfTerminal(terminalId: string): string | null {
+  const prefix = agentTerminalId("");
+  return terminalId.startsWith(prefix) && terminalId.length > prefix.length ? terminalId.slice(prefix.length) : null;
+}
+
 /** The inverse of {@link sessionTerminalId}: the session a session terminal id names, else `null`. */
 export function sessionIdOfTerminal(terminalId: string): string | null {
   const prefix = sessionTerminalId("");
@@ -117,14 +130,14 @@ export function sessionIdOfTerminal(terminalId: string): string | null {
 
 /**
  * The sessions whose Switchboard terminal is being stopped (Story 4.4): session terminals with
- * `stopping` set that have not exited, by session id, in `infos` order. What the canvas reads
- * for the `stopping` word.
+ * `stopping` set that have not exited, by session id, in `infos` order -- and (Story 12.2) agent
+ * cards, by node id. What the canvas reads for the `stopping` word.
  */
 export function stoppingSessionIds(infos: Readonly<Record<string, TermInfo>>): string[] {
   const ids: string[] = [];
   for (const info of Object.values(infos)) {
-    if (info.kind !== "session" || !info.stopping || info.exited !== null) continue;
-    const id = sessionIdOfTerminal(info.id);
+    if (info.kind === "plain" || !info.stopping || info.exited !== null) continue;
+    const id = info.kind === "agent" ? agentIdOfTerminal(info.id) : sessionIdOfTerminal(info.id);
     if (id !== null) ids.push(id);
   }
   return ids;

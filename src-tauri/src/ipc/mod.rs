@@ -889,6 +889,8 @@ pub async fn workspace_remove_project<R: Runtime>(app: AppHandle<R>, project_id:
     let watch_app = app.clone();
     let _ = tauri::async_runtime::spawn_blocking(move || git::watch::sync(&watch_app)).await;
     app.state::<AppState>().branch_locks.forget(&project_id);
+    // Its agent cards go (Story 12.2), before their terminals are killed.
+    crate::agents::forget_project(&app, &project_id);
     // Its terminals go too: their children are killed and the terminals forgotten.
     let terms_app = app.clone();
     let forget_id = project_id.clone();
@@ -1284,6 +1286,12 @@ fn sink<R: Runtime>(app: &AppHandle<R>) -> std::sync::Arc<dyn pty::Sink> {
     std::sync::Arc::new(EventSink(app.clone()))
 }
 
+/// The [`pty::Sink`] that emits terminal events to every webview (`crate::agents` opens its
+/// terminals with it).
+pub fn event_sink<R: Runtime>(app: &AppHandle<R>) -> std::sync::Arc<dyn pty::Sink> {
+    sink(app)
+}
+
 /// Run blocking PTY work off the main thread and the async workers.
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(work).await.map_err(|err| err.to_string())
@@ -1592,10 +1600,18 @@ pub async fn launch_defaults<R: Runtime>(app: AppHandle<R>, project_id: String, 
     }];
     let own = target_path.clone().unwrap_or_else(|| path.clone());
     let (add_dirs, skipped) = blocking(move || edge_add_dirs(&edges_app.state::<AppState>(), &source, &own)).await?;
-    let settings = state.read().settings.defaults.clone();
+    let (settings, agents) = {
+        let st = state.read();
+        (st.settings.defaults.clone(), st.settings.agents.iter().map(|a| a.name.clone()).collect::<Vec<String>>())
+    };
     let session_id = state.launcher.propose(&project_id);
     let name = launch::default_name(&label, &session_id);
+    // Story 12.2: the Agent field, on the project's sheet only.
+    let agents = if branch.is_none() { agents } else { Vec::new() };
+    let agent = launch::prefill_agent(project_defaults.as_ref(), &agents);
     Ok(LaunchPrefill {
+        agent,
+        agents,
         branch,
         target_path,
         worktree_plan,
@@ -1664,6 +1680,33 @@ pub async fn session_launch<R: Runtime>(
     rows: Option<u16>,
 ) -> Result<LaunchResult, String> {
     let size = (cols.unwrap_or(pty::DEFAULT_COLS), rows.unwrap_or(pty::DEFAULT_ROWS));
+    // Story 12.2: another coding agent. No claim, hooks, settings or MCP file, add-dirs, system
+    // prompt or worktree: the program runs in the project folder and is tracked by its process.
+    if let Some(agent) = request.agent.clone().filter(|a| a != crate::settings::store::CLAUDE_AGENT) {
+        return blocking(move || {
+            // The id the sheet showed, once, as for Claude: a stale sheet or a second start is
+            // refused; a start that fails gives it back, so the open sheet can try again.
+            let state = app.state::<AppState>();
+            state.launcher.claim(&request.project_id, &request.session_id)?;
+            let started = crate::agents::start(&app, &request.project_id, &agent, &request.name, &request.session_id, size);
+            if started.is_err() {
+                state.launcher.unclaim(&request.project_id, &request.session_id);
+            }
+            let (session_id, term) = started?;
+            let choice = || launch::DEFAULT_CHOICE.to_string();
+            Ok(LaunchResult {
+                session_id,
+                term,
+                choices: LaunchChoices {
+                    model: choice(),
+                    effort: choice(),
+                    permission_mode: choice(),
+                },
+                skipped: Vec::new(),
+            })
+        })
+        .await?;
+    }
     let check_app = app.clone();
     let (mut launch, create) = blocking(move || -> Result<(Launch, Option<String>), String> {
         let state = check_app.state::<AppState>();
@@ -1913,6 +1956,39 @@ pub async fn session_fork<R: Runtime>(
 #[tauri::command]
 pub async fn session_stop<R: Runtime>(app: AppHandle<R>, session_id: String) -> Result<TermInfo, String> {
     blocking(move || stop_session(&app, &session_id)).await?
+}
+
+// ---------------------------------------------------------------------------------------
+// Agent cards (Story 12.2)
+// ---------------------------------------------------------------------------------------
+
+/// Stop a running agent card: Ctrl+C, a second Ctrl+C 300 ms later, a kill 5 s later if it still
+/// runs; a second Stop kills at once. Replies with its terminal's info (`stopping` set).
+#[tauri::command]
+pub async fn agent_stop<R: Runtime>(app: AppHandle<R>, id: String) -> Result<TermInfo, String> {
+    blocking(move || crate::agents::stop(&app, &id)).await?
+}
+
+/// Restart an exited agent card in the same tab, under the same node id, with the same agent,
+/// args and env. Refused while it runs.
+#[tauri::command]
+pub async fn agent_restart<R: Runtime>(app: AppHandle<R>, id: String, cols: Option<u16>, rows: Option<u16>) -> Result<TermInfo, String> {
+    let size = (cols.unwrap_or(pty::DEFAULT_COLS), rows.unwrap_or(pty::DEFAULT_ROWS));
+    blocking(move || crate::agents::restart(&app, &id, size)).await?
+}
+
+/// Remove an exited agent card: the card and its terminal go. Refused while it runs.
+#[tauri::command]
+pub async fn agent_remove<R: Runtime>(app: AppHandle<R>, id: String) -> Result<WorkspaceSnapshot, String> {
+    blocking(move || crate::agents::remove(&app, &id)).await?
+}
+
+/// The selection is agent card `id` now (`null`: anything else, or nothing): its attention is
+/// acknowledged, and an exit while it stays selected (and the window focused) is seen. Replies
+/// whether a card's attention was cleared.
+#[tauri::command]
+pub fn agent_acknowledge<R: Runtime>(app: AppHandle<R>, id: Option<String>) -> bool {
+    crate::agents::acknowledge(&app, id.as_deref())
 }
 
 /// The work of [`session_stop`]. Sessions started elsewhere have no Switchboard terminal and
@@ -2511,6 +2587,7 @@ pub fn plan_agent_launch(state: &AppState, start: AgentStart) -> Result<AgentLau
         branch: start.branch.clone(),
         create_worktree: false,
         worktree_name: None,
+        agent: None,
     };
     let (mut launch, create) = new_launch(state, request)?;
     if create.is_some() {

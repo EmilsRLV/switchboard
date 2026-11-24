@@ -352,6 +352,20 @@
   flex: none;
 }
 
+/* Story 12.2: the agent chip -- the name of the agent an agent card runs, mono, in a 1-px
+   --border box like the worktree chip. Never the accent: the card's state word carries it. */
+.child-node-meta > .agent-node-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: var(--line) solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 0.3rem;
+  line-height: 1.1;
+}
+
 .child-node-meta > .branch-node-worktree {
   flex: 0 1 auto;
   min-width: 0;

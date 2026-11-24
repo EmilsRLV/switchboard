@@ -46,7 +46,7 @@ import { useUiStore } from "../state/ui";
 import { persistViewport, useWorkspaceStore } from "../state/workspace";
 import { reportFirstFrame } from "../perf";
 import { isTourOn, tourFirstFrame } from "../state/tour";
-import { BranchNode, MoreNode, SessionNode } from "./ChildNode";
+import { AgentNode, BranchNode, MoreNode, SessionNode } from "./ChildNode";
 import { FORK_HANDLE, checkFlowLink, linkFlowEdges, nodeRefOfFlowId, type LinkEdgeData, type LinkFlowEdge } from "./edges";
 import { GhostCard } from "./GhostCard";
 import { MAX_ZOOM, MIN_ZOOM } from "./limits";
@@ -73,7 +73,7 @@ const NO_CHILDREN: readonly ChildNode[] = [];
 const NO_BRANCH_ERRORS: Readonly<Record<string, string>> = Object.freeze({});
 const NO_STOPPING: readonly string[] = [];
 const NO_EDGES: readonly StoredEdge[] = [];
-const NODE_TYPES: NodeTypes = { project: ProjectNode, session: SessionNode, branch: BranchNode, more: MoreNode };
+const NODE_TYPES: NodeTypes = { project: ProjectNode, session: SessionNode, branch: BranchNode, agent: AgentNode, more: MoreNode };
 
 /**
  * The "forked from" line (Story 4.4): a thin, muted curve between the left edges of a fork's

@@ -484,7 +484,7 @@ describe("terminal tabs (Story 4.5)", () => {
     expect(isPoppedOut(null)).toBe(false);
   });
 
-  const term = (id: string, kind: "plain" | "session", project = "ide") => ({
+  const term = (id: string, kind: "plain" | "session" | "agent", project = "ide") => ({
     id,
     kind,
     project_id: project,
@@ -495,6 +495,13 @@ describe("terminal tabs (Story 4.5)", () => {
     cols: 80,
     rows: 24,
     stopping: false,
+  });
+
+  it("Story 12.2: an agent card's terminal is agent:<id> once known", () => {
+    expect(terminalOfTarget({ kind: "agent", id: "a1" })).toBeNull();
+    useTerminalStore.getState().upsert(term("agent:a1", "agent"));
+    expect(terminalOfTarget({ kind: "agent", id: "a1" })).toBe("agent:a1");
+    expect(terminalOfTarget({ kind: "agent", id: "a2" })).toBeNull();
   });
 
   it("selecting a node with a terminal switches the open pane to its tab, without taking focus", () => {

@@ -61,6 +61,8 @@ export const TOOLBAR_KINDS: Readonly<Record<ToolbarKind, readonly string[]>> = {
   project: ["project.newSession", "project.terminal", "edge.link", "review.changes"],
   session: ["session.resume", "session.showTerminal", "session.fork", "edge.link", "review.changes"],
   branch: ["branch.newSession", "branch.newWorktree", "branch.removeWorktree", "review.changes"],
+  // Story 12.2: an agent card's commands are all here (it has nothing else).
+  agent: ["agent.showTerminal", "agent.stop", "agent.restart", "agent.remove"],
 };
 
 /** At most this many buttons before `⋯`. */

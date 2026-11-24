@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ADD_DIR_MISSING,
+  agentChoices,
   canStart,
   claudeWorktreeFolder,
   editedForm,
@@ -9,6 +10,8 @@ import {
   EFFORT_CHOICES,
   formErrors,
   formFromPrefill,
+  idHex,
+  isAgentForm,
   launchKeyAction,
   launchKeyTarget,
   launchRequest,
@@ -35,6 +38,9 @@ function form(overrides: Partial<LaunchForm> = {}): LaunchForm {
 describe("the prefill", () => {
   it("becomes the form: choices kept, add-dirs and prompt empty, background off", () => {
     expect(formFromPrefill({ ...prefill, model: "opus", effort: "high", permissionMode: "plan" })).toEqual({
+      agent: "claude",
+      claudeName: "ide-3f2a",
+      nameHex: "3f2a",
       name: "ide-3f2a",
       model: "opus",
       customModel: "",
@@ -147,8 +153,9 @@ describe("validation and the request", () => {
       branch: null,
       createWorktree: false,
       worktreeName: null,
+      agent: null,
     });
-    expect(launchRequest("p1", "sid", form({ prompt: "  \n " })).prompt).toBeNull();
+    expect(launchRequest("p1", "sid", form({ prompt: "\n " })).prompt).toBeNull();
     expect(launchRequest("p1", "sid", form()).model).toBe("default");
   });
 });
@@ -278,5 +285,66 @@ describe("the key rule", () => {
     expect(launchKeyAction(key("Enter", { altKey: true }), "field")).toBeNull();
     expect(launchKeyAction(key("a"), "field")).toBeNull();
     expect(launchKeyAction(key("Escape"), "field")).toBeNull();
+  });
+});
+
+describe("the Agent choice (Story 12.2)", () => {
+  const agents = { ...prefill, agents: ["kimi", "qwen"] };
+
+  it("lists claude first, then the configured agents, and nothing without agents", () => {
+    expect(agentChoices(["kimi", "qwen"])).toEqual(["claude", "kimi", "qwen"]);
+    expect(agentChoices([])).toEqual([]);
+    expect(agentChoices(undefined)).toEqual([]);
+  });
+
+  it("opens on Claude without agents: the 0.2.0 form", () => {
+    const f = formFromPrefill(prefill);
+    expect(f.agent).toBe("claude");
+    expect(isAgentForm(f)).toBe(false);
+    expect(launchRequest("p1", "3f2a-id", f).agent).toBeNull();
+    // A remembered agent that is no longer configured reads as Claude.
+    expect(formFromPrefill({ ...prefill, agent: "kimi" }).agent).toBe("claude");
+  });
+
+  it("opens on the remembered agent with its default name", () => {
+    const f = formFromPrefill({ ...agents, agent: "qwen" });
+    expect([f.agent, f.name]).toEqual(["qwen", "qwen-3f2a"]);
+    expect(idHex("1A2b-c3")).toBe("1A2b");
+  });
+
+  it("switches the default name with the agent until the name is edited", () => {
+    let f = formFromPrefill(agents);
+    f = editedForm(f, { agent: "kimi" });
+    expect(f.name).toBe("kimi-3f2a");
+    f = editedForm(f, { agent: "claude" });
+    expect(f.name).toBe("ide-3f2a");
+    f = editedForm(editedForm(f, { name: "mine" }), { agent: "kimi" });
+    expect(f.name).toBe("mine");
+  });
+
+  it("an agent needs a valid name only: model, worktree, missing add-dirs and plans do not block it", () => {
+    const f = form({ agent: "kimi", name: "kimi-3f2a", model: "custom", customModel: "", useWorktree: true, worktreeName: "", addDirs: ["/gone"] });
+    expect(formErrors(f)).toEqual({ name: null, model: null, worktree: null });
+    expect(startBlockedReason(f, ["/gone"], false, { command: null, path: null, error: "nope" })).toBeNull();
+    expect(startBlockedReason({ ...f, name: " " }, [], false)).toBe("Start needs a valid name: name must not be blank");
+  });
+
+  it("sends the agent, the name and background only", () => {
+    const f = form({ agent: "kimi", name: " kimi-3f2a ", model: "opus", prompt: "hi", addDirs: ["/a"], background: true, useWorktree: true });
+    expect(launchRequest("p1", "3f2a-id", f)).toEqual({
+      projectId: "p1",
+      sessionId: "3f2a-id",
+      name: "kimi-3f2a",
+      model: "default",
+      effort: "default",
+      permissionMode: "default",
+      addDirs: [],
+      prompt: null,
+      background: true,
+      branch: null,
+      createWorktree: false,
+      worktreeName: null,
+      agent: "kimi",
+    });
   });
 });

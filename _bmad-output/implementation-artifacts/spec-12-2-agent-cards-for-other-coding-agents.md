@@ -2,7 +2,8 @@
 title: 'Story 12.2: Agent cards for other coding agents'
 type: 'feature'
 created: '2026-11-23'
-status: 'ready-for-dev'
+status: 'done'
+baseline_commit: '57803181908efd5354ff182f0b30b672236b3af9'
 route: 'dispatch'
 review_loop_iteration: 0
 context:
@@ -84,12 +85,12 @@ context:
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `src-tauri/src/settings/{mod,store}.rs` -- `AgentSetting`, `agents`, validation and banner; tests per refusal.
-- [ ] `src-tauri/src/pty/mod.rs`, `pty/tests.rs` -- `TermKind::Agent`; open, restart, close and stop by kind; a test that env order leaves `SWITCHBOARD_NODE` unoverridable.
-- [ ] `src-tauri/src/agents.rs`, `settings/mod.rs` (AppState) -- the registry, the `${env:}` resolution, command lookup with the batch refusal, the spawn, exit and attention, restart, remove and acknowledge; unit tests over the pure parts.
-- [ ] `src-tauri/src/graph/mod.rs`, `ipc/mod.rs`, `lib.rs` -- the kinds, the child merge, the launch branch, IPCs `agent_stop`, `agent_restart`, `agent_remove` and `agent_acknowledge`, the `launchDefaults.agent` field; a lib.rs fixture test that drives start → exit → attention → restart → remove and the refusals in the matrix.
-- [ ] `src/ipc/index.ts`, `src/commands/{launch,agents,nodes,builtins}.ts`, `src/components/LaunchPane.tsx`, `src/canvas/{ChildNode.tsx,Canvas.tsx,nodes.ts,nodes.css}`, `src/state/{terminals,ui}.ts` -- the UI, with vitest tests for the form rules, the toolbar set, live count and attention.
-- [ ] `docs/help/sessions.md`, help Terms and legend pages, `README.md` (Starting sessions, Settings), `docs/DESIGN.md`, `ROADMAP.md` (Not planned → "Full support for agents other than Claude Code (their history, state and resume); a basic card that runs them is in"), `CHANGELOG.md` (Unreleased › Sessions), and PRD §5 plus the epics overview to match.
+- [x] `src-tauri/src/settings/{mod,store}.rs` -- `AgentSetting`, `agents`, validation and banner; tests per refusal.
+- [x] `src-tauri/src/pty/mod.rs`, `pty/tests.rs` -- `TermKind::Agent`; open, restart, close and stop by kind; a test that env order leaves `SWITCHBOARD_NODE` unoverridable.
+- [x] `src-tauri/src/agents.rs`, `settings/mod.rs` (AppState) -- the registry, the `${env:}` resolution, command lookup with the batch refusal, the spawn, exit and attention, restart, remove and acknowledge; unit tests over the pure parts.
+- [x] `src-tauri/src/graph/mod.rs`, `ipc/mod.rs`, `lib.rs` -- the kinds, the child merge, the launch branch, IPCs `agent_stop`, `agent_restart`, `agent_remove` and `agent_acknowledge`, the `launchDefaults.agent` field; a lib.rs fixture test that drives start → exit → attention → restart → remove and the refusals in the matrix.
+- [x] `src/ipc/index.ts`, `src/commands/{launch,agents,nodes,builtins}.ts`, `src/components/LaunchPane.tsx`, `src/canvas/{ChildNode.tsx,Canvas.tsx,nodes.ts,nodes.css}`, `src/state/{terminals,ui}.ts` -- the UI, with vitest tests for the form rules, the toolbar set, live count and attention.
+- [x] `docs/help/sessions.md`, help Terms and legend pages, `README.md` (Starting sessions, Settings), `docs/DESIGN.md`, `ROADMAP.md` (Not planned → "Full support for agents other than Claude Code (their history, state and resume); a basic card that runs them is in"), `CHANGELOG.md` (Unreleased › Sessions), and PRD §5 plus the epics overview to match.
 
 **Acceptance Criteria:**
 - Given `agents` with `kimi` and `qwen`, when the launch sheet opens, then its Agent select lists `claude`, `kimi` and `qwen` with `claude` first, and picking `kimi` hides model, effort, mode, worktree, add-dirs and prompt.
@@ -98,9 +99,47 @@ context:
 
 ## Implementation Notes
 
+- An agent start claims the sheet's proposed id like a Claude start (a stale sheet is refused; a failed start unclaims it).
+- On Windows a bare `command` prefers a native `.exe` anywhere on PATH over an earlier `.cmd` shim; the batch refusal applies only when no native one exists.
+- Help pages trimmed a few words in `sessions.md` and `terms.md` to stay under the 400-word limit.
+- Manual check with real kimi/qwen not run here.
+
 ## Spec Change Log
 
 ## Review Triage Log
+
+| # | Source | Finding | Verdict | Route | Evidence |
+|---|---|---|---|---|---|
+| 1 | blind, edge | `set_agents` inserted under `set_live_children`'s doc comment | low | patch | graph/mod.rs: the doc block now heads `set_agents`; `set_live_children` has none. |
+| 2 | blind | Resolved env secrets kept in `AgentRun.spec`, printable via `Debug` | low | reject | No `{:?}` of a run anywhere; Claude spawn specs carry env the same way. |
+| 3 | blind | Restart replays the first start's spec, not current settings | false | reject | Spec: Restart "re-runs the same agent, args and env". |
+| 4 | blind | Batch refusal blocks npm-installed agents | false | reject | Operator confirmed Kimi and Qwen are separate exes; the refusal is in the frozen intent. |
+| 5 | blind | Malformed `${env:…}` passes as a literal | low | reject | Typo only sends a wrong value to the agent; the fix adds a validation branch. |
+| 6 | blind | Legend implies `ctrl+j` reaches agent cards | low | patch | legend.md says "selects the one that has waited longest" after "one of its nodes"; `goToNextAttention` is sessions only. |
+| 7 | blind | Exit toast is the generic `finished` one | false | reject | Spec: "A toast follows the same rule as `finished`". |
+| 8 | blind | `agents::stop` maps every error to "not running" | low | reject | `terms.stop` fails only when the terminal is gone or exited; fix adds a branch. |
+| 9 | blind | Blank `command` not dropped at load | low | reject | Start refuses with `agent <name>: command is blank`; rare and visible. |
+| 10 | blind | Duplicate check is case-sensitive | low | reject | `kimi` and `Kimi` both work as distinct agents; nothing breaks. |
+| 11 | blind | terms.md Attention colour omits agent cards; unrelated rewording | low | patch | terms.md:20 lists sessions, edges, toasts only. Rewording was needed for the 400-word help limit, so only the entry is patched. |
+| 12 | blind | Claude start wipes `launchDefaults.agent` | false | reject | Intended: the remembered choice is the last start's agent, and a Claude start is `claude`. |
+| 13 | blind | Removing a project or quitting doesn't warn about running agents | false | reject | `project.remove` has no confirmation for anything (nodes.ts:188); agents match sessions. |
+| 14 | blind | Stray `prompt:"…"` formatting in launch.test.ts | low | patch | Unrelated whitespace change in the diff. |
+| 15 | edge | Concurrent starts with one id: loser's `take` drops the winner's run | low | reject | The sheet sends one start; needs two IPCs with one proposed id. |
+| 16 | edge | Concurrent Restarts: loser's `restore` marks the new run exited | low | reject | Needs two Restarts within the spawn window; fix adds a CAS. |
+| 17 | edge | `sync` reads `children()` outside the workspace lock; a stale list can win | medium | patch | agents.rs `sync` then `set_agents`: an exit and an acknowledge racing can leave a card reading `running` after it exited. |
+| 18 | edge | A `.cmd` shim earlier on PATH refuses a later native `.exe` | medium | patch | `locate_program` uses `Search::locate`; `locate_native` exists for exactly this (detect.rs:86). |
+| 19 | edge | Doc says an extensionless path resolves through PATHEXT; `locate_program` returns `Missing::File` | low | patch | ipc/mod.rs:1120; the doc comment and test claim behaviour the code lacks. Correct the doc and test. |
+| 20 | edge | Agent start skips `launcher.claim` | medium | patch | ipc session_launch agent branch; the proposal stays unclaimed, so no stale-sheet guard and the id can be proposed again. |
+| 21 | edge | Agent request with branch/worktree fields is accepted silently | low | reject | Only a crafted request; the branch sheet offers no Agent field. |
+| 22 | edge | `term_close` on an agent terminal orphans the card | low | reject | `isClosableTerminal` allows session terminals only; needs a crafted IPC. |
+| 23 | edge | `remove` drops the run when `close` fails | low | reject | `close` fails only for a running or plain terminal, both excluded above it. |
+| 24 | edge | Secrets in `args` shown in Effective settings | low | reject | Env values exist for secrets; args are not meant to hold them. |
+| 25 | verification | `revealAgent` toast click untested | medium | patch | No test references `revealAgent`. |
+| 26 | verification, blind | `workspace_remove_project` forgetting agent runs untested | medium | patch | No remove-project test sets up a run. |
+| 27 | verification | Re-layout's agent reset untested | medium | patch | Fixture drags but never re-lays out. |
+| 28 | verification, blind | `with_agents` order and drop untested | medium | patch | No direct test. |
+| 29 | verification | `startLaunch` selecting `{kind:"agent"}` untested | medium | patch | sessions.test.ts has no agent form case. |
+| 30 | verification | `terminalOfTarget` agent branch untested | low | patch | ui.test.ts:503 covers session and project only. |
 
 ## Design Notes
 

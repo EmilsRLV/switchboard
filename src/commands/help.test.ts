@@ -183,6 +183,9 @@ describe("help commands (Story 10.1)", () => {
 
 describe("F1 from where you are and the return to the pane (Story 10.2)", () => {
   const form: LaunchForm = {
+    agent: "claude",
+    claudeName: "ide-1a2b",
+    nameHex: "1a2b",
     name: "typed name",
     model: "",
     customModel: "",

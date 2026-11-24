@@ -34,6 +34,7 @@ const SELECTION_PAGES: Readonly<Record<CanvasTarget["kind"], string | null>> = {
   project: "projects",
   session: "sessions",
   branch: "branches",
+  agent: "sessions",
   edge: "edges",
   more: null,
 };

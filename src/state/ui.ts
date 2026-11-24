@@ -12,7 +12,7 @@
 import { create } from "zustand";
 import { drawnFlowIds, isEdgeDrawn } from "../canvas/edges";
 import type { CanvasTarget, ChildGroup } from "../canvas/nodes";
-import { sessionAcknowledge, type Position, type Project } from "../ipc";
+import { agentAcknowledge, sessionAcknowledge, type Position, type Project } from "../ipc";
 import {
   applyAcknowledgement,
   elsewhereCount,
@@ -23,7 +23,7 @@ import {
   unmarkAcknowledging,
   useLiveStore,
 } from "./live";
-import { plainTerminalId, sessionTerminalId, terminalInfo } from "./terminals";
+import { agentTerminalId, plainTerminalId, sessionTerminalId, terminalInfo } from "./terminals";
 import { useWorkspaceStore } from "./workspace";
 
 /**
@@ -411,9 +411,22 @@ export function sendAcknowledge(id: string): boolean {
  * it is already on its way (see {@link sendAcknowledge}). Resolves whether a request was sent.
  */
 export function acknowledgeIfNeeded(target: CanvasTarget | null): boolean {
+  if (target !== null && target.kind === "agent") return acknowledgeAgent(target.id);
   if (target === null || target.kind !== "session") return false;
   if (!needsAttention(sessionState(target.id)) || isAcknowledging(target.id)) return false;
   return sendAcknowledge(target.id);
+}
+
+/**
+ * Story 12.2: tell Rust which agent card is selected now (`null`: none), which acknowledges its
+ * unseen exit and makes an exit while it stays selected a seen one. A failure (no runtime) is
+ * logged, never shown. Resolves whether a request was sent.
+ */
+export function acknowledgeAgent(id: string | null): boolean {
+  agentAcknowledge(id).catch((err: unknown) => {
+    console.warn(`agent acknowledge failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
+  return true;
 }
 
 // The selection becoming a session in attention acknowledges it (a click, an arrow, a toast
@@ -421,6 +434,9 @@ export function acknowledgeIfNeeded(target: CanvasTarget | null): boolean {
 // tray acknowledges every session it lists that needs attention (they cannot be selected).
 useUiStore.subscribe((ui, previous) => {
   if (ui.selection !== previous.selection) {
+    // Story 12.2: Rust learns when the selection leaves an agent card (an agent card selected
+    // is acknowledged just below).
+    if (previous.selection?.kind === "agent" && ui.selection?.kind !== "agent") acknowledgeAgent(null);
     acknowledgeIfNeeded(ui.selection);
     followSelection(ui.selection);
     // The edge inspector shows the selected edge (Story 6.1): it goes with it.
@@ -460,7 +476,13 @@ useWorkspaceStore.subscribe(dropHiddenEdge);
 export function terminalOfTarget(target: CanvasTarget | null): string | null {
   if (target === null) return null;
   const id =
-    target.kind === "session" ? sessionTerminalId(target.id) : target.kind === "project" ? plainTerminalId(target.id) : null;
+    target.kind === "session"
+      ? sessionTerminalId(target.id)
+      : target.kind === "agent"
+        ? agentTerminalId(target.id)
+        : target.kind === "project"
+          ? plainTerminalId(target.id)
+          : null;
   return id !== null && terminalInfo(id) !== null ? id : null;
 }
 
