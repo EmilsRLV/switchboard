@@ -9,6 +9,11 @@ What changed in Switchboard, newest first. Each release lists what you can see a
 - A session you `/clear` keeps its card: the same place, label, terminal and edges, and its state follows the
   new conversation. Its tooltip says `cleared N times`, Resume and Fork use the conversation it runs now, and
   **Earlier transcripts…** forks one of the conversations from before a clear.
+- Other coding agents, such as Kimi Code and Qwen Code, get a basic card. List them under `agents` in
+  `settings.json`, then pick one in the new **Agent** field of a project's launch sheet. It runs in a terminal
+  tab under the project, its card reads `running` or `exited (<code>)` and counts in `N live`, and an exit you
+  did not see takes the attention colour and makes the project glow. The card has **Show terminal**,
+  **Stop**, **Restart** and **Remove**. Agent cards are not kept after Switchboard restarts.
 
 ## 0.2.0 — 2026-11-04
 

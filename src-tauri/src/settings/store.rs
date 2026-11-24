@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use super::{Banner, PollSettings, SCHEMA_VERSION, Settings};
+use super::{AgentSetting, Banner, PollSettings, SCHEMA_VERSION, Settings};
 use crate::persist;
 
 pub use crate::persist::ParseError;
@@ -73,7 +73,67 @@ pub fn validate(settings: &mut Settings) -> Vec<Banner> {
             format!("poll intervals must be above 0; using the default for {}", replaced.join(", ")),
         ));
     }
+    if let Some(banner) = validate_agents(&mut settings.agents) {
+        banners.push(banner);
+    }
     banners
+}
+
+/// The name Switchboard's own agent goes by: an entry may not take it.
+pub const CLAUDE_AGENT: &str = "claude";
+
+/// Story 12.2: drop the `agents` entries that cannot be offered, keeping the rest in order: a
+/// blank name, a name already taken by an earlier entry, `claude`, a name starting with `-` or
+/// holding a control character (it names the card and the terminal), an env name that is not
+/// `[A-Za-z_][A-Za-z0-9_]*`, or an env name in [`crate::pty::PARENT_SESSION_VARS`]. Names are
+/// trimmed. One banner (`settings.agents`) names every dropped entry and why; `None` when none was.
+pub fn validate_agents(agents: &mut Vec<AgentSetting>) -> Option<Banner> {
+    let mut kept: Vec<AgentSetting> = Vec::new();
+    let mut dropped: Vec<String> = Vec::new();
+    for (index, mut agent) in std::mem::take(agents).into_iter().enumerate() {
+        agent.name = agent.name.trim().to_string();
+        match agent_refusal(&agent, &kept) {
+            Some(reason) => {
+                let who = if agent.name.is_empty() { format!("entry {}", index + 1) } else { agent.name.clone() };
+                dropped.push(format!("{who} ({reason})"));
+            }
+            None => kept.push(agent),
+        }
+    }
+    *agents = kept;
+    (!dropped.is_empty()).then(|| Banner::new("settings.agents", format!("settings.agents: dropped {}", dropped.join(", "))))
+}
+
+/// Why `agent` cannot be kept after `kept`; `None` when it can.
+fn agent_refusal(agent: &AgentSetting, kept: &[AgentSetting]) -> Option<String> {
+    let name = agent.name.as_str();
+    if name.is_empty() {
+        return Some("blank name".to_string());
+    }
+    if name.eq_ignore_ascii_case(CLAUDE_AGENT) {
+        return Some("the name claude is Claude Code's".to_string());
+    }
+    if name.starts_with('-') || name.chars().any(char::is_control) {
+        return Some("name must not start with - or hold control characters".to_string());
+    }
+    if kept.iter().any(|k| k.name == name) {
+        return Some("duplicate name".to_string());
+    }
+    for key in agent.env.keys() {
+        if !is_env_name(key) {
+            return Some(format!("env name {key:?} is not [A-Za-z_][A-Za-z0-9_]*"));
+        }
+        if crate::pty::PARENT_SESSION_VARS.contains(&key.as_str()) {
+            return Some(format!("env {key} is reserved"));
+        }
+    }
+    None
+}
+
+/// `[A-Za-z_][A-Za-z0-9_]*`.
+pub fn is_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// The on-disk form: pretty JSON with every key present and a trailing newline.
@@ -115,6 +175,7 @@ mod tests {
         assert_eq!(
             top,
             [
+                "agents",
                 "claude",
                 "close_to_tray",
                 "defaults",
@@ -202,6 +263,99 @@ mod tests {
         let banners = validate(&mut one);
         assert_eq!((one.poll.agents_ms, one.poll.git_ms), (2000, 7));
         assert!(banners[0].text.ends_with("poll.agents_ms (2000)"), "{}", banners[0].text);
+    }
+
+    #[test]
+    fn agents_default_to_none_and_parse_with_their_defaults() {
+        assert!(Settings::default().agents.is_empty());
+        let s = parse(r#"{ "agents": [{ "name": "kimi", "command": "kimi" }] }"#).unwrap();
+        assert_eq!(
+            s.agents,
+            [AgentSetting {
+                name: "kimi".into(),
+                command: "kimi".into(),
+                args: Vec::new(),
+                env: Default::default(),
+            }]
+        );
+    }
+
+    fn agents(text: &str) -> (Vec<AgentSetting>, Vec<Banner>) {
+        let mut s = parse(text).unwrap();
+        let banners = validate(&mut s);
+        (s.agents, banners)
+    }
+
+    fn names(list: &[AgentSetting]) -> Vec<&str> {
+        list.iter().map(|a| a.name.as_str()).collect()
+    }
+
+    #[test]
+    fn validate_keeps_good_agents_silently_and_trims_names() {
+        let (kept, banners) = agents(
+            r#"{ "agents": [{ "name": " kimi ", "command": "kimi", "args": ["--yolo"], "env": { "KIMI_KEY": "${env:KIMI_KEY}", "_x1": "1" } }, { "name": "qwen", "command": "qwen" }] }"#,
+        );
+        assert!(banners.is_empty(), "{banners:?}");
+        assert_eq!(names(&kept), ["kimi", "qwen"]);
+        assert_eq!(kept[0].args, ["--yolo"]);
+    }
+
+    #[test]
+    fn validate_drops_a_duplicate_and_claude_in_one_banner_keeping_the_rest() {
+        let (kept, banners) = agents(
+            r#"{ "agents": [{ "name": "qwen", "command": "a" }, { "name": "qwen", "command": "b" }, { "name": "claude", "command": "c" }, { "name": "kimi", "command": "k" }] }"#,
+        );
+        assert_eq!(names(&kept), ["qwen", "kimi"]);
+        assert_eq!(kept[0].command, "a", "the first of a duplicate is kept");
+        assert_eq!(
+            banners,
+            [Banner::new(
+                "settings.agents",
+                "settings.agents: dropped qwen (duplicate name), claude (the name claude is Claude Code's)"
+            )]
+        );
+    }
+
+    #[test]
+    fn validate_drops_a_blank_name() {
+        let (kept, banners) = agents(r#"{ "agents": [{ "name": "  ", "command": "x" }] }"#);
+        assert!(kept.is_empty());
+        assert_eq!(banners[0].text, "settings.agents: dropped entry 1 (blank name)");
+    }
+
+    #[test]
+    fn validate_drops_claude_in_any_case_and_a_flag_like_name() {
+        let (kept, banners) = agents(r#"{ "agents": [{ "name": "Claude" }, { "name": "-x" }] }"#);
+        assert!(kept.is_empty());
+        assert!(banners[0].text.contains("Claude (the name claude"), "{}", banners[0].text);
+        assert!(banners[0].text.contains("-x (name must not start with -"), "{}", banners[0].text);
+    }
+
+    #[test]
+    fn validate_drops_a_bad_env_name() {
+        for bad in ["1KEY", "A-B", "", "A B"] {
+            let text = format!(r#"{{ "agents": [{{ "name": "kimi", "env": {{ {}: "v" }} }}] }}"#, serde_json::to_string(bad).unwrap());
+            let (kept, banners) = agents(&text);
+            assert!(kept.is_empty(), "{bad:?}");
+            assert!(banners[0].text.starts_with("settings.agents: dropped kimi (env name"), "{}", banners[0].text);
+        }
+    }
+
+    #[test]
+    fn validate_drops_an_env_name_of_the_parent_session() {
+        let (kept, banners) = agents(r#"{ "agents": [{ "name": "kimi", "env": { "CLAUDECODE": "1" } }] }"#);
+        assert!(kept.is_empty());
+        assert_eq!(banners[0].text, "settings.agents: dropped kimi (env CLAUDECODE is reserved)");
+    }
+
+    #[test]
+    fn env_names_follow_the_shell_rule() {
+        for good in ["A", "_", "a_1", "KIMI_API_KEY"] {
+            assert!(is_env_name(good), "{good}");
+        }
+        for bad in ["", "1", "A-1", "Ä", "A.B"] {
+            assert!(!is_env_name(bad), "{bad}");
+        }
     }
 
     #[test]

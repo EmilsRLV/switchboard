@@ -157,8 +157,8 @@ chrome follows every rule here.
 | Keyboard focus | A 1-px `--focus` outline, offset 1 px. The palette input shows none: it always has focus while the palette is open, and the dialog's border is the cue. |
 | Selected node | A 1-px `--focus` outline, offset 2 px, and the node draws above its siblings. |
 | Selected edge | Its line (both lines of a cooperate edge) and its label in `--focus`. No accent. |
-| Attention (session card) | A `finished` or `waiting` session: 1-px `--accent` border, the state word in `--accent` after its 4-px dot (`currentColor`) pulsing like `busy`'s. |
-| Glow (project card) | Any of its sessions (drawn or hidden, collapsed or not) is `finished` / `waiting`: a 1-px `--accent` outline at 2-px offset whose opacity pulses 1 → 0.4. No shadow, gradient or filter. Selected and glowing, the `--focus` outline stays at 2 px and the glow moves out to 4 px around it. |
+| Attention (session card) | A `finished` or `waiting` session: 1-px `--accent` border, the state word in `--accent` after its 4-px dot (`currentColor`) pulsing like `busy`'s. An agent card (Story 12.2) whose exit went unseen: the same border and state word, without the dot. |
+| Glow (project card) | Any of its sessions (drawn or hidden, collapsed or not) is `finished` / `waiting`, or (Story 12.2) any of its agent cards exited unseen: a 1-px `--accent` outline at 2-px offset whose opacity pulses 1 → 0.4. No shadow, gradient or filter. Selected and glowing, the `--focus` outline stays at 2 px and the glow moves out to 4 px around it. |
 | Text selection | `--selection` background, `--bg` text. |
 | Disabled | `--fg-faint` text. |
 
@@ -575,6 +575,17 @@ session and branch children; the size is fixed like the project card's.
   needs attention.
 - **Branch, stub:** one row: the **label** in `--text-md` (ellipsis) and, at the right, the **detail** in mono
   `--text-xs` `--fg-muted`.
+- **Agent** (another coding agent's run, Story 12.2), the session card's look on two lines:
+  1. the **name** in `--text-md`, ellipsis;
+  2. the **meta** in mono `--text-xs` `--fg-muted`: the **state word** from the process only (`running`,
+     `stopping` during a Stop, `exited (<code>)`), then the **agent chip**: the agent's name in a 1-px `--border`
+     box, `--radius-sm`, like the worktree chip, the part that shrinks with an ellipsis. The chip never takes the
+     accent.
+
+  An exit nobody saw (the window unfocused, or the card not selected) is an attention state: the card's border
+  and its state word in `--accent` (`.session-attention`, `.session-attention-word`, no dot), and its project
+  glows. Selecting the card clears it. No edge handles: an agent card is never an edge end. The tooltip holds
+  the state, `<name> · <agent>` and the start time.
 
 ### The fork line
 

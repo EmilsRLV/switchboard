@@ -158,6 +158,7 @@ describe("the launch sheet commands", () => {
         branch: null,
         createWorktree: false,
         worktreeName: null,
+        agent: null,
       },
       cols: null,
       rows: null,
@@ -169,6 +170,30 @@ describe("the launch sheet commands", () => {
     expect(useUiStore.getState().selection).toEqual({ kind: "session", id: "s1" });
     expect(useLaunchStore.getState().form).toBeNull(); // the sheet went
     expect(canShowSessionTerminal()).toBe(true);
+  });
+
+  it("Story 12.2: an agent start selects its agent card, which tells Rust", async () => {
+    runtime({
+      launch_defaults: () => ({ sessionId: "3f2a-id", name: "ide-3f2a", model: "default", effort: "default", permissionMode: "default", agents: ["kimi"] }),
+    });
+    await expect(openLaunchSheet("ide")).resolves.toBe(true);
+    useLaunchStore.getState().edit({ agent: "kimi" });
+    const agentTerm = { ...term, id: "agent:a1", kind: "agent" as const };
+    let sent: { request: LaunchRequest } | null = null;
+    const invoke = runtime({
+      session_launch: (args) => {
+        sent = args as { request: LaunchRequest };
+        return { session_id: "a1", term: agentTerm };
+      },
+      workspace_set_expanded: () => workspace(true),
+      agent_acknowledge: () => true,
+    });
+    await expect(startLaunch()).resolves.toBe(true);
+    await flush();
+    expect(sent!.request).toMatchObject({ agent: "kimi", name: "kimi-3f2a" });
+    expect(useUiStore.getState().selection).toEqual({ kind: "agent", id: "a1" });
+    expect(invoke).toHaveBeenCalledWith("agent_acknowledge", { id: "a1" }, undefined);
+    expect(useUiStore.getState().activeTerminal).toBe("agent:a1");
   });
 
   it("starts in the background: the sheet goes, the pane stays shut and the selection is unchanged", async () => {

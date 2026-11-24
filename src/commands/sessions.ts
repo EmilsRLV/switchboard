@@ -27,7 +27,18 @@ import { isTerminalRunning, sessionTerminal, sessionTerminalId, terminalInfo, us
 import { disposeView, restore } from "../terminal/registry";
 import { currentPane, currentSelection, isPoppedOut, useUiStore } from "../state/ui";
 import { useWorkspaceStore } from "../state/workspace";
-import { canStart, formFromPrefill, launchRequest, missingAddDirs, skippedNote, startBlockedReason, withAddDir, withoutAddDir } from "./launch";
+import {
+  agentChoices,
+  canStart,
+  formFromPrefill,
+  isAgentForm,
+  launchRequest,
+  missingAddDirs,
+  skippedNote,
+  startBlockedReason,
+  withAddDir,
+  withoutAddDir,
+} from "./launch";
 import { notify, selectedBranch } from "./navigation";
 import { setExpanded } from "./nodes";
 import { closeOpenPane, openPane } from "./panes";
@@ -54,9 +65,10 @@ export async function openLaunchSheet(projectId: string, branch?: string): Promi
     // checked-out branch, or the worktree the Start will create (`worktreePlan`).
     // Story 6.2: the project's context edges, resolved by Rust, prefill the add-dirs on both sheets.
     const edges = { edgeDirs: prefill.addDirs ?? [], skipped: prefill.skipped ?? [] };
+    // Story 12.2: the Agent select's entries (none: no Agent field, as in 0.2.0).
     const target =
       branch === undefined
-        ? { repoTop: prefill.repoTop ?? null, ...edges }
+        ? { repoTop: prefill.repoTop ?? null, agents: agentChoices(prefill.agents), ...edges }
         : { branch, targetPath: prefill.targetPath ?? null, worktreePlan: prefill.worktreePlan ?? null, ...edges };
     useLaunchStore.getState().open({ id: project.id, path: project.path, label: project.label }, prefill.sessionId, formFromPrefill(prefill), target);
     openPane("launch");
@@ -136,7 +148,8 @@ export async function startLaunch(): Promise<boolean> {
   if (request.background || !current) return true;
   const project = useWorkspaceStore.getState().snapshot?.workspace.projects.find((p) => p.id === projectId);
   if (project !== undefined && !project.expanded) void setExpanded(projectId, true);
-  useUiStore.getState().select({ kind: "session", id: started.session_id });
+  // Story 12.2: an agent's card is an agent node.
+  useUiStore.getState().select({ kind: isAgentForm(form) ? "agent" : "session", id: started.session_id });
   await showTerminal(started.term.id);
   return true;
 }
@@ -428,5 +441,7 @@ export function canStartLaunch(): boolean {
 
 /** The `when` of `launch.addFolder` (the sheet's "Add folder…"): the sheet shows and is not starting. */
 export function canPickAddDir(): boolean {
-  return launchSheetShows() && !useLaunchStore.getState().starting;
+  const sheet = useLaunchStore.getState();
+  // Story 12.2: an agent has no add-dirs.
+  return launchSheetShows() && !sheet.starting && sheet.form !== null && !isAgentForm(sheet.form);
 }

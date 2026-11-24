@@ -72,14 +72,17 @@ const RESET: &str = "\x1bc";
 // Wire types
 // ---------------------------------------------------------------------------------------
 
-/// What a terminal runs: a plain shell (Story 4.1) or a Claude session the app launched
-/// (Story 4.2). A session terminal is never restarted; a resumed session (Story 4.4) opens a
-/// new session terminal over the exited one with the same id.
+/// What a terminal runs: a plain shell (Story 4.1), a Claude session the app launched
+/// (Story 4.2), or another coding agent from `settings.agents` (Story 12.2). A session terminal
+/// is never restarted; a resumed session (Story 4.4) opens a new session terminal over the
+/// exited one with the same id. An agent terminal is not restarted by `term_restart` either: its
+/// card's Restart opens a new agent terminal over the exited one, as a resume does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TermKind {
     Plain,
     Session,
+    Agent,
 }
 
 /// What the webview knows about a terminal (`term_open`, `term_list`, `term_restart`).
@@ -1102,6 +1105,14 @@ pub fn session_id(session_id: &str) -> String {
     format!("{SESSION_PREFIX}{session_id}")
 }
 
+/// What an agent terminal's id starts with (Story 12.2); the agent card's node id follows.
+pub const AGENT_PREFIX: &str = "agent:";
+
+/// The id of the terminal an agent run lives in (Story 12.2).
+pub fn agent_id(node_id: &str) -> String {
+    format!("{AGENT_PREFIX}{node_id}")
+}
+
 impl TermManager {
     pub fn get(&self, id: &str) -> Option<Arc<Term>> {
         lock(&self.terms).get(id).cloned()
@@ -1181,6 +1192,25 @@ impl TermManager {
         sink: Arc<dyn Sink>,
         hooks: SessionHooks,
     ) -> Result<TermInfo, String> {
+        self.open_kind(TermKind::Session, id, project_id, title, cwd, size, spec, sink, hooks)
+    }
+
+    /// [`TermManager::open_session`] for a terminal of `kind`: a session's, or (Story 12.2) an
+    /// agent's -- its first start and its Restart, which replaces the exited terminal of the same
+    /// id in its place in the list.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_kind(
+        &self,
+        kind: TermKind,
+        id: &str,
+        project_id: &str,
+        title: &str,
+        cwd: &str,
+        size: (u16, u16),
+        spec: SpawnSpec,
+        sink: Arc<dyn Sink>,
+        hooks: SessionHooks,
+    ) -> Result<TermInfo, String> {
         let mut terms = lock(&self.terms);
         let previous = terms.get(id).cloned();
         if let Some(previous) = &previous {
@@ -1191,7 +1221,7 @@ impl TermManager {
         }
         let term = Arc::new(Term::new(
             id.to_string(),
-            TermKind::Session,
+            kind,
             project_id.to_string(),
             title.to_string(),
             cwd.to_string(),
@@ -1223,11 +1253,14 @@ impl TermManager {
     }
 
     /// Respawn an exited terminal under the same id; its buffer is kept. A session terminal is
-    /// never restarted.
+    /// never restarted, and an agent terminal only through its card's Restart (Story 12.2).
     pub fn restart(&self, id: &str, spec: impl FnOnce() -> Result<SpawnSpec, String>, sink: Arc<dyn Sink>) -> Result<TermInfo, String> {
         let term = self.require(id)?;
         if term.kind == TermKind::Session {
             return Err("a session terminal cannot be restarted".to_string());
+        }
+        if term.kind == TermKind::Agent {
+            return Err("an agent terminal is restarted from its card".to_string());
         }
         let _starting = lock(&term.starting);
         if term.is_running() {
@@ -1249,12 +1282,13 @@ impl TermManager {
         Ok(term.info())
     }
 
-    /// Forget an exited session terminal (its "Close"): it leaves the list and its buffer goes.
-    /// A running terminal, or a plain one, is not closed.
+    /// Forget an exited session terminal (its "Close"), or an exited agent terminal (its card's
+    /// Remove, Story 12.2): it leaves the list and its buffer goes. A running terminal, or a plain
+    /// one, is not closed.
     pub fn close(&self, id: &str) -> Result<(), String> {
         let term = self.require(id)?;
         let _starting = lock(&term.starting);
-        if term.kind != TermKind::Session {
+        if term.kind == TermKind::Plain {
             return Err("only a session terminal is closed".to_string());
         }
         if term.is_running() {

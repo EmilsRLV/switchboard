@@ -154,7 +154,7 @@ fn notifier<R: Runtime>(app: &AppHandle<R>) -> Option<std::sync::Arc<dyn Notifie
 }
 
 /// Whether the main window has focus; no window, or a failed query, counts as unfocused.
-fn main_window_focused<R: Runtime>(app: &AppHandle<R>) -> bool {
+pub fn main_window_focused<R: Runtime>(app: &AppHandle<R>) -> bool {
     app.get_webview_window("main")
         .map(|w| w.is_focused().unwrap_or(false))
         .unwrap_or(false)

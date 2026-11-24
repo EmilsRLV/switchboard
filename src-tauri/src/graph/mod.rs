@@ -253,6 +253,15 @@ pub struct LaunchDefaults {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub permission_mode: Option<String>,
+    /// Story 12.2: the launch sheet's last Agent choice (a `settings.agents` name). Absent, and
+    /// never written, for `claude`, so a file from this build reads the same in 0.2.0.
+    #[serde(skip_serializing_if = "is_claude_agent")]
+    pub agent: Option<String>,
+}
+
+/// `None` or `claude`: the Agent choice [`LaunchDefaults::agent`] leaves out.
+fn is_claude_agent(agent: &Option<String>) -> bool {
+    agent.as_deref().is_none_or(|a| a == crate::settings::store::CLAUDE_AGENT)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -265,6 +274,8 @@ pub struct LaunchDefaults {
 pub enum ChildKind {
     Session,
     Branch,
+    /// Story 12.2: a run of another coding agent (`crate::agents`); memory only.
+    Agent,
 }
 
 /// A child of a project as the canvas lays it out: one row of the column under the card.
@@ -305,6 +316,19 @@ pub struct ChildNode {
     /// when it was never cleared. The card's Fork names it, so Rust can tell it from the node's
     /// own (earlier) transcript.
     pub current_id: Option<String>,
+    /// Story 12.2: what an agent card shows; `None` for the rest.
+    pub agent: Option<AgentMeta>,
+}
+
+/// The facts of an agent run (Story 12.2) its card shows: the `settings.agents` name it runs,
+/// when it started (ISO 8601 UTC), its exit code once exited, and whether that exit is unseen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMeta {
+    pub agent: String,
+    pub started_at: String,
+    pub exited: Option<i32>,
+    pub attention: bool,
 }
 
 /// One row of **Earlier transcripts…** (Story 12.1): a transcript in a card's clear chain.
@@ -354,6 +378,8 @@ pub enum NodeKind {
     Project,
     Session,
     Branch,
+    /// Story 12.2: an agent card; its position is kept in memory only.
+    Agent,
 }
 
 /// A node named by kind and id: the argument of [`move_node`].
@@ -577,6 +603,7 @@ pub fn children_with_worktrees(
                     cleared_count: chain.len(),
                     earlier,
                     current_id,
+                    agent: None,
                 })
             })
             .collect();
@@ -610,6 +637,7 @@ pub fn children_with_worktrees(
                 cleared_count: 0,
                 earlier: Vec::new(),
                 current_id: None,
+                agent: None,
             });
         }
         // Live first; then pinned; then started-at, not last activity: two running sessions
@@ -642,6 +670,7 @@ pub fn children_with_worktrees(
                 cleared_count: 0,
                 earlier: Vec::new(),
                 current_id: None,
+                agent: None,
             });
         }
         if !project.show_branches {
@@ -663,6 +692,7 @@ pub fn children_with_worktrees(
                 cleared_count: 0,
                 earlier: Vec::new(),
                 current_id: None,
+                agent: None,
                 branch: Some(BranchMeta {
                     head: info.head,
                     upstream: info.upstream.clone(),
@@ -674,6 +704,25 @@ pub fn children_with_worktrees(
             });
         }
     }
+    out
+}
+
+/// Story 12.2: `children` (in project order, as [`children_with_worktrees`] gives them) with each
+/// project's agent cards (`agents`, in their order) put before its other children. Agent cards
+/// of a project that is not on the canvas are left out.
+pub fn with_agents(workspace: &Workspace, children: Vec<ChildNode>, agents: &[ChildNode]) -> Vec<ChildNode> {
+    if agents.is_empty() {
+        return children;
+    }
+    let mut out = Vec::with_capacity(children.len() + agents.len());
+    let mut rest = children.into_iter().peekable();
+    for project in &workspace.projects {
+        out.extend(agents.iter().filter(|a| a.project_id == project.id).cloned());
+        while let Some(child) = rest.next_if(|c| c.project_id == project.id) {
+            out.push(child);
+        }
+    }
+    out.extend(rest);
     out
 }
 
@@ -933,6 +982,9 @@ pub struct WorkspaceState {
     /// The file did not exist and was created on this launch (a fresh profile, Story 10.3: the
     /// Getting started card shows). Never persisted.
     pub first_run: bool,
+    /// Story 12.2: the agent runs' cards, newest first, as `crate::agents` last built them from
+    /// its registry ([`set_agents`]). Memory only: never persisted, gone after a restart.
+    pub agents: Vec<ChildNode>,
 }
 
 impl WorkspaceState {
@@ -952,9 +1004,11 @@ impl WorkspaceState {
         }
     }
 
-    /// Every project's children as [`children_with_branches`] derives them from this state.
+    /// Every project's children as [`children_with_branches`] derives them from this state,
+    /// with each project's agent cards (Story 12.2) first ([`with_agents`]).
     pub fn children(&self) -> Vec<ChildNode> {
-        children_with_worktrees(&self.workspace, &self.discovered, &self.live_children, self.stub_children, &self.branches, &self.worktrees)
+        let derived = children_with_worktrees(&self.workspace, &self.discovered, &self.live_children, self.stub_children, &self.branches, &self.worktrees);
+        with_agents(&self.workspace, derived, &self.agents)
     }
 
     /// Replace the workspace with a freshly parsed, validated one.
@@ -1285,6 +1339,11 @@ pub fn move_node<R: Runtime>(app: &AppHandle<R>, target: &NodeTarget, position: 
         return Err("position is not finite".to_string());
     }
     let state = app.state::<AppState>();
+    if target.kind == NodeKind::Agent {
+        // Story 12.2: kept in memory only (a run never outlives the app), nothing written.
+        state.agents.set_position(&target.id, position)?;
+        return Ok(crate::agents::sync(app));
+    }
     let (write_target, workspace) = {
         let mut st = state.write_workspace();
         match target.kind {
@@ -1344,6 +1403,7 @@ pub fn move_node<R: Runtime>(app: &AppHandle<R>, target: &NodeTarget, position: 
                     }),
                 }
             }
+            NodeKind::Agent => unreachable!("handled above"),
         }
         st.revision += 1;
         (st.write_target(), st.workspace.clone())
@@ -1406,6 +1466,29 @@ pub fn set_launch_defaults<R: Runtime>(app: &AppHandle<R>, project_id: &str, def
         (st.write_target(), st.workspace.clone())
     };
     Ok(persist_and_emit(app, target, &workspace))
+}
+
+/// Story 12.2: remember the launch sheet's Agent choice for a project (`launchDefaults.agent`;
+/// `None` or `claude` is Claude Code), keeping its other choices; stored, written and emitted like
+/// [`set_launch_defaults`]. The same choice again changes nothing. An unknown id is an `Err`.
+pub fn set_launch_agent<R: Runtime>(app: &AppHandle<R>, project_id: &str, agent: Option<String>) -> Result<WorkspaceSnapshot, String> {
+    let agent = agent.filter(|a| a != crate::settings::store::CLAUDE_AGENT);
+    let state = app.state::<AppState>();
+    let current = {
+        let st = state.read_workspace();
+        st.workspace
+            .projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| "unknown project".to_string())?
+            .launch_defaults
+            .clone()
+    };
+    let defaults = LaunchDefaults {
+        agent,
+        ..current.unwrap_or_default()
+    };
+    set_launch_defaults(app, project_id, defaults)
 }
 
 /// Record that session `session_id` (under `project_id`) was forked from `from` (Story 4.4):
@@ -1617,6 +1700,9 @@ pub fn relayout_children<R: Runtime>(app: &AppHandle<R>, project_id: &str) -> Re
         for branch in st.workspace.branches.iter_mut().filter(|b| b.project_id == project_id) {
             branch.position = None;
         }
+        // Story 12.2: its agent cards go back to their slots too (memory only).
+        state.agents.clear_positions(project_id);
+        st.agents = state.agents.children();
         // A branch ref that only held a dragged position (Story 5.1) goes with it, unless an
         // edge or a session's `branchId` references it.
         let referenced = referenced_branch_ids(&st.workspace);
@@ -2416,6 +2502,22 @@ pub fn set_discovered<R: Runtime>(app: &AppHandle<R>, discovered: HashMap<String
     }
 }
 
+/// Story 12.2: store the agent cards of `crate::agents`' registry, bump the revision and emit
+/// `workspace://changed` (nothing is written: agent runs are memory only). The registry is read
+/// under the workspace lock, so of two racing calls the last one stored is never stale. Replies
+/// with the snapshot.
+pub fn set_agents<R: Runtime>(app: &AppHandle<R>, runs: &crate::agents::AgentRuns) -> WorkspaceSnapshot {
+    let state = app.state::<AppState>();
+    let snapshot = {
+        let mut st = state.write_workspace();
+        st.agents = runs.children();
+        st.revision += 1;
+        st.snapshot()
+    };
+    emit(app, &snapshot);
+    snapshot
+}
+
 /// Store which sessions the live poll places under which project (project id → its live
 /// children, each list ordered by id). When that differs from what is stored -- a session
 /// went live or exited, moved project, or a live-only child's name changed -- the revision is
@@ -2611,6 +2713,7 @@ mod tests {
             branch_errors: HashMap::from([("p1".to_string(), "fatal: bad".to_string())]),
             worktrees: HashMap::new(),
             first_run: true,
+            agents: Vec::new(),
         };
         assert_eq!(
             serde_json::to_value(st.snapshot()).unwrap(),
@@ -3563,6 +3666,7 @@ mod tests {
             cleared_count: 0,
             earlier: Vec::new(),
             current_id: None,
+            agent: None,
         };
         assert_eq!(
             serde_json::to_value(&child).unwrap(),
@@ -3570,9 +3674,31 @@ mod tests {
                 "id": "stub-1-p", "projectId": "p", "kind": "session",
                 "label": "session 1", "detail": "stub", "position": null,
                 "session": null, "branchId": null, "forkedFrom": null, "hasTranscript": false,
-                "branch": null, "clearedCount": 0, "earlier": [], "currentId": null
+                "branch": null, "clearedCount": 0, "earlier": [], "currentId": null, "agent": null
             })
         );
+        // Story 12.2: an agent card.
+        let agent = ChildNode {
+            id: "a1".into(),
+            kind: ChildKind::Agent,
+            label: "kimi-1a2b".into(),
+            detail: None,
+            agent: Some(AgentMeta {
+                agent: "kimi".into(),
+                started_at: "2026-11-23T10:00:00.000Z".into(),
+                exited: Some(0),
+                attention: true,
+            }),
+            ..child.clone()
+        };
+        let wire = serde_json::to_value(&agent).unwrap();
+        assert_eq!(wire["kind"], "agent");
+        assert_eq!(
+            wire["agent"],
+            serde_json::json!({ "agent": "kimi", "startedAt": "2026-11-23T10:00:00.000Z", "exited": 0, "attention": true })
+        );
+        let target: NodeTarget = serde_json::from_value(serde_json::json!({ "kind": "agent", "id": "a1" })).unwrap();
+        assert_eq!(target.kind, NodeKind::Agent);
         let branch = ChildNode {
             id: "p:feat".into(),
             kind: ChildKind::Branch,
@@ -4170,6 +4296,7 @@ mod tests {
             model: Some("opus".into()),
             effort: Some("high".into()),
             permission_mode: Some("plan".into()),
+            agent: None,
         };
         let snapshot = set_launch_defaults(app.handle(), "ide", chosen.clone()).unwrap();
         assert_eq!(snapshot.workspace.projects[0].launch_defaults, Some(chosen.clone()));
@@ -5851,5 +5978,35 @@ mod tests {
         assert_eq!((project.id.as_str(), name), ("a", "main"));
         assert!(branch_end(&ws, "a:").is_none());
         assert!(branch_end(&ws, "zz:main").is_none());
+    }
+
+    #[test]
+    fn with_agents_puts_each_projects_agent_cards_first_and_drops_unknown_projects() {
+        let ws = Workspace {
+            projects: vec![project_with("p1"), project_with("p2")],
+            ..Workspace::default()
+        };
+        let card = |id: &str, project: &str, kind: ChildKind| ChildNode {
+            id: id.into(),
+            project_id: project.into(),
+            kind,
+            label: id.into(),
+            detail: None,
+            position: None,
+            session: None,
+            branch_id: None,
+            forked_from: None,
+            has_transcript: false,
+            branch: None,
+            cleared_count: 0,
+            earlier: Vec::new(),
+            current_id: None,
+            agent: None,
+        };
+        let children = vec![card("s1", "p1", ChildKind::Session), card("s2", "p2", ChildKind::Session)];
+        let agents = vec![card("a2", "p2", ChildKind::Agent), card("gone", "nope", ChildKind::Agent), card("a1", "p1", ChildKind::Agent)];
+        let ids: Vec<String> = with_agents(&ws, children.clone(), &agents).into_iter().map(|c| c.id).collect();
+        assert_eq!(ids, ["a1", "s1", "a2", "s2"]);
+        assert_eq!(with_agents(&ws, children.clone(), &[]), children);
     }
 }

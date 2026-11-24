@@ -71,6 +71,9 @@ pub struct Settings {
     /// keep running) instead of quitting. Off by default. Read at close time, so a reload applies
     /// at once. Ignored (closing quits) when the tray could not be created.
     pub close_to_tray: bool,
+    /// Story 12.2: other coding agents **New session…** can start in a Switchboard terminal
+    /// (`kimi`, `qwen`, …). Nothing is run at load; `store::validate` drops unusable entries.
+    pub agents: Vec<AgentSetting>,
 }
 
 impl Default for Settings {
@@ -88,8 +91,23 @@ impl Default for Settings {
             notifications: NotificationSettings::default(),
             peers: PeerSettings::default(),
             close_to_tray: false,
+            agents: Vec::new(),
         }
     }
+}
+
+/// One entry of `settings.agents` (Story 12.2): a coding agent other than Claude Code that the
+/// launch sheet can start. `command` is resolved at start like `claude.path` (a path, `~/…`, or a
+/// bare name on PATH with `PATHEXT`); `args` are passed as separate arguments, never through a
+/// shell; an `env` value written `${env:NAME}` is read from Switchboard's own environment at
+/// start, any other value is used as written (and is stored in plain text in this file).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSetting {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 /// Where a binary lives. `None` means "detect it".
@@ -440,6 +458,9 @@ pub struct AppState {
     /// Story 10.3: `state.json` (the Getting started checklist), loaded in `setup` after the
     /// workspace (`crate::appstate`).
     pub state_file: RwLock<crate::appstate::AppStateStore>,
+    /// Story 12.2: the agent runs (`crate::agents`): each card's process state, attention and
+    /// position. Memory only.
+    pub agents: crate::agents::AgentRuns,
 }
 
 impl AppState {
@@ -936,7 +957,8 @@ mod tests {
                     "poll": { "agents_ms": 2000, "git_ms": 5000 },
                     "notifications": { "finished": true, "waiting": true, "review": true, "tray": true },
                     "peers": { "nudge": true },
-                    "close_to_tray": false
+                    "close_to_tray": false,
+                    "agents": []
                 },
                 "binaries": {
                     "claude": {

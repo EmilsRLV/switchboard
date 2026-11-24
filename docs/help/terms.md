@@ -1,6 +1,6 @@
 # Terms
 
-The words these pages use for the parts of Switchboard.
+The words these pages use.
 
 ## On the canvas
 
@@ -8,19 +8,21 @@ The words these pages use for the parts of Switchboard.
 - **Project node**: one folder you added. See [Projects](projects.md).
 - **Session node**: one Claude Code session in a project's folder. See
   [Sessions & launch sheet](sessions.md).
+- **Agent node**: another coding agent's run; its **agent chip** names the agent.
+  See [What you see](legend.md#agent-nodes).
 - **Branch node**: one local git branch of a project.
 - **Worktree**: a separate checkout of a branch in its own folder. See [Branches & worktrees](branches.md).
 - **Context edge**: a dashed line giving a session another folder. See [Edges](edges.md).
 - **Cooperate edge**: a double line between two sessions that may message each other.
-- **Handle**: the small dot on a node's right edge, dragged to draw an edge.
-- **Toolbar**: the buttons beside a hovered or selected project, session or branch node.
+- **Handle**: the dot on a node's right edge, dragged to draw edges.
+- **Toolbar**: the buttons beside a hovered or selected node.
 - **Elsewhere tray**: live sessions whose folder is off the canvas, at the bottom left.
-- **Attention colour**: the one colour Switchboard uses for a session that needs you (`finished` or
-  `waiting`), a failed edge and an approval toast.
+- **Attention colour**: the one colour for a session that needs you (`finished` or `waiting`), an unseen
+  agent exit, a failed edge and an approval toast.
 
 ## Panes
 
-The panes open on the right, one at a time; `esc` closes the one in front.
+Panes open on the right, one at a time; `esc` closes the one in front.
 
 - **Launch sheet**: the form that starts a new session.
 - **Worktree sheet** and **remove-worktree sheet**: the forms that make and remove a worktree.
@@ -47,5 +49,5 @@ The panes open on the right, one at a time; `esc` closes the one in front.
 - **Toast**: a box at the bottom right asking for an answer.
 - **Review request**: Claude asking you to look at its work. See
   [The app as a tool for Claude](tool.md).
-- **Notice**: a short line at the top saying what just happened.
-- **Banner**: a top line that stays while something is wrong, such as `claude` not found.
+- **Notice**: a short top line saying what just happened.
+- **Banner**: a top line that stays while something is wrong.

@@ -51,7 +51,8 @@ or a date.
 
 - Editing files: Switchboard shows files and opens them in your own editor.
 - Code intelligence and debugging.
-- Agents other than Claude Code.
+- Full support for agents other than Claude Code (their history, state and resume); a basic card that runs
+  them is in.
 - Testing on macOS for each release (a Mac build is under Later).
 - Remote and cloud sessions beyond what Later lists.
 - Several people sharing one workspace.

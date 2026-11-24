@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Banner, SettingsSnapshot } from "../ipc";
+import type { Banner, Settings, SettingsSnapshot } from "../ipc";
 
 // Whether the settings pane is showing lives in `state/ui.ts` (`pane === "settings"`), with
 // the other panes; this store holds only what the settings snapshot and its actions produce.
@@ -37,4 +37,16 @@ const NO_BANNERS: readonly Banner[] = Object.freeze([]);
 /** The banners to show in the top strip; empty until a snapshot arrives. */
 export function selectBanners(state: SettingsState): readonly Banner[] {
   return state.snapshot?.banners ?? NO_BANNERS;
+}
+
+/**
+ * Story 12.2: the settings as the Settings pane's "Effective settings" shows them: each agent's
+ * `env` as its variable names only, never their values (a literal token stays out of view).
+ */
+export function displayedSettings(settings: Settings): Settings {
+  if (settings.agents === undefined || settings.agents.length === 0) return settings;
+  return {
+    ...settings,
+    agents: settings.agents.map((agent) => ({ ...agent, env: Object.fromEntries(Object.keys(agent.env).map((name) => [name, "…"])) })),
+  };
 }

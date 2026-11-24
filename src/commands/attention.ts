@@ -77,6 +77,28 @@ export async function revealSession(sessionId: string): Promise<boolean> {
 }
 
 /**
+ * Story 12.2: an agent card's exit toast was clicked: while its exit is still unseen, expand its
+ * project when collapsed, show all of the column when it sits past the cut, select it (which
+ * acknowledges it) and pan it into view. Resolves false for any other id.
+ */
+export async function revealAgent(id: string): Promise<boolean> {
+  const find = () => useWorkspaceStore.getState().snapshot?.children.find((c) => c.kind === "agent" && c.id === id);
+  const child = find();
+  if (child === undefined || child.agent?.attention !== true) return false;
+  const project = useWorkspaceStore.getState().snapshot?.workspace.projects.find((p) => p.id === child.projectId);
+  if (project === undefined) return false;
+  if (!project.expanded && !(await setExpanded(project.id, true))) return false;
+  if (find() === undefined) return false;
+  const ui = useUiStore.getState();
+  const kids = (useWorkspaceStore.getState().snapshot?.children ?? []).filter((c) => c.projectId === project.id && c.kind !== "branch");
+  if (!ui.showAll.includes(project.id) && !visibleChildren(kids, false).visible.some((c) => c.id === id)) ui.toggleShowAll(project.id);
+  const target = { kind: "agent", id } as const;
+  if (!sameTarget(ui.selection, target)) ui.select(target);
+  revealTarget(target);
+  return true;
+}
+
+/**
  * `attention.next`: reveal and select the session that has needed attention longest; when
  * that fails, say so in the notice.
  */
@@ -101,6 +123,7 @@ export async function revealToastSession(request: RevealRequest): Promise<boolea
     if (placement(id) !== null) await revealSession(id);
     return openReview(id);
   }
+  if (await revealAgent(id)) return true;
   if (!needsAttention(sessionState(id))) return false;
   if (placement(id) !== null) return revealSession(id);
   if (useLiveStore.getState().snapshot.elsewhere.some((row) => row.session_id === id)) {

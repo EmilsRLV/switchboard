@@ -8,6 +8,9 @@ import type { EdgeDir, LaunchPrefill, LaunchRequest, SkippedEdge, WorktreePlanPr
 /** The choice that leaves a flag out (`claude`'s own default applies). */
 export const DEFAULT_CHOICE = "default";
 
+/** Story 12.2: the Agent select's first entry, Claude Code itself (mirrors `store::CLAUDE_AGENT`). */
+export const CLAUDE_AGENT = "claude";
+
 /** The model select's entry for free text. */
 export const CUSTOM_MODEL = "custom";
 
@@ -47,7 +50,43 @@ export type LaunchForm = {
   worktreeName: string;
   /** True once the operator typed in the worktree name (it then stops following the session name). */
   worktreeNameEdited: boolean;
+  /**
+   * Story 12.2: the Agent select: `claude`, or a `settings.agents` name. Any other agent hides
+   * model, effort, mode, worktree, add-dirs and prompt.
+   */
+  agent: string;
+  /** Rust's default name for a Claude session (`<label>-<4 hex>`); an agent's is `<agent>-<4 hex>`. */
+  claudeName: string;
+  /** The 4 hex of the session id the sheet was given, which the default names end with. */
+  nameHex: string;
 };
+
+/** True when the form starts another coding agent rather than Claude Code (Story 12.2). */
+export function isAgentForm(form: Pick<LaunchForm, "agent">): boolean {
+  return form.agent !== undefined && form.agent !== CLAUDE_AGENT;
+}
+
+/** The first 4 hex digits of a session id (mirrors `launch::default_name`). */
+export function idHex(sessionId: string): string {
+  return Array.from(sessionId ?? "")
+    .filter((c) => /[0-9a-fA-F]/.test(c))
+    .slice(0, 4)
+    .join("");
+}
+
+/** The default name for `agent` (Story 12.2): Claude's own (`<label>-<4 hex>`), else `<agent>-<4 hex>`. */
+export function defaultNameFor(agent: string, claudeName: string, hex: string): string {
+  return agent === CLAUDE_AGENT ? claudeName : `${agent}-${hex}`;
+}
+
+/**
+ * The Agent select's entries (Story 12.2): `claude` first, then the configured agents in
+ * `settings.agents` order; empty (no Agent field: the sheet as in 0.2.0) when none is configured.
+ */
+export function agentChoices(agents: readonly string[] | undefined): string[] {
+  const named = (agents ?? []).filter((a) => a !== CLAUDE_AGENT);
+  return named.length === 0 ? [] : [CLAUDE_AGENT, ...named];
+}
 
 /** The prefix of the branch `claude --worktree <name>` makes (mirrors `launch::CLAUDE_WORKTREE_BRANCH_PREFIX`). */
 export const CLAUDE_WORKTREE_BRANCH_PREFIX = "worktree-";
@@ -111,6 +150,12 @@ export function worktreeNameError(raw: string, windows = false): string | null {
  */
 export function editedForm(form: LaunchForm, patch: Partial<LaunchForm>): LaunchForm {
   const next = { ...form, ...patch };
+  // Story 12.2: a name still at the old agent's default follows the new agent's.
+  if (patch.agent !== undefined && patch.name === undefined && form.name === defaultNameFor(form.agent, form.claudeName, form.nameHex)) {
+    next.name = defaultNameFor(patch.agent, form.claudeName, form.nameHex);
+    if (!next.worktreeNameEdited) next.worktreeName = worktreeSlug(next.name);
+    return next;
+  }
   if (patch.worktreeName !== undefined && patch.worktreeNameEdited === undefined) next.worktreeNameEdited = true;
   else if (patch.name !== undefined && !next.worktreeNameEdited) next.worktreeName = worktreeSlug(next.name);
   return next;
@@ -129,8 +174,16 @@ function offered(value: string, choices: readonly string[]): string {
 export function formFromPrefill(prefill: LaunchPrefill): LaunchForm {
   const model = prefill.model.trim() || DEFAULT_CHOICE;
   const named = model !== CUSTOM_MODEL && (MODEL_CHOICES as readonly string[]).includes(model);
+  // Story 12.2: the project's last Agent while it is still offered, else Claude.
+  const wanted = prefill.agent ?? CLAUDE_AGENT;
+  const agent = agentChoices(prefill.agents).includes(wanted) ? wanted : CLAUDE_AGENT;
+  const hex = idHex(prefill.sessionId);
+  const name = defaultNameFor(agent, prefill.name, hex);
   return {
-    name: prefill.name,
+    agent,
+    claudeName: prefill.name,
+    nameHex: hex,
+    name,
     model: named ? model : CUSTOM_MODEL,
     customModel: named ? "" : model,
     effort: offered(prefill.effort, EFFORT_CHOICES),
@@ -139,7 +192,7 @@ export function formFromPrefill(prefill: LaunchPrefill): LaunchForm {
     prompt: "",
     background: false,
     useWorktree: false,
-    worktreeName: worktreeSlug(prefill.name),
+    worktreeName: worktreeSlug(name),
     worktreeNameEdited: false,
   };
 }
@@ -160,6 +213,8 @@ export type FormErrors = { name: string | null; model: string | null; worktree: 
 export function formErrors(form: LaunchForm, repoTop: string | null = null): FormErrors {
   const name = form.name.trim();
   const model = chosenModel(form);
+  // Story 12.2: an agent has no model or worktree (those fields are hidden).
+  const agent = isAgentForm(form);
   return {
     name:
       name === ""
@@ -170,8 +225,14 @@ export function formErrors(form: LaunchForm, repoTop: string | null = null): For
             ? "name must not contain control characters"
             : null,
     model:
-      form.model !== CUSTOM_MODEL ? null : model === "" ? "custom model must not be blank" : model.startsWith("-") ? "model must not start with -" : null,
-    worktree: form.useWorktree ? worktreeNameError(form.worktreeName, repoTop !== null && isWindowsPath(repoTop)) : null,
+      agent || form.model !== CUSTOM_MODEL
+        ? null
+        : model === ""
+          ? "custom model must not be blank"
+          : model.startsWith("-")
+            ? "model must not start with -"
+            : null,
+    worktree: !agent && form.useWorktree ? worktreeNameError(form.worktreeName, repoTop !== null && isWindowsPath(repoTop)) : null,
   };
 }
 
@@ -201,6 +262,8 @@ export function startBlockedReason(
   if (errors.name !== null) return `Start needs a valid name: ${errors.name}`;
   if (errors.model !== null) return `Start needs a model: ${errors.model}`;
   if (errors.worktree !== null) return `Start needs a valid worktree name: ${errors.worktree}`;
+  // Story 12.2: an agent starts in the project folder with no add-dirs: nothing else blocks it.
+  if (isAgentForm(form)) return null;
   if (worktreePlan !== null && worktreePlan.error !== null) return "No worktree would be created: see above";
   const missing = form.addDirs.filter((d) => missingDirs.some((m) => samePath(d, m))).length;
   if (missing > 0) return missing === 1 ? "Remove the missing folder to start" : `Remove the ${missing} missing folders to start`;
@@ -221,6 +284,24 @@ const PROJECT_TARGET: LaunchTarget = { branch: null, createWorktree: false };
  */
 export function launchRequest(projectId: string, sessionId: string, form: LaunchForm, target: LaunchTarget = PROJECT_TARGET): LaunchRequest {
   const onBranch = target.branch !== null;
+  if (isAgentForm(form)) {
+    // Story 12.2: an agent uses the project, the name and the id only.
+    return {
+      projectId,
+      sessionId,
+      name: form.name.trim(),
+      model: DEFAULT_CHOICE,
+      effort: DEFAULT_CHOICE,
+      permissionMode: DEFAULT_CHOICE,
+      addDirs: [],
+      prompt: null,
+      background: form.background,
+      branch: null,
+      createWorktree: false,
+      worktreeName: null,
+      agent: form.agent,
+    };
+  }
   return {
     projectId,
     sessionId,
@@ -234,6 +315,7 @@ export function launchRequest(projectId: string, sessionId: string, form: Launch
     branch: target.branch,
     createWorktree: onBranch && target.createWorktree,
     worktreeName: !onBranch && form.useWorktree ? form.worktreeName.trim() : null,
+    agent: null,
   };
 }
 

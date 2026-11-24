@@ -28,6 +28,8 @@ export type LaunchSheetTarget = {
   edgeDirs: readonly EdgeDir[];
   /** The project's context edges whose target gave no folder (the `not added:` line). */
   skipped: readonly SkippedEdge[];
+  /** Story 12.2: the Agent select's entries (`claude` first); empty: no Agent field. */
+  agents: readonly string[];
 };
 
 export type LaunchSheetState = LaunchSheetTarget & {
@@ -85,6 +87,7 @@ const initial = {
   repoTop: null,
   edgeDirs: Object.freeze([]) as readonly EdgeDir[],
   skipped: Object.freeze([]) as readonly SkippedEdge[],
+  agents: Object.freeze([]) as readonly string[],
 };
 
 export const useLaunchStore = create<LaunchSheetState>()((set) => ({
@@ -105,6 +108,7 @@ export const useLaunchStore = create<LaunchSheetState>()((set) => ({
       repoTop: target.repoTop ?? null,
       edgeDirs: target.edgeDirs ?? initial.edgeDirs,
       skipped: target.skipped ?? initial.skipped,
+      agents: target.agents ?? initial.agents,
       opened: s.opened + 1,
     })),
   edit: (patch) =>

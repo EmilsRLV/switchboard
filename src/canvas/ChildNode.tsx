@@ -8,6 +8,9 @@ import { ForkHandles, LinkHandles } from "./LinkHandles";
 import { NodeHint } from "./NodeHint";
 import { NodeToolbar, useHover } from "./NodeToolbar";
 import {
+  agentAriaLabel,
+  agentCardTitle,
+  agentStateWord,
   branchCardParts,
   branchCardTitle,
   childAriaLabel,
@@ -16,6 +19,7 @@ import {
   REVIEW_FLAG_TEXT,
   sessionCardMeta,
   sessionCardTitle,
+  type AgentFlowNode,
   type BranchFlowNode,
   type ChildNodeData,
   type MoreFlowNode,
@@ -210,6 +214,46 @@ export const BranchNode = memo(function BranchNode({ data, dragging }: NodeProps
       <ChildCard data={data} kind="branch" />
       <LinkHandles source={false} shown={false} />
       <NodeToolbar target={{ kind: "branch", id: data.child.id }} shown={(hovered || data.selected) && dragging !== true} />
+    </div>
+  );
+});
+
+/**
+ * Story 12.2: an agent card -- a run of another coding agent, tracked by its process only. The
+ * session card's look: its name over a mono meta line that leads with the state word (`running`,
+ * `stopping` during a Stop, `exited (<code>)`; muted, or in the accent while its exit is unseen,
+ * the card's border too) and ends with the **agent chip** (the agent's name, modelled on the
+ * worktree chip; never the accent). No edge handles (it is never an edge end), no review hint.
+ * Its node toolbar offers term, stop / restart and remove.
+ */
+function AgentCard({ data }: { data: ChildNodeData }) {
+  const { child, selected, attention } = data;
+  const meta = child.agent ?? null;
+  if (meta === null) return null;
+  const className =
+    "child-node child-node-agent child-node-two-line" + (selected ? " is-selected" : "") + (attention ? " session-attention" : "");
+  const word = agentStateWord(meta, data.stopping);
+  return (
+    <div className={className} role="group" aria-label={agentAriaLabel(data)} title={agentCardTitle(data)}>
+      <span className="child-node-label">{child.label}</span>
+      <span className="child-node-meta">
+        <span className={attention ? "session-attention-word session-state" : "session-state session-state-muted"}>{word}</span>
+        <span aria-hidden="true">·</span>
+        <span className="agent-node-chip" title={`agent ${meta.agent}`}>
+          {meta.agent}
+        </span>
+      </span>
+    </div>
+  );
+}
+
+/** An agent card (Story 12.2) with its node toolbar while hovered or selected and not dragged. */
+export const AgentNode = memo(function AgentNode({ data, dragging }: NodeProps<AgentFlowNode>) {
+  const [hovered, hover] = useHover();
+  return (
+    <div className="node-hover" {...hover}>
+      <AgentCard data={data} />
+      <NodeToolbar target={{ kind: "agent", id: data.child.id }} shown={(hovered || data.selected) && dragging !== true} />
     </div>
   );
 });

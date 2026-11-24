@@ -6,6 +6,7 @@ import {
   EFFORT_CHOICES,
   edgeVia,
   formErrors,
+  isAgentForm,
   launchKeyAction,
   launchKeyTarget,
   MODEL_CHOICES,
@@ -34,6 +35,10 @@ import { usePaletteStore } from "../state/palette";
  * Story 6.2: the project's context edges prefill the add-dirs; such a row reads `via edge →
  * <target>` and can be removed for this launch only (the edge stays). Edges whose target gives
  * no folder are listed in a muted `not added:` line; they never block Start.
+ *
+ * Story 12.2: with `settings.agents` configured, an Agent select comes first (`claude`, then the
+ * agents). Another agent keeps Name and Start in background only: model, effort, mode, worktree,
+ * add-dirs and the prompt are hidden. Without agents the sheet is exactly as before.
  */
 export function LaunchPane() {
   const projectLabel = useLaunchStore((s) => s.projectLabel);
@@ -47,6 +52,7 @@ export function LaunchPane() {
   const missingDirs = useLaunchStore((s) => s.missingDirs);
   const edgeDirs = useLaunchStore((s) => s.edgeDirs);
   const skipped = useLaunchStore((s) => s.skipped);
+  const agents = useLaunchStore((s) => s.agents);
   const edit = useLaunchStore((s) => s.edit);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -65,6 +71,8 @@ export function LaunchPane() {
   const blocked = startBlockedReason(form, missingDirs, starting, worktreePlan, repoTop);
   const worktreeFolder = repoTop === null ? null : claudeWorktreeFolder(repoTop, form.worktreeName.trim() || "<name>");
   const notAdded = skippedNote("not added", skipped);
+  const agent = isAgentForm(form);
+  const program = agent ? form.agent : "claude";
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (launchKeyAction(event.nativeEvent, launchKeyTarget(event.target)) !== "start") return;
@@ -85,7 +93,7 @@ export function LaunchPane() {
         <p className="muted">
           {branch === null ? (
             <>
-              Starts <code className="path">claude</code> in {projectLabel} in a terminal.
+              Starts <code className="path">{program}</code> in {projectLabel} in a terminal.
             </>
           ) : (
             <>
@@ -114,6 +122,18 @@ export function LaunchPane() {
             )}
           </div>
         )}
+        {agents.length > 0 && (
+          <label className="launch-field">
+            <span className="launch-label">Agent</span>
+            <select className="launch-input" value={form.agent} onChange={(e) => edit({ agent: e.target.value })}>
+              {agents.map((choice) => (
+                <option key={choice} value={choice}>
+                  {choice}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label className="launch-field">
           <span className="launch-label">Name</span>
           <input
@@ -132,58 +152,62 @@ export function LaunchPane() {
             </span>
           )}
         </label>
-        <label className="launch-field">
-          <span className="launch-label">Model</span>
-          <select className="launch-input" value={form.model} onChange={(e) => edit({ model: e.target.value })}>
-            {MODEL_CHOICES.map((choice) => (
-              <option key={choice} value={choice}>
-                {choice}
-              </option>
-            ))}
-          </select>
-        </label>
-        {form.model === CUSTOM_MODEL && (
-          <label className="launch-field">
-            <span className="launch-label">Custom model</span>
-            <input
-              className="launch-input"
-              type="text"
-              value={form.customModel}
-              spellCheck={false}
-              aria-invalid={errors.model !== null}
-              aria-describedby={errors.model !== null ? "launch-model-hint" : undefined}
-              onChange={(e) => edit({ customModel: e.target.value })}
-            />
-            {errors.model !== null && (
-              <span id="launch-model-hint" className="launch-hint">
-                {errors.model}
-              </span>
+        {!agent && (
+          <>
+            <label className="launch-field">
+              <span className="launch-label">Model</span>
+              <select className="launch-input" value={form.model} onChange={(e) => edit({ model: e.target.value })}>
+                {MODEL_CHOICES.map((choice) => (
+                  <option key={choice} value={choice}>
+                    {choice}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {form.model === CUSTOM_MODEL && (
+              <label className="launch-field">
+                <span className="launch-label">Custom model</span>
+                <input
+                  className="launch-input"
+                  type="text"
+                  value={form.customModel}
+                  spellCheck={false}
+                  aria-invalid={errors.model !== null}
+                  aria-describedby={errors.model !== null ? "launch-model-hint" : undefined}
+                  onChange={(e) => edit({ customModel: e.target.value })}
+                />
+                {errors.model !== null && (
+                  <span id="launch-model-hint" className="launch-hint">
+                    {errors.model}
+                  </span>
+                )}
+              </label>
             )}
-          </label>
+            <label className="launch-field">
+              <span className="launch-label">Effort</span>
+              <select className="launch-input" value={form.effort} onChange={(e) => edit({ effort: e.target.value })}>
+                {EFFORT_CHOICES.map((choice) => (
+                  <option key={choice} value={choice}>
+                    {choice}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="launch-field">
+              <span className="launch-label">Permission mode</span>
+              <select className="launch-input" value={form.permissionMode} onChange={(e) => edit({ permissionMode: e.target.value })}>
+                {PERMISSION_CHOICES.map((choice) => (
+                  <option key={choice} value={choice}>
+                    {choice}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
         )}
-        <label className="launch-field">
-          <span className="launch-label">Effort</span>
-          <select className="launch-input" value={form.effort} onChange={(e) => edit({ effort: e.target.value })}>
-            {EFFORT_CHOICES.map((choice) => (
-              <option key={choice} value={choice}>
-                {choice}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="launch-field">
-          <span className="launch-label">Permission mode</span>
-          <select className="launch-input" value={form.permissionMode} onChange={(e) => edit({ permissionMode: e.target.value })}>
-            {PERMISSION_CHOICES.map((choice) => (
-              <option key={choice} value={choice}>
-                {choice}
-              </option>
-            ))}
-          </select>
-        </label>
       </section>
 
-      {branch === null && repoTop !== null && worktreeFolder !== null && (
+      {!agent && branch === null && repoTop !== null && worktreeFolder !== null && (
         <section className="pane-section" aria-label="Claude worktree">
           <label className="launch-check">
             <input type="checkbox" checked={form.useWorktree} disabled={starting} onChange={(e) => edit({ useWorktree: e.target.checked })} />
@@ -218,57 +242,61 @@ export function LaunchPane() {
         </section>
       )}
 
-      <section className="pane-section" aria-label="Extra folders">
-        <h3 className="pane-heading">Add-dirs</h3>
-        {form.addDirs.length === 0 ? (
-          <p className="muted">None: the session sees the folder it starts in only.</p>
-        ) : (
-          <ul className="launch-dirs">
-            {form.addDirs.map((dir, index) => {
-              const missing = missingDirs.includes(dir);
-              const errorId = `launch-dir-error-${index}`;
-              const via = edgeVia(edgeDirs, dir);
-              return (
-                <li key={dir} className="launch-dir">
-                  <span className="launch-dir-path" title={dir} aria-describedby={missing ? errorId : undefined}>
-                    {shortenPath(dir, 44)}
-                  </span>
-                  {via !== null && (
-                    <span className="launch-dir-via" title={`via edge → ${via}`}>
-                      via edge → {via}
+      {!agent && (
+        <section className="pane-section" aria-label="Extra folders">
+          <h3 className="pane-heading">Add-dirs</h3>
+          {form.addDirs.length === 0 ? (
+            <p className="muted">None: the session sees the folder it starts in only.</p>
+          ) : (
+            <ul className="launch-dirs">
+              {form.addDirs.map((dir, index) => {
+                const missing = missingDirs.includes(dir);
+                const errorId = `launch-dir-error-${index}`;
+                const via = edgeVia(edgeDirs, dir);
+                return (
+                  <li key={dir} className="launch-dir">
+                    <span className="launch-dir-path" title={dir} aria-describedby={missing ? errorId : undefined}>
+                      {shortenPath(dir, 44)}
                     </span>
-                  )}
-                  <button type="button" className="btn" onClick={() => removeAddDir(index)} aria-label={`Remove ${dir}`}>
-                    Remove
-                  </button>
-                  {missing && (
-                    <span id={errorId} className="pane-error launch-dir-error" role="alert">
-                      folder does not exist
-                    </span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-        {notAdded !== null && <p className="launch-skipped">{notAdded}</p>}
-        <div className="actions">
-          <button type="button" className="btn" title={commandHint("launch.addFolder")} onClick={() => runCommand("launch.addFolder")} disabled={!isCommandEnabled("launch.addFolder")}>
-            Add folder…
-          </button>
-        </div>
-      </section>
+                    {via !== null && (
+                      <span className="launch-dir-via" title={`via edge → ${via}`}>
+                        via edge → {via}
+                      </span>
+                    )}
+                    <button type="button" className="btn" onClick={() => removeAddDir(index)} aria-label={`Remove ${dir}`}>
+                      Remove
+                    </button>
+                    {missing && (
+                      <span id={errorId} className="pane-error launch-dir-error" role="alert">
+                        folder does not exist
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {notAdded !== null && <p className="launch-skipped">{notAdded}</p>}
+          <div className="actions">
+            <button type="button" className="btn" title={commandHint("launch.addFolder")} onClick={() => runCommand("launch.addFolder")} disabled={!isCommandEnabled("launch.addFolder")}>
+              Add folder…
+            </button>
+          </div>
+        </section>
+      )}
 
       <section className="pane-section">
-        <label className="launch-field">
-          <span className="launch-label">First prompt (optional)</span>
-          <textarea
-            className="launch-input launch-prompt"
-            value={form.prompt}
-            rows={4}
-            onChange={(e) => edit({ prompt: e.target.value })}
-          />
-        </label>
+        {!agent && (
+          <label className="launch-field">
+            <span className="launch-label">First prompt (optional)</span>
+            <textarea
+              className="launch-input launch-prompt"
+              value={form.prompt}
+              rows={4}
+              onChange={(e) => edit({ prompt: e.target.value })}
+            />
+          </label>
+        )}
         <label className="launch-check">
           <input type="checkbox" checked={form.background} onChange={(e) => edit({ background: e.target.checked })} />
           <span>Start in background</span>

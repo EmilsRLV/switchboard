@@ -16,6 +16,11 @@ Settings you are likely to change: `claude.path` and `git.path`, the launch shee
 **Open in external editor**, such as `code -g {file}:{line}`), `shell` (the plain terminal), the
 `notifications` switches, and `peers.nudge`.
 
+`agents` lists other coding agents for the launch sheet, such as `{ "name": "kimi", "command": "kimi",
+"args": [], "env": { "KIMI_API_KEY": "${env:KIMI_API_KEY}" } }`. An `env` value written `${env:NAME}` is read
+from Switchboard's environment; any other value is stored here in plain text. A bad entry is left out with a
+banner, and the pane shows env names only.
+
 ## The settings pane
 
 - **File**: where the file is.

@@ -56,6 +56,7 @@ const ALLOW_LIST: readonly Exemption[] = [
   // -- import pane -------------------------------------------------------------------------------
   { file: "/src/components/ImportPane.tsx", handler: "() => toggle(project.cwd)", reason: `${ITEM} (ticks one folder); palette: import.addSelected adds the ticked ones` },
   // -- launch sheet --------------------------------------------------------------------------------
+  { file: "/src/components/LaunchPane.tsx", handler: "(e) => edit({ agent: e.target.value })", reason: `${FIELD} (Story 12.2: the Agent select)` },
   { file: "/src/components/LaunchPane.tsx", handler: "(e) => edit({ name: e.target.value })", reason: FIELD },
   { file: "/src/components/LaunchPane.tsx", handler: "(e) => edit({ model: e.target.value })", reason: FIELD },
   { file: "/src/components/LaunchPane.tsx", handler: "(e) => edit({ customModel: e.target.value })", reason: FIELD },

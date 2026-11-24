@@ -7,7 +7,7 @@ import { typingSink } from "../perf";
 import { useKeybindingsStore } from "../state/keybindings";
 import { usePaletteStore } from "../state/palette";
 import { useReviewStore } from "../state/review";
-import { useSettingsStore } from "../state/settings";
+import { displayedSettings, useSettingsStore } from "../state/settings";
 import { useWorkspaceStore } from "../state/workspace";
 
 /**
@@ -100,7 +100,7 @@ export function SettingsPane() {
 
           <section className="pane-section">
             <h3 className="pane-heading">Effective settings</h3>
-            <Tree value={snapshot.settings} />
+            <Tree value={displayedSettings(snapshot.settings)} />
           </section>
 
           <Diagnostics />

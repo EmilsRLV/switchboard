@@ -87,6 +87,7 @@ function fakeRust(onExpand?: () => void) {
         elsewhere: snap.elsewhere.map((r) => (r.session_id === id ? { ...r, state: IDLE } : r)),
       };
     }
+    if (cmd === "agent_acknowledge") return true;
     throw new Error(`unexpected command ${cmd}`);
   });
   vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
@@ -219,5 +220,24 @@ describe("attention", () => {
     expect(invoke).toHaveBeenCalledWith("session_acknowledge", { sessionId: "e1", attentionSince: 1 }, undefined);
     await flush();
     expect(useLiveStore.getState().snapshot.elsewhere[0]?.state).toEqual(IDLE);
+  });
+
+  it("Story 12.2: a toast click on an agent card that exited unseen expands its project and selects it", async () => {
+    const invoke = fakeRust();
+    const agent = (attention: boolean): ChildNode => ({
+      ...session("a1", "ide"),
+      kind: "agent",
+      agent: { agent: "kimi", startedAt: "2026-11-23T10:00:00.000Z", exited: 0, attention },
+    });
+    useWorkspaceStore.setState({ snapshot: workspace([project("ide", false)], [agent(false)]) });
+    await expect(revealToastSession({ session_id: "a1", project_id: "ide" })).resolves.toBe(false);
+    expect(useUiStore.getState().selection).toBeNull();
+    expect(useWorkspaceStore.getState().snapshot?.workspace.projects[0]?.expanded).toBe(false);
+
+    useWorkspaceStore.setState({ snapshot: workspace([project("ide", false)], [agent(true)]) });
+    await expect(revealToastSession({ session_id: "a1", project_id: "ide" })).resolves.toBe(true);
+    expect(useWorkspaceStore.getState().snapshot?.workspace.projects[0]?.expanded).toBe(true);
+    expect(useUiStore.getState().selection).toEqual({ kind: "agent", id: "a1" });
+    expect(invoke).toHaveBeenCalledWith("agent_acknowledge", { id: "a1" }, undefined);
   });
 });

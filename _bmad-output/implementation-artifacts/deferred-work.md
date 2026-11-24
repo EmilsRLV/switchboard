@@ -207,3 +207,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-12-1-cleared-session-keeps-its-card.md`
   summary: An unhooked session's in-process `/resume` may be recorded as a `/clear` by the poll's pid+cwd rule, chaining an unrelated conversation into the card.
   evidence: Unverified (maybe-false, medium if true). Settle by running `claude agents --json --all` before and after an in-process `/resume` in a session started outside Switchboard: if the row keeps its pid and cwd under the resumed id, it is real; a guard would require the new id's transcript to be newly created.
+- source_spec: `_bmad-output/implementation-artifacts/spec-12-2-agent-cards-for-other-coding-agents.md`
+  summary: Per-agent palette commands `agent.new.<name>` ("New kimi session", shown when a project is selected, bindable), registered at runtime from `settings.agents` via `registerCommands` (registry.ts :149) with `rawOverrides` keeping their bindings.
+  evidence: Split from Story 12.2 at the size gate (spec ~2,600 tokens). Agents can be started from New session… meanwhile.
+- source_spec: `_bmad-output/implementation-artifacts/spec-12-2-agent-cards-for-other-coding-agents.md`
+  summary: List agent cards in the MCP `sessions` tool as `{nodeId, kind:"agent", agent, project, status:"running"|"exited"}`; Claude rows carry no `kind`.
+  evidence: Split from Story 12.2 at the size gate. 12.2 leaves `mcp/mod.rs` unchanged, so agents are invisible to MCP until then.
