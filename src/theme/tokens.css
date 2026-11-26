@@ -63,6 +63,14 @@
   --diff-add-word: #98c37947;
   --diff-del-word: #e06c7547;
 
+  /* Group colours (Story 12.3): a project group's optional 2-px left rule. Five muted tones that
+     sit beside --border; never the accent, never a fill. */
+  --group-slate: #6b7685;
+  --group-sage: #74907a;
+  --group-sand: #9a8f76;
+  --group-rose: #9a747c;
+  --group-sky: #6c8ca6;
+
   --font-sans:
     system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;
   --font-mono:

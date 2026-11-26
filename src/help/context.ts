@@ -37,6 +37,7 @@ const SELECTION_PAGES: Readonly<Record<CanvasTarget["kind"], string | null>> = {
   agent: "sessions",
   edge: "edges",
   more: null,
+  group: "projects",
 };
 
 /** The guide page Help opens on from `context`, or `null` for Contents. */

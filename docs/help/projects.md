@@ -5,18 +5,18 @@ hang under it as a column. Removing one never touches the folder.
 
 ## Adding a folder
 
-- `ctrl+o` (**Add project folder…**) opens the folder picker; the folder lands in the view's centre.
+- `ctrl+o` (**Add project folder…**) opens the folder picker.
 - Drop folders from the file manager.
-- **Import from Claude…** in the command palette opens the import pane: every folder Claude Code has run in
-  that still exists, newest first, with its session count. Tick folders with Space or a click, then press
-  `enter` or **Add selected** (also **Import: add selected**). Folders already on the canvas show `on canvas`.
+- **Import from Claude…** in the command palette lists every existing folder Claude Code has run in, newest
+  first. Tick folders with Space or a click, then press `enter` or **Add selected**. Folders already there
+  show `on canvas`.
 
 Adding a folder already there adds nothing; its project node flashes instead.
 
 ## Working with a project node
 
-Select a project node and press `enter`, or click its chevron, to expand or collapse it. Hovered or selected, it
-shows a **toolbar** of what it can run. Right-click it for its menu, or use the palette:
+Press `enter` on it, or click its chevron, to expand or collapse it. Hovered or selected, it shows a
+**toolbar**. Right-click it for its menu, or use the palette:
 
 - **New session…** (`n`) opens the [launch sheet](sessions.md#the-launch-sheet); **Plain terminal…** opens
   a [plain terminal](terminals.md) in the folder.
@@ -25,9 +25,14 @@ shows a **toolbar** of what it can run. Right-click it for its menu, or use the 
 - **Show branches** / **Hide branches** and **New worktree…**: see [Branches & worktrees](branches.md).
 - **Open in external editor**, **Open in file manager**, **Reveal Claude project dir**.
 - **Re-layout children** tidies the column; **Show all sessions** lifts the ten-row limit.
-- **Remove from canvas** takes the node, its column and its edges off, with no undo. It
-  also ends its terminals and the sessions in them; its other live sessions move to the
-  Elsewhere tray.
+- **Remove from canvas** takes the node, its column and its edges off, with no undo, ending its
+  terminals; its other live sessions move to the Elsewhere tray.
+
+## Groups
+
+`g` (**Add to group…**) puts the selected project in a group, or **New group…** names one. A frame surrounds
+the members; drag its label to move them all, click it to select the group, `enter` to collapse it into one
+card. Its menu renames, colours or deletes it (the projects stay). Only **Remove from group** takes one out.
 
 ## What you can see
 

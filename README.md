@@ -948,6 +948,28 @@ other while it is idle. That check is done by hand with the real `claude`; if it
 nudge of Story 7.3 becomes the primary channel. See
 [`docs/research/claude-code-integration.md`](docs/research/claude-code-integration.md).
 
+### Groups
+
+Projects can be kept together in a named **group** (Story 12.3). With a project selected, `g` (**Add to
+group…**, also on its menu) turns the palette into a pick list of the groups by label plus **New group…**,
+which asks for the label in the palette (control characters become a space, it is trimmed and cut to 60
+characters; a blank one is refused with `group label is blank`). A project is in at most one group; moving it
+to another deletes its old group when that leaves it empty. **Remove from group** takes it out again and its
+card stays where it is; dragging a member never changes membership, the frame just grows.
+
+An expanded group draws as a **frame** behind its members (their cards and drawn children, plus a padding),
+its label top-left: drag the label to move every member (one write on release), click it to select the group.
+`enter` on a selected group collapses it into one **group card** at the frame's top-left: the label,
+`N projects`, the members' summed `N live` and the glow while any member needs you. Its members and their
+children are hidden, and so are edges to them; `ctrl+j` or a toast into a collapsed group expands it first.
+The arrow keys visit the card like a project card, and dragging it moves the members.
+
+While a group is selected the palette and its menu offer **Rename group…** (prefilled), **Set group
+colour…** (`slate`, `sage`, `sand`, `rose`, `sky` or **None**; shown as a 2-px left rule), **Collapse group** /
+**Expand group** and **Delete group** (no confirmation; the projects stay). Each group also has **Go to group:
+<label>** in the palette, which selects and centres it. A group has no position of its own: the frame and the
+card are placed from the members.
+
 ### The file
 
 What the canvas shows is persisted in one app-written JSON file beside `settings.json`:
@@ -963,7 +985,8 @@ collapsed, re-laid-out or removed, at the end of every node drag, and atomically
 every pan or zoom that moved the viewport by more than 0.5 px or 0.001 zoom, so a relaunch opens exactly
 where you left off with the same nodes at the same positions. Loading an existing file never rewrites it.
 Each project is `{ id (UUID v4), path (canonical), label, position, expanded, color, launchDefaults,
-showBranches }`;
+showBranches, groupId }` (`groupId` left out while the project is in no group), and `groups[]` (left out
+while empty) holds `{ id, label, color, collapsed }`;
 `sessions[]` holds `{ sessionId, projectId, branchId, label, pinned, position }` (a child's `position` is
 relative to its parent card and `null` in its slot), `branches[].position` likewise (a branch is written
 only once it is moved, or given a worktree from the sheet, which also sets its `worktreePath`, or a session is
@@ -987,6 +1010,7 @@ banners, never a crash:
 | cannot read workspace: … | The file exists but cannot be read | Defaults in memory; changes are kept in memory and **not saved** this session (the file may well be valid). |
 | workspace.json is version N … | A `version` newer than this build | Loaded as-is; changes are kept in memory and **not saved**, so a v1 write cannot drop the newer fields. |
 | workspace.json had N projects with an empty or duplicate id | Hand-edited `projects` | Those entries are dropped (the first of a duplicate is kept); the rest load. |
+| workspace.json had … group…; fixed | Hand-edited `groups` / `groupId` | Groups with an empty or duplicate id are dropped (the first kept), a `groupId` naming no group is cleared, groups with no members are dropped; the rest load. |
 | cannot write workspace: … | The write failed (no config dir, permissions) | The change lives in memory; the next write is tried again. |
 | project add failed: … | Adding a folder failed (picker, IPC) | Nothing added; the banner clears on the next successful add. |
 | node move failed / expand failed / collapse failed / re-layout failed / remove failed / label edge failed / delete edge failed: … | Rust rejected the change (an id it does not know, no runtime) | Nothing changes; a dropped node goes back to its stored position; the banner clears on the next successful change. |

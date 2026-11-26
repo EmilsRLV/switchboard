@@ -19,6 +19,22 @@ export type PalettePick = {
 };
 
 /**
+ * The palette as a text prompt (Story 12.3, "New group…", "Rename group…"): no list, the input
+ * starts at `initial`; Enter closes the palette and hands what was typed to `onSubmit` (Rust
+ * judges it: a blank label is refused there); Esc closes it with nothing submitted.
+ */
+export type PalettePrompt = {
+  /** The input's placeholder and the dialog's accessible name. */
+  placeholder: string;
+  /** What the input holds when the prompt opens (a rename's current label). */
+  initial: string;
+  onSubmit: (text: string) => void;
+};
+
+/** The line a prompt shows under its input. */
+export const PROMPT_HINT = "Enter to confirm · Esc to cancel";
+
+/**
  * UI state of the command palette: whether it is showing, what has been typed and which row
  * is selected. The commands themselves live in the registry; this store only filters them.
  */
@@ -26,6 +42,8 @@ export type PaletteState = {
   isOpen: boolean;
   /** The pick list showing in place of the commands, or `null` (the command palette). */
   pick: PalettePick | null;
+  /** The text prompt showing in place of the commands (Story 12.3), or `null`. */
+  prompt: PalettePrompt | null;
   query: string;
   /** Index into the filtered list; clamped by `move`, reset by `setQuery` and `open`. */
   selected: number;
@@ -33,6 +51,8 @@ export type PaletteState = {
   open: () => void;
   /** Show the palette as the pick list `pick`, with an empty query and the first row selected. */
   openPick: (pick: PalettePick) => void;
+  /** Show the palette as the text prompt `prompt`, its input holding `prompt.initial`. */
+  openPrompt: (prompt: PalettePrompt) => void;
   close: () => void;
   toggle: () => void;
   setQuery: (query: string) => void;
@@ -100,7 +120,20 @@ export function runPaletteRow(rowId: string): void {
     return;
   }
   runCommand(rowId);
-  if (usePaletteStore.getState().pick === null) usePaletteStore.getState().close();
+  const after = usePaletteStore.getState();
+  if (after.pick === null && after.prompt === null) after.close();
+}
+
+/**
+ * Enter on the palette while it is a text prompt: close it, then hand the typed text to the
+ * prompt's `onSubmit`. Resolves whether there was a prompt.
+ */
+export function submitPalettePrompt(): boolean {
+  const { prompt, query } = usePaletteStore.getState();
+  if (prompt === null) return false;
+  usePaletteStore.getState().close();
+  prompt.onSubmit(query);
+  return true;
 }
 
 /** Keep `index` within a list of `count` rows; an empty list has nothing to select but 0. */
@@ -135,11 +168,13 @@ export function paletteKeyAction(key: string): PaletteKeyAction | null {
 export const usePaletteStore = create<PaletteState>()((set, get) => ({
   isOpen: false,
   pick: null,
+  prompt: null,
   query: "",
   selected: 0,
-  open: () => set({ isOpen: true, pick: null, query: "", selected: 0 }),
-  openPick: (pick) => set({ isOpen: true, pick, query: "", selected: 0 }),
-  close: () => set({ isOpen: false, pick: null }),
+  open: () => set({ isOpen: true, pick: null, prompt: null, query: "", selected: 0 }),
+  openPick: (pick) => set({ isOpen: true, pick, prompt: null, query: "", selected: 0 }),
+  openPrompt: (prompt) => set({ isOpen: true, pick: null, prompt, query: prompt.initial, selected: 0 }),
+  close: () => set({ isOpen: false, pick: null, prompt: null }),
   toggle: () => (get().isOpen ? get().close() : get().open()),
   setQuery: (query) => set({ query, selected: 0 }),
   // `selected` may be stale from a longer list; clamp it first so `delta` moves from a real row.

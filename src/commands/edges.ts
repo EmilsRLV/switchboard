@@ -176,7 +176,7 @@ function drawnNow(): Set<string> {
   const snapshot = useWorkspaceStore.getState().snapshot;
   if (snapshot === null) return new Set();
   const { showAll, showAllBranches } = useUiStore.getState();
-  return drawnFlowIds(snapshot.workspace.projects, snapshot.children, showAll, showAllBranches);
+  return drawnFlowIds(snapshot.workspace.projects, snapshot.children, showAll, showAllBranches, snapshot.workspace.groups);
 }
 
 /** The "Select edge…" rows of the selected node: its drawn edges. */

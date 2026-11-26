@@ -33,6 +33,7 @@ Requirements are numbered `FR-<area>-<n>` so epics and specs can cite them. "Mus
 | FR-CANVAS-6 | Keyboard: arrow keys move selection between nodes; Enter opens; `n` new session; `e` start edge; `/` command palette; Esc closes panes. | Must |
 | FR-CANVAS-7 | Command palette (`ctrl+k`) for every action a menu would have. The app has no menu bar. | Must |
 | FR-CANVAS-8 | Multiple workspaces (switch between saved graphs). | Later |
+| FR-CANVAS-9 | **Project groups** (Story 12.3): a project can join one named group (`groups: [{id, label, color, collapsed}]`, `Project.groupId`). Expanded, a group is a frame behind its members whose label drags them all (one write); collapsed, one project-sized card with `N projects`, the summed `N live` and the attention glow. Add to group… (`g`), Remove from group, Rename, Set colour (five muted colours), Collapse/Expand (Enter), Delete (members kept) and Go to group are palette commands; a group is never an edge end, and an empty group is deleted. | Should |
 
 ### 2.2 Project nodes (`FR-PROJ`)
 

@@ -455,6 +455,56 @@ pub async fn workspace_move_node<R: Runtime>(
     graph::move_node(&app, &target, position)
 }
 
+/// Story 12.3: store several dropped positions in one write (a group's members moved
+/// together). Every target must exist and every position be finite, or nothing moves.
+#[tauri::command]
+pub async fn workspace_move_nodes<R: Runtime>(app: AppHandle<R>, moves: Vec<graph::NodeMove>) -> Result<WorkspaceSnapshot, String> {
+    graph::move_nodes(&app, &moves)
+}
+
+/// Story 12.3: make a group labelled `label` holding `projectId`. Replies with the snapshot (the
+/// new group is the project's `groupId`), or `Err("group label is blank")` / `"unknown project"`.
+#[tauri::command]
+pub async fn group_create<R: Runtime>(app: AppHandle<R>, label: String, project_id: String) -> Result<WorkspaceSnapshot, String> {
+    graph::create_group(&app, &label, &project_id)
+}
+
+/// Story 12.3: move a project into a group; its old group is deleted if left empty.
+#[tauri::command]
+pub async fn group_add<R: Runtime>(app: AppHandle<R>, group_id: String, project_id: String) -> Result<WorkspaceSnapshot, String> {
+    graph::add_to_group(&app, &group_id, &project_id)
+}
+
+/// Story 12.3: take a project out of its group; the group is deleted if left empty.
+#[tauri::command]
+pub async fn group_remove<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<WorkspaceSnapshot, String> {
+    graph::remove_from_group(&app, &project_id)
+}
+
+/// Story 12.3: rename a group under the label rules.
+#[tauri::command]
+pub async fn group_rename<R: Runtime>(app: AppHandle<R>, group_id: String, label: String) -> Result<WorkspaceSnapshot, String> {
+    graph::rename_group(&app, &group_id, &label)
+}
+
+/// Story 12.3: set (one of the five group colours) or clear (`null`) a group's colour.
+#[tauri::command]
+pub async fn group_set_color<R: Runtime>(app: AppHandle<R>, group_id: String, color: Option<String>) -> Result<WorkspaceSnapshot, String> {
+    graph::set_group_color(&app, &group_id, color.as_deref())
+}
+
+/// Story 12.3: collapse or expand a group.
+#[tauri::command]
+pub async fn group_collapse<R: Runtime>(app: AppHandle<R>, group_id: String, collapsed: bool) -> Result<WorkspaceSnapshot, String> {
+    graph::set_group_collapsed(&app, &group_id, collapsed)
+}
+
+/// Story 12.3: delete a group, keeping its members as plain projects.
+#[tauri::command]
+pub async fn group_delete<R: Runtime>(app: AppHandle<R>, group_id: String) -> Result<WorkspaceSnapshot, String> {
+    graph::delete_group(&app, &group_id)
+}
+
 /// Draw an edge (Story 6.1): Rust picks the kind from the pair and refuses an invalid pair, a
 /// duplicate or an unknown end with the notice to show (`"can't link a project to a session"`,
 /// `"already linked"`, ...). Replies with the new edge; the snapshot follows as

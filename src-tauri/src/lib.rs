@@ -52,6 +52,14 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             ipc::worktree_remove_preview,
             ipc::worktree_remove,
             ipc::workspace_move_node,
+            ipc::workspace_move_nodes,
+            ipc::group_create,
+            ipc::group_add,
+            ipc::group_remove,
+            ipc::group_rename,
+            ipc::group_set_color,
+            ipc::group_collapse,
+            ipc::group_delete,
             ipc::workspace_relayout_children,
             ipc::edge_add,
             ipc::edge_set_label,
@@ -870,6 +878,83 @@ mod tests {
         assert_eq!(err, serde_json::json!("unknown branch"));
         let args = serde_json::json!({ "target": { "kind": "folder", "id": "x" }, "position": { "x": 0, "y": 0 } });
         invoke_with(&webview, "workspace_move_node", InvokeBody::Json(args)).expect_err("not a node kind");
+    }
+
+    #[test]
+    fn the_group_commands_are_registered_validate_their_ids_and_persist() {
+        use serde_json::json;
+        let (app, webview, dir) = app_with_ide();
+        app.state::<super::AppState>().write_workspace().workspace.projects.push(super::graph::Project {
+            id: "web".into(),
+            path: "/p/web".into(),
+            label: "web".into(),
+            ..super::graph::Project::default()
+        });
+        let call = |cmd: &str, args: serde_json::Value| -> Result<serde_json::Value, serde_json::Value> {
+            invoke_with(&webview, cmd, InvokeBody::Json(args)).map(|body| body.deserialize().unwrap())
+        };
+        let disk = || -> serde_json::Value { serde_json::from_str(&std::fs::read_to_string(dir.path().join("workspace.json")).unwrap()).unwrap() };
+
+        // group_create
+        let snapshot = call("group_create", json!({ "label": "  web\u{7} apps ", "projectId": "ide" })).unwrap();
+        assert_eq!(snapshot["workspace"]["groups"][0]["label"], "web apps");
+        let g1 = snapshot["workspace"]["groups"][0]["id"].as_str().unwrap().to_string();
+        assert_eq!(snapshot["workspace"]["projects"][0]["groupId"], json!(g1));
+        assert_eq!(disk()["projects"][0]["groupId"], json!(g1));
+        assert_eq!(call("group_create", json!({ "label": "  ", "projectId": "ide" })), Err(json!("group label is blank")));
+        assert_eq!(call("group_create", json!({ "label": "x", "projectId": "nope" })), Err(json!("unknown project")));
+
+        // group_add
+        let snapshot = call("group_add", json!({ "groupId": g1, "projectId": "web" })).unwrap();
+        assert_eq!(snapshot["workspace"]["projects"][1]["groupId"], json!(g1));
+        assert_eq!(call("group_add", json!({ "groupId": "ghost", "projectId": "web" })), Err(json!("unknown group")));
+        assert_eq!(call("group_add", json!({ "groupId": g1, "projectId": "nope" })), Err(json!("unknown project")));
+
+        // group_rename
+        let snapshot = call("group_rename", json!({ "groupId": g1, "label": "site" })).unwrap();
+        assert_eq!(snapshot["workspace"]["groups"][0]["label"], "site");
+        assert_eq!(call("group_rename", json!({ "groupId": g1, "label": "\n" })), Err(json!("group label is blank")));
+        assert_eq!(call("group_rename", json!({ "groupId": "ghost", "label": "x" })), Err(json!("unknown group")));
+
+        // group_set_color
+        let snapshot = call("group_set_color", json!({ "groupId": g1, "color": "sage" })).unwrap();
+        assert_eq!(snapshot["workspace"]["groups"][0]["color"], "sage");
+        assert_eq!(call("group_set_color", json!({ "groupId": g1, "color": "#ff0000" })), Err(json!("unknown group colour")));
+        assert_eq!(call("group_set_color", json!({ "groupId": "ghost", "color": null })), Err(json!("unknown group")));
+        let snapshot = call("group_set_color", json!({ "groupId": g1, "color": null })).unwrap();
+        assert_eq!(snapshot["workspace"]["groups"][0]["color"], serde_json::Value::Null);
+
+        // group_collapse
+        let snapshot = call("group_collapse", json!({ "groupId": g1, "collapsed": true })).unwrap();
+        assert_eq!(snapshot["workspace"]["groups"][0]["collapsed"], true);
+        assert_eq!(disk()["groups"][0]["collapsed"], true);
+        assert_eq!(call("group_collapse", json!({ "groupId": "ghost", "collapsed": true })), Err(json!("unknown group")));
+
+        // workspace_move_nodes
+        let moves = json!({ "moves": [
+            { "target": { "kind": "project", "id": "ide" }, "position": { "x": 50, "y": 20 } },
+            { "target": { "kind": "project", "id": "web" }, "position": { "x": 350, "y": 20 } }
+        ] });
+        let snapshot = call("workspace_move_nodes", moves).unwrap();
+        assert_eq!(snapshot["workspace"]["projects"][1]["position"], json!({ "x": 350.0, "y": 20.0 }));
+        assert_eq!(disk()["projects"][0]["position"], json!({ "x": 50.0, "y": 20.0 }));
+        let bad = json!({ "moves": [
+            { "target": { "kind": "project", "id": "ide" }, "position": { "x": 0, "y": 0 } },
+            { "target": { "kind": "project", "id": "nope" }, "position": { "x": 0, "y": 0 } }
+        ] });
+        assert_eq!(call("workspace_move_nodes", bad), Err(json!("unknown project")));
+        assert_eq!(disk()["projects"][0]["position"], json!({ "x": 50.0, "y": 20.0 }), "nothing moved");
+
+        // group_remove
+        let snapshot = call("group_remove", json!({ "projectId": "web" })).unwrap();
+        assert!(snapshot["workspace"]["projects"][1].get("groupId").is_none());
+        assert_eq!(call("group_remove", json!({ "projectId": "nope" })), Err(json!("unknown project")));
+
+        // group_delete
+        let snapshot = call("group_delete", json!({ "groupId": g1 })).unwrap();
+        assert!(snapshot["workspace"].get("groups").is_none(), "left out while empty");
+        assert_eq!(snapshot["workspace"]["projects"].as_array().unwrap().len(), 2, "members kept");
+        assert_eq!(call("group_delete", json!({ "groupId": g1 })), Err(json!("unknown group")));
     }
 
     #[test]

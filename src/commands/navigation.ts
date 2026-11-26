@@ -25,6 +25,7 @@ import { useCanvasStore, viewportCentre, type CanvasElement } from "../state/can
 import { liveSession } from "../state/live";
 import { acknowledgeIfNeeded, currentSelection, NOTICE_MS, sameTarget, selectedProject, useUiStore, type Size } from "../state/ui";
 import { projectHasChildren, useWorkspaceStore } from "../state/workspace";
+import { drawnGroupRect, toggleSelectedGroup } from "./groups";
 import { setExpanded } from "./nodes";
 import type { Timers } from "./projects";
 
@@ -63,9 +64,14 @@ export function moveSelection(direction: Direction): boolean {
   const snapshot = useWorkspaceStore.getState().snapshot;
   if (snapshot === null) return false;
   const ui = useUiStore.getState();
-  const rects = nodeRects(snapshot.workspace.projects, snapshot.children, ui.showAll, ui.showAllBranches);
+  const rects = nodeRects(snapshot.workspace.projects, snapshot.children, ui.showAll, ui.showAllBranches, snapshot.workspace.groups);
   if (rects.length === 0) return false;
-  const from = ui.selection === null ? undefined : rects.find((rect) => sameTarget(rect.target, ui.selection));
+  let from = ui.selection === null ? undefined : rects.find((rect) => sameTarget(rect.target, ui.selection));
+  // Story 12.3: an expanded group (selected by its label) is not a card; its frame is the origin.
+  if (from === undefined && ui.selection?.kind === "group") {
+    const frame = drawnGroupRect(ui.selection.id);
+    if (frame !== null) from = { target: ui.selection, ...frame };
+  }
   const next = from === undefined ? nearestToPoint(rects, viewportCentre() ?? { x: 0, y: 0 }) : nearestInDirection(from, rects, direction);
   if (next === null) return false;
   ui.select(next.target);
@@ -82,7 +88,7 @@ export function revealTarget(target: CanvasTarget): boolean {
   const snapshot = useWorkspaceStore.getState().snapshot;
   if (snapshot === null) return false;
   const { showAll, showAllBranches } = useUiStore.getState();
-  const rect = nodeRects(snapshot.workspace.projects, snapshot.children, showAll, showAllBranches).find((r) =>
+  const rect = nodeRects(snapshot.workspace.projects, snapshot.children, showAll, showAllBranches, snapshot.workspace.groups).find((r) =>
     sameTarget(r.target, target),
   );
   return rect === undefined ? false : revealRect(rect);
@@ -101,6 +107,21 @@ function revealRect(rect: NodeRect): boolean {
   if (size === null) return false;
   const next = panToReveal(rect, instance.getViewport(), size, REVEAL_MARGIN);
   if (next === null) return false;
+  void instance.setViewport(next, { duration: prefersReducedMotion() ? 0 : REVEAL_PAN_MS });
+  return true;
+}
+
+/**
+ * Story 12.3 ("Go to group"): pan the canvas so `rect`'s centre is the canvas's centre, zoom
+ * unchanged, over `REVEAL_PAN_MS` (instantly under reduced motion). False without a canvas.
+ */
+export function centreOnRect(rect: { x: number; y: number; width: number; height: number }): boolean {
+  const { instance, element } = useCanvasStore.getState();
+  if (instance === null) return false;
+  const size = canvasSize(element);
+  if (size === null) return false;
+  const { zoom } = instance.getViewport();
+  const next = { x: size.width / 2 - (rect.x + rect.width / 2) * zoom, y: size.height / 2 - (rect.y + rect.height / 2) * zoom, zoom };
   void instance.setViewport(next, { duration: prefersReducedMotion() ? 0 : REVEAL_PAN_MS });
   return true;
 }
@@ -124,7 +145,7 @@ function canvasSize(element: CanvasElement | null): Size | null {
 /**
  * `selection.activate` (Enter): the selected node's default action. A project with children
  * toggles expand/collapse (persisted); a project's `more` row toggles its `show all` (UI
- * only); a childless project and child cards do nothing (Resume, Fork and Stop are menu and palette commands, Story 4.4).
+ * only); a selected group toggles its collapse (Story 12.3); a childless project and child cards do nothing (Resume, Fork and Stop are menu and palette commands, Story 4.4).
  * Resolves to whether anything was done.
  */
 export async function activateSelection(): Promise<boolean> {
@@ -133,7 +154,9 @@ export async function activateSelection(): Promise<boolean> {
   // Only a target that is drawn right now: a `more` row that is gone, or a child hidden past
   // the cut, does nothing.
   if (ui.selection === null || snapshot === null) return false;
-  const drawn = nodeRects(snapshot.workspace.projects, snapshot.children, ui.showAll, ui.showAllBranches);
+  // Story 12.3: Enter on a selected group, expanded or collapsed, toggles its collapse.
+  if (ui.selection.kind === "group") return toggleSelectedGroup();
+  const drawn = nodeRects(snapshot.workspace.projects, snapshot.children, ui.showAll, ui.showAllBranches, snapshot.workspace.groups);
   if (!drawn.some((rect) => sameTarget(rect.target, ui.selection))) return false;
   if (ui.selection.kind === "more") {
     ui.toggleShowAll(ui.selection.id, ui.selection.group);

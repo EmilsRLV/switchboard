@@ -4,6 +4,15 @@ What changed in Switchboard, newest first. Each release lists what you can see a
 
 ## Unreleased
 
+### Canvas
+
+- Projects can be kept together in a named group. Press `g` (**Add to group…**) on a project and pick a group
+  or **New group…**. A group draws a thin frame around its projects; drag its label to move them all, click it
+  to select the group. `enter` collapses it into one card showing `N projects`, their summed `N live`, and the
+  glow when one of them needs you; `ctrl+j` into a collapsed group opens it. **Rename group…**, **Set group
+  colour…**, **Delete group** (the projects stay) and **Remove from group** are on the menus and in the
+  palette, with a **Go to group** entry for each group.
+
 ### Sessions
 
 - A session you `/clear` keeps its card: the same place, label, terminal and edges, and its state follows the

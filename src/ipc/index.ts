@@ -165,6 +165,24 @@ export type Project = {
   launchDefaults: LaunchDefaults | null;
   /** The "branches" toggle (Story 5.1): its local branches are listed as branch children. */
   showBranches: boolean;
+  /** Story 12.3: the group it belongs to; absent (or `null`) when none. */
+  groupId?: string | null;
+};
+
+/** Story 12.3: the five group colours (`--group-<name>` tokens); mirrors `graph::GROUP_COLORS`. */
+export const GROUP_COLORS = ["slate", "sage", "sand", "rose", "sky"] as const;
+export type GroupColor = (typeof GROUP_COLORS)[number];
+
+/**
+ * Mirrors `graph::Group` (Story 12.3): a named set of projects. It has no position: the frame and
+ * the collapsed card are placed from its members.
+ */
+export type Group = {
+  id: string;
+  label: string;
+  /** One of `GROUP_COLORS`, or `null`. */
+  color: string | null;
+  collapsed: boolean;
 };
 
 /**
@@ -480,6 +498,8 @@ export type Workspace = {
   defaults: LaunchDefaults;
   /** Story 7.2: the agents' act tools ask (`ask`, also when absent) or run without a toast (`allowAll`). */
   agentActions?: AgentActions;
+  /** Story 12.3: the project groups; absent while there are none. */
+  groups?: Group[];
 };
 
 /** Mirrors `graph::AgentActions` (Story 7.2). */
@@ -1034,6 +1054,14 @@ type Commands = {
   worktree_remove_preview: RemoveWorktreeCheck;
   worktree_remove: WorktreeRemoved;
   workspace_move_node: WorkspaceSnapshot;
+  workspace_move_nodes: WorkspaceSnapshot;
+  group_create: WorkspaceSnapshot;
+  group_add: WorkspaceSnapshot;
+  group_remove: WorkspaceSnapshot;
+  group_rename: WorkspaceSnapshot;
+  group_set_color: WorkspaceSnapshot;
+  group_collapse: WorkspaceSnapshot;
+  group_delete: WorkspaceSnapshot;
   workspace_relayout_children: WorkspaceSnapshot;
   edge_add: Edge;
   edge_set_label: WorkspaceSnapshot;
@@ -1294,6 +1322,55 @@ export function worktreeRemove(
  */
 export function workspaceMoveNode(target: NodeTarget, position: Position): Promise<WorkspaceSnapshot> {
   return call("workspace_move_node", { target, position });
+}
+
+/** Mirrors `graph::NodeMove` (Story 12.3): one entry of `workspace_move_nodes`. */
+export type NodeMove = { target: NodeTarget; position: Position };
+
+/**
+ * `ipc::workspace_move_nodes` (Story 12.3) -- store several dropped positions in one write (a
+ * group's members). Rejects, moving nothing, when any target is unknown or any position non-finite.
+ */
+export function workspaceMoveNodes(moves: NodeMove[]): Promise<WorkspaceSnapshot> {
+  return call("workspace_move_nodes", { moves });
+}
+
+/** Rust's refusal of a blank group label (`graph::REFUSE_GROUP_LABEL_BLANK`). */
+export const GROUP_LABEL_BLANK = "group label is blank";
+
+/** `ipc::group_create` (Story 12.3) -- a new group holding `projectId`; it is the project's `groupId` in the reply. */
+export function groupCreate(label: string, projectId: string): Promise<WorkspaceSnapshot> {
+  return call("group_create", { label, projectId });
+}
+
+/** `ipc::group_add` (Story 12.3) -- move a project into a group; its emptied old group is deleted. */
+export function groupAdd(groupId: string, projectId: string): Promise<WorkspaceSnapshot> {
+  return call("group_add", { groupId, projectId });
+}
+
+/** `ipc::group_remove` (Story 12.3) -- take a project out of its group; an emptied group is deleted. */
+export function groupRemove(projectId: string): Promise<WorkspaceSnapshot> {
+  return call("group_remove", { projectId });
+}
+
+/** `ipc::group_rename` (Story 12.3). Rejects with `"group label is blank"` or `"unknown group"`. */
+export function groupRename(groupId: string, label: string): Promise<WorkspaceSnapshot> {
+  return call("group_rename", { groupId, label });
+}
+
+/** `ipc::group_set_color` (Story 12.3) -- one of `GROUP_COLORS`, or `null` for none. */
+export function groupSetColor(groupId: string, color: string | null): Promise<WorkspaceSnapshot> {
+  return call("group_set_color", { groupId, color });
+}
+
+/** `ipc::group_collapse` (Story 12.3) -- collapse or expand a group (kept across restarts). */
+export function groupCollapse(groupId: string, collapsed: boolean): Promise<WorkspaceSnapshot> {
+  return call("group_collapse", { groupId, collapsed });
+}
+
+/** `ipc::group_delete` (Story 12.3) -- delete a group, keeping its members as plain projects. */
+export function groupDelete(groupId: string): Promise<WorkspaceSnapshot> {
+  return call("group_delete", { groupId });
 }
 
 /**

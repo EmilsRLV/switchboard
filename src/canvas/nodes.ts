@@ -9,6 +9,7 @@ import type {
   BranchMeta,
   ChildKind,
   ChildNode,
+  Group,
   LiveSession,
   NodeTarget,
   Position,
@@ -99,7 +100,40 @@ export type BranchFlowNode = Node<ChildNodeData, "branch">;
 /** Story 12.2: an agent card (`child.agent` set); `attention` is its unseen exit, `stopping` a Stop under way. */
 export type AgentFlowNode = Node<ChildNodeData, "agent">;
 export type MoreFlowNode = Node<MoreNodeData, "more">;
-export type CanvasFlowNode = ProjectFlowNode | SessionFlowNode | BranchFlowNode | AgentFlowNode | MoreFlowNode;
+
+/** Story 12.3: what an expanded group's frame renders from. */
+export type GroupFrameData = {
+  group: Group;
+  /** The frame's size (flow px): its members' cards and drawn children, plus the padding. */
+  width: number;
+  height: number;
+  selected: boolean;
+};
+
+/** Story 12.3: what a collapsed group's card renders from. */
+export type GroupCardData = {
+  group: Group;
+  /** How many projects are in the group: `N projects`. */
+  memberCount: number;
+  /** The sum of the members' `N live`. */
+  liveCount: number;
+  /** True while any member's node needs the operator: the card glows. */
+  attention: boolean;
+  /** The glow's tooltip (the session `ctrl+j` would pick among the members); `null` while it does not glow. */
+  attentionText: string | null;
+  selected: boolean;
+};
+
+export type GroupFrameFlowNode = Node<GroupFrameData, "groupFrame">;
+export type GroupCardFlowNode = Node<GroupCardData, "groupCard">;
+export type CanvasFlowNode =
+  | ProjectFlowNode
+  | SessionFlowNode
+  | BranchFlowNode
+  | AgentFlowNode
+  | MoreFlowNode
+  | GroupFrameFlowNode
+  | GroupCardFlowNode;
 
 /**
  * The synthetic `more` row of one group of a project's column: `id` is the project's id and
@@ -138,8 +172,14 @@ export function moreTarget(projectId: string, group: ChildGroup): MoreTarget {
  */
 export type EdgeTarget = { kind: "edge"; id: string };
 
-/** Anything the canvas draws and can select: a node Rust knows, a `more` row, or an edge. */
-export type CanvasTarget = NodeTarget | MoreTarget | EdgeTarget;
+/**
+ * Story 12.3: a project group, selected by a click on its frame's label or its collapsed card.
+ * Not a Rust node kind: never an edge end, a launch target or a terminal owner.
+ */
+export type GroupTarget = { kind: "group"; id: string };
+
+/** Anything the canvas draws and can select: a node Rust knows, a `more` row, an edge or a group. */
+export type CanvasTarget = NodeTarget | MoreTarget | EdgeTarget | GroupTarget;
 
 /** How many children an expanded project shows until `show all` is clicked. */
 export const SHOW_LIMIT = 10;
@@ -192,10 +232,16 @@ export function edgeFlowId(id: string): string {
   return `edge:${id}`;
 }
 
+/** Story 12.3: the flow id of a group's frame or card (one at a time): `group:<id>`. */
+export function groupFlowId(id: string): string {
+  return `group:${id}`;
+}
+
 /** The flow id of any canvas target (an edge's is its xyflow edge id). */
 export function flowIdOf(target: CanvasTarget): string {
   if (target.kind === "project") return target.id;
   if (target.kind === "edge") return edgeFlowId(target.id);
+  if (target.kind === "group") return groupFlowId(target.id);
   if (target.kind === "more") return moreFlowId(target.id, moreGroup(target));
   return childFlowId({ kind: target.kind, id: target.id });
 }
@@ -208,6 +254,7 @@ export function parseFlowId(flowId: string): CanvasTarget {
   if (flowId.startsWith("more-branches:")) return moreTarget(flowId.slice("more-branches:".length), "branches");
   if (flowId.startsWith("more:")) return { kind: "more", id: flowId.slice("more:".length) };
   if (flowId.startsWith("edge:")) return { kind: "edge", id: flowId.slice("edge:".length) };
+  if (flowId.startsWith("group:")) return { kind: "group", id: flowId.slice("group:".length) };
   return { kind: "project", id: flowId };
 }
 
@@ -436,6 +483,8 @@ export type FlowInputs = {
   review?: Readonly<Record<string, boolean>>;
   /** Why a project's last branch read failed (Story 5.1), by project id; absent means none. */
   branchErrors?: Readonly<Record<string, string>>;
+  /** Story 12.3: the workspace's groups; absent means none. */
+  groups?: readonly Group[];
 };
 
 /**
@@ -521,8 +570,25 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
     else list.push(child);
   }
 
+  // The badge counts the project's own session children in a live state, and (Story 12.2)
+  // its running agent cards.
+  const liveCountOf = (kids: readonly ChildNode[]): number =>
+    kids.filter((child) => {
+      if (child.kind === "agent") return isAgentRunning(child);
+      const state = stateOf(child);
+      return state !== null && isLiveState(state);
+    }).length;
+
+  // Story 12.3: a collapsed group's members (and their children) are not drawn.
+  const groups = inputs.groups ?? [];
+  const collapsedGroups = new Set(groups.filter((g) => g.collapsed).map((g) => g.id));
+  const memberOf = (project: Project): string | null =>
+    project.groupId !== undefined && project.groupId !== null && groups.some((g) => g.id === project.groupId) ? project.groupId : null;
+
   const out: CanvasFlowNode[] = [];
   for (const project of projects) {
+    const groupId = memberOf(project);
+    if (groupId !== null && collapsedGroups.has(groupId)) continue;
     const kids = byProject.get(project.id) ?? [];
     const projectDrag = override(dragging, project.id);
     const projectSelected = selection !== null && selection.kind === "project" && selection.id === project.id;
@@ -536,13 +602,7 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
         flashed: flashed.includes(project.id),
         selected: projectSelected,
         childCount: kids.length,
-        // The badge counts the project's own session children in a live state, and (Story 12.2)
-        // its running agent cards.
-        liveCount: kids.filter((child) => {
-          if (child.kind === "agent") return isAgentRunning(child);
-          const state = stateOf(child);
-          return state !== null && isLiveState(state);
-        }).length,
+        liveCount: liveCountOf(kids),
         attention: kids.some(attentionOf),
         attentionText: glowTextOf(kids),
         branchesError: project.showBranches && Object.hasOwn(branchErrors, project.id) ? (branchErrors[project.id] ?? null) : null,
@@ -601,8 +661,141 @@ export function toFlowNodes(inputs: FlowInputs, previous: readonly CanvasFlowNod
       out.push(reuse(before.get(id), next));
     }
   }
+
+  // Story 12.3: each group with members is a frame behind them (expanded) or one card (collapsed),
+  // placed from its members (with their drag overrides, so a drag grows the frame live).
+  const frames: CanvasFlowNode[] = [];
+  for (const group of groups) {
+    const members = projects.filter((p) => memberOf(p) === group.id);
+    if (members.length === 0) continue;
+    const rect = groupRect(members, children, showAll, showAllBranches, dragging);
+    if (rect === null) continue;
+    const id = groupFlowId(group.id);
+    const selected = selection !== null && selection.kind === "group" && selection.id === group.id;
+    const dragged = members.some((m) => override(dragging, m.id) !== undefined);
+    if (group.collapsed) {
+      const kids = members.flatMap((m) => byProject.get(m.id) ?? []);
+      const next: GroupCardFlowNode = {
+        id,
+        type: "groupCard",
+        position: { x: rect.x, y: rect.y },
+        data: {
+          group,
+          memberCount: members.length,
+          liveCount: members.reduce((sum, m) => sum + liveCountOf(byProject.get(m.id) ?? []), 0),
+          attention: kids.some(attentionOf),
+          attentionText: glowTextOf(kids),
+          selected,
+        },
+        zIndex: dragged ? ELEVATED_Z + 1 : selected ? ELEVATED_Z : 0,
+        draggable: true,
+        selectable: false,
+        connectable: false,
+      };
+      out.push(reuse(before.get(id), next));
+    } else {
+      const next: GroupFrameFlowNode = {
+        id,
+        type: "groupFrame",
+        position: { x: rect.x, y: rect.y },
+        data: { group, width: rect.width, height: rect.height, selected },
+        // Behind every card, whatever is selected or dragged.
+        zIndex: GROUP_FRAME_Z,
+        draggable: true,
+        dragHandle: `.${GROUP_FRAME_HANDLE}`,
+        // Only its label takes the pointer; the frame lets clicks through.
+        style: GROUP_FRAME_STYLE,
+        selectable: false,
+        connectable: false,
+      };
+      frames.push(reuse(before.get(id), next));
+    }
+  }
+  return frames.length === 0 ? out : [...frames, ...out];
+}
+
+// --- groups (Story 12.3) ---------------------------------------------------------------------
+
+/** Space (flow px) between a group's members and its frame, on every side. */
+export const GROUP_PADDING = 16;
+/** Room (flow px) above the members for the frame's label. */
+export const GROUP_LABEL_HEIGHT = 20;
+/** The frame's `zIndex`: behind the cards. */
+export const GROUP_FRAME_Z = -1;
+/** The class of the frame's label, its drag handle. */
+export const GROUP_FRAME_HANDLE = "group-frame-label";
+/** The frame's xyflow wrapper style: no pointer events (its label turns them back on). */
+const GROUP_FRAME_STYLE = Object.freeze({ pointerEvents: "none" as const });
+
+/** A rectangle in canvas coordinates. */
+export type Rect = { x: number; y: number; width: number; height: number };
+
+/**
+ * A group's frame (Story 12.3): the bounds of its members' cards and, for an expanded member, its
+ * drawn children and `more` rows, grown by {@link GROUP_PADDING} on every side and by
+ * {@link GROUP_LABEL_HEIGHT} more on top for the label. Drag overrides (a member or a child being
+ * dragged) are applied, so the frame follows a drag live. The collapsed card sits at its top-left.
+ * `null` for no members.
+ */
+export function groupRect(
+  members: readonly Project[],
+  children: readonly ChildNode[],
+  showAll: readonly string[] = [],
+  showAllBranches: readonly string[] = [],
+  dragging: DragOverrides = NO_DRAG,
+): Rect | null {
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  const add = (x: number, y: number, width: number, height: number) => {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + width);
+    maxY = Math.max(maxY, y + height);
+  };
+  for (const project of members) {
+    const at = override(dragging, project.id) ?? project.position;
+    add(at.x, at.y, CARD_WIDTH, CARD_HEIGHT);
+    if (!project.expanded) continue;
+    const kids = children.filter((child) => child.projectId === project.id);
+    const { drawn, mores } = projectColumn(project.id, kids, showAll, showAllBranches);
+    for (const { child, position } of drawn) {
+      const rel = override(dragging, childFlowId(child)) ?? position;
+      add(at.x + rel.x, at.y + rel.y, CHILD_WIDTH, CHILD_HEIGHT);
+    }
+    for (const { position } of mores) add(at.x + position.x, at.y + position.y, CHILD_WIDTH, CHILD_HEIGHT);
+  }
+  if (!Number.isFinite(minX)) return null;
+  return {
+    x: minX - GROUP_PADDING,
+    y: minY - GROUP_PADDING - GROUP_LABEL_HEIGHT,
+    width: maxX - minX + 2 * GROUP_PADDING,
+    height: maxY - minY + 2 * GROUP_PADDING + GROUP_LABEL_HEIGHT,
+  };
+}
+
+/** The projects in group `groupId`, in workspace order. */
+export function groupMembers(projects: readonly Project[], groupId: string): Project[] {
+  return projects.filter((p) => p.groupId === groupId);
+}
+
+/** A group card's count: `1 project`, `N projects`. */
+export function groupCountText(count: number): string {
+  return count === 1 ? "1 project" : `${count} projects`;
+}
+
+/**
+ * Where each member goes when its group's frame or card is dragged by `(dx, dy)` from where the
+ * members were at the drag's start (`start`, by project id).
+ */
+export function offsetMembers(start: Readonly<Record<string, Position>>, dx: number, dy: number): Record<string, Position> {
+  const out: Record<string, Position> = {};
+  for (const [id, at] of Object.entries(start)) out[id] = { x: at.x + dx, y: at.y + dy };
   return out;
 }
+
+const NO_DRAG: DragOverrides = Object.freeze({});
 
 const NO_LIVE: Readonly<Record<string, LiveSession>> = Object.freeze({});
 const NO_ERRORS: Readonly<Record<string, string>> = Object.freeze({});
@@ -637,6 +830,19 @@ function sameNode(a: CanvasFlowNode, b: CanvasFlowNode): boolean {
       sameStatus(a.data.status, b.data.status)
     );
   }
+  if (a.type === "groupFrame" && b.type === "groupFrame") {
+    return a.data.width === b.data.width && a.data.height === b.data.height && a.data.selected === b.data.selected && sameGroup(a.data.group, b.data.group);
+  }
+  if (a.type === "groupCard" && b.type === "groupCard") {
+    return (
+      a.data.memberCount === b.data.memberCount &&
+      a.data.liveCount === b.data.liveCount &&
+      a.data.attention === b.data.attention &&
+      a.data.attentionText === b.data.attentionText &&
+      a.data.selected === b.data.selected &&
+      sameGroup(a.data.group, b.data.group)
+    );
+  }
   if (a.type === "more" && b.type === "more") {
     return (
       a.data.projectId === b.data.projectId &&
@@ -664,6 +870,10 @@ function sameNode(a: CanvasFlowNode, b: CanvasFlowNode): boolean {
   return false;
 }
 
+function sameGroup(a: Group, b: Group): boolean {
+  return a === b || (a.id === b.id && a.label === b.label && a.color === b.color && a.collapsed === b.collapsed);
+}
+
 function samePosition(a: Position, b: Position): boolean {
   return a.x === b.x && a.y === b.y;
 }
@@ -681,7 +891,8 @@ function sameProject(a: Project, b: Project): boolean {
       a.label === b.label &&
       a.expanded === b.expanded &&
       a.color === b.color &&
-      a.showBranches === b.showBranches)
+      a.showBranches === b.showBranches &&
+      (a.groupId ?? null) === (b.groupId ?? null))
   );
 }
 
@@ -1265,9 +1476,22 @@ export function nodeRects(
   children: readonly ChildNode[],
   showAll: readonly string[] = [],
   showAllBranches: readonly string[] = [],
+  groups: readonly Group[] = [],
 ): NodeRect[] {
   const out: NodeRect[] = [];
+  // Story 12.3: a collapsed group is one project-sized card in its first member's place in the
+  // order; its members and their children are not drawn.
+  const collapsed = new Map(groups.filter((g) => g.collapsed).map((g) => [g.id, g]));
+  const carded = new Set<string>();
   for (const project of projects) {
+    const groupId = project.groupId ?? null;
+    if (groupId !== null && collapsed.has(groupId)) {
+      if (carded.has(groupId)) continue;
+      carded.add(groupId);
+      const rect = groupRect(groupMembers(projects, groupId), children, showAll, showAllBranches);
+      if (rect !== null) out.push({ target: { kind: "group", id: groupId }, x: rect.x, y: rect.y, width: CARD_WIDTH, height: CARD_HEIGHT });
+      continue;
+    }
     out.push({
       target: { kind: "project", id: project.id },
       x: project.position.x,

@@ -61,7 +61,77 @@ pub fn validate(workspace: &mut Workspace) -> Vec<Banner> {
             ),
         ));
     }
+    if let Some(banner) = validate_groups(workspace) {
+        banners.push(banner);
+    }
     banners
+}
+
+/// Story 12.3: the group rules on a loaded workspace. Dropped or cleared, under one
+/// `workspace.groups` banner: groups with an empty or duplicate id (first kept), a project's
+/// `groupId` naming no group (cleared), and groups no project belongs to. Labels are normalised
+/// by the group label rule (a blank one drops its group, its members cleared) and a colour
+/// outside the five is cleared.
+fn validate_groups(workspace: &mut Workspace) -> Option<Banner> {
+    let mut seen = std::collections::HashSet::new();
+    let before = workspace.groups.len();
+    workspace.groups.retain(|group| !group.id.is_empty() && seen.insert(group.id.clone()));
+    let bad_ids = before - workspace.groups.len();
+    // Labels follow the group label rule; a blank one drops its group (its members are then
+    // cleared below). A colour outside the five is cleared.
+    let (mut relabelled, mut recoloured) = (0, 0);
+    let before = workspace.groups.len();
+    workspace.groups.retain_mut(|group| match super::normalise_group_label(&group.label) {
+        Ok(label) => {
+            if label != group.label {
+                group.label = label;
+                relabelled += 1;
+            }
+            if group.color.as_deref().is_some_and(|c| !super::GROUP_COLORS.contains(&c)) {
+                group.color = None;
+                recoloured += 1;
+            }
+            true
+        }
+        Err(_) => false,
+    });
+    let blank = before - workspace.groups.len();
+    let seen: std::collections::HashSet<String> = workspace.groups.iter().map(|g| g.id.clone()).collect();
+    let mut cleared = 0;
+    for project in workspace.projects.iter_mut() {
+        if project.group_id.as_ref().is_some_and(|id| !seen.contains(id)) {
+            project.group_id = None;
+            cleared += 1;
+        }
+    }
+    let used: std::collections::HashSet<&str> = workspace.projects.iter().filter_map(|p| p.group_id.as_deref()).collect();
+    let before = workspace.groups.len();
+    workspace.groups.retain(|group| used.contains(group.id.as_str()));
+    let empty = before - workspace.groups.len();
+    let mut parts = Vec::new();
+    if bad_ids > 0 {
+        parts.push(format!("{bad_ids} group{} with an empty or duplicate id", plural(bad_ids)));
+    }
+    if blank > 0 {
+        parts.push(format!("{blank} group{} with a blank label", plural(blank)));
+    }
+    if relabelled > 0 {
+        parts.push(format!("{relabelled} group label{} not as stored", plural(relabelled)));
+    }
+    if recoloured > 0 {
+        parts.push(format!("{recoloured} unknown group colour{}", plural(recoloured)));
+    }
+    if cleared > 0 {
+        parts.push(format!("{cleared} project{} in an unknown group", plural(cleared)));
+    }
+    if empty > 0 {
+        parts.push(format!("{empty} empty group{}", plural(empty)));
+    }
+    (!parts.is_empty()).then(|| Banner::new("workspace.groups", format!("workspace.json had {}; fixed", parts.join(", "))))
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
 }
 
 /// Read and parse `path`; when it does not exist, write the default workspace there.
@@ -213,6 +283,82 @@ mod tests {
         let mut fine = parse(r#"{ "projects": [{ "id": "a" }, { "id": "b" }] }"#).unwrap();
         assert!(validate(&mut fine).is_empty());
         assert_eq!(fine.projects.len(), 2);
+    }
+
+    #[test]
+    fn validate_fixes_groups_under_one_banner_and_keeps_the_rest() {
+        let mut ws = parse(
+            r#"{ "projects": [
+                { "id": "a", "groupId": "x" },
+                { "id": "b", "groupId": "ghost" },
+                { "id": "c" }
+            ], "groups": [
+                { "id": "x", "label": "first x" },
+                { "id": "x", "label": "second x" },
+                { "id": "", "label": "no id" },
+                { "id": "lonely", "label": "empty" }
+            ] }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            validate(&mut ws),
+            [Banner::new(
+                "workspace.groups",
+                "workspace.json had 2 groups with an empty or duplicate id, 1 project in an unknown group, 1 empty group; fixed"
+            )]
+        );
+        assert_eq!(ws.groups.len(), 1);
+        assert_eq!((ws.groups[0].id.as_str(), ws.groups[0].label.as_str()), ("x", "first x"));
+        let ids: Vec<Option<&str>> = ws.projects.iter().map(|p| p.group_id.as_deref()).collect();
+        assert_eq!(ids, [Some("x"), None, None]);
+        assert_eq!(ws.projects.len(), 3, "other data kept");
+
+        // Hand-edited labels and colours: normalised, a blank label drops its group.
+        let long = "x".repeat(80);
+        let text = format!(
+            r##"{{ "projects": [
+                {{ "id": "a", "groupId": "ctl" }},
+                {{ "id": "b", "groupId": "blank" }},
+                {{ "id": "c", "groupId": "long" }}
+            ], "groups": [
+                {{ "id": "ctl", "label": " web\u0007 apps ", "color": "sage" }},
+                {{ "id": "blank", "label": " \n " }},
+                {{ "id": "long", "label": "{long}", "color": "#ff0000" }}
+            ] }}"##
+        );
+        let mut ws = parse(&text).unwrap();
+        assert_eq!(
+            validate(&mut ws),
+            [Banner::new(
+                "workspace.groups",
+                "workspace.json had 1 group with a blank label, 2 group labels not as stored, 1 unknown group colour, 1 project in an unknown group; fixed"
+            )]
+        );
+        let groups: Vec<(&str, &str, Option<&str>)> = ws.groups.iter().map(|g| (g.id.as_str(), g.label.as_str(), g.color.as_deref())).collect();
+        assert_eq!(groups, [("ctl", "web apps", Some("sage")), ("long", &"x".repeat(60)[..], None)]);
+        let ids: Vec<Option<&str>> = ws.projects.iter().map(|p| p.group_id.as_deref()).collect();
+        assert_eq!(ids, [Some("ctl"), None, Some("long")]);
+
+        let mut fine = parse(r#"{ "projects": [{ "id": "a", "groupId": "g" }], "groups": [{ "id": "g", "label": "web", "color": "sage", "collapsed": true }] }"#).unwrap();
+        assert!(validate(&mut fine).is_empty());
+        assert!(fine.groups[0].collapsed);
+    }
+
+    #[test]
+    fn groups_and_group_ids_are_left_out_of_the_file_while_unset() {
+        let mut ws = parse(r#"{ "projects": [{ "id": "a" }] }"#).unwrap();
+        let text = to_json(&ws);
+        assert!(!text.contains("groups") && !text.contains("groupId"), "{text}");
+        ws.projects[0].group_id = Some("g".into());
+        ws.groups.push(crate::graph::Group {
+            id: "g".into(),
+            label: "web".into(),
+            color: None,
+            collapsed: false,
+        });
+        let text = to_json(&ws);
+        assert!(text.contains("\"groupId\": \"g\"") && text.contains("\"groups\""), "{text}");
+        assert_eq!(parse(&text).unwrap(), ws);
     }
 
     #[test]

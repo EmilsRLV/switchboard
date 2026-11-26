@@ -213,3 +213,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-12-2-agent-cards-for-other-coding-agents.md`
   summary: List agent cards in the MCP `sessions` tool as `{nodeId, kind:"agent", agent, project, status:"running"|"exited"}`; Claude rows carry no `kind`.
   evidence: Split from Story 12.2 at the size gate. 12.2 leaves `mcp/mod.rs` unchanged, so agents are invisible to MCP until then.
+- source_spec: `_bmad-output/implementation-artifacts/spec-12-3-project-groups.md`
+  summary: Test that the palette's rendered input shows a prompt's `initial` text (Rename group…) and selects it, in a DOM test environment.
+  evidence: Review finding 17. The vitest setup has no DOM, so `Palette.test.tsx` checks the store's query and `paletteKeyDown` instead of the rendered `value`; needs jsdom or a props-only view component.

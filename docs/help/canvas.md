@@ -25,9 +25,8 @@ A pane slides in on the right, then the palette opens over the dimmed canvas.
 ```
 
 Click a node, or use the arrow keys, to select it; `esc` clears the selection. `enter` on a project node
-expands or collapses it. Right-click a project, session or branch node for its menu; every entry there is also in the command palette.
-Hover a node for its **toolbar**. Right-click the empty canvas for the **canvas menu**: add projects, fit
-view, Help, settings. With a project node selected, `n` opens the [launch sheet](sessions.md#the-launch-sheet)
+or a [group](projects.md#groups) expands or collapses it; **Go to group: …** in the palette finds a group. Right-click a project, session or branch node for its menu; every entry there is also in the command palette.
+Hover a node for its **toolbar**. Right-click the empty canvas for the **canvas menu**. With a project node selected, `n` opens the [launch sheet](sessions.md#the-launch-sheet)
 and `r` the [Review pane](review.md).
 
 Past ten children, a column's last row reads **show all (N)**; click it or press `enter` on it.

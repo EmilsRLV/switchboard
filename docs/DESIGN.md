@@ -105,6 +105,20 @@ yellow, comments bright black, types cyan, functions blue), set on the CodeMirro
 `src/review/DiffView.tsx`. A collapsed stretch of unchanged lines is a `--bg-hover` row in mono `--text-xs`
 `--fg-muted`; the gutters are `--bg-raised` with `--fg-faint` line numbers and a 1-px `--border` line.
 
+### Group colours
+
+A project group's optional colour (Story 12.3), shown only as the 2-px left rule of its frame or collapsed
+card, never as a fill or text. Five muted tones that sit beside `--border`; the accent is never a group
+colour, and nothing else uses these.
+
+| Token | Value | Use |
+|---|---|---|
+| `--group-slate` | `#6b7685` | The `slate` group colour. |
+| `--group-sage` | `#74907a` | The `sage` group colour. |
+| `--group-sand` | `#9a8f76` | The `sand` group colour. |
+| `--group-rose` | `#9a747c` | The `rose` group colour. |
+| `--group-sky` | `#6c8ca6` | The `sky` group colour. |
+
 ## Rules
 
 1. **Lines are 1 px** (`--line`) in `--border`. The only 2-px lines are the left indicators: the banner
@@ -625,6 +639,26 @@ SVG `<title>`), and the handle's tooltip reads `Drag to link · e`. While a link
 dragged, the line that follows the pointer has the context edge's dashed look. Every project, branch and session
 card is a drop target over its whole area. Over a card the pair is refused for, the cursor is
 `not-allowed`. Nothing else changes colour.
+
+### Group frame
+
+An expanded project group (Story 12.3) is a frame **behind** its members (`zIndex` below every card): a 1-px
+`--border` rectangle, `--radius-md`, no fill, around the members' cards and their drawn children and `more`
+rows, with a fixed 16-px padding on every side and 20 px more on top for the label. The label sits top-left in
+mono `--text-xs` `--fg-muted` (`--fg` on hover and while the group is selected), one line, ellipsis. A set
+colour shows only as a 2-px left rule in its `--group-*` token (see [Group colours](#group-colours)). The
+frame is placed from its members, never stored: dragging a member just grows it. Only the label takes the
+pointer: a click selects the group (the 1-px `--focus` outline, 2-px offset, on the frame) and a drag moves
+every member live, written once on release; the rest of the frame lets clicks through to the canvas.
+
+### Group card
+
+A collapsed group is one card the size of a project card (240 × 80), at the frame's top-left, drawn like a
+project card: the label in the head row with the members' summed `N live` badge, `N projects` in the path row,
+and a muted `group` status line. While any member's node needs the operator it takes the project glow
+(`.project-glow`, the accent allow-list's). The group colour is its 2-px left rule. Its members and their
+children are not drawn, and edges to them follow the hidden-ends rule. Dragging it moves the members by the
+same offset; the arrow keys visit it like a project card.
 
 ### The more row
 
